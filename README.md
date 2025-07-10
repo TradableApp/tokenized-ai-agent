@@ -13,7 +13,7 @@ This repository provides a production-ready integration between an on-chain ERC-
 
 - Token-gated access to AI inference
 - Secure off-chain execution inside a TEE (Intel TDX)
-- Verifiable responses posted back to a smart contract
+- Verifiable responses posted back to your smart contract
 - Deferred payment only when valid results are delivered
 
 ---
@@ -56,20 +56,59 @@ cp .env.example .env
 cp .env.rofl.example .env.rofl
 ```
 
-### 4. Build and deploy the smart contract
+---
+
+## 🔬 ROFL Setup
+
+### ⚗️ Testnet Deployment
+
+This section assumes you're deploying to Oasis Sapphire testnet using the ROFL CLI.
+
+#### 1. Create a wallet account
+
+Use `secp256k1-bip44` for compatibility with smart contracts:
 
 ```bash
-npx hardhat compile
-npx hardhat run scripts/deploy.js --network sapphireTestnet
+oasis wallet create YOUR_TESTNET_ACCOUNT --file.algorithm secp256k1-bip44
 ```
 
-### 5. Build the ROFL app
+**Note:** Replace `YOUR_TESTNET_ACCOUNT` with a lowercase identifier (e.g. `your_testnet_account`). Oasis account names must begin with a lowercase letter or number and contain only lowercase letters, numbers, and underscores.
+
+Fund the generated address with TEST tokens via [Oasis Testnet Faucet](https://faucet.testnet.oasis.io/).
+
+#### 2. Create the ROFL app
+
+```bash
+oasis rofl create --network testnet --account YOUR_TESTNET_ACCOUNT
+```
+
+This command updates `rofl.yaml` with `deployments`.
+
+#### 3. Build the ROFL container
 
 ```bash
 oasis rofl build
-oasis rofl create
-oasis rofl deploy --show-offers
 ```
+
+#### 4. Deploy to testnet
+
+```bash
+oasis rofl deploy --network testnet --account YOUR_TESTNET_ACCOUNT --show-offers
+```
+
+---
+
+### 🛡 Production Deployment Notes
+
+In production, use the `--scheme cri` flag to avoid container manipulation attacks:
+
+```bash
+oasis rofl deploy --network sapphire --account YOUR_MAINNET_ACCOUNT --scheme cri
+```
+
+**Note:** Replace `YOUR_MAINNET_ACCOUNT` with your actual Oasis account name (following the same naming rules as above).
+
+Make sure production wallets and trust roots are documented and stored securely in a team-accessible password manager or secure vault. Do **not** store private keys in Git.
 
 ---
 

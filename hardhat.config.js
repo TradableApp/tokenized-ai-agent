@@ -3,8 +3,13 @@ require("@nomicfoundation/hardhat-toolbox");
 require("@openzeppelin/hardhat-upgrades");
 require("hardhat-gas-reporter");
 
-const { PRIVATE_KEY, SAPPHIRE_TESTNET_RPC, SAPPHIRE_MAINNET_RPC, COINMARKETCAP_API_KEY } =
-  process.env;
+const {
+  PRIVATE_KEY,
+  SAPPHIRE_TESTNET_RPC,
+  SAPPHIRE_MAINNET_RPC,
+  SAPPHIRE_LOCALNET_RPC,
+  COINMARKETCAP_API_KEY,
+} = process.env;
 
 module.exports = {
   // Best practice: Set the default network to `hardhat` for testing and development.
@@ -15,15 +20,20 @@ module.exports = {
     hardhat: {
       chainId: 1337,
     },
-    sapphireTestnet: {
-      url: SAPPHIRE_TESTNET_RPC || "https://testnet.sapphire.oasis.io",
-      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
-      chainId: 23295,
-    },
     sapphire: {
       url: SAPPHIRE_MAINNET_RPC || "https://sapphire.oasis.io",
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
-      chainId: 23294,
+      chainId: 0x5afe,
+    },
+    "sapphire-testnet": {
+      url: SAPPHIRE_TESTNET_RPC || "https://testnet.sapphire.oasis.io",
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 0x5aff,
+    },
+    "sapphire-localnet": {
+      url: SAPPHIRE_LOCALNET_RPC || "http://localhost:8545",
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 0x5afd,
     },
   },
 
