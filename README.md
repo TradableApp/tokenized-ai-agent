@@ -11,10 +11,10 @@
 
 This repository provides a production-ready integration between an on-chain ERC-20 token and Oasis ROFL, enabling:
 
-* Token-gated access to AI inference
-* Secure off-chain execution inside a TEE (Intel TDX)
-* Verifiable responses posted back to a smart contract
-* Deferred payment only when valid results are delivered
+- Token-gated access to AI inference
+- Secure off-chain execution inside a TEE (Intel TDX)
+- Verifiable responses posted back to a smart contract
+- Deferred payment only when valid results are delivered
 
 ---
 
@@ -22,13 +22,13 @@ This repository provides a production-ready integration between an on-chain ERC-
 
 ```text
 User ➔ Smart Contract (ERC-20 gated) ➔ ROFL App (TEE) ➔ External AI (GCP/LLM)
-                                       ⮑ Signed result + payment
+                                       ⮑ signed result + payment
 ```
 
-1. User submits a query on-chain
-2. ROFL app detects it, performs inference via external AI
+1. User sends a query on-chain
+2. ROFL app reads query, performs inference using external AI
 3. ROFL app submits a signed result back on-chain
-4. Smart contract verifies origin and pulls payment using ERC-20 tokens
+4. Smart contract verifies TEE origin and pulls payment using ERC-20 token
 
 ---
 
@@ -47,14 +47,23 @@ cd tokenized-ai-agent
 npm install
 ```
 
-### 3. Build and deploy the smart contract
+### 3. Set up environment variables
+
+Copy the example env files and populate them with your secrets:
+
+```bash
+cp .env.example .env
+cp .env.rofl.example .env.rofl
+```
+
+### 4. Build and deploy the smart contract
 
 ```bash
 npx hardhat compile
 npx hardhat run scripts/deploy.js --network sapphireTestnet
 ```
 
-### 4. Build the ROFL app
+### 5. Build the ROFL app
 
 ```bash
 oasis rofl build
@@ -72,7 +81,7 @@ Set API keys or service credentials securely using ROFL secrets:
 oasis rofl secret set OPENAI_KEY ./openai.key
 ```
 
-Secrets are encrypted and accessible only within the TEE at runtime.
+Secrets are encrypted and only accessible within the ROFL TEE at runtime.
 
 ---
 
@@ -84,8 +93,8 @@ Licensed under the [Apache 2.0 License](./LICENSE).
 
 ## 🧹 Credits
 
-* Built with [Oasis ROFL](https://docs.oasis.io/build/rofl/)
-* Inspired by [demo-rofl-chatbot](https://github.com/oasisprotocol/demo-rofl-chatbot)
+- Built with [Oasis ROFL](https://docs.oasis.io/build/rofl/)
+- Inspired by [demo-rofl-chatbot](https://github.com/oasisprotocol/demo-rofl-chatbot)
 
 ---
 

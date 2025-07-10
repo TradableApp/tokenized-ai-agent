@@ -3,17 +3,13 @@ require("@nomicfoundation/hardhat-toolbox");
 require("@openzeppelin/hardhat-upgrades");
 require("hardhat-gas-reporter");
 
-const {
-  PRIVATE_KEY,
-  SAPPHIRE_TESTNET_RPC,
-  SAPPHIRE_MAINNET_RPC,
-  COINMARKETCAP_API_KEY,
-} = process.env;
+const { PRIVATE_KEY, SAPPHIRE_TESTNET_RPC, SAPPHIRE_MAINNET_RPC, COINMARKETCAP_API_KEY } =
+  process.env;
 
 module.exports = {
-   // Best practice: Set the default network to `hardhat` for testing and development.
+  // Best practice: Set the default network to `hardhat` for testing and development.
   // This avoids accidental transactions on live networks.
- defaultNetwork: "hardhat",
+  defaultNetwork: "hardhat",
 
   networks: {
     hardhat: {
