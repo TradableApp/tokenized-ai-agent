@@ -137,6 +137,6 @@ Licensed under the [Apache 2.0 License](./LICENSE).
 
 ---
 
-## 🧪 Milestone Use
+## 🧪 Use
 
-This repository is designed for use in Oasis milestone submissions and real-world integrations. It may be forked and adapted by other teams integrating token-gated AI agents using their own ERC-20 tokens.
+This repository is designed for use in real-world integrations. It may be forked and adapted by other teams integrating token-gated AI agents using their own ERC-20 tokens.

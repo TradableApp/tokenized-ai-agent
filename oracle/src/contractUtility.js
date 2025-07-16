@@ -34,7 +34,7 @@ function setupProviderAndSigner(networkName, secret) {
 function getContractArtifacts(contractName) {
   const contractPath = path.resolve(
     __dirname,
-    "../../contracts/out",
+    "../../artifacts/contracts",
     `${contractName}.sol`,
     `${contractName}.json`,
   );
@@ -45,7 +45,7 @@ function getContractArtifacts(contractName) {
 
   const contractData = JSON.parse(fs.readFileSync(contractPath, "utf-8"));
   const { abi, bytecode } = contractData;
-  return { abi, bytecode: bytecode.object };
+  return { abi, bytecode };
 }
 
 module.exports = {
