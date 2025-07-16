@@ -9,11 +9,11 @@ services:
       ["/usr/bin/bash", "-c", "/bin/ollama serve & sleep 5; ollama pull deepseek-r1:1.5b; wait"]
 
   oracle:
-  build:
-    dockerfile: ./Dockerfile.oracle
-  image: tokenized-ai-agent:latest
-  platform: linux/amd64
-  entrypoint: /bin/sh -c 'node index.js --network https://testnet.sapphire.oasis.io --ollama-address http://ollama:11434'
-  restart: on-failure
-  volumes:
-    - /run/rofl-appd.sock:/run/rofl-appd.sock
+    build:
+      dockerfile: ./Dockerfile.oracle
+    image: tokenized-ai-agent:latest
+    platform: linux/amd64
+    entrypoint: /bin/sh -c 'node src/index.js --network https://testnet.sapphire.oasis.io --ollama-address http://ollama:11434'
+    restart: on-failure
+    volumes:
+      - /run/rofl-appd.sock:/run/rofl-appd.sock

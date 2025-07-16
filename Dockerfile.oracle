@@ -1,0 +1,11 @@
+FROM node:18
+
+WORKDIR /oracle
+
+COPY ./oracle/package.json ./oracle/package-lock.json ./
+RUN npm install
+
+COPY ./oracle/src ./src
+COPY ./oracle/.env.oracle .env.oracle
+
+ENTRYPOINT ["/bin/sh", "-c", "node src/index.js --network https://testnet.sapphire.oasis.io --ollama-address http://ollama:11434"]
