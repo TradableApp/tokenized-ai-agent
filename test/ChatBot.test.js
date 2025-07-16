@@ -5,7 +5,7 @@ describe("ChatBot", function () {
   let ChatBot, chatBot;
   let deployer, user, oracle;
   const domain = "example.com";
-  const roflAppID = ethers.zeroPadValue("0x0", 21); // bytes21
+  const roflAppID = ethers.zeroPadBytes("0x", 21);
 
   beforeEach(async function () {
     [deployer, user, oracle, unauthorizedUser] = await ethers.getSigners();

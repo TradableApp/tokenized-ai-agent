@@ -1,16 +1,19 @@
 const hre = require("hardhat");
+const { Wallet } = require("ethers");
+require("dotenv").config({ path: process.env.ENV_FILE || ".env" });
 
 async function main() {
-  const [deployer] = await hre.ethers.getSigners();
+  console.log("Deploying ChatBot.sol...");
 
-  console.log("Deploying ChatBot.sol with account:", deployer.address);
+  const domain = process.env.DOMAIN || "example.com";
+  const roflAppID = hre.ethers.zeroPadBytes("0x", 21);
 
-  // Parameters for constructor
-  const domain = "example.com"; // SIWE domain for authentication
-  const roflAppID = hre.ethers.zeroPadValue("0x0", 21); // bytes21(0)
-  const oracle = deployer.address; // In production, replace with actual Oracle signer address
+  const wallet = new Wallet(process.env.PRIVATE_KEY);
+  const oracle = wallet.address;
 
-  // Deploy contract
+  console.log("Oracle address:", oracle);
+  console.log("Domain:", domain);
+
   const ChatBot = await hre.ethers.getContractFactory("ChatBot");
   const chatBot = await ChatBot.deploy(domain, roflAppID, oracle);
   await chatBot.waitForDeployment();

@@ -47,15 +47,6 @@ cd tokenized-ai-agent
 npm install
 ```
 
-### 3. Set up environment variables
-
-Copy the example env files and populate them with your secrets:
-
-```bash
-cp .env.example .env
-cp .env.rofl.example .env.rofl
-```
-
 ---
 
 ## 🔬 ROFL Setup
@@ -74,9 +65,37 @@ oasis wallet create YOUR_TESTNET_ACCOUNT --file.algorithm secp256k1-bip44
 
 **Note:** Replace `YOUR_TESTNET_ACCOUNT` with a lowercase identifier (e.g. `your_testnet_account`). Oasis account names must begin with a lowercase letter or number and contain only lowercase letters, numbers, and underscores.
 
+Confirm with:
+
+```bash
+oasis wallet list
+```
+
 Fund the generated address with TEST tokens via [Oasis Testnet Faucet](https://faucet.testnet.oasis.io/).
 
-#### 2. Create the ROFL app
+After funding, you can confirm your balance on the [Oasis Testnet Explorer](https://testnet.explorer.oasis.io/?network=testnet) by searching for your wallet's ethereum address (0x...).
+
+#### 2. Export the private key
+
+```bash
+oasis wallet export YOUR_TESTNET_ACCOUNT
+```
+
+---
+
+### 3. Set up environment variables
+
+Copy the example env files and populate them with your secrets:
+
+```bash
+cp .env.example .env
+cp .env.rofl.example .env.rofl
+cp ./oracle/.env.oracle.example ./oracle/.env.oracle
+```
+
+Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
+
+#### 4. Create the ROFL app
 
 ```bash
 oasis rofl create --network testnet --account YOUR_TESTNET_ACCOUNT
@@ -84,13 +103,13 @@ oasis rofl create --network testnet --account YOUR_TESTNET_ACCOUNT
 
 This command updates `rofl.yaml` with `deployments`.
 
-#### 3. Build the ROFL container
+#### 5. Build the ROFL container
 
 ```bash
 oasis rofl build
 ```
 
-#### 4. Deploy to testnet
+#### 6. Deploy to testnet
 
 ```bash
 oasis rofl deploy --network testnet --account YOUR_TESTNET_ACCOUNT --show-offers

@@ -9,6 +9,7 @@
     "coverage": "hardhat coverage",
     "lint": "solhint 'contracts/**/*.sol'",
     "format": "prettier --write 'contracts/**/*.sol'",
+    "deploy:localnet": "ENV_FILE=.env.localnet npx hardhat run scripts/deploy.js --network sapphire-localnet",
     "deploy:testnet": "ENV_FILE=.env.testnet npx hardhat run scripts/deploy.js --network sapphireTestnet",
     "deploy:mainnet": "ENV_FILE=.env.mainnet npx hardhat run scripts/deploy.js --network sapphire"
   },

@@ -60,16 +60,3 @@ npm run run-localnet-debug
 ## 🔐 Environment Variables
 
 Create `.env.oracle` based on `.env.oracle.example`.
-
----
-
-## 📄 License
-
-Apache 2.0
-
----
-
-## 🧹 Credits
-
-- Built for Oasis ROFL integration
-- Inspired by Oasis `demo-rofl-chatbot` project

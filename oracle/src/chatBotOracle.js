@@ -2,7 +2,7 @@ const { ethers } = require("ethers");
 const fetch = require("node-fetch");
 const { setupProviderAndSigner, getContractArtifacts } = require("./contractUtility");
 const { submitTx } = require("./roflUtility");
-require("dotenv").config({ path: "./oracle/.env.oracle" });
+require("dotenv").config({ path: process.env.ENV_FILE || "./oracle/.env.oracle" });
 
 // Set up signer, provider, and contract from contract artifacts
 const signer = setupProviderAndSigner(

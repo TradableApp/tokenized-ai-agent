@@ -5,6 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:localnet": "ENV_FILE=.env.oracle.localnet node src/index.js",
+    "start:testnet": "ENV_FILE=.env.oracle.testnet node src/index.js",
+    "start:mainnet": "ENV_FILE=.env.oracle.mainnet node src/index.js",
     "dev": "nodemon src/index.js",
     "lint": "eslint .",
     "clean": "rm -rf node_modules",
