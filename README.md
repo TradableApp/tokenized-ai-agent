@@ -95,7 +95,44 @@ cp ./oracle/.env.oracle.example ./oracle/.env.oracle
 
 Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
 
-#### 4. Create the ROFL app
+#### 4. Deploy Smart Contracts
+
+Compile the contracts:
+
+```bash
+npm run compile
+```
+
+Deploy to testnet:
+
+```bash
+npm run deploy
+```
+
+After deployment, update your `CONTRACT_ADDRESS` in `./oracle/.env.oracle` to the `ChatBot deployed to` in the deploy output.
+
+#### 4a. Confirm Deployment (Optional)
+
+After deployment, you can verify the contract exists and the Oracle address is correct:
+
+1. Visit [Oasis Testnet Explorer](https://testnet.explorer.oasis.io/?network=testnet)
+2. Search for your deployed CONTRACT_ADDRESS
+3. Confirm:
+   - The contract exists at the address
+   - The deployer address matches your funded wallet
+
+To inspect the contract via Hardhat console:
+
+```bash
+npx hardhat console --network sapphire-testnet
+```
+
+```javascript
+const ChatBot = await ethers.getContractAt("ChatBot", "0xYourDeployedAddress");
+await ChatBot.oracle(); // Should return your wallet address
+```
+
+#### 5. Create the ROFL app
 
 ```bash
 oasis rofl create --network testnet --account YOUR_TESTNET_ACCOUNT
@@ -103,13 +140,13 @@ oasis rofl create --network testnet --account YOUR_TESTNET_ACCOUNT
 
 This command updates `rofl.yaml` with `deployments`.
 
-#### 5. Build the ROFL container
+#### 6. Build the ROFL container
 
 ```bash
 oasis rofl build
 ```
 
-#### 6. Deploy to testnet
+#### 7. Deploy to testnet
 
 ```bash
 oasis rofl deploy --network testnet --account YOUR_TESTNET_ACCOUNT --show-offers
@@ -149,7 +186,7 @@ Licensed under the [Apache 2.0 License](./LICENSE).
 
 ---
 
-## 🧹 Credits
+## 🙏 Credits
 
 - Built with [Oasis ROFL](https://docs.oasis.io/build/rofl/)
 - Inspired by [demo-rofl-chatbot](https://github.com/oasisprotocol/demo-rofl-chatbot)
