@@ -11,8 +11,8 @@
     "dev": "nodemon src/index.js",
     "lint": "eslint .",
     "clean": "rm -rf node_modules",
-    "run-localnet": "docker run -it -p8545:8545 -p8546:8546 ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
-    "run-localnet-debug": "docker run -it -p8545:8545 -p8546:8546 -e OASIS_NODE_LOG_LEVEL=debug -e LOG__LEVEL=debug ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
+    "run-localnet": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
+    "run-localnet-debug": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 -e OASIS_NODE_LOG_LEVEL=debug -e LOG__LEVEL=debug ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
     "test": "mocha 'test/**/*.test.js'"
   },
   "keywords": [
@@ -30,9 +30,11 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@oasisprotocol/sapphire-ethers-v6": "^6.0.1",
     "dotenv": "^17.0.1",
-    "ethers": "^6.10.0",
-    "node-fetch": "^3.3.2"
+    "ethers": "^6.15.0",
+    "node-fetch": "^3.3.2",
+    "siwe": "^3.0.0"
   },
   "devDependencies": {
     "chai": "^5.2.1",

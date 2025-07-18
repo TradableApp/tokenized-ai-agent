@@ -95,6 +95,8 @@ cp ./oracle/.env.oracle.example ./oracle/.env.oracle
 
 Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
 
+Add `CONTRACT_ADDRESS` to both `.env.testnet` and `oracle/.env.oracle.testnet`.
+
 #### 4. Deploy Smart Contracts
 
 Compile the contracts:
@@ -109,7 +111,7 @@ Deploy to testnet:
 npm run deploy
 ```
 
-After deployment, update your `CONTRACT_ADDRESS` in `./oracle/.env.oracle` to the `ChatBot deployed to` in the deploy output.
+After deployment, update your `CONTRACT_ADDRESS` in `.env` and `./oracle/.env.oracle` to the `ChatBot deployed to` in the deploy output.
 
 #### 4a. Confirm Deployment (Optional)
 
@@ -128,7 +130,9 @@ npx hardhat console --network sapphire-testnet
 ```
 
 ```javascript
-const ChatBot = await ethers.getContractAt("ChatBot", "0xYourDeployedAddress");
+const { Wallet } = require("ethers");
+const signer = new Wallet(process.env.PRIVATE_KEY, ethers.provider);
+const ChatBot = await ethers.getContractAt("ChatBot", process.env.CONTRACT_ADDRESS, signer);
 await ChatBot.oracle(); // Should return your wallet address
 ```
 

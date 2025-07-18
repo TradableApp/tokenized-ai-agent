@@ -5,8 +5,8 @@ require("hardhat-gas-reporter");
 
 const {
   PRIVATE_KEY,
-  SAPPHIRE_TESTNET_RPC,
   SAPPHIRE_MAINNET_RPC,
+  SAPPHIRE_TESTNET_RPC,
   SAPPHIRE_LOCALNET_RPC,
   COINMARKETCAP_API_KEY,
 } = process.env;

@@ -1,33 +1,86 @@
 const { ethers } = require("ethers");
-const fetch = require("node-fetch");
+const { SiweMessage } = require("siwe");
 const { setupProviderAndSigner, getContractArtifacts } = require("./contractUtility");
-const { submitTx } = require("./roflUtility");
+const { submitTx, fetchKey } = require("./roflUtility"); // Kept for future ROFL integration
 require("dotenv").config({ path: process.env.ENV_FILE || "./oracle/.env.oracle" });
 
-// Set up signer, provider, and contract from contract artifacts
-const signer = setupProviderAndSigner(
-  process.env.NETWORK_NAME || "sapphire-testnet",
+console.log({
+  ENV_FILE: process.env.ENV_FILE,
+  PRIVATE_KEY: process.env.PRIVATE_KEY?.slice(0, 6) + "...", // Don't log the full private key!
+  NETWORK_NAME: process.env.NETWORK_NAME,
+  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS,
+  OLLAMA_URL: process.env.OLLAMA_URL,
+});
+
+const { provider: wrappedProvider, signer: wrappedSigner } = setupProviderAndSigner(
+  process.env.NETWORK_NAME,
   process.env.PRIVATE_KEY,
 );
-const { abi } = getContractArtifacts("Oracle");
-const contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, abi, signer);
-const provider = signer.provider;
+const { abi } = getContractArtifacts("ChatBot");
+const contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, abi, wrappedSigner);
+const provider = wrappedSigner.provider;
+
+console.log("Oracle signer address:", wrappedSigner.address);
+console.log("ChatBot contract address:", contract.target);
 
 /**
  * Ensure the Oracle address is correctly set on the contract.
  */
 async function setOracleAddress() {
   const oracleAddress = await contract.oracle();
-  if (oracleAddress.toLowerCase() !== signer.address.toLowerCase()) {
-    console.log(`Updating oracle address from ${oracleAddress} to ${signer.address}`);
-    const tx = await contract.setOracle(signer.address, {
+  console.log("ChatBot on-chain oracle address:", oracleAddress);
+
+  if (oracleAddress.toLowerCase() !== wrappedSigner.address.toLowerCase()) {
+    console.log(`Updating oracle address from ${oracleAddress} to ${wrappedSigner.address}`);
+    const tx = await contract.setOracle(wrappedSigner.address, {
       gasLimit: 1000000,
     });
     await tx.wait();
-    console.log(`Updated oracle address to ${signer.address}`);
+    console.log(`Updated oracle address to ${wrappedSigner.address}`);
   } else {
     console.log(`Oracle address already correct: ${oracleAddress}`);
   }
+}
+
+/**
+ * Creates a "Sign-In with Ethereum" (SIWE) authToken to authenticate oracle.
+ * @returns {Promise<string>} The ABI-encoded authentication token.
+ */
+async function createSiweAuthToken() {
+  const { chainId } = await wrappedProvider.getNetwork();
+  const domain = process.env.DOMAIN || "example.com";
+  const siweMessage = new SiweMessage({
+    domain,
+    address: wrappedSigner.address,
+    statement: "Oracle authentication for ChatBot",
+    uri: `http://${domain}`,
+    version: "1",
+    chainId: Number(chainId),
+    nonce: ethers.hexlify(ethers.randomBytes(32)),
+  });
+  const messageToSign = await siweMessage.prepareMessage();
+  // Use the wrapped signer to create a standard, verifiable signature
+  const signature = await wrappedSigner.signMessage(messageToSign);
+  return ethers.AbiCoder.defaultAbiCoder().encode(
+    [
+      "tuple(string domain, address addr, string statement, string uri, string version, uint256 chainId, uint256 nonce, uint256 issuedAt, bytes recap)",
+      "bytes",
+    ],
+    [
+      {
+        domain: siweMessage.domain,
+        addr: siweMessage.address,
+        statement: siweMessage.statement,
+        uri: siweMessage.uri,
+        version: siweMessage.version,
+        chainId: siweMessage.chainId,
+        nonce: siweMessage.nonce,
+        issuedAt: Date.parse(siweMessage.issuedAt),
+        recap: ethers.toUtf8Bytes(siweMessage.recap ?? ""),
+      },
+      signature,
+    ],
+  );
 }
 
 /**
@@ -37,7 +90,8 @@ async function setOracleAddress() {
  */
 async function retrievePrompts(address) {
   try {
-    return await contract.getPrompts("0x", address);
+    const authToken = await createSiweAuthToken();
+    return await contract.getPrompts(authToken, address);
   } catch (e) {
     console.error("Error retrieving prompts:", e);
     return [];
@@ -51,7 +105,8 @@ async function retrievePrompts(address) {
  */
 async function retrieveAnswers(address) {
   try {
-    return await contract.getAnswers("0x", address);
+    const authToken = await createSiweAuthToken();
+    return await contract.getAnswers(authToken, address);
   } catch (e) {
     console.error("Error retrieving answers:", e);
     return [];
@@ -108,7 +163,7 @@ async function pollPrompts() {
   console.log("Listening for prompts...");
   while (true) {
     try {
-      const latestBlock = await provider.getBlockNumber();
+      const latestBlock = await wrappedProvider.getBlockNumber();
       const logs = await contract.queryFilter(contract.filters.PromptSubmitted(), latestBlock);
 
       for (const log of logs) {
@@ -117,12 +172,17 @@ async function pollPrompts() {
         const prompts = await retrievePrompts(submitter);
         const answers = await retrieveAnswers(submitter);
 
+        if (!prompts || prompts.length === 0) {
+          console.log(`No prompts found for ${submitter}, skipping...`);
+          continue;
+        }
+
         if (answers.length > 0 && answers[answers.length - 1][0] === prompts.length - 1) {
           console.log("Last prompt already answered, skipping");
           continue;
         }
 
-        console.log("Asking chat bot...");
+        console.log(`Got ${prompts.length} prompts. Asking chat bot...`);
         const answer = await askChatBot(prompts);
         console.log(`Storing chat bot answer for ${submitter}...`);
         await submitAnswer(answer, prompts.length - 1, submitter);

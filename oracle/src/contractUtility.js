@@ -1,17 +1,17 @@
 const { ethers } = require("ethers");
 const fs = require("fs");
 const path = require("path");
+const { wrapEthersProvider, wrapEthersSigner } = require("@oasisprotocol/sapphire-ethers-v6");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env.oracle") });
 
-// Sapphire RPC URLs (mirroring their Python defaults)
 const NETWORKS = {
-  sapphire: "https://sapphire.oasis.io",
-  "sapphire-testnet": "https://testnet.sapphire.oasis.io",
-  "sapphire-localnet": "http://localhost:8545",
+  sapphire: process.env.SAPPHIRE_MAINNET_RPC,
+  "sapphire-testnet": process.env.SAPPHIRE_TESTNET_RPC,
+  "sapphire-localnet": process.env.SAPPHIRE_LOCALNET_RPC,
 };
 
 /**
- * Sets up the ethers.js provider and signer.
+ * Sets up the ethers.js provider and signer for a NodeJS backend.
  * @param {string} networkName
  * @param {string} secret
  * @returns {ethers.Wallet}
@@ -21,9 +21,20 @@ function setupProviderAndSigner(networkName, secret) {
     throw new Error("Missing required environment variable: PRIVATE_KEY");
   }
 
-  const networkRpc = NETWORKS[networkName] || networkName;
-  const provider = new ethers.JsonRpcProvider(networkRpc);
-  return new ethers.Wallet(secret, provider);
+  const networkRpc = NETWORKS[networkName];
+  if (!networkRpc) throw new Error(`Unknown network: ${networkName}`);
+
+  // Create the base, unwrapped provider and signer
+  const baseProvider = new ethers.JsonRpcProvider(networkRpc);
+  const baseSigner = new ethers.Wallet(secret, baseProvider);
+
+  // Create the wrapped provider for reading confidential state
+  const wrappedProvider = wrapEthersProvider(baseProvider);
+
+  // Create the wrapped signer for sending confidential transactions
+  const wrappedSigner = wrapEthersSigner(baseSigner);
+
+  return { provider: wrappedProvider, signer: wrappedSigner };
 }
 
 /**
@@ -45,6 +56,7 @@ function getContractArtifacts(contractName) {
 
   const contractData = JSON.parse(fs.readFileSync(contractPath, "utf-8"));
   const { abi, bytecode } = contractData;
+
   return { abi, bytecode };
 }
 

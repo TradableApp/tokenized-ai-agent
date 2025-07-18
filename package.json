@@ -11,8 +11,8 @@
     "format": "prettier --write 'contracts/**/*.sol'",
     "deploy": "npx hardhat run scripts/deploy.js --network sapphire-testnet",
     "deploy:localnet": "ENV_FILE=.env.localnet npx hardhat run scripts/deploy.js --network sapphire-localnet",
-    "deploy:testnet": "ENV_FILE=.env.testnet  npx hardhat run scripts/deploy.js --network sapphire-testnet",
-    "deploy:mainnet": "ENV_FILE=.env.mainnet  npx hardhat run scripts/deploy.js --network sapphire"
+    "deploy:testnet": "ENV_FILE=.env.testnet npx hardhat run scripts/deploy.js --network sapphire-testnet",
+    "deploy:mainnet": "ENV_FILE=.env.mainnet npx hardhat run scripts/deploy.js --network sapphire"
   },
   "repository": {
     "type": "git",
@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@oasisprotocol/sapphire-contracts": "^0.2.14",
+    "@oasisprotocol/sapphire-ethers-v6": "^6.0.1",
     "@openzeppelin/contracts": "^5.3.0",
     "@openzeppelin/contracts-upgradeable": "^5.3.0"
   },
