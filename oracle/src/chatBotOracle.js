@@ -90,8 +90,12 @@ async function createSiweAuthToken() {
  */
 async function retrievePrompts(address) {
   try {
-    const authToken = await createSiweAuthToken();
-    return await contract.getPrompts(authToken, address);
+    // const authToken = await createSiweAuthToken();
+    return await contract.getPrompts(
+      "0x", // The oracle doesn't need a token to call itself
+      address,
+      { from: wrappedSigner.address }, // Specify the caller
+    );
   } catch (e) {
     console.error("Error retrieving prompts:", e);
     return [];
@@ -105,8 +109,12 @@ async function retrievePrompts(address) {
  */
 async function retrieveAnswers(address) {
   try {
-    const authToken = await createSiweAuthToken();
-    return await contract.getAnswers(authToken, address);
+    // const authToken = await createSiweAuthToken();
+    return await contract.getAnswers(
+      "0x", // The oracle doesn't need a token to call itself
+      address,
+      { from: wrappedSigner.address }, // Specify the caller
+    );
   } catch (e) {
     console.error("Error retrieving answers:", e);
     return [];

@@ -95,8 +95,6 @@ cp ./oracle/.env.oracle.example ./oracle/.env.oracle
 
 Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
 
-Add `CONTRACT_ADDRESS` to both `.env.testnet` and `oracle/.env.oracle.testnet`.
-
 #### 4. Deploy Smart Contracts
 
 Compile the contracts:
