@@ -49,6 +49,88 @@ npm install
 
 ---
 
+### 🧪 Local Development (Using Localnet)
+
+This setup is for rapid development and testing on your local machine. It uses a local Sapphire blockchain and a local Ollama AI server, both running in Docker.
+
+#### Prerequisites
+
+Make sure you have [Docker](https://www.docker.com/products/docker-desktop/) installed and running.
+
+#### 1. Start Background Services
+
+You will need three separate terminals for this step.
+
+**Terminal 1: Start Sapphire Localnet**
+
+```bash
+cd ./oracle
+npm run run-localnet
+```
+
+Wait for the output to show a list of "Available Accounts" and their private keys. You will need these in the next step.
+
+**Terminal 2: Start Ollama AI Server**
+
+```bash
+docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
+```
+
+Then load the model:
+
+```bash
+docker exec ollama ollama pull deepseek-r1:1.5b
+```
+
+#### 2. Set Up Local Environment Variables
+
+```bash
+cp ./.env.example ./.env.localnet
+cp ./oracle/.env.oracle.example ./oracle/.env.oracle.localnet
+```
+
+Then edit the equivalent environment files:
+
+- In `./.env.localnet`, update:
+  - `PRIVATE_KEY`: Use one of the private keys from the Sapphire localnet output (e.g. account 0)
+  - `USER_PRIVATE_KEY`: Use a different private key (e.g. account 1) to simulate a user
+  - `CONTRACT_ADDRESS`: Leave this blank for now
+
+- In `./oracle/.env.oracle.localnet`, update:
+  - `PRIVATE_KEY`: Use one of the private keys from the Sapphire localnet output (e.g. account 0)
+  - `OLLAMA_URL`: Set to `http://localhost:11434`
+  - `CONTRACT_ADDRESS`: Leave this blank for now
+
+#### 3. Deploy Contracts to Localnet
+
+```bash
+npm run compile
+npm run deploy:localnet
+```
+
+After deployment, update your `CONTRACT_ADDRESS` in `.env.localnet` and `oracle/.env.oracle.localnet` to the `ChatBot deployed to` in the deploy output.
+
+#### 4. Run the Oracle
+
+```bash
+cd ./oracle
+npm run start:localnet
+```
+
+**Terminal 3: Interact with the smart contract**
+
+#### 5. Send a Prompt to Test
+
+Use the pre-written script in a third terminal to test the flow:
+
+```bash
+ENV_FILE=.env.localnet npx hardhat run scripts/send-prompt.js --network sapphire-localnet
+```
+
+You should see the Oracle terminal log confirm it received a prompt, queried the AI, and submitted the response on-chain.
+
+---
+
 ## 🔬 ROFL Setup
 
 ### ⚗️ Testnet Deployment
