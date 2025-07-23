@@ -40,7 +40,7 @@ contract ChatBot is SiweAuth {
   modifier onlyUserOrOracle(bytes memory authToken, address addr) {
     if (msg.sender != addr && msg.sender != oracle) {
       address msgSender = authMsgSender(authToken);
-      if (msgSender != addr) {
+      if (msgSender != addr && msgSender != oracle) {
         revert UnauthorizedUserOrOracle();
       }
     }
