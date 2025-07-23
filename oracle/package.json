@@ -5,8 +5,15 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:localnet": "ENV_FILE=.env.oracle.localnet node src/index.js",
+    "start:testnet": "ENV_FILE=.env.oracle.testnet node src/index.js",
+    "start:mainnet": "ENV_FILE=.env.oracle.mainnet node src/index.js",
     "dev": "nodemon src/index.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "clean": "rm -rf node_modules",
+    "run-localnet": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
+    "run-localnet-debug": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 -e OASIS_NODE_LOG_LEVEL=debug -e LOG__LEVEL=debug ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
+    "test": "mocha 'test/**/*.test.js'"
   },
   "keywords": [
     "oracle",
@@ -23,12 +30,17 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "ethers": "^6.10.0",
+    "@oasisprotocol/sapphire-ethers-v6": "^6.0.1",
     "dotenv": "^17.0.1",
-    "node-fetch": "^3.3.2"
+    "ethers": "^6.15.0",
+    "node-fetch": "^3.3.2",
+    "siwe": "^3.0.0"
   },
   "devDependencies": {
+    "chai": "^5.2.1",
     "eslint": "^8.57.0",
-    "nodemon": "^3.0.2"
+    "mocha": "^11.7.1",
+    "nodemon": "^3.0.2",
+    "sinon": "^21.0.0"
   }
 }

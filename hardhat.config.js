@@ -5,15 +5,13 @@ require("hardhat-gas-reporter");
 
 const {
   PRIVATE_KEY,
-  SAPPHIRE_TESTNET_RPC,
   SAPPHIRE_MAINNET_RPC,
+  SAPPHIRE_TESTNET_RPC,
   SAPPHIRE_LOCALNET_RPC,
   COINMARKETCAP_API_KEY,
 } = process.env;
 
 module.exports = {
-  // Best practice: Set the default network to `hardhat` for testing and development.
-  // This avoids accidental transactions on live networks.
   defaultNetwork: "hardhat",
 
   networks: {
@@ -40,39 +38,12 @@ module.exports = {
   solidity: {
     version: "0.8.24",
     settings: {
-      // The optimizer is crucial for reducing contract size and gas costs.
-      // It's a standard practice for production deployments.
       optimizer: {
         enabled: true,
-        runs: 10000, // The number of runs should be tuned based on contract usage.
+        runs: 10000,
       },
     },
   },
-
-  // etherscan: {
-  //   apiKey: {
-  //     sapphireTestnet: "", // Not supported currently
-  //     sapphire: "", // Not supported currently
-  //   },
-  //   customChains: [
-  //     {
-  //       network: "sapphireTestnet",
-  //       chainId: 23295,
-  //       urls: {
-  //         apiURL: "https://NOT_YET_SUPPORTED",
-  //         browserURL: "https://testnet.explorer.oasis.io",
-  //       },
-  //     },
-  //     {
-  //       network: "sapphire",
-  //       chainId: 23294,
-  //       urls: {
-  //         apiURL: "https://NOT_YET_SUPPORTED",
-  //         browserURL: "https://explorer.oasis.io",
-  //       },
-  //     },
-  //   ],
-  // },
 
   gasReporter: {
     enabled: process.env.REPORT_GAS === "true", // Run with `REPORT_GAS=true npx hardhat test`
@@ -81,6 +52,7 @@ module.exports = {
     outputFile: "gas-report.txt",
     noColors: true,
     coinmarketcap: COINMARKETCAP_API_KEY || "",
+    offline: true, // Suppresses warnings when not using Etherscan
   },
 
   namedAccounts: {
