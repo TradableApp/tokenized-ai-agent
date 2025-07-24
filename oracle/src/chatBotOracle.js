@@ -1,7 +1,7 @@
 const { ethers } = require("ethers");
 const { SiweMessage } = require("siwe");
 const { setupProviderAndSigner, getContractArtifacts } = require("./contractUtility");
-const { submitTx, fetchKey } = require("./roflUtility");
+const { submitTx } = require("./roflUtility");
 require("dotenv").config({ path: process.env.ENV_FILE || "./oracle/.env.oracle" });
 
 console.log({
@@ -156,17 +156,41 @@ async function askChatBot(prompts) {
 /**
  * Submit the AI answer to the Oracle contract on-chain.
  * This is a state-changing transaction and requires gas.
+ * Falls back to standard transaction submission for localnet.
  * @param {string} answer - The AI's response text.
  * @param {number} promptId - The ID of the prompt being answered.
- * @param {string} address - The user's address to submit the answer for.
+ * @param {string} address - The user’s address associated with the prompt.
  */
 async function submitAnswer(answer, promptId, address) {
+  console.log(`Submitting answer for prompt ${promptId} to ${address}...`);
+
   // Set a dynamic gas limit to prevent 'out of gas' errors for long answers.
   // Use a high base minimum plus a buffer per character of the answer.
   const gasLimit = Math.max(3000000, 1500 * answer.length);
-  const tx = await contract.submitAnswer(answer, promptId, address, { gasLimit });
-  await tx.wait();
-  console.log(`Submitted answer for prompt ${promptId} to address ${address}`);
+  const isLocalnet = process.env.NETWORK_NAME === "sapphire-localnet";
+
+  try {
+    if (isLocalnet) {
+      const tx = await contract.submitAnswer(answer, promptId, address, { gasLimit });
+      const receipt = await tx.wait();
+      console.log(`Tx confirmed: ${receipt.transactionHash}`);
+    } else {
+      const txUnsigned = await contract.submitAnswer.populateTransaction(answer, promptId, address);
+      const txParams = {
+        to: process.env.CONTRACT_ADDRESS.replace(/^0x/, ""),
+        gas: gasLimit,
+        value: "0",
+        data: txUnsigned.data.replace(/^0x/, ""),
+      };
+
+      const responseHex = await submitTx(txParams);
+      console.log(`Tx confirmed: ${responseHex}`);
+    }
+
+    console.log(`Submitted answer for prompt ${promptId} to address ${address}`);
+  } catch (err) {
+    console.error(`Failed to submit answer for prompt ${promptId}:`, err);
+  }
 }
 
 /**

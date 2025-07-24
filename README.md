@@ -177,6 +177,8 @@ cp ./oracle/.env.oracle.example ./oracle/.env.oracle
 
 Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
 
+⚠️ **The `.env.rofl` file should have the same values as `.env.oracle`.** This file is used to substitute variables into `compose.yaml` when building the ROFL container.
+
 #### 4. Deploy Smart Contracts
 
 Compile the contracts:
@@ -191,7 +193,7 @@ Deploy to testnet:
 npm run deploy
 ```
 
-After deployment, update your `CONTRACT_ADDRESS` in `.env` and `./oracle/.env.oracle` to the `ChatBot deployed to` in the deploy output.
+After deployment, update your `CONTRACT_ADDRESS` in `.env`, `./oracle/.env.oracle`, and `.env.rofl` to the `ChatBot deployed to` in the deploy output.
 
 #### 4a. Confirm Deployment (Optional)
 
@@ -224,17 +226,55 @@ oasis rofl create --network testnet --account YOUR_TESTNET_ACCOUNT
 
 This command updates `rofl.yaml` with `deployments`.
 
-#### 6. Build the ROFL container
+---
+
+#### 6. Set ROFL Secrets
+
+Secrets are encrypted and only accessible within the ROFL TEE at runtime. To populate them from your local environment, run:
 
 ```bash
-oasis rofl build
+npm run rofl:set:testnet
 ```
 
-#### 7. Deploy to testnet
+This script reads from your `oracle/.env.oracle` and `oracle/.env.oracle.testnet` files, merges them, and sets each secret using `oasis rofl secret set`.
+
+> Note: Be sure you’ve configured `PRIVATE_KEY`, `CONTRACT_ADDRESS`, and other secrets in the relevant `.env` files before setting.
+
+---
+
+#### 7. Build the ROFL container
+
+```bash
+npm run rofl:build:testnet
+```
+
+This step packages your ROFL enclave and application logic based on the `compose.yaml` file and specified resources.
+
+---
+
+### 8. Deploy to testnet
 
 ```bash
 oasis rofl deploy --network testnet --account YOUR_TESTNET_ACCOUNT --show-offers
 ```
+
+This pushes your compiled ROFL app and container to the Sapphire testnet.
+
+If you’ve updated secrets or trust settings, you’ll need to follow this with an update step:
+
+---
+
+### 9. Update ROFL app configuration (after secrets or policy changes)
+
+Once secrets are set and your ROFL build has been deployed, run:
+
+```bash
+oasis rofl update
+```
+
+This signs and sends an on-chain transaction to register your secrets, policy, and metadata.
+
+> ⚠️ You’ll be prompted to unlock your wallet and confirm the transaction.
 
 ---
 
@@ -249,18 +289,6 @@ oasis rofl deploy --network sapphire --account YOUR_MAINNET_ACCOUNT --scheme cri
 **Note:** Replace `YOUR_MAINNET_ACCOUNT` with your actual Oasis account name (following the same naming rules as above).
 
 Make sure production wallets and trust roots are documented and stored securely in a team-accessible password manager or secure vault. Do **not** store private keys in Git.
-
----
-
-## 🔐 ROFL Secrets
-
-Set API keys or service credentials securely using ROFL secrets:
-
-```bash
-oasis rofl secret set OPENAI_KEY ./openai.key
-```
-
-Secrets are encrypted and only accessible within the ROFL TEE at runtime.
 
 ---
 

@@ -1,11 +1,21 @@
-FROM node:18
+# (New, Corrected Version)
+FROM node:22-slim
 
-WORKDIR /oracle
+# Set the root working directory for the entire application
+WORKDIR /app
 
-COPY ./oracle/package.json ./oracle/package-lock.json ./
-RUN npm install
+# Copy artifacts to the root, maintaining the project structure
+COPY ./artifacts ./artifacts
 
+# Now, create and move into the 'oracle' subdirectory
+WORKDIR /app/oracle
+
+# Copy the oracle's specific package files and install dependencies
+COPY ./oracle/package*.json ./
+RUN npm install --omit=dev --no-progress
+
+# Copy the oracle's source code into the current directory (/app/oracle)
 COPY ./oracle/src ./src
-COPY ./oracle/.env.oracle .env.oracle
 
-ENTRYPOINT ["/bin/sh", "-c", "node src/index.js --network https://testnet.sapphire.oasis.io --ollama-address http://ollama:11434"]
+# The command will be run from /app/oracle, so the entrypoint path is simple
+CMD ["node", "src/index.js"]

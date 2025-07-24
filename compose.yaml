@@ -11,9 +11,16 @@ services:
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
-    image: tokenized-ai-agent:latest
+    image: ghcr.io/tradableapp/tokenized-ai-agent:testnet
     platform: linux/amd64
-    entrypoint: /bin/sh -c 'node src/index.js --network https://testnet.sapphire.oasis.io --ollama-address http://ollama:11434'
+    entrypoint: /bin/sh -c 'node src/index.js --network sapphire-testnet --ollama-address http://ollama:11434'
     restart: on-failure
     volumes:
       - /run/rofl-appd.sock:/run/rofl-appd.sock
+    environment:
+      - PRIVATE_KEY=${PRIVATE_KEY}
+      - CONTRACT_ADDRESS=${CONTRACT_ADDRESS}
+      - DOMAIN=${DOMAIN}
+      - SAPPHIRE_MAINNET_RPC=${SAPPHIRE_MAINNET_RPC}
+      - SAPPHIRE_LOCALNET_RPC=${SAPPHIRE_LOCALNET_RPC}
+      - SAPPHIRE_TESTNET_RPC=${SAPPHIRE_TESTNET_RPC}

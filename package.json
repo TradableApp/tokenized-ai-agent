@@ -12,7 +12,18 @@
     "deploy": "npx hardhat run scripts/deploy.js --network sapphire-testnet",
     "deploy:localnet": "ENV_FILE=.env.localnet npx hardhat run scripts/deploy.js --network sapphire-localnet",
     "deploy:testnet": "ENV_FILE=.env.testnet npx hardhat run scripts/deploy.js --network sapphire-testnet",
-    "deploy:mainnet": "ENV_FILE=.env.mainnet npx hardhat run scripts/deploy.js --network sapphire"
+    "deploy:mainnet": "ENV_FILE=.env.mainnet npx hardhat run scripts/deploy.js --network sapphire",
+    "rofl:set:testnet": "./scripts/rofl-set-secrets.sh testnet",
+    "rofl:set:mainnet": "./scripts/rofl-set-secrets.sh mainnet",
+    "image:build:testnet": "docker build -t ghcr.io/tradableapp/tokenized-ai-agent:testnet -f Dockerfile.oracle .",
+    "image:build:mainnet": "docker build -t ghcr.io/tradableapp/tokenized-ai-agent:mainnet -f Dockerfile.oracle .",
+    "image:push:testnet": "docker push ghcr.io/tradableapp/tokenized-ai-agent:testnet",
+    "image:push:mainnet": "docker push ghcr.io/tradableapp/tokenized-ai-agent:mainnet",
+    "rofl:build": "docker run --platform linux/amd64 --volume .:/src --volume ~/.docker:/root/.docker:ro -it ghcr.io/oasisprotocol/rofl-dev:main oasis rofl build --force",
+    "rofl:build:testnet": "cp compose.testnet.yaml compose.yaml && npm run rofl:build",
+    "rofl:build:mainnet": "cp compose.mainnet.yaml compose.yaml && npm run rofl:build",
+    "rofl:update:testnet": "npm run rofl:set:testnet && oasis rofl update",
+    "rofl:update:mainnet": "npm run rofl:set:mainnet && oasis rofl update"
   },
   "repository": {
     "type": "git",

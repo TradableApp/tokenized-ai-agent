@@ -157,6 +157,10 @@ node_modules
 /cache
 /artifacts
 
+# Environment specific compose.*.yaml files
+compose.testnet.yaml
+compose.mainnet.yaml
+
 # TypeChain files
 /typechain
 /typechain-types

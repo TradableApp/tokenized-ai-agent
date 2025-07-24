@@ -24,6 +24,7 @@ deployments:
     network: testnet
     paratime: sapphire
     admin: oasis_testnet
+    oci_repository: rofl.sh/70cf6997-a696-4852-99be-ab43ede0368c:1753328676
     trust_root:
       height: 27433197
       hash: d59836ab871bdaba9827a692284e4c8299fdb4db19a9367bd67c6bf123ea7004
@@ -33,8 +34,32 @@ deployments:
           tcb_validity_period: 30
           min_tcb_evaluation_data_number: 18
           tdx: {}
-      enclaves: []
+      enclaves:
+        - id: OQAejc2LhQ+HsARd4QJcMinXOezJqkvMpcdRLhKr+2MAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: 5l8Xp07asxiQPOaWWQRoYtDjbV9byhJX9unV8lerDtMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
       endorsements:
         - any: {}
       fees: endorsing_node
       max_expiration: 3
+    secrets:
+      - name: SAPPHIRE_MAINNET_RPC
+        value: pGJwa1ggbAGdVG9U877n67qQOEG0RFAH2Fse7af6XWPsyOhgqn9kbmFtZVgkyGWaLn0N+OcGffmKSmujcm7zk5Qu6XO/gm0Fr+8AKlu+T2TYZW5vbmNlT6cWEUn3qXj66UUHDDAm0WV2YWx1ZVgpoXVJdPJxyrqvrLxsCjVQ0M0RLxYkAKgQzoYWyGmlaNgCbxVXGN38pTM=
+      - name: SAPPHIRE_LOCALNET_RPC
+        value: pGJwa1ggE+olPtMSXEtmgvs34UpXejjYqP6OWYbdnFwtQEd5k3pkbmFtZVgl6W6vOSZc4Bx6Wr442sD1YCOtq4UJIU/9bTaoLogjtUdsJbd1WWVub25jZU9MjJYiH8Ra4KGAF6BA3x9ldmFsdWVYJf13yAUFc2sNw7Plrffl+TUmmWAVh/xLS09L/Ey1sNrnUfAwU5Y=
+      - name: SAPPHIRE_TESTNET_RPC
+        value: pGJwa1gg6JJyiR43T4L6K2T9DarGJCg4858fSnnJCkgQSjhxliNkbmFtZVgk9hw0tb+tE6CvjJ4+MOEmx6kB/nGEELo6mEp1STpX0GQxeit2ZW5vbmNlT8gVvKOXztqNAJBhn1aIsWV2YWx1ZVgxfkpn9IZ8ZI6+Re9HBJ3KNmP9wSdTrAoATT8OPfL841B3L3K6NJ8vHDdeP9WXIDkzNg==
+      - name: NETWORK_NAME
+        value: pGJwa1ggJWwsSDDOAMmaG62AokeeYHKHbcr7m+TCxdALT2J8YThkbmFtZVgc7tGo25celk8edxd4Gwp1kSm77cNeDGheSiBq42Vub25jZU/cSlayNHohXFkMzNPitIdldmFsdWVYIKT1wv2t/VQchYArwyHD/JKoyKL9o+0ugtNWPyRzIasJ
+      - name: PRIVATE_KEY
+        value: pGJwa1ggmXBkc5Nz/zfp5/XY5dieoDhTE2QT2OFIYudg63TL3m1kbmFtZVgbMt3SQ2l+AK/ILMLD9j9qLsGOhu7OlFiHKtONZW5vbmNlTyH5Nv3wdJDeY4JyNxTls2V2YWx1ZVhSiccUzcgyr1i3A6OdYqwoMGbP5ugfi9GzLDPKglN3HGepnVPUrpj1zia6br9vkwgfQpiaJc92w5VrxeW8z8JKBWulChXuN78dwRib66cRrtQxog==
+      - name: CONTRACT_ADDRESS
+        value: pGJwa1gggQvvldnBR/rGz90CzD+JqWWQHckGhV48staYkBmbeTdkbmFtZVggF6YKjv/Hepv9lzjn/T2AR1RmWZ4OqD3X2sXJRrvrofRlbm9uY2VP9rqCsO31BVkm8bEzcfLDZXZhbHVlWDpAFGF4WLxYDolhLMdgvkOCKCaSn6e7iWe5kIZk+bnbtxN5qeW9rNs9nHnLWz6BB8dLikwYcmzaBYHG
+      - name: DOMAIN
+        value: pGJwa1gga/B59A+yRg6wHEcOelK9XrmAHx61/i8+34w2be9Lkz9kbmFtZVZhvmayxJJ6Xsp8FM9zcYZdkhr5QS0LZW5vbmNlT2crvRn0fIUXhFI+f5uYLmV2YWx1ZVgkoqa4KSWFLXs0pGKENxFQgrkLHrrBwwFCkmQjqWfyEBgQvtEo
+      - name: OLLAMA_URL
+        value: pGJwa1ggxKKlc12Po0JOVJWak27djDsmGQ2Du3hE0/ZzvyAKZXpkbmFtZVga81T9/du0wIoDQWwdCjRh8hmw8U4QmrXUQ2xlbm9uY2VPt3MGhvok4UFBWJIrPkDbZXZhbHVlWCM+RcadE+Vlo5zKlttfc04sl9RnF/3pwcFS4nlV3zByH/FWAw==
+    machines:
+      default:
+        provider: oasis1qp2ens0hsp7gh23wajxa4hpetkdek3swyyulyrmz
+        offer: playground_short
+        id: 00000000000001f8
