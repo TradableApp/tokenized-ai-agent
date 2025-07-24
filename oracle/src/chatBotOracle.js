@@ -173,7 +173,7 @@ async function submitAnswer(answer, promptId, address) {
     if (isLocalnet) {
       const tx = await contract.submitAnswer(answer, promptId, address, { gasLimit });
       const receipt = await tx.wait();
-      console.log(`Tx confirmed: ${receipt.transactionHash}`);
+      console.log(`Tx confirmed: ${receipt.hash}`);
     } else {
       const txUnsigned = await contract.submitAnswer.populateTransaction(answer, promptId, address);
       const txParams = {
