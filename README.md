@@ -131,17 +131,18 @@ You should see the Oracle terminal log confirm it received a prompt, queried the
 
 ---
 
-## 🔬 ROFL Setup
+## 🔬 ROFL Deployment
 
-### ⚗️ Testnet Deployment
+### 1. Prerequisites
 
-This section assumes you're deploying to Oasis Sapphire testnet using the ROFL CLI.
+Before you can deploy to a live network (Testnet or Mainnet), you must complete these one-time setup steps.
 
-#### 1. Create a wallet account
+#### a. Create a Wallet Account
 
-Use `secp256k1-bip44` for compatibility with smart contracts:
+Use `secp256k1-bip44` for compatibility with smart contracts. Create a separate account for each network.
 
 ```bash
+# For Testnet
 oasis wallet create YOUR_TESTNET_ACCOUNT --file.algorithm secp256k1-bip44
 ```
 
@@ -157,29 +158,28 @@ Fund the generated address with TEST tokens via [Oasis Testnet Faucet](https://f
 
 After funding, you can confirm your balance on the [Oasis Testnet Explorer](https://testnet.explorer.oasis.io/?network=testnet) by searching for your wallet's ethereum address (0x...).
 
-#### 2. Export the private key
+#### b. Export the private key
 
 ```bash
 oasis wallet export YOUR_TESTNET_ACCOUNT
 ```
 
----
+#### c. Set Up Environment Variables
 
-### 3. Set up environment variables
-
-Copy the example env files and populate them with your secrets:
+This project uses a series of `.env` files to manage secrets for different environments.
 
 ```bash
-cp .env.example .env
-cp .env.rofl.example .env.rofl
-cp ./oracle/.env.oracle.example ./oracle/.env.oracle
+# Create the files from their examples
+cp .env.example .env.testnet
+cp .env.rofl.example .env.rofl.testnet
+cp ./oracle/.env.oracle.example ./oracle/.env.oracle.testnet
 ```
 
 Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
 
 ⚠️ **The `.env.rofl` file should have the same values as `.env.oracle`.** This file is used to substitute variables into `compose.yaml` when building the ROFL container.
 
-#### 4. Deploy Smart Contracts
+#### d. Deploy Your Smart Contract
 
 Compile the contracts:
 
@@ -187,15 +187,15 @@ Compile the contracts:
 npm run compile
 ```
 
-Deploy to testnet:
+Deploy your contract to the target network. The deployment script reads from `.env.*`.
 
 ```bash
-npm run deploy
+npm run deploy:testnet
 ```
 
-After deployment, update your `CONTRACT_ADDRESS` in `.env`, `./oracle/.env.oracle`, and `.env.rofl` to the `ChatBot deployed to` in the deploy output.
+After deployment, update your `CONTRACT_ADDRESS` in `.env`, `./oracle/.env.oracle.testnet`, and `.env.rofl.testnet` to the `ChatBot deployed to` in the deploy output.
 
-#### 4a. Confirm Deployment (Optional)
+#### e. Confirm Deployment (Optional)
 
 After deployment, you can verify the contract exists and the Oracle address is correct:
 
@@ -218,17 +218,38 @@ const ChatBot = await ethers.getContractAt("ChatBot", process.env.CONTRACT_ADDRE
 await ChatBot.oracle(); // Should return your wallet address
 ```
 
-#### 5. Create the ROFL app
+#### f. Create the ROFL App
+
+Create the ROFL app on-chain. This is a one-time transaction that reserves a unique ID for your application. This command will update your `rofl.yaml` filewith `deployments`.
 
 ```bash
-oasis rofl create --network testnet --account YOUR_TESTNET_ACCOUNT
+oasis rofl create --network testnet --deployment testnet --account YOUR_TESTNET_ACCOUNT
 ```
-
-This command updates `rofl.yaml` with `deployments`.
 
 ---
 
-#### 6. Set ROFL Secrets
+## ⚗️ Testnet Deployment Workflow
+
+Follow these steps to deploy to the Sapphire Testnet.
+
+### 1. Build and Push the Docker Image
+
+The ROFL provider needs to download your application's image from a public container registry. This step builds the image locally and pushes it.
+
+```bash
+npm run image:build:testnet
+npm run image:push:testnet
+```
+
+### 2. Build the ROFL Bundle
+
+This command packages your application configuration (`compose.yaml`) and TEE metadata into a secure `.orc` bundle.
+
+```bash
+npm run rofl:build:testnet
+```
+
+### 3. Set ROFL Secrets
 
 Secrets are encrypted and only accessible within the ROFL TEE at runtime. To populate them from your local environment, run:
 
@@ -240,50 +261,46 @@ This script reads from your `oracle/.env.oracle` and `oracle/.env.oracle.testnet
 
 > Note: Be sure you’ve configured `PRIVATE_KEY`, `CONTRACT_ADDRESS`, and other secrets in the relevant `.env` files before setting.
 
----
+### 4. Update On-Chain Configuration
 
-#### 7. Build the ROFL container
-
-```bash
-npm run rofl:build:testnet
-```
-
-This step packages your ROFL enclave and application logic based on the `compose.yaml` file and specified resources.
-
----
-
-### 8. Deploy to testnet
+This critical step encrypts your ROFL secrets and registers them on-chain along with the cryptographic identity of the code you just built.
 
 ```bash
-oasis rofl deploy --network testnet --account YOUR_TESTNET_ACCOUNT --show-offers
+npm run rofl:update:testnet
 ```
 
-This pushes your compiled ROFL app and container to the Sapphire testnet.
+⚠️ You’ll be prompted to unlock your wallet and confirm the transaction.
 
-If you’ve updated secrets or trust settings, you’ll need to follow this with an update step:
+### 5. Deploy the Machine
 
----
-
-### 9. Update ROFL app configuration (after secrets or policy changes)
-
-Once secrets are set and your ROFL build has been deployed, run:
+This command finds an available provider on the ROFL marketplace and instructs them to start a TEE machine running your application.
 
 ```bash
-oasis rofl update
+npm run rofl:deploy:testnet
 ```
 
-This signs and sends an on-chain transaction to register your secrets, policy, and metadata.
+### 6. Monitor the Deployment
 
-> ⚠️ You’ll be prompted to unlock your wallet and confirm the transaction.
+After deploying, you can check the status and view live logs from your application running inside the TEE.
+
+```bash
+# Check the status (wait for it to become 'running')
+oasis rofl machine show --deployment testnet
+
+# Stream live logs
+oasis rofl machine logs --deployment testnet
+```
+
+## 🛡 Production (Mainnet) Release Workflow
+
+The mainnet release process is designed to be safe and deliberate, with manual checkpoints.
 
 ---
-
-### 🛡 Production Deployment Notes
 
 In production, use the `--scheme cri` flag to avoid container manipulation attacks:
 
 ```bash
-oasis rofl deploy --network sapphire --account YOUR_MAINNET_ACCOUNT --scheme cri
+oasis rofl create --network sapphire --deployment mainnet --account YOUR_MAINNET_ACCOUNT --scheme cri
 ```
 
 **Note:** Replace `YOUR_MAINNET_ACCOUNT` with your actual Oasis account name (following the same naming rules as above).
@@ -292,18 +309,52 @@ Make sure production wallets and trust roots are documented and stored securely 
 
 ---
 
+### 1. Prepare Release Assets
+
+This is the primary command to start a new release. It is an interactive script that will:
+
+- Prompt you to enter the new version number (e.g., 0.2.0).
+- Update the `version:` field in `rofl.yaml`.
+- Build the Docker image with a version-specific tag (e.g., `ghcr.io/tradableapp/tokenized-ai-agent:0.2.0`).
+- Push the versioned image to the container registry.
+- Print the next steps for you to follow.
+
+```bash
+npm run release:mainnet
+```
+
+### 2. Commit the Version Bump
+
+After the release script succeeds, your `rofl.yaml` file will be modified. You should commit this change to your repository.
+
+```bash
+git add rofl.yaml
+git commit -m "chore: Release ROFL v0.2.0"
+```
+
+### 3. Manually Build, Update, and Deploy
+
+These steps are kept manual for mainnet to allow you to review the output and transaction details at each critical stage.
+
+```bash
+# Build the mainnet ROFL bundle
+npm run rofl:build:mainnet
+
+# Update the on-chain secrets and enclave IDs
+npm run rofl:update:mainnet
+
+# Deploy to a mainnet provider
+npm run rofl:deploy:mainnet
+```
+
 ## 📜 License
 
-Licensed under the [Apache 2.0 License](./LICENSE).
-
----
+Licensed under the Apache 2.0 License.
 
 ## 🙏 Credits
 
-- Built with [Oasis ROFL](https://docs.oasis.io/build/rofl/)
-- Inspired by [demo-rofl-chatbot](https://github.com/oasisprotocol/demo-rofl-chatbot)
-
----
+- Built with Oasis ROFL
+- Inspired by demo-rofl-chatbot
 
 ## 🧪 Use
 

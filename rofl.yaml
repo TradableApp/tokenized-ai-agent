@@ -10,7 +10,7 @@ resources:
   cpus: 2
   storage:
     kind: disk-persistent
-    size: 2048
+    size: 4096 # Changed from 2048 to 4096 (4 GB)
 artifacts:
   firmware: https://github.com/oasisprotocol/oasis-boot/releases/download/v0.5.0/ovmf.tdx.fd#db47100a7d6a0c1f6983be224137c3f8d7cb09b63bb1c7a5ee7829d8e994a42f
   kernel: https://github.com/oasisprotocol/oasis-boot/releases/download/v0.5.0/stage1.bin#23877530413a661e9187aad2eccfc9660fc4f1a864a1fbad2f6c7d43512071ca
@@ -19,7 +19,7 @@ artifacts:
     runtime: https://github.com/oasisprotocol/oasis-sdk/releases/download/rofl-containers%2Fv0.5.2/rofl-containers#3abac3e7519588c1a4e250f1bf5cbbbd58c4e4c8ee817070031b9e0e3d4e0095
     compose: compose.yaml
 deployments:
-  default:
+  testnet:
     app_id: rofl1qqpuk4ke7d2nk5tx736tcpxm6kjtstndyu79pk2g
     network: testnet
     paratime: sapphire
@@ -59,7 +59,7 @@ deployments:
       - name: OLLAMA_URL
         value: pGJwa1ggxKKlc12Po0JOVJWak27djDsmGQ2Du3hE0/ZzvyAKZXpkbmFtZVga81T9/du0wIoDQWwdCjRh8hmw8U4QmrXUQ2xlbm9uY2VPt3MGhvok4UFBWJIrPkDbZXZhbHVlWCM+RcadE+Vlo5zKlttfc04sl9RnF/3pwcFS4nlV3zByH/FWAw==
     machines:
-      default:
+      testnet:
         provider: oasis1qp2ens0hsp7gh23wajxa4hpetkdek3swyyulyrmz
         offer: playground_short
         id: 00000000000001f8
