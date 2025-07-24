@@ -34,7 +34,8 @@
     "dotenv": "^17.0.1",
     "ethers": "^6.15.0",
     "node-fetch": "^3.3.2",
-    "siwe": "^3.0.0"
+    "siwe": "^3.0.0",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "chai": "^5.2.1",

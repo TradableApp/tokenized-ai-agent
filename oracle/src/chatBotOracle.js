@@ -1,8 +1,12 @@
 const { ethers } = require("ethers");
 const { SiweMessage } = require("siwe");
+const { v5: uuidv5 } = require("uuid");
 const { setupProviderAndSigner, getContractArtifacts } = require("./contractUtility");
 const { submitTx } = require("./roflUtility");
 require("dotenv").config({ path: process.env.ENV_FILE || "./oracle/.env.oracle" });
+
+// Use a constant namespace for your application. This can be any valid UUID.
+const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 
 console.log({
   ENV_FILE: process.env.ENV_FILE,
@@ -124,11 +128,15 @@ async function retrieveAnswers(authToken, address) {
 }
 
 /**
- * Query Ollama with the collected prompts.
- * @param {string[]} prompts - The array of prompts forming the addresses conversation history.
+ * Query the DeepSeek model via a local Ollama server.
+ * @param {string[]} prompts - The array of prompts forming the conversation history.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function askChatBot(prompts) {
+async function queryDeepSeek(prompts) {
+  if (!process.env.OLLAMA_URL) {
+    throw new Error("OLLAMA_URL is not set in the environment file.");
+  }
+
   try {
     const messages = prompts.map((p) => ({
       role: "user",
@@ -145,11 +153,85 @@ async function askChatBot(prompts) {
       }),
     });
 
+    if (!res.ok) throw new Error(`Ollama server responded with status: ${res.status}`);
     const json = await res.json();
-    return json.message?.content || "Error generating response";
+
+    return json.message?.content || "Error: Malformed response from DeepSeek.";
   } catch (e) {
     console.error("Error calling Ollama service:", e);
     return "Error: Could not generate a response from the AI service.";
+  }
+}
+
+/**
+ * Query the ChainGPT API for a response.
+ * @param {string[]} prompts - The array of prompts forming the conversation history.
+ * @returns {Promise<string>} The content of the AI's response.
+ */
+async function queryChainGPT(prompts, userAddress) {
+  if (!process.env.CHAIN_GPT_API_KEY) {
+    throw new Error("CHAIN_GPT_API_KEY is not set in the environment file.");
+  }
+  if (!prompts || prompts.length === 0) {
+    throw new Error("Cannot query with an empty prompt list.");
+  }
+
+  try {
+    // The user's current question is the last prompt.
+    const question = prompts[prompts.length - 1];
+
+    // The first prompt defines the unique ID for this entire conversation history.
+    const firstPrompt = prompts[0];
+
+    // Generate a deterministic UUID for this conversation.
+    // The same user + same first prompt will ALWAYS result in the same UUID.
+    const uniqueConversationIdentifier = `${userAddress}:${firstPrompt}`;
+    const conversationUUID = uuidv5(uniqueConversationIdentifier, NAMESPACE_UUID);
+
+    const res = await fetch("https://api.chaingpt.org/chat/stream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.CHAIN_GPT_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "general_assistant",
+        question,
+        chatHistory: "on",
+        sdkUniqueId: conversationUUID,
+        aiTone: "PRE_SET_TONE",
+        selectedTone: "FRIENDLY",
+      }),
+    });
+
+    if (!res.ok) throw new Error(`ChainGPT API responded with status: ${res.status}`);
+    const answerText = await res.text();
+
+    return answerText.trim() || "Error: Malformed response from ChainGPT.";
+  } catch (e) {
+    console.error("Error calling ChainGPT service:", e);
+    return "Error: Could not generate a response from the AI service.";
+  }
+}
+
+/**
+ * A dispatcher for querying the AI model specified by the AI_PROVIDER env variable.
+ * @param {string[]} prompts - The array of prompts to send to the AI.
+ * @param {string} userAddress - The address of the user submitting the prompt.
+ * @returns {Promise<string>} The content of the AI's response.
+ */
+async function queryAIModel(prompts, userAddress) {
+  const aiProvider = process.env.AI_PROVIDER || "DeepSeek";
+  console.log(`Querying AI model via: ${aiProvider}`);
+
+  switch (aiProvider.toLowerCase()) {
+    case "chaingpt":
+      return await queryChainGPT(prompts, userAddress);
+    case "deepseek":
+      return await queryDeepSeek(prompts);
+    default:
+      console.error(`Unknown AI_PROVIDER: "${aiProvider}". Defaulting to DeepSeek.`);
+      return await queryDeepSeek(prompts);
   }
 }
 
@@ -234,8 +316,9 @@ async function pollPrompts() {
         }
 
         console.log(`Got ${prompts.length} prompts. Querying AI model...`);
-        const answer = await askChatBot(prompts);
-        console.log(`Storing chat bot answer for ${submitter}...`);
+        const answer = await queryAIModel(prompts, submitter);
+
+        console.log(`Storing AI answer for ${submitter}...`);
         await submitAnswer(answer, prompts.length - 1, submitter);
       }
     } catch (err) {
