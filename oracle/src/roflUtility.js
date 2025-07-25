@@ -90,7 +90,7 @@ async function submitTx(tx, socketPath = "/run/rofl-appd.sock") {
         data: tx.data.replace(/^0x/, ""),
       },
     },
-    encrypt: true,
+    encrypt: false,
   };
   console.log(`  Posting ${JSON.stringify(payload)} to /rofl/v1/tx/sign-submit`);
 

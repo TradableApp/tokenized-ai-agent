@@ -269,7 +269,6 @@ async function queryAIModel(prompts, userAddress) {
  */
 async function submitAnswer(answer, promptId, address) {
   console.log(`Submitting answer for prompt ${promptId} to ${address}...`);
-  const isLocalnet = process.env.NETWORK_NAME === "sapphire-localnet";
 
   try {
     // Set a dynamic gas limit to prevent 'out of gas' errors for long answers.
