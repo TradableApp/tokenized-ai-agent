@@ -34,7 +34,7 @@ rm "${COMPOSE_MAINNET}.bak"
 
 # Build and push the version-tagged Docker image
 echo "Building mainnet image: ghcr.io/tradableapp/tokenized-ai-agent:$NEW_VERSION..."
-docker build -t "ghcr.io/tradableapp/tokenized-ai-agent:$NEW_VERSION" -f Dockerfile.oracle .
+docker build --platform linux/amd64 -t "ghcr.io/tradableapp/tokenized-ai-agent:$NEW_VERSION" -f Dockerfile.oracle .
 
 echo "Pushing mainnet image..."
 docker push "ghcr.io/tradableapp/tokenized-ai-agent:$NEW_VERSION"
