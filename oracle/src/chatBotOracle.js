@@ -36,13 +36,37 @@ async function setOracleAddress() {
 
   if (oracleAddress.toLowerCase() !== wrappedSigner.address.toLowerCase()) {
     console.log(`Updating oracle address from ${oracleAddress} to ${wrappedSigner.address}`);
-    const tx = await contract.setOracle(wrappedSigner.address, {
-      gasLimit: 1000000,
-    });
-    await tx.wait();
-    console.log(`Updated oracle address to ${wrappedSigner.address}`);
+
+    const isLocalnet = process.env.NETWORK_NAME === "sapphire-localnet";
+
+    try {
+      if (isLocalnet) {
+        const tx = await contract.setOracle(wrappedSigner.address, { gasLimit: 1000000 });
+        await tx.wait();
+      } else {
+        // Use the ROFL utility for testnet/mainnet
+        console.log("Populating setOracle transaction...");
+        const txUnsigned = await contract.setOracle.populateTransaction(wrappedSigner.address);
+
+        const txParams = {
+          to: process.env.CONTRACT_ADDRESS.replace(/^0x/, ""),
+          gas: 2000000, // setOracle is a simple transaction, a fixed high limit is safe
+          value: 0,
+          data: txUnsigned.data.replace(/^0x/, ""),
+        };
+
+        const txHash = await submitTx(txParams);
+        console.log(`setOracle transaction submitted: ${txHash}`);
+      }
+
+      console.log(`Updated oracle address to ${wrappedSigner.address}`);
+    } catch (e) {
+      console.error("Failed to update oracle address:", e);
+      // Throw the error to prevent the oracle from continuing in a bad state
+      throw e;
+    }
   } else {
-    console.log(`Oracle address already correct: ${oracleAddress}`);
+    console.log(`Oracle address already correct: ${wrappedSigner.address}`);
   }
 }
 
@@ -245,30 +269,16 @@ async function queryAIModel(prompts, userAddress) {
  */
 async function submitAnswer(answer, promptId, address) {
   console.log(`Submitting answer for prompt ${promptId} to ${address}...`);
-
-  // Set a dynamic gas limit to prevent 'out of gas' errors for long answers.
-  // Use a high base minimum plus a buffer per character of the answer.
-  const gasLimit = Math.max(3000000, 1500 * answer.length);
   const isLocalnet = process.env.NETWORK_NAME === "sapphire-localnet";
 
   try {
-    if (isLocalnet) {
-      const tx = await contract.submitAnswer(answer, promptId, address, { gasLimit });
-      const receipt = await tx.wait();
-      console.log(`Tx confirmed: ${receipt.hash}`);
-    } else {
-      const txUnsigned = await contract.submitAnswer.populateTransaction(answer, promptId, address);
-      const txParams = {
-        to: process.env.CONTRACT_ADDRESS.replace(/^0x/, ""),
-        gas: gasLimit,
-        value: "0",
-        data: txUnsigned.data.replace(/^0x/, ""),
-      };
+    // Set a dynamic gas limit to prevent 'out of gas' errors for long answers.
+    // Use a high base minimum plus a buffer per character of the answer.
+    const gasLimit = Math.max(3000000, 1500 * answer.length);
 
-      const responseHex = await submitTx(txParams);
-      console.log(`Tx confirmed: ${responseHex}`);
-    }
-
+    const tx = await contract.submitAnswer(answer, promptId, address, { gasLimit });
+    const receipt = await tx.wait();
+    console.log(`Tx confirmed: ${receipt.hash}`);
     console.log(`Submitted answer for prompt ${promptId} to address ${address}`);
   } catch (err) {
     console.error(`Failed to submit answer for prompt ${promptId}:`, err);
@@ -281,13 +291,12 @@ async function submitAnswer(answer, promptId, address) {
 async function pollPrompts() {
   console.log("Listening for prompts...");
 
-  // Get the initial session, which contains the token and its expiration.
   let session = await loginToContract();
+  let lastProcessedBlock = await wrappedProvider.getBlockNumber();
+  console.log(`Starting to process events from block ${lastProcessedBlock}`);
 
   while (true) {
     try {
-      // Proactively refresh the auth token if it's about to expire.
-      // Check against a 5-minute buffer to avoid race conditions.
       const nowInSeconds = Math.floor(Date.now() / 1000);
       if (nowInSeconds >= session.expiresAt - 300) {
         console.log("Auth token is nearing expiration. Refreshing proactively...");
@@ -295,38 +304,48 @@ async function pollPrompts() {
       }
 
       const latestBlock = await wrappedProvider.getBlockNumber();
-      const logs = await contract.queryFilter(contract.filters.PromptSubmitted(), latestBlock);
 
-      for (const log of logs) {
-        const submitter = log.args.sender;
-        console.log(`Processing new prompt from ${submitter}...`);
+      if (latestBlock > lastProcessedBlock) {
+        // More robust: Query all blocks since the last check
+        const logs = await contract.queryFilter(
+          contract.filters.PromptSubmitted(),
+          lastProcessedBlock + 1,
+          latestBlock,
+        );
 
-        const prompts = await retrievePrompts(session.token, submitter);
-        const answers = await retrieveAnswers(session.token, submitter);
+        const uniqueSubmitters = new Set(logs.map((log) => log.args.sender));
 
-        if (!prompts || prompts.length === 0) {
-          console.log(`No prompts found for ${submitter}, skipping.`);
-          continue;
+        for (const submitter of uniqueSubmitters) {
+          console.log(`Checking for new prompts from ${submitter}...`);
+          const [prompts, answers] = await Promise.all([
+            retrievePrompts(session.token, submitter),
+            retrieveAnswers(session.token, submitter),
+          ]);
+
+          if (!prompts || prompts.length === 0) continue;
+
+          // More robust: Find the *next* unanswered prompt, not just the last one
+          const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
+          const nextPromptId = prompts.findIndex((_, i) => !answeredPromptIds.has(i));
+
+          if (nextPromptId === -1) {
+            console.log(`All prompts for ${submitter} have been answered. Skipping.`);
+            continue;
+          }
+
+          console.log(`Found unanswered prompt #${nextPromptId}. Querying AI model...`);
+          const answer = await queryAIModel(prompts, submitter);
+
+          console.log(`Storing AI answer for prompt #${nextPromptId} for ${submitter}...`);
+          await submitAnswer(answer, nextPromptId, submitter);
         }
 
-        // Check if the latest prompt has already been answered.
-        if (answers.length > 0 && answers[answers.length - 1][0] >= prompts.length - 1) {
-          console.log(`Last prompt for ${submitter} already answered, skipping.`);
-          continue;
-        }
-
-        console.log(`Got ${prompts.length} prompts. Querying AI model...`);
-        const answer = await queryAIModel(prompts, submitter);
-
-        console.log(`Storing AI answer for ${submitter}...`);
-        await submitAnswer(answer, prompts.length - 1, submitter);
+        lastProcessedBlock = latestBlock;
       }
     } catch (err) {
-      // Catch errors in the main loop to prevent the entire service from crashing.
       console.error("An unexpected error occurred in the polling loop:", err);
     }
-    // Wait for a short period before polling again to avoid spamming the RPC node.
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await new Promise((resolve) => setTimeout(resolve, 5000)); // Increased polling interval slightly
   }
 }
 
@@ -334,6 +353,8 @@ async function pollPrompts() {
  * The entry point for the oracle service.
  */
 async function start() {
+  console.log("--- CHATBOT ORACLE SCRIPT STARTING ---");
+
   await setOracleAddress();
   await pollPrompts();
 }

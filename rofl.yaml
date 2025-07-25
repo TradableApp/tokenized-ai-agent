@@ -10,7 +10,7 @@ resources:
   cpus: 2
   storage:
     kind: disk-persistent
-    size: 4096 # Changed from 2048 to 4096 (4 GB)
+    size: 4096
 artifacts:
   firmware: https://github.com/oasisprotocol/oasis-boot/releases/download/v0.5.0/ovmf.tdx.fd#db47100a7d6a0c1f6983be224137c3f8d7cb09b63bb1c7a5ee7829d8e994a42f
   kernel: https://github.com/oasisprotocol/oasis-boot/releases/download/v0.5.0/stage1.bin#23877530413a661e9187aad2eccfc9660fc4f1a864a1fbad2f6c7d43512071ca
@@ -35,31 +35,35 @@ deployments:
           min_tcb_evaluation_data_number: 18
           tdx: {}
       enclaves:
-        - id: OQAejc2LhQ+HsARd4QJcMinXOezJqkvMpcdRLhKr+2MAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
-        - id: 5l8Xp07asxiQPOaWWQRoYtDjbV9byhJX9unV8lerDtMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: 7hiCLU2EgaZ7E7yo+QlKrSJYu+I0nCQRre38dqE7WkkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: 2PxQn7qV+9mLkseiNXSG12Ul1hj3Q/ynbl/5vBkAyEsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
       endorsements:
         - any: {}
       fees: endorsing_node
       max_expiration: 3
     secrets:
       - name: SAPPHIRE_MAINNET_RPC
-        value: pGJwa1ggbAGdVG9U877n67qQOEG0RFAH2Fse7af6XWPsyOhgqn9kbmFtZVgkyGWaLn0N+OcGffmKSmujcm7zk5Qu6XO/gm0Fr+8AKlu+T2TYZW5vbmNlT6cWEUn3qXj66UUHDDAm0WV2YWx1ZVgpoXVJdPJxyrqvrLxsCjVQ0M0RLxYkAKgQzoYWyGmlaNgCbxVXGN38pTM=
+        value: pGJwa1ggTU025I9nZRDmo7FUGLldDsCR3eKiIFalg4kciLsDGiRkbmFtZVgkOxrOugrxq38QzPlwwu6X2OTC+xT+DQ6xh7PzCj/kx4vzn9PMZW5vbmNlT18Uf4q24uo29MFusGxHOGV2YWx1ZVgpT1jiITpG94OPOdNoQQ/GJd5JXn/kgg6YOeLgyM1S85rGltu211au+DA=
       - name: SAPPHIRE_LOCALNET_RPC
-        value: pGJwa1ggE+olPtMSXEtmgvs34UpXejjYqP6OWYbdnFwtQEd5k3pkbmFtZVgl6W6vOSZc4Bx6Wr442sD1YCOtq4UJIU/9bTaoLogjtUdsJbd1WWVub25jZU9MjJYiH8Ra4KGAF6BA3x9ldmFsdWVYJf13yAUFc2sNw7Plrffl+TUmmWAVh/xLS09L/Ey1sNrnUfAwU5Y=
+        value: pGJwa1ggDBJ9ayq3h+fnIH4grFCdhEGW1c8zXr2SGqnu1L3LNC9kbmFtZVglCy08Tb+rYX7Of2jLhPwewvGSix13dKpd4SSs1UTxj+rFXC4s42Vub25jZU+75esiUE+IvlyPXs/yichldmFsdWVYJVYKMRGqZefr3brirwwlWse8PdwPQxr/V8rYQqyEDHp8ljoJ6Pw=
       - name: SAPPHIRE_TESTNET_RPC
-        value: pGJwa1gg6JJyiR43T4L6K2T9DarGJCg4858fSnnJCkgQSjhxliNkbmFtZVgk9hw0tb+tE6CvjJ4+MOEmx6kB/nGEELo6mEp1STpX0GQxeit2ZW5vbmNlT8gVvKOXztqNAJBhn1aIsWV2YWx1ZVgxfkpn9IZ8ZI6+Re9HBJ3KNmP9wSdTrAoATT8OPfL841B3L3K6NJ8vHDdeP9WXIDkzNg==
+        value: pGJwa1gg9Zvc7DrV4qprblArUpRH7qxrqLuhuJBW5su//x/7YEpkbmFtZVgkDeRwwl7Aw3CA4K8LHY+r0NMXQR/YtebHKVT4MhqtmDrw/ulIZW5vbmNlT6YiYOL5gVoLvxBQkCDczGV2YWx1ZVgxjCNt0ik4tp7XhmYEJ8gkeVEpiK1oIQWe/mxFemlgdPG8Bn6IW0glShEUQJC1C5Tm8A==
       - name: NETWORK_NAME
-        value: pGJwa1ggJWwsSDDOAMmaG62AokeeYHKHbcr7m+TCxdALT2J8YThkbmFtZVgc7tGo25celk8edxd4Gwp1kSm77cNeDGheSiBq42Vub25jZU/cSlayNHohXFkMzNPitIdldmFsdWVYIKT1wv2t/VQchYArwyHD/JKoyKL9o+0ugtNWPyRzIasJ
+        value: pGJwa1gghUcIUVNz0UI2ht6IwsMHqn37gDeDv6r7nB6l+yT1vmFkbmFtZVgcuBbTmsASaSZ7T1saYrC99JnM5HpDcCGv6M1fk2Vub25jZU/2nqKSnvj1E2BaKjnxtbJldmFsdWVYIKALD3lHqpl0LtB2se8JN1cBMCdC5oAwNTdMQgsy4Iw5
       - name: PRIVATE_KEY
-        value: pGJwa1ggmXBkc5Nz/zfp5/XY5dieoDhTE2QT2OFIYudg63TL3m1kbmFtZVgbMt3SQ2l+AK/ILMLD9j9qLsGOhu7OlFiHKtONZW5vbmNlTyH5Nv3wdJDeY4JyNxTls2V2YWx1ZVhSiccUzcgyr1i3A6OdYqwoMGbP5ugfi9GzLDPKglN3HGepnVPUrpj1zia6br9vkwgfQpiaJc92w5VrxeW8z8JKBWulChXuN78dwRib66cRrtQxog==
+        value: pGJwa1ggE7S8MhFdlf+xYzxrG2+/dQE2UJ5wyk3YkMEpjrKyzgZkbmFtZVgbC2mvTyf5Fn63wHyoPOxjTtPZJFfvNmDSLVuHZW5vbmNlT13wSRxGIM/rOPKUUo1vL2V2YWx1ZVhSgsEu0OovkoISROsmA0GRiAJ6M8nEOSV1Xs2MCfKb94a28ohCa2l+zmLKAUerZTehSQM2wrRush5P2VSDBZj78WVU9F6pFfBr3fQL6heFWLdHuQ==
       - name: CONTRACT_ADDRESS
-        value: pGJwa1gggQvvldnBR/rGz90CzD+JqWWQHckGhV48staYkBmbeTdkbmFtZVggF6YKjv/Hepv9lzjn/T2AR1RmWZ4OqD3X2sXJRrvrofRlbm9uY2VP9rqCsO31BVkm8bEzcfLDZXZhbHVlWDpAFGF4WLxYDolhLMdgvkOCKCaSn6e7iWe5kIZk+bnbtxN5qeW9rNs9nHnLWz6BB8dLikwYcmzaBYHG
+        value: pGJwa1ggEDGTj2GvUgVXYu5CxmwHL8URjADtxhcq4AFP6zPBpwZkbmFtZVggoU6e4rqYH7e6ZqNBGS7R3zvvvjIiHKOo5DUrn1Rp4gRlbm9uY2VPRKKtewwHSpn1AYonoDCkZXZhbHVlWDopZwA/7tejgPWKpPsy3Ef34wfp74xvVVcHNbuDje/CTGqXCgDl/bd2zzrhNU+gmNg6NRzpWGRaGsyc
       - name: DOMAIN
-        value: pGJwa1gga/B59A+yRg6wHEcOelK9XrmAHx61/i8+34w2be9Lkz9kbmFtZVZhvmayxJJ6Xsp8FM9zcYZdkhr5QS0LZW5vbmNlT2crvRn0fIUXhFI+f5uYLmV2YWx1ZVgkoqa4KSWFLXs0pGKENxFQgrkLHrrBwwFCkmQjqWfyEBgQvtEo
+        value: pGJwa1gg4wblCoXp6XnQwQZkF7zhbrGXmklM2HaheMCfhHm5SVxkbmFtZVZzO/C3fGeoi6W8x1xLWLWwh/85dUhUZW5vbmNlT8ymNnnYog50nldq756PJmV2YWx1ZVgkuk/ozWP7nG0BuXT2iM39SaieiZsvzENH9/cQZ7ndHq9Jkb8f
+      - name: AI_PROVIDER
+        value: pGJwa1ggXzY28iM/D2WfN3c1wXdW0lCiQftyPx6mDQ0kTbnP4wlkbmFtZVgbjOAQMhpSyaItvzwRVVpvKOa/Td33SrUypfxiZW5vbmNlT0KjPeOnLpouktFMNzF9iWV2YWx1ZVgYCTlzriq/hhlp3xFhNeD6z3zXkXrBwKAC
+      - name: CHAIN_GPT_API_KEY
+        value: pGJwa1ggI83tsCIaaRNXJNGcfUo0DeGB6y+vgRYeRA1lGgNxrBFkbmFtZVghiQB11NFt/IcJlghXam/7UXgj7pXgd61z0RqXgwCSgmTlZW5vbmNlT0sLckTcJtDNT2+r9R8ojmV2YWx1ZVg0ebkqJgfi5lcVmafRnRW2qCjsFgcbO9A/y/yvdd8efcTPDSUb0MSLxzEzuJK/EiphQOzlaw==
       - name: OLLAMA_URL
-        value: pGJwa1ggxKKlc12Po0JOVJWak27djDsmGQ2Du3hE0/ZzvyAKZXpkbmFtZVga81T9/du0wIoDQWwdCjRh8hmw8U4QmrXUQ2xlbm9uY2VPt3MGhvok4UFBWJIrPkDbZXZhbHVlWCM+RcadE+Vlo5zKlttfc04sl9RnF/3pwcFS4nlV3zByH/FWAw==
+        value: pGJwa1ggdKsB/IC95JYxzJsXVB9740xunPNT6IDlKu7Bxv5K9xxkbmFtZVgaDXFwGhY9RRbZ3dwLBsAPra2nhZAYAZdl7zxlbm9uY2VP8RSbCgZnGQWZ6ErXno4QZXZhbHVlWCNjEOSUzMvX3DWUDOGx07cWUto30ZLLMImdlupERRKkaXHTMg==
     machines:
-      testnet:
+      default:
         provider: oasis1qp2ens0hsp7gh23wajxa4hpetkdek3swyyulyrmz
         offer: playground_short
-        id: 00000000000001f8
+        id: "0000000000000203"

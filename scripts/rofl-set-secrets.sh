@@ -37,10 +37,10 @@ while IFS='=' read -r KEY VALUE; do
   fi
 
   # Delete existing secret (ignore error if not exists)
-  oasis rofl secret rm "$KEY" 2>/dev/null || true
+  oasis rofl secret rm "$KEY" --deployment "$ENV" 2>/dev/null || true
 
   # Set new secret
-  echo -n "$VALUE" | oasis rofl secret set "$KEY" -
+  echo -n "$VALUE" | oasis rofl secret set "$KEY" --deployment "$ENV" -
 done <<< "$MERGED_VARS"
 
 echo "✅ Done: All secrets set from merged env ($ENV)"

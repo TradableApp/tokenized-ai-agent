@@ -18,9 +18,14 @@ services:
     volumes:
       - /run/rofl-appd.sock:/run/rofl-appd.sock
     environment:
+      - NETWORK_NAME=${NETWORK_NAME}
       - PRIVATE_KEY=${PRIVATE_KEY}
       - CONTRACT_ADDRESS=${CONTRACT_ADDRESS}
-      - DOMAIN=${DOMAIN}
       - SAPPHIRE_MAINNET_RPC=${SAPPHIRE_MAINNET_RPC}
       - SAPPHIRE_LOCALNET_RPC=${SAPPHIRE_LOCALNET_RPC}
       - SAPPHIRE_TESTNET_RPC=${SAPPHIRE_TESTNET_RPC}
+      - DOMAIN=${DOMAIN}
+      - AI_PROVIDER=${AI_PROVIDER}
+      - CHAIN_GPT_API_KEY=${CHAIN_GPT_API_KEY}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - ROFL_IMAGE=${ROFL_IMAGE}
