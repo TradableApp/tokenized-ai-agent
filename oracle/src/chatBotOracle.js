@@ -12,7 +12,7 @@ console.log({
   ENV_FILE: process.env.ENV_FILE,
   PRIVATE_KEY: process.env.PRIVATE_KEY?.slice(0, 6) + "...", // For security, only log a prefix.
   NETWORK_NAME: process.env.NETWORK_NAME,
-  CONTRACT_ADDRESS: process.env.CONTRACT_ADDRESS,
+  ORACLE_CONTRACT_ADDRESS: process.env.ORACLE_CONTRACT_ADDRESS,
   OLLAMA_URL: process.env.OLLAMA_URL,
 });
 
@@ -22,7 +22,7 @@ const { provider: wrappedProvider, signer: wrappedSigner } = setupProviderAndSig
   process.env.PRIVATE_KEY,
 );
 const { abi } = getContractArtifacts("ChatBot");
-const contract = new ethers.Contract(process.env.CONTRACT_ADDRESS, abi, wrappedSigner);
+const contract = new ethers.Contract(process.env.ORACLE_CONTRACT_ADDRESS, abi, wrappedSigner);
 
 console.log("Oracle signer address:", wrappedSigner.address);
 console.log("ChatBot contract address:", contract.target);
@@ -49,7 +49,7 @@ async function setOracleAddress() {
         const txUnsigned = await contract.setOracle.populateTransaction(wrappedSigner.address);
 
         const txParams = {
-          to: process.env.CONTRACT_ADDRESS.replace(/^0x/, ""),
+          to: process.env.ORACLE_CONTRACT_ADDRESS.replace(/^0x/, ""),
           gas: 2000000, // setOracle is a simple transaction, a fixed high limit is safe
           value: 0,
           data: txUnsigned.data.replace(/^0x/, ""),

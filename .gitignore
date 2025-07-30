@@ -160,6 +160,8 @@ node_modules
 # Environment specific compose.*.yaml files
 compose.testnet.yaml
 compose.mainnet.yaml
+compose.base-testnet.yaml
+compose.base-mainnet.yaml
 
 # TypeChain files
 /typechain

@@ -389,7 +389,7 @@ async function main() {
     const { chainId } = await provider.getNetwork();
 
     const { abi } = getContractArtifacts();
-    let contractAddress = process.env.CONTRACT_ADDRESS;
+    let contractAddress = process.env.ORACLE_CONTRACT_ADDRESS;
     if (!contractAddress) {
       spinner.stop();
       ({ contractAddress } = await inquirer.prompt([

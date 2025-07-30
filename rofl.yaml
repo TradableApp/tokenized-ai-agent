@@ -52,7 +52,7 @@ deployments:
         value: pGJwa1gghUcIUVNz0UI2ht6IwsMHqn37gDeDv6r7nB6l+yT1vmFkbmFtZVgcuBbTmsASaSZ7T1saYrC99JnM5HpDcCGv6M1fk2Vub25jZU/2nqKSnvj1E2BaKjnxtbJldmFsdWVYIKALD3lHqpl0LtB2se8JN1cBMCdC5oAwNTdMQgsy4Iw5
       - name: PRIVATE_KEY
         value: pGJwa1ggE7S8MhFdlf+xYzxrG2+/dQE2UJ5wyk3YkMEpjrKyzgZkbmFtZVgbC2mvTyf5Fn63wHyoPOxjTtPZJFfvNmDSLVuHZW5vbmNlT13wSRxGIM/rOPKUUo1vL2V2YWx1ZVhSgsEu0OovkoISROsmA0GRiAJ6M8nEOSV1Xs2MCfKb94a28ohCa2l+zmLKAUerZTehSQM2wrRush5P2VSDBZj78WVU9F6pFfBr3fQL6heFWLdHuQ==
-      - name: CONTRACT_ADDRESS
+      - name: ORACLE_CONTRACT_ADDRESS
         value: pGJwa1ggEDGTj2GvUgVXYu5CxmwHL8URjADtxhcq4AFP6zPBpwZkbmFtZVggoU6e4rqYH7e6ZqNBGS7R3zvvvjIiHKOo5DUrn1Rp4gRlbm9uY2VPRKKtewwHSpn1AYonoDCkZXZhbHVlWDopZwA/7tejgPWKpPsy3Ef34wfp74xvVVcHNbuDje/CTGqXCgDl/bd2zzrhNU+gmNg6NRzpWGRaGsyc
       - name: DOMAIN
         value: pGJwa1gg4wblCoXp6XnQwQZkF7zhbrGXmklM2HaheMCfhHm5SVxkbmFtZVZzO/C3fGeoi6W8x1xLWLWwh/85dUhUZW5vbmNlT8ymNnnYog50nldq756PJmV2YWx1ZVgkuk/ozWP7nG0BuXT2iM39SaieiZsvzENH9/cQZ7ndHq9Jkb8f

@@ -5,10 +5,13 @@ require("hardhat-gas-reporter");
 
 const {
   PRIVATE_KEY,
+  BASE_MAINNET_RPC,
+  BASE_SEPOLIA_TESTNET_RPC,
   SAPPHIRE_MAINNET_RPC,
   SAPPHIRE_TESTNET_RPC,
   SAPPHIRE_LOCALNET_RPC,
   COINMARKETCAP_API_KEY,
+  REPORT_GAS,
 } = process.env;
 
 module.exports = {
@@ -17,6 +20,16 @@ module.exports = {
   networks: {
     hardhat: {
       chainId: 1337,
+    },
+    base: {
+      url: BASE_MAINNET_RPC || "https://mainnet.base.org",
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 8453,
+    },
+    baseSepolia: {
+      url: BASE_SEPOLIA_TESTNET_RPC || "https://sepolia.base.org",
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 84532,
     },
     sapphire: {
       url: SAPPHIRE_MAINNET_RPC || "https://sapphire.oasis.io",
@@ -46,7 +59,7 @@ module.exports = {
   },
 
   gasReporter: {
-    enabled: process.env.REPORT_GAS === "true", // Run with `REPORT_GAS=true npx hardhat test`
+    enabled: REPORT_GAS === "true", // Run with `REPORT_GAS=true npx hardhat test`
     currency: "USD",
     currencyDisplayPrecision: 8,
     outputFile: "gas-report.txt",

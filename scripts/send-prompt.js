@@ -5,11 +5,13 @@ const { wrapEthersSigner } = require("@oasisprotocol/sapphire-ethers-v6");
 async function main() {
   // Load environment variables from .env.testnet
   const userPrivateKey = process.env.USER_PRIVATE_KEY;
-  const contractAddress = process.env.CONTRACT_ADDRESS;
+  const contractAddress = process.env.ORACLE_CONTRACT_ADDRESS;
   const prompt = "Is my confidential prompt readable by the oracle?";
 
   if (!userPrivateKey || !contractAddress) {
-    throw new Error("Please set USER_PRIVATE_KEY and CONTRACT_ADDRESS in your .env.testnet file");
+    throw new Error(
+      "Please set USER_PRIVATE_KEY and ORACLE_CONTRACT_ADDRESS in your .env.testnet file",
+    );
   }
 
   console.log("Preparing to send an encrypted prompt...");
