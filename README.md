@@ -94,12 +94,12 @@ Then edit the equivalent environment files:
 - In `./.env.localnet`, update:
   - `PRIVATE_KEY`: Use one of the private keys from the Sapphire localnet output (e.g. account 0)
   - `USER_PRIVATE_KEY`: Use a different private key (e.g. account 1) to simulate a user
-  - `CONTRACT_ADDRESS`: Leave this blank for now
+  - `ORACLE_CONTRACT_ADDRESS`: Leave this blank for now
 
 - In `./oracle/.env.oracle.localnet`, update:
   - `PRIVATE_KEY`: Use one of the private keys from the Sapphire localnet output (e.g. account 0)
   - `OLLAMA_URL`: Set to `http://localhost:11434`
-  - `CONTRACT_ADDRESS`: Leave this blank for now
+  - `ORACLE_CONTRACT_ADDRESS`: Leave this blank for now
 
 #### 3. Deploy Contracts to Localnet
 
@@ -108,7 +108,7 @@ npm run compile
 npm run deploy:localnet
 ```
 
-After deployment, update your `CONTRACT_ADDRESS` in `.env.localnet` and `oracle/.env.oracle.localnet` to the `ChatBot deployed to` in the deploy output.
+After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env.localnet` and `oracle/.env.oracle.localnet` to the `ChatBot deployed to` in the deploy output.
 
 #### 4. Run the Oracle
 
@@ -171,13 +171,10 @@ This project uses a series of `.env` files to manage secrets for different envir
 ```bash
 # Create the files from their examples
 cp .env.example .env.testnet
-cp .env.rofl.example .env.rofl.testnet
 cp ./oracle/.env.oracle.example ./oracle/.env.oracle.testnet
 ```
 
 Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
-
-⚠️ **The `.env.rofl` file should have the same values as `.env.oracle`.** This file is used to substitute variables into `compose.yaml` when building the ROFL container.
 
 #### d. Deploy Your Smart Contract
 
@@ -193,14 +190,14 @@ Deploy your contract to the target network. The deployment script reads from `.e
 npm run deploy:testnet
 ```
 
-After deployment, update your `CONTRACT_ADDRESS` in `.env`, `./oracle/.env.oracle.testnet`, and `.env.rofl.testnet` to the `ChatBot deployed to` in the deploy output.
+After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env` and `./oracle/.env.oracle.testnet` to the `ChatBot deployed to` in the deploy output.
 
 #### e. Confirm Deployment (Optional)
 
 After deployment, you can verify the contract exists and the Oracle address is correct:
 
 1. Visit [Oasis Testnet Explorer](https://testnet.explorer.oasis.io/?network=testnet)
-2. Search for your deployed CONTRACT_ADDRESS
+2. Search for your deployed ORACLE_CONTRACT_ADDRESS
 3. Confirm:
    - The contract exists at the address
    - The deployer address matches your funded wallet
@@ -214,8 +211,12 @@ npx hardhat console --network sapphire-testnet
 ```javascript
 const { Wallet } = require("ethers");
 const signer = new Wallet(process.env.PRIVATE_KEY, ethers.provider);
-const ChatBot = await ethers.getContractAt("ChatBot", process.env.CONTRACT_ADDRESS, signer);
-await ChatBot.oracle(); // Should return your wallet address
+const SapphireChatBot = await ethers.getContractAt(
+  "SapphireChatBot",
+  process.env.ORACLE_CONTRACT_ADDRESS,
+  signer,
+);
+await SapphireChatBot.oracle(); // Should return your wallet address
 ```
 
 #### f. Create the ROFL App
@@ -259,7 +260,7 @@ npm run rofl:set:testnet
 
 This script reads from your `oracle/.env.oracle` and `oracle/.env.oracle.testnet` files, merges them, and sets each secret using `oasis rofl secret set`.
 
-> Note: Be sure you’ve configured `PRIVATE_KEY`, `CONTRACT_ADDRESS`, and other secrets in the relevant `.env` files before setting.
+> Note: Be sure you’ve configured `PRIVATE_KEY`, `ORACLE_CONTRACT_ADDRESS`, and other secrets in the relevant `.env` files before setting.
 
 ### 4. Update On-Chain Configuration
 

@@ -9,7 +9,7 @@ struct Answer {
   string answer;
 }
 
-contract ChatBot is SiweAuth {
+contract SapphireChatBot is SiweAuth {
   mapping(address => string[]) private _prompts;
   mapping(address => Answer[]) private _answers;
 

@@ -1,0 +1,62 @@
+.
+├── ._file-structure.txt
+├── .dockerignore
+├── .env
+├── .env.base-mainnet
+├── .env.base-testnet
+├── .env.example
+├── .env.localnet
+├── .env.mainnet
+├── .env.testnet
+├── .eslintignore
+├── .gitignore
+├── .prettierrc
+├── .solhint.json
+├── Dockerfile.oracle
+├── LICENSE
+├── README.md
+├── compose.base-mainnet.yaml
+├── compose.base-testnet.yaml
+├── compose.mainnet.yaml
+├── compose.testnet.yaml
+├── compose.yaml
+├── contracts
+│   ├── EVMChatBot.sol
+│   ├── README.md
+│   └── SapphireChatBot.sol
+├── file-structure.txt
+├── gas-report.txt
+├── hardhat.config.js
+├── oracle
+│   ├── .env.oracle
+│   ├── .env.oracle.example
+│   ├── .env.oracle.localnet
+│   ├── .env.oracle.mainnet
+│   ├── .env.oracle.testnet
+│   ├── README.md
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── src
+│   │   ├── chatBotOracle.js
+│   │   ├── contractUtility.js
+│   │   ├── index.js
+│   │   └── roflUtility.js
+│   └── test
+│       └── roflUtility.test.js
+├── package-lock.json
+├── package.json
+├── rofl.yaml
+├── scripts
+│   ├── deploy.js
+│   ├── getPublicKey.js
+│   ├── interact.js
+│   ├── release-mainnet.sh
+│   ├── rofl-set-secrets.sh
+│   └── send-prompt.js
+├── test
+│   └── SapphireChatBot.test.js
+├── tokenized-ai-agent.code-workspace
+├── tokenized-ai-agent.default.orc
+└── tokenized-ai-agent.testnet.orc
+
+7 directories, 53 files

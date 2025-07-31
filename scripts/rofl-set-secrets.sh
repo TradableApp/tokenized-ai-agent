@@ -4,13 +4,18 @@ set -e
 ENV="$1"
 
 if [ -z "$ENV" ]; then
-  echo "❌ Usage: $0 <env> (e.g., localnet, testnet, mainnet)"
+  echo "❌ Usage: $0 <env>"
+  echo "   (e.g., testnet, mainnet, base-testnet, base-mainnet)"
   exit 1
 fi
 
-echo "🔐 Setting ROFL secrets from merged environment ($ENV)..."
+# The environment name now maps DIRECTLY to the deployment name in rofl.yaml.
+# No complex mapping is needed.
+DEPLOYMENT_TARGET="$ENV"
 
-# Paths
+echo "🔐 Setting secrets for environment '$ENV' on ROFL deployment '$DEPLOYMENT_TARGET'..."
+
+# --- File Paths ---
 BASE_ENV_FILE="./oracle/.env.oracle"
 ENV_FILE="./oracle/.env.oracle.${ENV}"
 
@@ -24,24 +29,18 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-# Merge with env-specific overwriting base
-MERGED_VARS=$( (cat "$BASE_ENV_FILE"; cat "$ENV_FILE") | grep -v '^#' | grep '=' | awk -F= '!seen[$1]++' )
+# --- Merge and Set Secrets ---
+MERGED_VARS=$( (cat "$BASE_ENV_FILE"; cat "$ENV_FILE") | grep -v '^#' | grep -E '.+=' | awk -F= '!seen[$1]++' )
 
-# Export to local shell session
-eval "$MERGED_VARS"
-
-# Loop and delete+set each secret
 while IFS='=' read -r KEY VALUE; do
   if [ -z "$KEY" ] || [ -z "$VALUE" ]; then
     continue
   fi
 
-  # Delete existing secret (ignore error if not exists)
-  oasis rofl secret rm "$KEY" --deployment "$ENV" 2>/dev/null || true
-
-  # Set new secret
-  echo -n "$VALUE" | oasis rofl secret set "$KEY" --deployment "$ENV" -
+  echo "  - Setting secret: $KEY"
+  oasis rofl secret rm "$KEY" --deployment "$DEPLOYMENT_TARGET" 2>/dev/null || true
+  echo -n "$VALUE" | oasis rofl secret set "$KEY" --deployment "$DEPLOYMENT_TARGET" -
 done <<< "$MERGED_VARS"
 
-echo "✅ Done: All secrets set from merged env ($ENV)"
-echo "⚠️  Don't forget to run: oasis rofl update"
+echo "✅ Done: All secrets set for '$ENV' on ROFL deployment '$DEPLOYMENT_TARGET'."
+echo "⚠️  Don't forget to run: oasis rofl update --deployment '$DEPLOYMENT_TARGET'"

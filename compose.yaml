@@ -11,21 +11,26 @@ services:
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
-    image: ghcr.io/tradableapp/tokenized-ai-agent:testnet
+    image: ghcr.io/tradableapp/tokenized-ai-agent:base-testnet
     platform: linux/amd64
-    entrypoint: /bin/sh -c 'node src/index.js --network sapphire-testnet --ollama-address http://ollama:11434'
+    entrypoint: /bin/sh -c 'node src/index.js --network baseSepolia --ollama-address http://ollama:11434'
     restart: on-failure
     volumes:
       - /run/rofl-appd.sock:/run/rofl-appd.sock
     environment:
+      # These environment variables are injected from rofl.yaml secrets at runtime
       - NETWORK_NAME=${NETWORK_NAME}
       - PRIVATE_KEY=${PRIVATE_KEY}
-      - CONTRACT_ADDRESS=${CONTRACT_ADDRESS}
+      - PUBLIC_KEY=${PUBLIC_KEY}
+      - ORACLE_CONTRACT_ADDRESS=${ORACLE_CONTRACT_ADDRESS}
+      - PAYMENT_MANAGER_CONTRACT_ADDRESS=${PAYMENT_MANAGER_CONTRACT_ADDRESS}
+      - TOKEN_CONTRACT_ADDRESS=${TOKEN_CONTRACT_ADDRESS}
+      - BASE_SEPOLIA_TESTNET_RPC=${BASE_SEPOLIA_TESTNET_RPC}
+      - BASE_MAINNET_RPC=${BASE_MAINNET_RPC}
       - SAPPHIRE_MAINNET_RPC=${SAPPHIRE_MAINNET_RPC}
-      - SAPPHIRE_LOCALNET_RPC=${SAPPHIRE_LOCALNET_RPC}
       - SAPPHIRE_TESTNET_RPC=${SAPPHIRE_TESTNET_RPC}
+      - SAPPHIRE_LOCALNET_RPC=${SAPPHIRE_LOCALNET_RPC}
       - DOMAIN=${DOMAIN}
       - AI_PROVIDER=${AI_PROVIDER}
       - CHAIN_GPT_API_KEY=${CHAIN_GPT_API_KEY}
       - OLLAMA_URL=${OLLAMA_URL}
-      - ROFL_IMAGE=${ROFL_IMAGE}
