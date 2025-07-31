@@ -1,5 +1,5 @@
 const { ethers, Contract, Signature } = require("ethers");
-const { Logger } = require("ethers/lib.commonjs/utils");
+
 const { wrapEthersSigner } = require("@oasisprotocol/sapphire-ethers-v6");
 const ethCrypto = require("eth-crypto");
 const inquirer = require("inquirer");
@@ -10,8 +10,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const dotenv = require("dotenv");
-
-Logger.setLogLevel("error");
 
 // --- Configuration ---
 const envPath = path.resolve(__dirname, "../.env");
