@@ -11,13 +11,14 @@ services:
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
-    image: ghcr.io/tradableapp/tokenized-ai-agent:testnet
+    image: ghcr.io/tradableapp/tokenized-ai-agent:base-testnet
     platform: linux/amd64
-    entrypoint: /bin/sh -c 'node src/index.js --network sapphire-testnet --ollama-address http://ollama:11434'
+    entrypoint: /bin/sh -c 'node src/index.js --network baseSepolia --ollama-address http://ollama:11434'
     restart: on-failure
     volumes:
       - /run/rofl-appd.sock:/run/rofl-appd.sock
     environment:
+      # These environment variables are injected from rofl.yaml secrets at runtime
       - NETWORK_NAME=${NETWORK_NAME}
       - PRIVATE_KEY=${PRIVATE_KEY}
       - PUBLIC_KEY=${PUBLIC_KEY}

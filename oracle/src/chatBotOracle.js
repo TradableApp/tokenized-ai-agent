@@ -286,6 +286,57 @@ async function queryAIModel(prompts, userAddress) {
 }
 
 /**
+ * [EVM ONLY]
+ * @description A helper to remove the '0x04' or '04' prefix from a public key string,
+ * preparing it for use with the eth-crypto library.
+ * @param {string} publicKey - The public key string.
+ * @returns {string} The cleaned, raw public key.
+ */
+function cleanPublicKey(publicKey) {
+  if (publicKey.startsWith("0x04")) {
+    return publicKey.slice(4);
+  }
+  if (publicKey.startsWith("04")) {
+    return publicKey.slice(2);
+  }
+  return publicKey;
+}
+
+/**
+ * [EVM ONLY]
+ * @description Ensures a hex string has a '0x' prefix, which is required by ethers.js for `bytes` types.
+ * @param {string} hexString - The hex string.
+ * @returns {string} The hex string with a '0x' prefix.
+ */
+function ensure0xPrefix(hexString) {
+  return hexString.startsWith("0x") ? hexString : `0x${hexString}`;
+}
+
+/**
+ * [EVM ONLY]
+ * @description Removes the '0x' prefix from a hex string, which is required by eth-crypto.
+ * @param {string} hexString - The hex string, which may or may not have a '0x' prefix.
+ * @returns {string} The raw hex string without the '0x' prefix.
+ */
+function strip0xPrefix(hexString) {
+  return hexString.startsWith("0x") ? hexString.slice(2) : hexString;
+}
+
+/**
+ * [EVM ONLY] Decrypts an EncryptedMessage struct using the oracle's private key.
+ * @param {object} encryptedMessage - The struct fetched from the contract.
+ * @returns {Promise<string>} The decrypted plaintext.
+ */
+async function decryptMessage(encryptedMessage) {
+  // Use the helper to safely remove the "0x" prefix before parsing.
+  const parsedRoflKey = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.roflEncryptedKey));
+  const parsedContent = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.encryptedContent));
+
+  const sessionKey = await ethCrypto.decryptWithPrivateKey(ORACLE_PRIVATE_KEY, parsedRoflKey);
+  return await ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent);
+}
+
+/**
  * Submit the AI answer to the Oracle contract on-chain.
  * Handles both plaintext (Sapphire) and encrypted (EVM) answer submission.
  * @param {string} answerText - The plaintext AI response.
@@ -317,17 +368,17 @@ async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
       const sessionKey = ethCrypto.createIdentity().privateKey;
 
       // The public key is derived from the session's private key.
-      const sessionPublicKey = ethCrypto.getPublicKey(sessionKey).slice(2);
+      const sessionPublicKey = ethCrypto.publicKeyByPrivateKey(sessionKey);
 
-      // Clean the keys to remove the '0x04' prefix for eth-crypto.
-      const userPublicKeyClean = userPublicKey.startsWith("0x04")
-        ? userPublicKey.slice(4)
-        : userPublicKey;
-      const oraclePublicKeyClean = ORACLE_PUBLIC_KEY.startsWith("0x04")
-        ? ORACLE_PUBLIC_KEY.slice(4)
-        : ORACLE_PUBLIC_KEY;
+      // Use the helper functions to safely clean the keys.
+      const userPublicKeyClean = cleanPublicKey(userPublicKey);
+      const oraclePublicKeyClean = cleanPublicKey(ORACLE_PUBLIC_KEY);
+      const sessionPublicKeyClean = cleanPublicKey(sessionPublicKey);
 
-      const encryptedContent = await ethCrypto.encryptWithPublicKey(sessionPublicKey, answerText);
+      const encryptedContent = await ethCrypto.encryptWithPublicKey(
+        sessionPublicKeyClean,
+        answerText,
+      );
       const userEncryptedKey = await ethCrypto.encryptWithPublicKey(userPublicKeyClean, sessionKey);
       const roflEncryptedKey = await ethCrypto.encryptWithPublicKey(
         oraclePublicKeyClean,
@@ -335,9 +386,9 @@ async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
       );
 
       const tx = await contract.submitAnswer(
-        ethCrypto.cipher.stringify(encryptedContent),
-        ethCrypto.cipher.stringify(userEncryptedKey),
-        ethCrypto.cipher.stringify(roflEncryptedKey),
+        ensure0xPrefix(ethCrypto.cipher.stringify(encryptedContent)),
+        ensure0xPrefix(ethCrypto.cipher.stringify(userEncryptedKey)),
+        ensure0xPrefix(ethCrypto.cipher.stringify(roflEncryptedKey)),
         promptId,
         userAddress,
       );
@@ -360,109 +411,130 @@ async function pollPrompts() {
   if (isSapphire) {
     // Initialize the session if on Sapphire to be used for the authToken.
     sapphireSession = await loginToContract();
+  }
 
-    let lastProcessedBlock = await provider.getBlockNumber();
-    console.log(`Starting to process events from block ${lastProcessedBlock}`);
+  let lastProcessedBlock = await provider.getBlockNumber();
+  console.log(`Starting to process events from block ${lastProcessedBlock}`);
 
-    while (true) {
-      try {
+  while (true) {
+    try {
+      if (isSapphire) {
         const nowInSeconds = Math.floor(Date.now() / 1000);
         if (nowInSeconds >= sapphireSession.expiresAt - 300) {
           console.log("Auth token is nearing expiration. Refreshing proactively...");
           sapphireSession = await loginToContract();
         }
+      }
 
-        const latestBlock = await provider.getBlockNumber();
+      const latestBlock = await provider.getBlockNumber();
 
-        if (latestBlock > lastProcessedBlock) {
-          // More robust: Query all blocks since the last check
-          const logs = await contract.queryFilter(
-            contract.filters.PromptSubmitted(),
-            lastProcessedBlock + 1,
-            latestBlock,
-          );
+      if (latestBlock > lastProcessedBlock) {
+        // Query all blocks since the last check
+        const logs = await contract.queryFilter(
+          contract.filters.PromptSubmitted(),
+          lastProcessedBlock + 1,
+          latestBlock,
+        );
 
+        if (isSapphire) {
           const uniqueSenders = new Set(logs.map((log) => log.args.sender));
 
           for (const sender of uniqueSenders) {
-            console.log(`Checking for new prompts from ${sender}...`);
+            // This inner try...catch ensures that an error for one user
+            // does not stop the oracle from processing prompts for other users.
+            try {
+              console.log(`Checking for new prompts from ${sender}...`);
 
-            const [prompts, answers] = await Promise.all([
-              retrievePrompts(sender),
-              retrieveAnswers(sender),
-            ]);
+              const [prompts, answers] = await Promise.all([
+                retrievePrompts(sender),
+                retrieveAnswers(sender),
+              ]);
 
-            if (!prompts || prompts.length === 0) continue;
+              if (!prompts || prompts.length === 0) continue;
 
-            // More robust: Find the *next* unanswered prompt, not just the last one
-            const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
-            const nextPromptId = prompts.findIndex((_, i) => !answeredPromptIds.has(i));
+              // Find the *next* unanswered prompt, not just the last one
+              const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
+              const nextPromptId = prompts.findIndex((_, i) => !answeredPromptIds.has(i));
 
-            if (nextPromptId === -1) {
-              console.log(`All prompts for ${sender} have been answered. Skipping.`);
-              continue;
+              if (nextPromptId === -1) {
+                console.log(`All prompts for ${sender} have been answered. Skipping.`);
+                continue;
+              }
+              console.log(`Found unanswered prompt #${nextPromptId}. Querying AI model...`);
+
+              const answerText = await queryAIModel(prompts, sender);
+
+              console.log(`Storing AI answer for prompt #${nextPromptId} for ${sender}...`);
+              await submitAnswer(answerText, nextPromptId, sender);
+            } catch (err) {
+              console.error(`Error processing prompts for sender ${sender}:`, err);
             }
-            console.log(`Found unanswered prompt #${nextPromptId}. Querying AI model...`);
-
-            const answerText = await queryAIModel(prompts, sender);
-
-            console.log(`Storing AI answer for prompt #${nextPromptId} for ${sender}...`);
-            await submitAnswer(answerText, nextPromptId, sender);
           }
+        } else {
+          for (const event of logs) {
+            const sender = event.args.sender;
+            console.log(
+              `[EVENT] Detected new prompt from: ${sender} in block ${event.blockNumber}`,
+            );
 
-          lastProcessedBlock = latestBlock;
+            try {
+              // Fetch the full transaction details to access its signature.
+              const txResponse = await provider.getTransaction(event.transactionHash);
+              if (!txResponse) {
+                throw new Error(`Transaction not found: ${event.transactionHash}`);
+              }
+
+              // Create a static Transaction object to access cryptographic properties.
+              const tx = ethers.Transaction.from(txResponse);
+
+              // Recover the sender's public key from the transaction's signature and unsigned hash.
+              // This is necessary to encrypt the AI's response for the user.
+              const userPublicKey = ethers.SigningKey.recoverPublicKey(
+                tx.unsignedHash,
+                tx.signature,
+              );
+              if (!userPublicKey) {
+                throw new Error("Could not recover public key from signature.");
+              }
+
+              const [encryptedPrompts, encryptedAnswers] = await Promise.all([
+                retrievePrompts(sender),
+                retrieveAnswers(sender),
+              ]);
+
+              if (!encryptedPrompts || encryptedPrompts.length === 0) continue;
+
+              // Decrypt the full prompt history for the AI's context.
+              const plaintextPrompts = await Promise.all(encryptedPrompts.map(decryptMessage));
+
+              const answeredPromptIds = new Set(encryptedAnswers.map((a) => Number(a.promptId)));
+              const nextPromptId = plaintextPrompts.findIndex((_, i) => !answeredPromptIds.has(i));
+
+              if (nextPromptId === -1) {
+                console.log(`All prompts for ${sender} have been answered. Skipping.`);
+                continue;
+              }
+              console.log(`Found unanswered prompt #${nextPromptId}. Querying AI...`);
+
+              const answerText = await queryAIModel(plaintextPrompts, sender);
+              await submitAnswer(answerText, nextPromptId, sender, userPublicKey);
+            } catch (err) {
+              console.error(
+                `Error processing prompt from ${sender} from tx ${event.transactionHash}:`,
+                err,
+              );
+            }
+          }
         }
-      } catch (err) {
-        console.error("An unexpected error occurred in the polling loop:", err);
+
+        lastProcessedBlock = latestBlock;
       }
-      await new Promise((resolve) => setTimeout(resolve, 5000)); // Increased polling interval slightly
+    } catch (err) {
+      console.error("An unexpected error occurred in the polling loop:", err);
     }
-  } else {
-    // The public EVM workflow uses an event listener for real-time processing.
-    contract.on("PromptSubmitted", async (sender, event) => {
-      console.log(`[EVENT] Detected new prompt from: ${sender}`);
 
-      try {
-        const tx = await provider.getTransaction(event.transactionHash);
-        const userPublicKey = ethers.SigningKey.recoverPublicKey(tx.unsignedHash, tx.signature);
-
-        const [encryptedPrompts, encryptedAnswers] = await Promise.all([
-          retrievePrompts(sender),
-          retrieveAnswers(sender),
-        ]);
-
-        if (!encryptedPrompts || encryptedPrompts.length === 0) return;
-
-        // Decrypt the full prompt history for the AI's context.
-        const plaintextPrompts = await Promise.all(
-          encryptedPrompts.map((p) => {
-            const parsedRoflKey = ethCrypto.cipher.parse(p.roflEncryptedKey);
-            const parsedContent = ethCrypto.cipher.parse(p.encryptedContent);
-
-            return ethCrypto
-              .decryptWithPrivateKey(ORACLE_PRIVATE_KEY, parsedRoflKey)
-              .then((sessionKey) => ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent));
-          }),
-        );
-
-        const answeredPromptIds = new Set(encryptedAnswers.map((a) => Number(a.promptId)));
-        const nextPromptId = plaintextPrompts.findIndex((_, i) => !answeredPromptIds.has(i));
-
-        if (nextPromptId === -1) {
-          console.log(`All prompts for ${sender} have been answered. Skipping.`);
-          return;
-        }
-        console.log(`Found unanswered prompt #${nextPromptId}. Querying AI...`);
-
-        const answerText = await queryAIModel(plaintextPrompts, sender);
-        await submitAnswer(answerText, nextPromptId, sender, userPublicKey);
-      } catch (err) {
-        console.error(`Error processing prompt from ${sender}:`, err);
-      }
-    });
-
-    // Keep the process alive for the listener.
-    await new Promise(() => {});
+    // Run polling on a 5s loop
+    await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
 

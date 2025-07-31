@@ -1,4 +1,5 @@
 const { ethers, Contract, Signature } = require("ethers");
+const { Logger } = require("ethers/lib.commonjs/utils");
 const { wrapEthersSigner } = require("@oasisprotocol/sapphire-ethers-v6");
 const ethCrypto = require("eth-crypto");
 const inquirer = require("inquirer");
@@ -9,6 +10,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const dotenv = require("dotenv");
+
+Logger.setLogLevel("error");
 
 // --- Configuration ---
 const envPath = path.resolve(__dirname, "../.env");
@@ -93,24 +96,65 @@ async function loginSiwe(chainId) {
 
 /**
  * [EVM ONLY]
+ * @description A helper to remove the '0x04' or '04' prefix from a public key string,
+ * preparing it for use with the eth-crypto library.
+ * @param {string} publicKey - The public key string.
+ * @returns {string} The cleaned, raw public key.
+ */
+function cleanPublicKey(publicKey) {
+  if (publicKey.startsWith("0x04")) {
+    return publicKey.slice(4);
+  }
+  if (publicKey.startsWith("04")) {
+    return publicKey.slice(2);
+  }
+  return publicKey;
+}
+
+/**
+ * [EVM ONLY]
+ * @description Ensures a hex string has a '0x' prefix, which is required by ethers.js for `bytes` types.
+ * @param {string} hexString - The hex string.
+ * @returns {string} The hex string with a '0x' prefix.
+ */
+function ensure0xPrefix(hexString) {
+  return hexString.startsWith("0x") ? hexString : `0x${hexString}`;
+}
+
+/**
+ * [EVM ONLY]
+ * @description Removes the '0x' prefix from a hex string, which is required by eth-crypto.
+ * @param {string} hexString - The hex string, which may or may not have a '0x' prefix.
+ * @returns {string} The raw hex string without the '0x' prefix.
+ */
+function strip0xPrefix(hexString) {
+  return hexString.startsWith("0x") ? hexString.slice(2) : hexString;
+}
+
+/**
+ * [EVM ONLY]
  * @description Encrypts a plaintext prompt for the user and the ROFL oracle.
  * @param {string} plaintext - The user's prompt.
  * @returns {Promise<object>} An object containing the three encrypted parts for the contract call.
  */
 async function encryptPrompt(plaintext) {
   const sessionKey = ethCrypto.createIdentity().privateKey;
-  const sessionPublicKey = ethCrypto.getPublicKeyByPrivateKey(sessionKey);
-  const userPublicKeyClean = signer.publicKey.slice(4); // Remove '0x04' prefix
-  const roflPublicKeyClean = roflPublicKey.slice(4); // Remove '0x04' prefix
+  const sessionPublicKey = ethCrypto.publicKeyByPrivateKey(sessionKey);
 
-  const encryptedContent = await ethCrypto.encryptWithPublicKey(sessionPublicKey, plaintext);
+  // Use the helper functions to safely clean the keys.
+  const userPublicKeyClean = cleanPublicKey(signer.signingKey.publicKey);
+  const roflPublicKeyClean = cleanPublicKey(roflPublicKey);
+  const sessionPublicKeyClean = cleanPublicKey(sessionPublicKey);
+
+  const encryptedContent = await ethCrypto.encryptWithPublicKey(sessionPublicKeyClean, plaintext);
   const userEncryptedKey = await ethCrypto.encryptWithPublicKey(userPublicKeyClean, sessionKey);
   const roflEncryptedKey = await ethCrypto.encryptWithPublicKey(roflPublicKeyClean, sessionKey);
 
+  // Use the helper function to safely format the output for ethers.js.
   return {
-    encryptedContent: ethCrypto.cipher.stringify(encryptedContent),
-    userEncryptedKey: ethCrypto.cipher.stringify(userEncryptedKey),
-    roflEncryptedKey: ethCrypto.cipher.stringify(roflEncryptedKey),
+    encryptedContent: ensure0xPrefix(ethCrypto.cipher.stringify(encryptedContent)),
+    userEncryptedKey: ensure0xPrefix(ethCrypto.cipher.stringify(userEncryptedKey)),
+    roflEncryptedKey: ensure0xPrefix(ethCrypto.cipher.stringify(roflEncryptedKey)),
   };
 }
 
@@ -122,9 +166,10 @@ async function encryptPrompt(plaintext) {
  */
 async function decryptMessage(encryptedMessage) {
   const userPrivateKey = signer.privateKey;
-  // eth-crypto requires the cipher object, not a raw hex string.
-  const parsedUserKey = ethCrypto.cipher.parse(encryptedMessage.userEncryptedKey);
-  const parsedContent = ethCrypto.cipher.parse(encryptedMessage.encryptedContent);
+  // Use the helper to safely remove the "0x" prefix before parsing.
+  const parsedUserKey = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.userEncryptedKey));
+  const parsedContent = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.encryptedContent));
+
   const sessionKey = await ethCrypto.decryptWithPrivateKey(userPrivateKey, parsedUserKey);
   return await ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent);
 }
