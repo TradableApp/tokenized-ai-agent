@@ -1,5 +1,6 @@
 const { ethers, Contract, Signature } = require("ethers");
 const { wrapEthersSigner } = require("@oasisprotocol/sapphire-ethers-v6");
+const ethCrypto = require("eth-crypto");
 const inquirer = require("inquirer");
 const ora = require("ora");
 const chalk = require("chalk");
@@ -7,45 +8,60 @@ const { SiweMessage } = require("siwe");
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const dotenv = require("dotenv");
 
 // --- Configuration ---
-const baseEnvPath = path.resolve(__dirname, "../.env");
-const ENV_FILES = {
-  testnet: path.resolve(__dirname, "../.env.testnet"),
-  mainnet: path.resolve(__dirname, "../.env.mainnet"),
-  localnet: path.resolve(__dirname, "../.env.localnet"),
-};
-const RPC_URLS = {
-  testnet: "SAPPHIRE_TESTNET_RPC",
-  mainnet: "SAPPHIRE_MAINNET_RPC",
-  localnet: "http://localhost:8545",
+const envPath = path.resolve(__dirname, "../.env");
+const CHAINS = {
+  Sapphire: {
+    isSapphire: true,
+    networks: {
+      testnet: { envFile: "../.env.testnet", rpcEnvVar: "SAPPHIRE_TESTNET_RPC" },
+      mainnet: { envFile: "../.env.mainnet", rpcEnvVar: "SAPPHIRE_MAINNET_RPC" },
+      localnet: { envFile: "../.env.localnet", rpcEnvVar: "SAPPHIRE_LOCALNET_RPC" },
+    },
+  },
+  Base: {
+    isSapphire: false,
+    networks: {
+      testnet: { envFile: "../.env.base-testnet", rpcEnvVar: "BASE_SEPOLIA_TESTNET_RPC" },
+      mainnet: { envFile: "../.env.base-mainnet", rpcEnvVar: "BASE_MAINNET_RPC" },
+    },
+  },
 };
 const POLLING_INTERVAL_MS = 5000;
-// ---
 
 // --- Global State ---
-let confidentialSigner;
-let chatBotContract;
-let authInfo;
+let signer;
+let contract;
+let isSapphire;
 let networkName;
-// ---
+let roflPublicKey;
+let sapphireAuthToken; // Only used by the Sapphire workflow
+
+// --- Utility Functions ---
 
 /**
- * @description Loads the contract ABI from the project's artifacts directory.
- * @returns {{abi: object}} The contract's Application Binary Interface (ABI).
+ * @description Loads the contract's ABI from the artifacts directory.
+ * @param {string} contractName The name of the contract (e.g., 'EVMChatBot').
+ * @returns {{abi: object}} An object containing the contract's ABI.
  * @throws {Error} If the artifact JSON file cannot be found.
  */
-function getContractArtifacts() {
-  const contractPath = path.resolve(__dirname, "../artifacts/contracts/ChatBot.sol/ChatBot.json");
+function loadContractArtifact(contractName) {
+  const contractPath = path.resolve(
+    __dirname,
+    `../artifacts/contracts/${contractName}.sol/${contractName}.json`,
+  );
   if (!fs.existsSync(contractPath)) {
     throw new Error(
-      `Contract artifacts not found at: ${contractPath}. Please run 'npm run compile'.`,
+      `Contract artifacts for "${contractName}" not found. Please run 'npm run compile'.`,
     );
   }
   return JSON.parse(fs.readFileSync(contractPath, "utf-8"));
 }
 
 /**
+ * [SAPPHIRE ONLY]
  * @description Authenticates with the smart contract using Sign-In with Ethereum (SIWE).
  * This provides a session token required for subsequent contract interactions.
  * @param {number} chainId - The chain ID of the connected network.
@@ -55,8 +71,8 @@ function getContractArtifacts() {
 async function loginSiwe(chainId) {
   const spinner = ora("Authenticating with contract via Sign-In with Ethereum (SIWE)...").start();
   try {
-    const domain = await chatBotContract.domain();
-    const address = await confidentialSigner.getAddress();
+    const domain = await contract.domain();
+    const address = await signer.getAddress();
     const siweMessage = new SiweMessage({
       domain,
       address,
@@ -64,15 +80,53 @@ async function loginSiwe(chainId) {
       version: "1",
       chainId,
     }).toMessage();
-    const signatureString = await confidentialSigner.signMessage(siweMessage);
+    const signatureString = await signer.signMessage(siweMessage);
     const signature = Signature.from(signatureString);
-    const retrievedAuthInfo = await chatBotContract.login(siweMessage, signature);
+    const retrievedAuthToken = await contract.login(siweMessage, signature);
     spinner.succeed(chalk.green("Successfully authenticated with the contract."));
-    return retrievedAuthInfo;
+    return retrievedAuthToken;
   } catch (error) {
     spinner.fail(chalk.red("SIWE Authentication failed!"));
     throw error;
   }
+}
+
+/**
+ * [EVM ONLY]
+ * @description Encrypts a plaintext prompt for the user and the ROFL oracle.
+ * @param {string} plaintext - The user's prompt.
+ * @returns {Promise<object>} An object containing the three encrypted parts for the contract call.
+ */
+async function encryptPrompt(plaintext) {
+  const sessionKey = ethCrypto.createIdentity().privateKey;
+  const sessionPublicKey = ethCrypto.getPublicKeyByPrivateKey(sessionKey);
+  const userPublicKeyClean = signer.publicKey.slice(4); // Remove '0x04' prefix
+  const roflPublicKeyClean = roflPublicKey.slice(4); // Remove '0x04' prefix
+
+  const encryptedContent = await ethCrypto.encryptWithPublicKey(sessionPublicKey, plaintext);
+  const userEncryptedKey = await ethCrypto.encryptWithPublicKey(userPublicKeyClean, sessionKey);
+  const roflEncryptedKey = await ethCrypto.encryptWithPublicKey(roflPublicKeyClean, sessionKey);
+
+  return {
+    encryptedContent: ethCrypto.cipher.stringify(encryptedContent),
+    userEncryptedKey: ethCrypto.cipher.stringify(userEncryptedKey),
+    roflEncryptedKey: ethCrypto.cipher.stringify(roflEncryptedKey),
+  };
+}
+
+/**
+ * [EVM ONLY]
+ * @description Decrypts an EncryptedMessage or EncryptedAnswer struct.
+ * @param {object} encryptedMessage - The struct fetched from the contract.
+ * @returns {Promise<string>} The decrypted plaintext.
+ */
+async function decryptMessage(encryptedMessage) {
+  const userPrivateKey = signer.privateKey;
+  // eth-crypto requires the cipher object, not a raw hex string.
+  const parsedUserKey = ethCrypto.cipher.parse(encryptedMessage.userEncryptedKey);
+  const parsedContent = ethCrypto.cipher.parse(encryptedMessage.encryptedContent);
+  const sessionKey = await ethCrypto.decryptWithPrivateKey(userPrivateKey, parsedUserKey);
+  return await ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent);
 }
 
 /**
@@ -100,8 +154,8 @@ async function interruptibleSleep(ms, shouldStop) {
 async function waitForAnswer(promptId) {
   let userSkipped = false;
   const keypressHandler = (_, key) => {
-    if (key && key.name === "s") userSkipped = true;
-    if (key && key.ctrl && key.name === "c") process.exit();
+    if (key?.name === "s") userSkipped = true;
+    if (key?.ctrl && key?.name === "c") process.exit();
   };
 
   const spinner = ora(chalk.yellow(`Waiting for AI response... (Press 's' to skip)`)).start();
@@ -112,21 +166,29 @@ async function waitForAnswer(promptId) {
   process.stdin.resume();
 
   try {
-    while (true) {
-      if (userSkipped) break;
+    while (!userSkipped) {
+      const address = await signer.getAddress();
+      const rawAnswers = isSapphire
+        ? await contract.getAnswers(sapphireAuthToken, address)
+        : await contract.getAnswers(address);
 
-      const address = await confidentialSigner.getAddress();
-      const rawAnswers = await chatBotContract.getAnswers(authInfo, address);
-      const foundAnswer = rawAnswers.find((answer) => Number(answer.promptId) === promptId);
+      const answerStruct = rawAnswers.find((answer) => Number(answer.promptId) === promptId);
+      if (answerStruct) {
+        let cleanAnswer;
+        if (isSapphire) {
+          cleanAnswer = answerStruct.answer.replaceAll(/<think>.*<\/think>/gs, "").trim();
+        } else {
+          spinner.text = "Decrypting response...";
+          cleanAnswer = await decryptMessage(answerStruct.message);
+        }
 
-      if (foundAnswer) {
-        const cleanAnswer = foundAnswer.answer.replaceAll(/<think>.*<\/think>/gs, "").trim();
         spinner.succeed(chalk.green("AI response received!"));
         console.log(`   ${chalk.green.bold("Answer:")} ${chalk.green(cleanAnswer)}`);
+
         return;
       }
 
-      // Use the interruptible sleep to allow for a responsive skip.
+      // CORRECTED: Call the superior interruptibleSleep function.
       const wasSkipped = await interruptibleSleep(POLLING_INTERVAL_MS, () => userSkipped);
       if (wasSkipped) break;
     }
@@ -161,20 +223,30 @@ async function handleSendPrompt() {
   ]);
 
   const spinner = ora("Sending encrypted prompt to the contract...").start();
+
   try {
-    const tx = await chatBotContract.appendPrompt(prompt);
+    let tx;
+    if (isSapphire) {
+      tx = await contract.appendPrompt(prompt);
+    } else {
+      const { encryptedContent, userEncryptedKey, roflEncryptedKey } = await encryptPrompt(prompt);
+
+      tx = await contract.appendPrompt(encryptedContent, userEncryptedKey, roflEncryptedKey);
+    }
+
     spinner.text = "Waiting for transaction to be mined...";
+
     const receipt = await tx.wait();
 
-    // Determine the ID of the prompt we just sent by checking the new array length.
-    const address = await confidentialSigner.getAddress();
-    const currentPrompts = await chatBotContract.getPrompts(authInfo, address);
-    const newPromptId = currentPrompts.length - 1;
+    const promptsCount = isSapphire
+      ? await contract.getPromptsCount(sapphireAuthToken, signer.address)
+      : await contract.getPromptsCount(signer.address);
+    const newPromptId = promptsCount - 1n;
 
     spinner.succeed(chalk.green("Prompt sent successfully!"));
     console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
 
-    await waitForAnswer(newPromptId);
+    await waitForAnswer(Number(newPromptId));
   } catch (error) {
     spinner.fail(chalk.red("Failed to send prompt."));
     console.error(error.message);
@@ -187,10 +259,10 @@ async function handleSendPrompt() {
 async function handleCheckAnswers() {
   const spinner = ora("Fetching prompts and answers...").start();
   try {
-    const address = await confidentialSigner.getAddress();
-    const [prompts, rawAnswers] = await Promise.all([
-      chatBotContract.getPrompts(authInfo, address),
-      chatBotContract.getAnswers(authInfo, address),
+    const address = await signer.getAddress();
+    const [prompts, answers] = await Promise.all([
+      isSapphire ? contract.getPrompts(sapphireAuthToken, address) : contract.getPrompts(address),
+      isSapphire ? contract.getAnswers(sapphireAuthToken, address) : contract.getAnswers(address),
     ]);
 
     spinner.succeed(chalk.green("Data fetched successfully."));
@@ -201,17 +273,34 @@ async function handleCheckAnswers() {
       return;
     }
 
+    spinner.start("Decrypting conversation history...");
+    const plaintextPrompts = isSapphire ? prompts : await Promise.all(prompts.map(decryptMessage));
+
     // Use a Map to efficiently align answers with their prompts by ID.
     const answersMap = new Map();
-    rawAnswers.forEach((answer) => {
-      const cleanAnswer = answer.answer.replaceAll(/<think>.*<\/think>/gs, "").trim();
-      answersMap.set(Number(answer.promptId), cleanAnswer);
-    });
 
-    prompts.forEach((prompt, index) => {
+    if (isSapphire) {
+      answers.forEach((a) =>
+        answersMap.set(Number(a.promptId), a.answer.replaceAll(/<think>.*<\/think>/gs, "").trim()),
+      );
+    } else {
+      const decryptedAnswers = await Promise.all(
+        answers.map(async (a) => ({
+          promptId: Number(a.promptId),
+          answer: await decryptMessage(a.message),
+        })),
+      );
+
+      decryptedAnswers.forEach((a) => answersMap.set(a.promptId, a.answer));
+    }
+
+    spinner.stop();
+
+    plaintextPrompts.forEach((prompt, index) => {
       const answer = answersMap.get(index);
       console.log(`\n #${index + 1}:`);
       console.log(`   ${chalk.bold("Prompt:")} ${prompt}`);
+
       if (answer) {
         console.log(`   ${chalk.green.bold("Answer:")} ${chalk.green(answer)}`);
       } else {
@@ -250,7 +339,7 @@ async function handleClearPrompts() {
   const spinner = ora("Sending transaction to clear your data...").start();
   try {
     // Manually set a high gas limit to overcome potential estimation issues.
-    const tx = await chatBotContract.clearPrompt({ gasLimit: 10_000_000 });
+    const tx = await contract.clearPrompt({ gasLimit: 10_000_000 });
     spinner.text = "Waiting for transaction to be mined...";
     const receipt = await tx.wait();
     spinner.succeed(chalk.green("Your prompts and answers have been cleared."));
@@ -267,11 +356,18 @@ async function handleClearPrompts() {
 async function handleCheckBalance() {
   const spinner = ora("Fetching wallet balance...").start();
   try {
-    const address = await confidentialSigner.getAddress();
-    const balanceWei = await confidentialSigner.provider.getBalance(address);
+    const address = await signer.getAddress();
+    const balanceWei = await signer.provider.getBalance(address);
     const balance = ethers.formatEther(balanceWei);
+
+    // This logic was already correctly implemented in main(), we bring it here for consistency.
+    const chainName = Object.keys(CHAINS).find((cn) => CHAINS[cn].isSapphire === isSapphire);
+    const CURRENCY_SYMBOLS = {
+      Sapphire: { mainnet: "ROSE", default: "TEST" },
+      Base: { default: "ETH" },
+    };
     const currency =
-      networkName === "localnet" ? "TEST" : networkName === "testnet" ? "TEST" : "ROSE";
+      CURRENCY_SYMBOLS[chainName]?.[networkName] || CURRENCY_SYMBOLS[chainName]?.default || "TOKEN";
 
     spinner.succeed(chalk.green("Balance updated:"));
     console.log(`   - Wallet: ${chalk.yellow(address)}`);
@@ -329,94 +425,158 @@ async function mainMenu() {
  * contract instantiation, and kicks off the main menu.
  */
 async function main() {
-  console.log("\n\nWelcome to the ChatBot CLI!");
-  console.log("===========================");
-  console.log("");
+  console.log("\nWelcome to the Tradable AI Agent CLI!");
+  console.log("=====================================");
 
   try {
     // Load base .env file for shared configuration like RPC URLs.
-    if (fs.existsSync(baseEnvPath)) {
-      require("dotenv").config({ path: baseEnvPath, quiet: true });
+    if (fs.existsSync(envPath)) {
+      require("dotenv").config({ path: envPath, quiet: true });
     }
 
-    const networkChoice = await inquirer.prompt([
+    // --- Step 1: Network Selection ---
+    const { chainName } = await inquirer.prompt([
       {
         type: "list",
-        name: "networkName",
-        message: "Choose a network to connect to:",
-        choices: Object.keys(ENV_FILES),
+        name: "chainName",
+        message: "Choose a chain:",
+        choices: Object.keys(CHAINS),
       },
     ]);
-    networkName = networkChoice.networkName;
+    const selectedChain = CHAINS[chainName];
+    isSapphire = selectedChain.isSapphire;
 
-    const envFilePath = ENV_FILES[networkName];
+    const { networkChoice } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "networkChoice",
+        message: `Choose a network for ${chainName}:`,
+        choices: Object.keys(selectedChain.networks),
+      },
+    ]);
+    networkName = networkChoice;
+    const selectedNetwork = selectedChain.networks[networkName];
+
+    // --- Step 2: Environment and Wallet Setup ---
+    const envFilePath = path.resolve(__dirname, selectedNetwork.envFile);
     if (!fs.existsSync(envFilePath)) {
       throw new Error(
         `Environment file not found at: ${envFilePath}\nPlease create it before proceeding.`,
       );
     }
-    // Load environment-specific .env file to override with secrets.
-    require("dotenv").config({ path: envFilePath, override: true, quiet: true });
-    console.log(`> Loaded configuration for: ${networkName}`);
+    // Load the specific environment file, which will override any base values.
+    dotenv.config({ path: envFilePath, override: true, quiet: true });
+    console.log(`> Loaded configuration for: ${chalk.bold(networkName)}`);
 
     console.log("\n--- Wallet Login ---");
-    const privateKey = process.env.USER_PRIVATE_KEY;
-    if (!privateKey)
-      throw new Error(`'USER_PRIVATE_KEY' not found in ${path.basename(envFilePath)}.`);
-
-    const { confirmed } = await inquirer.prompt([
-      {
-        type: "confirm",
-        name: "confirmed",
-        message: `Login using the 'USER_PRIVATE_KEY' from your ${path.basename(envFilePath)} file?`,
-        default: true,
-      },
-    ]);
-    if (!confirmed) {
-      console.log("\nLogin cancelled by user.");
-      return;
+    let privateKey = process.env.USER_PRIVATE_KEY;
+    if (!privateKey) {
+      console.log(chalk.yellow(`'USER_PRIVATE_KEY' not found in ${path.basename(envFilePath)}.`));
+      ({ privateKey } = await inquirer.prompt([
+        {
+          type: "password",
+          name: "privateKey",
+          message: "Please enter your private key to continue:",
+        },
+      ]));
+    } else {
+      const { confirmed } = await inquirer.prompt([
+        {
+          type: "confirm",
+          name: "confirmed",
+          message: `Login using the 'USER_PRIVATE_KEY' from your ${path.basename(envFilePath)} file?`,
+          default: true,
+        },
+      ]);
+      if (!confirmed) {
+        console.log("\nLogin cancelled by user.");
+        return;
+      }
     }
 
-    const rpcUrl =
-      networkName === "localnet" ? RPC_URLS.localnet : process.env[RPC_URLS[networkName]];
-    if (!rpcUrl) throw new Error(`RPC URL variable '${RPC_URLS[networkName]}' not found.`);
+    if (!privateKey) {
+      throw new Error("A private key is required to proceed.");
+    }
+
+    // --- Step 3: Provider, Signer, and Contract Initialization ---
+    let rpcUrl = process.env[selectedNetwork.rpcEnvVar];
+    if (!rpcUrl) {
+      console.log(chalk.yellow(`RPC URL for '${networkName}' not found in .env file.`));
+      ({ rpcUrl } = await inquirer.prompt([
+        { type: "input", name: "rpcUrl", message: `Please enter the RPC URL for ${networkName}:` },
+      ]));
+    }
+
+    if (!rpcUrl) {
+      throw new Error("An RPC URL is required to connect.");
+    }
 
     const spinner = ora(`Connecting to ${networkName}...`).start();
     const provider = new ethers.JsonRpcProvider(rpcUrl);
-    const signer = new ethers.Wallet(privateKey, provider);
-    confidentialSigner = wrapEthersSigner(signer);
+    const baseSigner = new ethers.Wallet(privateKey, provider);
+    signer = isSapphire ? wrapEthersSigner(baseSigner) : baseSigner;
 
     const { chainId } = await provider.getNetwork();
+    const contractName = isSapphire ? "SapphireChatBot" : "EVMChatBot";
 
-    const { abi } = getContractArtifacts();
+    const { abi } = loadContractArtifact(contractName);
+
     let contractAddress = process.env.ORACLE_CONTRACT_ADDRESS;
     if (!contractAddress) {
       spinner.stop();
+      console.log(chalk.yellow("Contract address not found in .env file."));
       ({ contractAddress } = await inquirer.prompt([
-        {
-          type: "input",
-          name: "contractAddress",
-          message: "Contract address not found in .env file. Please enter it here:",
-        },
+        { type: "input", name: "contractAddress", message: "Please enter the contract address:" },
       ]));
     }
-    if (!contractAddress) throw new Error("Contract address is required.");
 
-    chatBotContract = new Contract(contractAddress, abi, confidentialSigner);
+    if (!contractAddress) {
+      throw new Error("A contract address is required.");
+    }
 
-    const address = await confidentialSigner.getAddress();
-    const balanceWei = await confidentialSigner.provider.getBalance(address);
+    contract = new Contract(contractAddress, abi, signer);
+
+    // --- Step 4: Display Connection Info ---
+    const address = signer.address;
+    const balanceWei = await provider.getBalance(address);
     const balance = ethers.formatEther(balanceWei);
-    const currency =
-      networkName === "localnet" ? "TEST" : networkName === "testnet" ? "TEST" : "ROSE";
 
-    spinner.succeed(chalk.green(`Connected successfully!`));
+    // Correctly determine the native currency symbol based on the selected chain.
+    const CURRENCY_SYMBOLS = {
+      Sapphire: { mainnet: "ROSE", default: "TEST" },
+      Base: { default: "ETH" },
+    };
+    const currency =
+      CURRENCY_SYMBOLS[chainName]?.[networkName] || CURRENCY_SYMBOLS[chainName]?.default || "TOKEN";
+
+    spinner.succeed(chalk.green("Connected successfully!"));
     console.log(`   - Network: ${chalk.bold(networkName)} (Chain ID: ${chainId})`);
     console.log(`   - Wallet Address: ${chalk.yellow(address)}`);
-    console.log(`   - Contract Address: ${chalk.cyan(contractAddress)}`);
+    console.log(`   - Contract Address: ${chalk.cyan(contract.target)}`);
     console.log(`   - Balance: ${chalk.bold(balance)} ${currency}`);
 
-    authInfo = await loginSiwe(Number(chainId));
+    // --- Step 5: Environment-Specific Login/Setup ---
+    if (isSapphire) {
+      sapphireAuthToken = await loginSiwe(Number(chainId));
+    } else {
+      roflPublicKey = process.env.PUBLIC_KEY;
+      if (!roflPublicKey) {
+        console.log(chalk.yellow("PUBLIC_KEY for ROFL worker not found in your .env file."));
+        ({ roflPublicKey } = await inquirer.prompt([
+          {
+            type: "input",
+            name: "roflPublicKey",
+            message: "Please enter the ROFL worker's public key:",
+          },
+        ]));
+      }
+
+      if (!roflPublicKey) {
+        throw new Error("ROFL worker's public key is required for encryption.");
+      }
+    }
+
+    // --- Step 6: Start the Main Application Loop ---
     await mainMenu();
   } catch (error) {
     // Gracefully handle Ctrl+C interruptions from inquirer.

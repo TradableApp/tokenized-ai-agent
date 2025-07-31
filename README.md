@@ -211,8 +211,12 @@ npx hardhat console --network sapphire-testnet
 ```javascript
 const { Wallet } = require("ethers");
 const signer = new Wallet(process.env.PRIVATE_KEY, ethers.provider);
-const ChatBot = await ethers.getContractAt("ChatBot", process.env.ORACLE_CONTRACT_ADDRESS, signer);
-await ChatBot.oracle(); // Should return your wallet address
+const SapphireChatBot = await ethers.getContractAt(
+  "SapphireChatBot",
+  process.env.ORACLE_CONTRACT_ADDRESS,
+  signer,
+);
+await SapphireChatBot.oracle(); // Should return your wallet address
 ```
 
 #### f. Create the ROFL App

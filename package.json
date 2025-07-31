@@ -70,21 +70,22 @@
     "@oasisprotocol/sapphire-contracts": "^0.2.14",
     "@oasisprotocol/sapphire-ethers-v6": "^6.0.1",
     "@openzeppelin/contracts": "^5.3.0",
-    "@openzeppelin/contracts-upgradeable": "^5.3.0"
+    "@openzeppelin/contracts-upgradeable": "^5.3.0",
+    "chalk": "^4.1.2",
+    "dotenv": "^17.0.1",
+    "eth-crypto": "^2.6.0",
+    "inquirer": "^8.2.6",
+    "ora": "^5.4.1",
+    "siwe": "^3.0.0"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^6.0.0",
     "@openzeppelin/hardhat-upgrades": "^3.9.1",
     "chai": "^4.2.0",
-    "chalk": "^4.1.2",
-    "dotenv": "^17.0.1",
     "hardhat": "^2.25.0",
     "hardhat-gas-reporter": "^2.3.0",
-    "inquirer": "^8.2.6",
-    "ora": "^5.4.1",
     "prettier": "^3.6.2",
     "prettier-plugin-solidity": "^2.0.0",
-    "siwe": "^3.0.0",
     "solhint": "^6.0.0",
     "solidity-coverage": "^0.8.16"
   }

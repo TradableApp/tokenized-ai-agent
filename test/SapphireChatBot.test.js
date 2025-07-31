@@ -1,16 +1,16 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("ChatBot", function () {
-  let ChatBot, chatBot;
+describe("SapphireChatBot", function () {
+  let SapphireChatBot, chatBot;
   let deployer, user, oracle;
   const domain = "example.com";
   const roflAppID = ethers.zeroPadBytes("0x", 21);
 
   beforeEach(async function () {
     [deployer, user, oracle, unauthorizedUser] = await ethers.getSigners();
-    ChatBot = await ethers.getContractFactory("ChatBot");
-    chatBot = await ChatBot.deploy(domain, roflAppID, oracle.address);
+    SapphireChatBot = await ethers.getContractFactory("SapphireChatBot");
+    chatBot = await SapphireChatBot.deploy(domain, roflAppID, oracle.address);
     await chatBot.waitForDeployment();
   });
 

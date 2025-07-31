@@ -23,8 +23,12 @@ async function main() {
   //    Any transaction sent with this `confidentialSigner` will be automatically encrypted.
   const confidentialSigner = wrapEthersSigner(userSigner);
 
-  // 3. Get the ChatBot contract instance, attached to our confidential signer.
-  const chatBot = await hre.ethers.getContractAt("ChatBot", contractAddress, confidentialSigner);
+  // 3. Get the SapphireChatBot contract instance, attached to our confidential signer.
+  const chatBot = await hre.ethers.getContractAt(
+    "SapphireChatBot",
+    contractAddress,
+    confidentialSigner,
+  );
 
   console.log(`Sending prompt: "${prompt}"`);
   console.log(`To contract: ${contractAddress}`);
