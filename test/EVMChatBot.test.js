@@ -1,4 +1,3 @@
-// test/EVMChatBot.test.js
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
@@ -33,13 +32,17 @@ describe("EVMChatBot", function () {
   });
 
   describe("Prompts", function () {
-    it("should allow a user to append a prompt with encrypted data", async function () {
+    it("should allow a user to append a prompt and emit an event with the correct promptId", async function () {
       const chatBotWithUser = chatBot.connect(user);
-      await chatBotWithUser.appendPrompt(mockEncryptedContent, mockUserKey, mockRoflKey);
+      // The first prompt should have promptId 0.
+      await expect(chatBotWithUser.appendPrompt(mockEncryptedContent, mockUserKey, mockRoflKey))
+        .to.emit(chatBot, "PromptSubmitted")
+        .withArgs(user.address, 0);
 
       const prompts = await chatBotWithUser.getPrompts(user.address);
       expect(prompts.length).to.equal(1);
-      expect(prompts[0].encryptedContent).to.equal(ethers.hexlify(mockEncryptedContent));
+      expect(prompts[0].promptId).to.equal(0);
+      expect(prompts[0].message.encryptedContent).to.equal(ethers.hexlify(mockEncryptedContent));
     });
 
     it("should allow a user to clear their prompts and answers", async function () {
@@ -56,20 +59,25 @@ describe("EVMChatBot", function () {
 
   describe("Answers", function () {
     beforeEach(async function () {
-      // A prompt needs to exist before an answer can be submitted.
+      // Create prompt with ID 0.
       await chatBot.connect(user).appendPrompt(mockEncryptedContent, mockUserKey, mockRoflKey);
     });
 
     context("When called by the authorized oracle", function () {
-      it("should successfully submit an answer", async function () {
+      it("should successfully submit an answer and emit an event", async function () {
         const chatBotWithOracle = chatBot.connect(oracle);
-        await chatBotWithOracle.submitAnswer(
-          mockAnswerContent,
-          mockUserKey,
-          mockRoflKey,
-          0,
-          user.address,
-        );
+        await expect(
+          chatBotWithOracle.submitAnswer(
+            mockAnswerContent,
+            mockUserKey,
+            mockRoflKey,
+            0,
+            user.address,
+          ),
+        )
+          .to.emit(chatBot, "AnswerSubmitted")
+          .withArgs(user.address, 0);
+
         const answers = await chatBot.connect(user).getAnswers(user.address);
         expect(answers.length).to.equal(1);
         expect(answers[0].promptId).to.equal(0);
@@ -96,7 +104,7 @@ describe("EVMChatBot", function () {
         ).to.be.revertedWithCustomError(chatBot, "PromptAlreadyAnswered");
       });
 
-      it("should revert if the promptId is invalid (out of bounds)", async function () {
+      it("should revert if the promptId is invalid (does not exist)", async function () {
         const chatBotWithOracle = chatBot.connect(oracle);
         await expect(
           chatBotWithOracle.submitAnswer(
@@ -135,6 +143,8 @@ describe("EVMChatBot", function () {
       it("should return the correct data", async function () {
         const prompts = await chatBot.connect(user).getPrompts(user.address);
         expect(prompts.length).to.equal(1);
+        expect(prompts[0].message.encryptedContent).to.equal(ethers.hexlify(mockEncryptedContent));
+
         const count = await chatBot.connect(user).getPromptsCount(user.address);
         expect(count).to.equal(1);
       });
@@ -144,6 +154,7 @@ describe("EVMChatBot", function () {
       it("should return the correct data", async function () {
         const prompts = await chatBot.connect(oracle).getPrompts(user.address);
         expect(prompts.length).to.equal(1);
+        expect(prompts[0].message.encryptedContent).to.equal(ethers.hexlify(mockEncryptedContent));
       });
     });
 

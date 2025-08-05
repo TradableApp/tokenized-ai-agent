@@ -4,20 +4,27 @@ pragma solidity ^0.8.21;
 import { Subcall } from "@oasisprotocol/sapphire-contracts/contracts/Subcall.sol";
 import { SiweAuth } from "@oasisprotocol/sapphire-contracts/contracts/auth/SiweAuth.sol";
 
+struct Prompt {
+  uint256 promptId;
+  string prompt;
+}
+
 struct Answer {
   uint256 promptId;
   string answer;
 }
 
 contract SapphireChatBot is SiweAuth {
-  mapping(address => string[]) private _prompts;
+  mapping(address => Prompt[]) private _prompts;
   mapping(address => Answer[]) private _answers;
+
+  uint256 private _promptIdCounter;
 
   address public oracle; // Oracle address running inside TEE.
   bytes21 public roflAppID; // Allowed app ID within TEE for managing allowed oracle address.
 
-  event PromptSubmitted(address indexed sender);
-  event AnswerSubmitted(address indexed sender);
+  event PromptSubmitted(address indexed sender, uint256 promptId);
+  event AnswerSubmitted(address indexed sender, uint256 promptId);
 
   error InvalidPromptId();
   error PromptAlreadyAnswered();
@@ -66,8 +73,9 @@ contract SapphireChatBot is SiweAuth {
   // Append the new prompt and request answer.
   // Called by the user.
   function appendPrompt(string memory prompt) external {
-    _prompts[msg.sender].push(prompt);
-    emit PromptSubmitted(msg.sender);
+    uint256 promptId = _promptIdCounter++;
+    _prompts[msg.sender].push(Prompt({ promptId: promptId, prompt: prompt }));
+    emit PromptSubmitted(msg.sender, promptId);
   }
 
   // Clears the conversation.
@@ -89,7 +97,7 @@ contract SapphireChatBot is SiweAuth {
   function getPrompts(
     bytes memory authToken,
     address addr
-  ) external view onlyUserOrOracle(authToken, addr) returns (string[] memory) {
+  ) external view onlyUserOrOracle(authToken, addr) returns (Prompt[] memory) {
     return _prompts[addr];
   }
 
@@ -112,15 +120,27 @@ contract SapphireChatBot is SiweAuth {
   // Submits the answer to the prompt for a given user address.
   // Called by the oracle within TEE.
   function submitAnswer(string memory answer, uint256 promptId, address addr) external onlyOracle {
-    if (promptId >= _prompts[addr].length) {
+    // Check if a prompt with this ID exists for this user.
+    bool promptExists = false;
+    for (uint256 i = 0; i < _prompts[addr].length; i++) {
+      if (_prompts[addr][i].promptId == promptId) {
+        promptExists = true;
+        break;
+      }
+    }
+    if (!promptExists) {
       revert InvalidPromptId();
     }
-    if (
-      _answers[addr].length > 0 && _answers[addr][_answers[addr].length - 1].promptId >= promptId
-    ) {
-      revert PromptAlreadyAnswered();
+
+    // Check if this prompt has already been answered.
+    for (uint256 i = 0; i < _answers[addr].length; i++) {
+      if (_answers[addr][i].promptId == promptId) {
+        revert PromptAlreadyAnswered();
+      }
     }
+
     _answers[addr].push(Answer({ promptId: promptId, answer: answer }));
-    emit AnswerSubmitted(addr);
+
+    emit AnswerSubmitted(addr, promptId);
   }
 }

@@ -7,21 +7,28 @@ struct EncryptedMessage {
   bytes roflEncryptedKey;
 }
 
+struct EncryptedPrompt {
+  uint256 promptId;
+  EncryptedMessage message;
+}
+
 struct EncryptedAnswer {
   uint256 promptId;
   EncryptedMessage message;
 }
 
 contract EVMChatBot {
-  mapping(address => EncryptedMessage[]) private _prompts;
+  mapping(address => EncryptedPrompt[]) private _prompts;
   mapping(address => EncryptedAnswer[]) private _answers;
+
+  uint256 private _promptIdCounter;
 
   address public oracle; // Oracle address running inside TEE.
   bytes21 public roflAppID; // Allowed app ID within TEE for managing allowed oracle address.
   string public domain; // The domain used for off-chain SIWE validation.
 
-  event PromptSubmitted(address indexed sender);
-  event AnswerSubmitted(address indexed sender);
+  event PromptSubmitted(address indexed sender, uint256 promptId);
+  event AnswerSubmitted(address indexed sender, uint256 promptId);
 
   error InvalidPromptId();
   error PromptAlreadyAnswered();
@@ -73,14 +80,16 @@ contract EVMChatBot {
     bytes calldata userEncryptedKey,
     bytes calldata roflEncryptedKey
   ) external {
-    _prompts[msg.sender].push(
-      EncryptedMessage({
-        encryptedContent: encryptedContent,
-        userEncryptedKey: userEncryptedKey,
-        roflEncryptedKey: roflEncryptedKey
-      })
-    );
-    emit PromptSubmitted(msg.sender);
+    uint256 promptId = _promptIdCounter++;
+    EncryptedMessage memory promptMessage = EncryptedMessage({
+      encryptedContent: encryptedContent,
+      userEncryptedKey: userEncryptedKey,
+      roflEncryptedKey: roflEncryptedKey
+    });
+
+    _prompts[msg.sender].push(EncryptedPrompt({ promptId: promptId, message: promptMessage }));
+
+    emit PromptSubmitted(msg.sender, promptId);
   }
 
   // Clears the conversation.
@@ -98,7 +107,7 @@ contract EVMChatBot {
   // Called by the user in the frontend and by the oracle to generate the answer.
   function getPrompts(
     address addr
-  ) external view onlyUserOrOracle(addr) returns (EncryptedMessage[] memory) {
+  ) external view onlyUserOrOracle(addr) returns (EncryptedPrompt[] memory) {
     return _prompts[addr];
   }
 
@@ -126,13 +135,23 @@ contract EVMChatBot {
     uint256 promptId,
     address addr
   ) external onlyOracle {
-    if (promptId >= _prompts[addr].length) {
+    // Check if a prompt with this ID exists for this user.
+    bool promptExists = false;
+    for (uint256 i = 0; i < _prompts[addr].length; i++) {
+      if (_prompts[addr][i].promptId == promptId) {
+        promptExists = true;
+        break;
+      }
+    }
+    if (!promptExists) {
       revert InvalidPromptId();
     }
-    if (
-      _answers[addr].length > 0 && _answers[addr][_answers[addr].length - 1].promptId >= promptId
-    ) {
-      revert PromptAlreadyAnswered();
+
+    // Check if this prompt has already been answered.
+    for (uint256 i = 0; i < _answers[addr].length; i++) {
+      if (_answers[addr][i].promptId == promptId) {
+        revert PromptAlreadyAnswered();
+      }
     }
 
     EncryptedMessage memory answerMessage = EncryptedMessage({
@@ -140,7 +159,9 @@ contract EVMChatBot {
       userEncryptedKey: userEncryptedKey,
       roflEncryptedKey: roflEncryptedKey
     });
+
     _answers[addr].push(EncryptedAnswer({ promptId: promptId, message: answerMessage }));
-    emit AnswerSubmitted(addr);
+
+    emit AnswerSubmitted(addr, promptId);
   }
 }

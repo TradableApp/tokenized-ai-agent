@@ -1,5 +1,4 @@
 const { ethers, Contract, Signature } = require("ethers");
-
 const { wrapEthersSigner } = require("@oasisprotocol/sapphire-ethers-v6");
 const ethCrypto = require("eth-crypto");
 const inquirer = require("inquirer");
@@ -231,12 +230,10 @@ async function waitForAnswer(promptId) {
         return;
       }
 
-      // CORRECTED: Call the superior interruptibleSleep function.
       const wasSkipped = await interruptibleSleep(POLLING_INTERVAL_MS, () => userSkipped);
       if (wasSkipped) break;
     }
   } finally {
-    // Critical cleanup: always restore the terminal to its normal state.
     process.stdin.removeListener("keypress", keypressHandler);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.pause();
@@ -281,15 +278,19 @@ async function handleSendPrompt() {
 
     const receipt = await tx.wait();
 
-    const promptsCount = isSapphire
-      ? await contract.getPromptsCount(sapphireAuthToken, signer.address)
-      : await contract.getPromptsCount(signer.address);
-    const newPromptId = promptsCount - 1n;
+    // Find the PromptSubmitted event in the transaction logs to get the new promptId.
+    const event = receipt.logs.find((log) => log.eventName === "PromptSubmitted");
+
+    if (!event) {
+      throw new Error("Could not find PromptSubmitted event in transaction receipt.");
+    }
+
+    const newPromptId = Number(event.args.promptId);
 
     spinner.succeed(chalk.green("Prompt sent successfully!"));
     console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
 
-    await waitForAnswer(Number(newPromptId));
+    await waitForAnswer(newPromptId);
   } catch (error) {
     spinner.fail(chalk.red("Failed to send prompt."));
     console.error(error.message);
@@ -317,7 +318,15 @@ async function handleCheckAnswers() {
     }
 
     spinner.start("Decrypting conversation history...");
-    const plaintextPrompts = isSapphire ? prompts : await Promise.all(prompts.map(decryptMessage));
+    // The prompts array now contains structs with { promptId, message/prompt }.
+    const plaintextPrompts = isSapphire
+      ? prompts.map((p) => ({ promptId: Number(p.promptId), prompt: p.prompt }))
+      : await Promise.all(
+          prompts.map(async (p) => ({
+            promptId: Number(p.promptId),
+            prompt: await decryptMessage(p.message),
+          })),
+        );
 
     // Use a Map to efficiently align answers with their prompts by ID.
     const answersMap = new Map();
@@ -339,10 +348,11 @@ async function handleCheckAnswers() {
 
     spinner.stop();
 
-    plaintextPrompts.forEach((prompt, index) => {
-      const answer = answersMap.get(index);
-      console.log(`\n #${index + 1}:`);
-      console.log(`   ${chalk.bold("Prompt:")} ${prompt}`);
+    // Iterate through the processed prompts to display them in order.
+    plaintextPrompts.forEach((p) => {
+      const answer = answersMap.get(p.promptId);
+      console.log(`\n #${p.promptId}:`);
+      console.log(`   ${chalk.bold("Prompt:")} ${p.prompt}`);
 
       if (answer) {
         console.log(`   ${chalk.green.bold("Answer:")} ${chalk.green(answer)}`);
@@ -472,12 +482,10 @@ async function main() {
   console.log("=====================================");
 
   try {
-    // Load base .env file for shared configuration like RPC URLs.
     if (fs.existsSync(envPath)) {
-      require("dotenv").config({ path: envPath, quiet: true });
+      dotenv.config({ path: envPath, quiet: true });
     }
 
-    // --- Step 1: Network Selection ---
     const { chainName } = await inquirer.prompt([
       {
         type: "list",
@@ -500,18 +508,18 @@ async function main() {
     networkName = networkChoice;
     const selectedNetwork = selectedChain.networks[networkName];
 
-    // --- Step 2: Environment and Wallet Setup ---
     const envFilePath = path.resolve(__dirname, selectedNetwork.envFile);
     if (!fs.existsSync(envFilePath)) {
       throw new Error(
         `Environment file not found at: ${envFilePath}\nPlease create it before proceeding.`,
       );
     }
+
     // Load the specific environment file, which will override any base values.
     dotenv.config({ path: envFilePath, override: true, quiet: true });
     console.log(`> Loaded configuration for: ${chalk.bold(networkName)}`);
-
     console.log("\n--- Wallet Login ---");
+
     let privateKey = process.env.USER_PRIVATE_KEY;
     if (!privateKey) {
       console.log(chalk.yellow(`'USER_PRIVATE_KEY' not found in ${path.basename(envFilePath)}.`));
@@ -541,12 +549,15 @@ async function main() {
       throw new Error("A private key is required to proceed.");
     }
 
-    // --- Step 3: Provider, Signer, and Contract Initialization ---
     let rpcUrl = process.env[selectedNetwork.rpcEnvVar];
     if (!rpcUrl) {
       console.log(chalk.yellow(`RPC URL for '${networkName}' not found in .env file.`));
       ({ rpcUrl } = await inquirer.prompt([
-        { type: "input", name: "rpcUrl", message: `Please enter the RPC URL for ${networkName}:` },
+        {
+          type: "input",
+          name: "rpcUrl",
+          message: `Please enter the RPC URL for ${networkName}:`,
+        },
       ]));
     }
 
@@ -569,7 +580,11 @@ async function main() {
       spinner.stop();
       console.log(chalk.yellow("Contract address not found in .env file."));
       ({ contractAddress } = await inquirer.prompt([
-        { type: "input", name: "contractAddress", message: "Please enter the contract address:" },
+        {
+          type: "input",
+          name: "contractAddress",
+          message: "Please enter the contract address:",
+        },
       ]));
     }
 
@@ -579,7 +594,6 @@ async function main() {
 
     contract = new Contract(contractAddress, abi, signer);
 
-    // --- Step 4: Display Connection Info ---
     const address = signer.address;
     const balanceWei = await provider.getBalance(address);
     const balance = ethers.formatEther(balanceWei);
@@ -598,7 +612,6 @@ async function main() {
     console.log(`   - Contract Address: ${chalk.cyan(contract.target)}`);
     console.log(`   - Balance: ${chalk.bold(balance)} ${currency}`);
 
-    // --- Step 5: Environment-Specific Login/Setup ---
     if (isSapphire) {
       sapphireAuthToken = await loginSiwe(Number(chainId));
     } else {
@@ -619,7 +632,6 @@ async function main() {
       }
     }
 
-    // --- Step 6: Start the Main Application Loop ---
     await mainMenu();
   } catch (error) {
     // Gracefully handle Ctrl+C interruptions from inquirer.

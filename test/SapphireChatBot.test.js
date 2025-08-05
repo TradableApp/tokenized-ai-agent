@@ -28,13 +28,16 @@ describe("SapphireChatBot", function () {
   });
 
   describe("Prompts", function () {
-    it("should allow a user to append a prompt", async function () {
+    it("should allow a user to append a prompt and emit an event with the correct promptId", async function () {
       const chatBotWithUser = chatBot.connect(user);
-      await chatBotWithUser.appendPrompt("Hello");
+      await expect(chatBotWithUser.appendPrompt("Hello"))
+        .to.emit(chatBot, "PromptSubmitted")
+        .withArgs(user.address, 0);
 
       const prompts = await chatBotWithUser.getPrompts("0x", user.address);
       expect(prompts.length).to.equal(1);
-      expect(prompts[0]).to.equal("Hello");
+      expect(prompts[0].promptId).to.equal(0);
+      expect(prompts[0].prompt).to.equal("Hello");
     });
 
     it("should allow a user to clear their prompts and answers", async function () {
@@ -51,14 +54,16 @@ describe("SapphireChatBot", function () {
 
   describe("Answers", function () {
     beforeEach(async function () {
-      // A prompt needs to exist before an answer can be submitted.
+      // Create prompt with ID 0.
       await chatBot.connect(user).appendPrompt("Hello");
     });
 
     context("When called by the authorized oracle", function () {
-      it("should successfully submit an answer", async function () {
+      it("should successfully submit an answer and emit an event", async function () {
         const chatBotWithOracle = chatBot.connect(oracle);
-        await chatBotWithOracle.submitAnswer("Test answer", 0, user.address);
+        await expect(chatBotWithOracle.submitAnswer("Test answer", 0, user.address))
+          .to.emit(chatBot, "AnswerSubmitted")
+          .withArgs(user.address, 0);
 
         const answers = await chatBot.connect(user).getAnswers("0x", user.address);
         expect(answers.length).to.equal(1);
@@ -75,7 +80,7 @@ describe("SapphireChatBot", function () {
         ).to.be.revertedWithCustomError(chatBot, "PromptAlreadyAnswered");
       });
 
-      it("should revert if the promptId is invalid (out of bounds)", async function () {
+      it("should revert if the promptId is invalid (does not exist)", async function () {
         const chatBotWithOracle = chatBot.connect(oracle);
         await expect(
           chatBotWithOracle.submitAnswer("Answer to non-existent prompt", 1, user.address),
@@ -102,7 +107,7 @@ describe("SapphireChatBot", function () {
       it("should return the correct data", async function () {
         const prompts = await chatBot.connect(user).getPrompts("0x", user.address);
         expect(prompts.length).to.equal(1);
-        expect(prompts[0]).to.equal("Prompt 1");
+        expect(prompts[0].prompt).to.equal("Prompt 1");
 
         const count = await chatBot.connect(user).getPromptsCount("0x", user.address);
         expect(count).to.equal(1);
@@ -113,6 +118,7 @@ describe("SapphireChatBot", function () {
       it("should return the correct data", async function () {
         const prompts = await chatBot.connect(oracle).getPrompts("0x", user.address);
         expect(prompts.length).to.equal(1);
+        expect(prompts[0].prompt).to.equal("Prompt 1");
       });
     });
 

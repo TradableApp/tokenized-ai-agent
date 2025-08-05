@@ -87,6 +87,7 @@ async function setOracleAddress() {
     throw err; // Throw to prevent the oracle from running in a bad state.
   }
 }
+
 /**
  * Performs a SIWE login against the Sapphire contract to receive an encrypted authentication token.
  * This token is used to authenticate view calls, as `msg.sender` is not reliable for those on Sapphire.
@@ -138,7 +139,7 @@ async function loginToContract() {
  * Retrieve prompts from the contract for the given address.
  * Handles both Sapphire (with authToken) and public EVM (without authToken) workflows.
  * @param {string} address - The address to retrieve prompts for.
- * @returns {Promise<Array>} An array of prompts (either string[] or EncryptedMessage[]).
+ * @returns {Promise<Array>} An array of prompts (either Prompt[] or EncryptedPrompt[]).
  */
 async function retrievePrompts(address) {
   try {
@@ -286,8 +287,7 @@ async function queryAIModel(prompts, userAddress) {
 }
 
 /**
- * [EVM ONLY]
- * @description A helper to remove the '0x04' or '04' prefix from a public key string,
+ * [EVM ONLY] A helper to remove the '0x04' or '04' prefix from a public key string,
  * preparing it for use with the eth-crypto library.
  * @param {string} publicKey - The public key string.
  * @returns {string} The cleaned, raw public key.
@@ -303,8 +303,7 @@ function cleanPublicKey(publicKey) {
 }
 
 /**
- * [EVM ONLY]
- * @description Ensures a hex string has a '0x' prefix, which is required by ethers.js for `bytes` types.
+ * [EVM ONLY] Ensures a hex string has a '0x' prefix, which is required by ethers.js for `bytes` types.
  * @param {string} hexString - The hex string.
  * @returns {string} The hex string with a '0x' prefix.
  */
@@ -313,8 +312,7 @@ function ensure0xPrefix(hexString) {
 }
 
 /**
- * [EVM ONLY]
- * @description Removes the '0x' prefix from a hex string, which is required by eth-crypto.
+ * [EVM ONLY] Removes the '0x' prefix from a hex string, which is required by eth-crypto.
  * @param {string} hexString - The hex string, which may or may not have a '0x' prefix.
  * @returns {string} The raw hex string without the '0x' prefix.
  */
@@ -345,7 +343,7 @@ async function decryptMessage(encryptedMessage) {
  * @param {string} [userPublicKey] - (EVM only) The user's public key, recovered from their transaction signature.
  */
 async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
-  console.log(`Submitting answer for prompt ${promptId} to ${userAddress}...`);
+  console.log(`Submitting answer for prompt #${promptId} to ${userAddress}...`);
 
   try {
     if (isSapphire) {
@@ -398,7 +396,7 @@ async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
 
     console.log(`Answer for prompt #${promptId} submitted successfully.`);
   } catch (err) {
-    console.error(`Failed to submit answer for prompt ${promptId}:`, err);
+    console.error(`Failed to submit answer for prompt #${promptId}:`, err);
   }
 }
 
@@ -437,13 +435,21 @@ async function pollPrompts() {
         );
 
         if (isSapphire) {
-          const uniqueSenders = new Set(logs.map((log) => log.args.sender));
+          // Group events by sender to efficiently fetch history once.
+          const promptsBySender = new Map();
+          for (const log of logs) {
+            const sender = log.args.sender;
 
-          for (const sender of uniqueSenders) {
-            // This inner try...catch ensures that an error for one user
-            // does not stop the oracle from processing prompts for other users.
+            if (!promptsBySender.has(sender)) {
+              promptsBySender.set(sender, []);
+            }
+
+            promptsBySender.get(sender).push(log);
+          }
+
+          for (const [sender, userLogs] of promptsBySender.entries()) {
             try {
-              console.log(`Checking for new prompts from ${sender}...`);
+              console.log(`Processing ${userLogs.length} new prompt(s) from ${sender}...`);
 
               const [prompts, answers] = await Promise.all([
                 retrievePrompts(sender),
@@ -452,30 +458,36 @@ async function pollPrompts() {
 
               if (!prompts || prompts.length === 0) continue;
 
-              // Find the *next* unanswered prompt, not just the last one
+              const plaintextPrompts = prompts.map((p) => p.prompt);
               const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
-              const nextPromptId = prompts.findIndex((_, i) => !answeredPromptIds.has(i));
 
-              if (nextPromptId === -1) {
-                console.log(`All prompts for ${sender} have been answered. Skipping.`);
+              // Find ALL unanswered prompts for this user and process them.
+              const unansweredPrompts = prompts.filter(
+                (p) => !answeredPromptIds.has(Number(p.promptId)),
+              );
+
+              if (unansweredPrompts.length === 0) {
+                console.log(`All prompts for ${sender} appear to be answered. Skipping.`);
                 continue;
               }
-              console.log(`Found unanswered prompt #${nextPromptId}. Querying AI model...`);
 
-              const answerText = await queryAIModel(prompts, sender);
+              for (const promptToAnswer of unansweredPrompts) {
+                const nextPromptId = Number(promptToAnswer.promptId);
+                console.log(`Found unanswered prompt #${nextPromptId}. Querying AI model...`);
 
-              console.log(`Storing AI answer for prompt #${nextPromptId} for ${sender}...`);
-              await submitAnswer(answerText, nextPromptId, sender);
+                const answerText = await queryAIModel(plaintextPrompts, sender);
+                await submitAnswer(answerText, nextPromptId, sender);
+              }
             } catch (err) {
               console.error(`Error processing prompts for sender ${sender}:`, err);
             }
           }
         } else {
+          // On public EVM, each event corresponds to a single new prompt.
           for (const event of logs) {
             const sender = event.args.sender;
-            console.log(
-              `[EVENT] Detected new prompt from: ${sender} in block ${event.blockNumber}`,
-            );
+            const promptId = Number(event.args.promptId);
+            console.log(`[EVENT] Detected new prompt #${promptId} from: ${sender}`);
 
             try {
               // Fetch the full transaction details to access its signature.
@@ -504,20 +516,22 @@ async function pollPrompts() {
 
               if (!encryptedPrompts || encryptedPrompts.length === 0) continue;
 
-              // Decrypt the full prompt history for the AI's context.
-              const plaintextPrompts = await Promise.all(encryptedPrompts.map(decryptMessage));
-
               const answeredPromptIds = new Set(encryptedAnswers.map((a) => Number(a.promptId)));
-              const nextPromptId = plaintextPrompts.findIndex((_, i) => !answeredPromptIds.has(i));
 
-              if (nextPromptId === -1) {
-                console.log(`All prompts for ${sender} have been answered. Skipping.`);
+              if (answeredPromptIds.has(promptId)) {
+                console.log(
+                  `Prompt #${promptId} for ${sender} has already been answered. Skipping.`,
+                );
                 continue;
               }
-              console.log(`Found unanswered prompt #${nextPromptId}. Querying AI...`);
+
+              const plaintextPrompts = await Promise.all(
+                encryptedPrompts.map((p) => decryptMessage(p.message)),
+              );
+              console.log(`Found unanswered prompt #${promptId}. Querying AI...`);
 
               const answerText = await queryAIModel(plaintextPrompts, sender);
-              await submitAnswer(answerText, nextPromptId, sender, userPublicKey);
+              await submitAnswer(answerText, promptId, sender, userPublicKey);
             } catch (err) {
               console.error(
                 `Error processing prompt from ${sender} from tx ${event.transactionHash}:`,
