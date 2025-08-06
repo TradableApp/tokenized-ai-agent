@@ -75,7 +75,7 @@ async function setOracleAddress() {
       }
     } else {
       // On a standard EVM, the oracle sends a regular transaction from its own wallet.
-      // Note: This requires the `setOracle` function on the EVMChatBot contract to be
+      // Note: This requires the `setOracle` function on the EVMAIAgent contract to be
       // either unprotected or callable by the current oracle address.
       const tx = await contract.setOracle(signer.address);
       await tx.wait();
@@ -107,7 +107,7 @@ async function loginToContract() {
   const siweMessage = new SiweMessage({
     domain,
     address: signer.address,
-    statement: "Oracle authentication for ChatBot",
+    statement: "Oracle authentication for AIAgent",
     uri: `http://${domain}`,
     version: "1",
     chainId: Number(chainId),

@@ -16,7 +16,7 @@ const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-loc
 async function main() {
   const networkName = hre.network.name;
   const isSapphire = SAPPHIRE_NETWORKS.has(networkName);
-  const contractName = isSapphire ? "SapphireChatBot" : "EVMChatBot";
+  const contractName = isSapphire ? "SapphireAIAgent" : "EVMAIAgent";
 
   console.log(`Deploying ${contractName}.sol to the ${networkName} network...`);
 
@@ -39,11 +39,11 @@ async function main() {
   console.log(`  - Domain:        ${domain}`);
   console.log(`  - Oracle Address:  ${oracle}`);
 
-  const ChatBotFactory = await hre.ethers.getContractFactory(contractName);
-  const chatBot = await ChatBotFactory.deploy(domain, roflAppID, oracle);
-  await chatBot.waitForDeployment();
+  const AIAgentFactory = await hre.ethers.getContractFactory(contractName);
+  const aiAgent = await AIAgentFactory.deploy(domain, roflAppID, oracle);
+  await aiAgent.waitForDeployment();
 
-  const contractAddress = await chatBot.getAddress();
+  const contractAddress = await aiAgent.getAddress();
   console.log(`✅ ${contractName}.sol deployed to: ${contractAddress}`);
 
   // --- 4. VERIFY CONTRACT (for public EVM chains only) ---

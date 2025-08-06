@@ -1,31 +1,27 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-struct EncryptedMessage {
-  bytes encryptedContent;
-  bytes userEncryptedKey;
-  bytes roflEncryptedKey;
-}
+import { Subcall } from "@oasisprotocol/sapphire-contracts/contracts/Subcall.sol";
+import { SiweAuth } from "@oasisprotocol/sapphire-contracts/contracts/auth/SiweAuth.sol";
 
-struct EncryptedPrompt {
+struct Prompt {
   uint256 promptId;
-  EncryptedMessage message;
+  string prompt;
 }
 
-struct EncryptedAnswer {
+struct Answer {
   uint256 promptId;
-  EncryptedMessage message;
+  string answer;
 }
 
-contract EVMChatBot {
-  mapping(address => EncryptedPrompt[]) private _prompts;
-  mapping(address => EncryptedAnswer[]) private _answers;
+contract SapphireAIAgent is SiweAuth {
+  mapping(address => Prompt[]) private _prompts;
+  mapping(address => Answer[]) private _answers;
 
   uint256 private _promptIdCounter;
 
   address public oracle; // Oracle address running inside TEE.
   bytes21 public roflAppID; // Allowed app ID within TEE for managing allowed oracle address.
-  string public domain; // The domain used for off-chain SIWE validation.
 
   event PromptSubmitted(address indexed sender, uint256 promptId);
   event AnswerSubmitted(address indexed sender, uint256 promptId);
@@ -36,21 +32,24 @@ contract EVMChatBot {
   error UnauthorizedOracle();
 
   // Sets up a chat bot smart contract where.
-  // @param inDomain is used for SIWE login on the frontend
-  // @param inRoflAppID is the attested ROFL app that is allowed to call setOracle()
+  // @param domain is used for SIWE login on the frontend
+  // @param roflAppId is the attested ROFL app that is allowed to call setOracle()
   // @param inOracle only for testing, not attested; set the oracle address for accessing prompts
-  constructor(string memory inDomain, bytes21 inRoflAppID, address inOracle) {
-    domain = inDomain;
+  constructor(string memory domain, bytes21 inRoflAppID, address inOracle) SiweAuth(domain) {
     roflAppID = inRoflAppID;
     oracle = inOracle;
   }
 
-  // For the user: checks that the caller is the specified user address.
-  // For the oracle: checks that the transaction was signed by the oracle's private key.
-  // @dev On a standard EVM, msg.sender is reliable and an authToken is not needed.
-  modifier onlyUserOrOracle(address addr) {
+  // For the user: checks whether authToken is a valid SIWE token
+  // corresponding to the requested address.
+  // For the oracle: checks whether the transaction or query was signed by the
+  // oracle's private key accessible only within TEE.
+  modifier onlyUserOrOracle(bytes memory authToken, address addr) {
     if (msg.sender != addr && msg.sender != oracle) {
-      revert UnauthorizedUserOrOracle();
+      address msgSender = authMsgSender(authToken);
+      if (msgSender != addr && msgSender != oracle) {
+        revert UnauthorizedUserOrOracle();
+      }
     }
     _;
   }
@@ -66,29 +65,16 @@ contract EVMChatBot {
 
   // Checks whether the transaction was signed by the ROFL's app key inside
   // TEE.
-  // @dev Placeholder: This check requires a Sapphire precompile and cannot be performed on-chain here.
   modifier onlyTEE(bytes21 appId) {
-    // TODO: A robust mechanism for TEE attestation on a standard EVM chain requires
-    // further research (e.g., via light client or message bridge to Sapphire).
+    Subcall.roflEnsureAuthorizedOrigin(appId);
     _;
   }
 
   // Append the new prompt and request answer.
   // Called by the user.
-  function appendPrompt(
-    bytes calldata encryptedContent,
-    bytes calldata userEncryptedKey,
-    bytes calldata roflEncryptedKey
-  ) external {
+  function appendPrompt(string memory prompt) external {
     uint256 promptId = _promptIdCounter++;
-    EncryptedMessage memory promptMessage = EncryptedMessage({
-      encryptedContent: encryptedContent,
-      userEncryptedKey: userEncryptedKey,
-      roflEncryptedKey: roflEncryptedKey
-    });
-
-    _prompts[msg.sender].push(EncryptedPrompt({ promptId: promptId, message: promptMessage }));
-
+    _prompts[msg.sender].push(Prompt({ promptId: promptId, prompt: prompt }));
     emit PromptSubmitted(msg.sender, promptId);
   }
 
@@ -99,23 +85,28 @@ contract EVMChatBot {
     delete _answers[msg.sender];
   }
 
-  function getPromptsCount(address addr) external view onlyUserOrOracle(addr) returns (uint256) {
+  function getPromptsCount(
+    bytes memory authToken,
+    address addr
+  ) external view onlyUserOrOracle(authToken, addr) returns (uint256) {
     return _prompts[addr].length;
   }
 
   // Returns all prompts for a given user address.
   // Called by the user in the frontend and by the oracle to generate the answer.
   function getPrompts(
+    bytes memory authToken,
     address addr
-  ) external view onlyUserOrOracle(addr) returns (EncryptedPrompt[] memory) {
+  ) external view onlyUserOrOracle(authToken, addr) returns (Prompt[] memory) {
     return _prompts[addr];
   }
 
   // Returns all answers for a given user address.
   // Called by the user.
   function getAnswers(
+    bytes memory authToken,
     address addr
-  ) external view onlyUserOrOracle(addr) returns (EncryptedAnswer[] memory) {
+  ) external view onlyUserOrOracle(authToken, addr) returns (Answer[] memory) {
     return _answers[addr];
   }
 
@@ -128,13 +119,7 @@ contract EVMChatBot {
 
   // Submits the answer to the prompt for a given user address.
   // Called by the oracle within TEE.
-  function submitAnswer(
-    bytes calldata encryptedContent,
-    bytes calldata userEncryptedKey,
-    bytes calldata roflEncryptedKey,
-    uint256 promptId,
-    address addr
-  ) external onlyOracle {
+  function submitAnswer(string memory answer, uint256 promptId, address addr) external onlyOracle {
     // Check if a prompt with this ID exists for this user.
     bool promptExists = false;
     for (uint256 i = 0; i < _prompts[addr].length; i++) {
@@ -154,13 +139,7 @@ contract EVMChatBot {
       }
     }
 
-    EncryptedMessage memory answerMessage = EncryptedMessage({
-      encryptedContent: encryptedContent,
-      userEncryptedKey: userEncryptedKey,
-      roflEncryptedKey: roflEncryptedKey
-    });
-
-    _answers[addr].push(EncryptedAnswer({ promptId: promptId, message: answerMessage }));
+    _answers[addr].push(Answer({ promptId: promptId, answer: answer }));
 
     emit AnswerSubmitted(addr, promptId);
   }

@@ -108,7 +108,7 @@ npm run compile
 npm run deploy:localnet
 ```
 
-After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env.localnet` and `oracle/.env.oracle.localnet` to the `ChatBot deployed to` in the deploy output.
+After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env.localnet` and `oracle/.env.oracle.localnet` to the `AIAgent deployed to` in the deploy output.
 
 #### 4. Run the Oracle
 
@@ -190,7 +190,7 @@ Deploy your contract to the target network. The deployment script reads from `.e
 npm run deploy:testnet
 ```
 
-After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env` and `./oracle/.env.oracle.testnet` to the `ChatBot deployed to` in the deploy output.
+After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env` and `./oracle/.env.oracle.testnet` to the `AIAgent deployed to` in the deploy output.
 
 #### e. Confirm Deployment (Optional)
 
@@ -211,12 +211,12 @@ npx hardhat console --network sapphire-testnet
 ```javascript
 const { Wallet } = require("ethers");
 const signer = new Wallet(process.env.PRIVATE_KEY, ethers.provider);
-const SapphireChatBot = await ethers.getContractAt(
-  "SapphireChatBot",
+const SapphireAIAgent = await ethers.getContractAt(
+  "SapphireAIAgent",
   process.env.ORACLE_CONTRACT_ADDRESS,
   signer,
 );
-await SapphireChatBot.oracle(); // Should return your wallet address
+await SapphireAIAgent.oracle(); // Should return your wallet address
 ```
 
 #### f. Create the ROFL App

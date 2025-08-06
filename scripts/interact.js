@@ -43,7 +43,7 @@ let sapphireAuthToken; // Only used by the Sapphire workflow
 
 /**
  * @description Loads the contract's ABI from the artifacts directory.
- * @param {string} contractName The name of the contract (e.g., 'EVMChatBot').
+ * @param {string} contractName The name of the contract (e.g., 'EVMAIAgent').
  * @returns {{abi: object}} An object containing the contract's ABI.
  * @throws {Error} If the artifact JSON file cannot be found.
  */
@@ -571,7 +571,7 @@ async function main() {
     signer = isSapphire ? wrapEthersSigner(baseSigner) : baseSigner;
 
     const { chainId } = await provider.getNetwork();
-    const contractName = isSapphire ? "SapphireChatBot" : "EVMChatBot";
+    const contractName = isSapphire ? "SapphireAIAgent" : "EVMAIAgent";
 
     const { abi } = loadContractArtifact(contractName);
 
