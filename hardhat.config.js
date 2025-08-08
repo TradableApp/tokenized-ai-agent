@@ -10,6 +10,7 @@ const {
   SAPPHIRE_MAINNET_RPC,
   SAPPHIRE_TESTNET_RPC,
   SAPPHIRE_LOCALNET_RPC,
+  ETHERSCAN_API_KEY,
   COINMARKETCAP_API_KEY,
   REPORT_GAS,
 } = process.env;
@@ -61,7 +62,7 @@ module.exports = {
   // Configuration for Etherscan contract verification
   etherscan: {
     // It's good practice to provide a fallback to prevent errors
-    apiKey: process.env.ETHERSCAN_API_KEY || "",
+    apiKey: ETHERSCAN_API_KEY || "",
     customChains: [
       {
         network: "base",

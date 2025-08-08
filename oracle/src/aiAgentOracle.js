@@ -556,7 +556,7 @@ async function pollPrompts() {
  * The entry point for the oracle service.
  */
 async function start() {
-  console.log("--- CHATBOT ORACLE SCRIPT STARTING ---");
+  console.log("--- AI AGENT ORACLE SCRIPT STARTING ---");
 
   await setOracleAddress();
   await pollPrompts();

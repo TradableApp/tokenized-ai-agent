@@ -2,7 +2,9 @@
 pragma solidity ^0.8.21;
 
 import { IEVMAIAgentEscrow } from "./interfaces/IEVMAIAgentEscrow.sol";
+import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 struct EncryptedMessage {
   bytes encryptedContent;
@@ -20,46 +22,54 @@ struct EncryptedAnswer {
   EncryptedMessage message;
 }
 
-contract EVMAIAgent is Initializable {
+contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   mapping(address => EncryptedPrompt[]) private _prompts;
   mapping(address => EncryptedAnswer[]) private _answers;
+  mapping(uint256 => address) public promptIdToUser;
+  mapping(uint256 => bool) public isPromptAnswered;
 
   uint256 public promptIdCounter;
 
   address public oracle; // Oracle address running inside TEE.
   bytes21 public roflAppID; // Allowed app ID within TEE for managing allowed oracle address.
-  IEVMAIAgentEscrow public agentEscrow; // The escrow contract that manages payments.
+  IEVMAIAgentEscrow public aiAgentEscrow; // The escrow contract that manages payments.
   string public domain; // The domain used for off-chain SIWE validation.
 
   event PromptSubmitted(address indexed user, uint256 indexed promptId);
   event AnswerSubmitted(address indexed sender, uint256 indexed promptId);
+  event AgentEscrowUpdated(address indexed newAIAgentEscrow);
+  event OracleUpdated(address indexed newOracle);
 
-  error InvalidPromptId();
-  error PromptAlreadyAnswered();
+  error ZeroAddress();
+  error AgentEscrowAlreadySet();
   error UnauthorizedUserOrOracle();
+  error UnauthorizedUser();
   error UnauthorizedOracle();
   error NotAIAgentEscrow();
+  error InvalidPromptId();
+  error PromptAlreadyAnswered();
   error MismatchedPromptId();
-
-  constructor() {
-    _disableInitializers();
-  }
 
   // Sets up the AI Agent smart contract.
   // @param _domain is used for SIWE login on the frontend
   // @param _roflAppID is the attested ROFL app that is allowed to call setOracle()
   // @param _oracle only for testing, not attested; set the oracle address for accessing prompts
-  // @param _agentEscrowAddress The address of the EVMAIAgentEscrow contract this agent is linked to.
+  // @param _initialOwner The address that will have ownership of this contract.
   function initialize(
     string memory _domain,
     bytes21 _roflAppID,
     address _oracle,
-    address _agentEscrowAddress
+    address _initialOwner
   ) public initializer {
+    if (_oracle == address(0) || _initialOwner == address(0)) {
+      revert ZeroAddress();
+    }
+
+    __Ownable_init(_initialOwner);
+    __UUPSUpgradeable_init();
     domain = _domain;
     roflAppID = _roflAppID;
     oracle = _oracle;
-    agentEscrow = IEVMAIAgentEscrow(_agentEscrowAddress);
   }
 
   // For the user: checks that the caller is the specified user address.
@@ -68,6 +78,15 @@ contract EVMAIAgent is Initializable {
   modifier onlyUserOrOracle(address _addr) {
     if (msg.sender != _addr && msg.sender != oracle) {
       revert UnauthorizedUserOrOracle();
+    }
+    _;
+  }
+
+  // For the user: checks that the caller is the specified user address.
+  // @dev On a standard EVM, msg.sender is reliable and an authToken is not needed.
+  modifier onlyUser(address _addr) {
+    if (msg.sender != _addr) {
+      revert UnauthorizedUser();
     }
     _;
   }
@@ -83,7 +102,7 @@ contract EVMAIAgent is Initializable {
 
   // Checks that the caller is the registered EVMAIAgentEscrow contract.
   modifier onlyAIAgentEscrow() {
-    if (msg.sender != address(agentEscrow)) {
+    if (msg.sender != address(aiAgentEscrow)) {
       revert NotAIAgentEscrow();
     }
     _;
@@ -96,6 +115,37 @@ contract EVMAIAgent is Initializable {
     // TODO: A robust mechanism for TEE attestation on a standard EVM chain requires
     // further research (e.g., via light client or message bridge to Sapphire).
     _;
+  }
+
+  /**
+   * @notice Sets the address of the AgentEscrow contract.
+   * @dev This can only be called once by the owner to complete the deployment linking.
+   * @param _newAIAgentEscrow The address of the deployed EVMAIAgentEscrow contract.
+   */
+  function setAgentEscrow(address _newAIAgentEscrow) external onlyOwner {
+    if (_newAIAgentEscrow == address(0)) {
+      revert ZeroAddress();
+    }
+    // This ensures the link can only be set once, from address(0) to the real address.
+    if (address(aiAgentEscrow) != address(0)) {
+      revert AgentEscrowAlreadySet();
+    }
+
+    aiAgentEscrow = IEVMAIAgentEscrow(_newAIAgentEscrow);
+    emit AgentEscrowUpdated(_newAIAgentEscrow);
+  }
+
+  // Sets the oracle address that will be allowed to read prompts and submit answers.
+  // This setter can only be called within the ROFL TEE and the keypair
+  // corresponding to the address should never leave TEE.
+  // @param _newOracle The new address for the oracle.
+  function setOracle(address _newOracle) external onlyTEE(roflAppID) {
+    if (_newOracle == address(0)) {
+      revert ZeroAddress();
+    }
+
+    oracle = _newOracle;
+    emit OracleUpdated(_newOracle);
   }
 
   // Submits a new prompt after payment has been secured by the EVMAIAgentEscrow contract.
@@ -123,6 +173,7 @@ contract EVMAIAgent is Initializable {
     });
 
     _prompts[_user].push(EncryptedPrompt({ promptId: _promptId, message: promptMessage }));
+    promptIdToUser[_promptId] = _user;
 
     promptIdCounter++;
 
@@ -131,9 +182,10 @@ contract EVMAIAgent is Initializable {
 
   // Clears the conversation.
   // Called by the user.
-  function clearPrompt() external {
-    delete _prompts[msg.sender];
-    delete _answers[msg.sender];
+  // @param _addr The address of the user whose conversation is being cleared.
+  function clearPrompt(address _addr) external onlyUser(_addr) {
+    delete _prompts[_addr];
+    delete _answers[_addr];
   }
 
   // @param _addr The address of the user whose prompt count is being checked.
@@ -159,14 +211,6 @@ contract EVMAIAgent is Initializable {
     return _answers[_addr];
   }
 
-  // Sets the oracle address that will be allowed to read prompts and submit answers.
-  // This setter can only be called within the ROFL TEE and the keypair
-  // corresponding to the address should never leave TEE.
-  // @param _addr The new address for the oracle.
-  function setOracle(address _addr) external onlyTEE(roflAppID) {
-    oracle = _addr;
-  }
-
   // Submits the answer to the prompt for a given user address.
   // Called by the oracle within TEE.
   // @param _encryptedContent The answer, encrypted with a session key.
@@ -181,24 +225,15 @@ contract EVMAIAgent is Initializable {
     uint256 _promptId,
     address _addr
   ) external onlyOracle {
-    bool promptExists = false;
-
-    for (uint256 i = 0; i < _prompts[_addr].length; i++) {
-      if (_prompts[_addr][i].promptId == _promptId) {
-        promptExists = true;
-        break;
-      }
-    }
-
-    if (!promptExists) {
+    if (promptIdToUser[_promptId] != _addr) {
       revert InvalidPromptId();
     }
 
-    for (uint256 i = 0; i < _answers[_addr].length; i++) {
-      if (_answers[_addr][i].promptId == _promptId) {
-        revert PromptAlreadyAnswered();
-      }
+    if (isPromptAnswered[_promptId]) {
+      revert PromptAlreadyAnswered();
     }
+
+    isPromptAnswered[_promptId] = true;
 
     EncryptedMessage memory answerMessage = EncryptedMessage({
       encryptedContent: _encryptedContent,
@@ -211,7 +246,16 @@ contract EVMAIAgent is Initializable {
     emit AnswerSubmitted(_addr, _promptId);
 
     // After successfully storing the answer, finalize the payment.
-    agentEscrow.finalizePayment(_promptId);
+    aiAgentEscrow.finalizePayment(_promptId);
+  }
+
+  // @dev Authorizes an upgrade to a new implementation contract.
+  // @dev This internal function is part of the UUPS upgrade mechanism. Access is restricted to the
+  // owner via the `onlyOwner` modifier.
+  // @param _newImplementation The address of the new implementation contract.
+  function _authorizeUpgrade(address _newImplementation) internal override onlyOwner {
+    // solhint-disable-previous-line no-empty-blocks
+    // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
   uint256[49] private __gap;

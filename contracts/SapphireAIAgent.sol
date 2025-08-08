@@ -4,6 +4,7 @@ pragma solidity ^0.8.21;
 import { Subcall } from "@oasisprotocol/sapphire-contracts/contracts/Subcall.sol";
 import { SiweAuth } from "@oasisprotocol/sapphire-contracts/contracts/auth/SiweAuth.sol";
 import { ISapphireAIAgentEscrow } from "./interfaces/ISapphireAIAgentEscrow.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
 struct Prompt {
   uint256 promptId;
@@ -15,9 +16,11 @@ struct Answer {
   string answer;
 }
 
-contract SapphireAIAgent is SiweAuth {
+contract SapphireAIAgent is SiweAuth, Ownable {
   mapping(address => Prompt[]) private _prompts;
   mapping(address => Answer[]) private _answers;
+  mapping(uint256 => address) public promptIdToUser;
+  mapping(uint256 => bool) public isPromptAnswered;
 
   uint256 public promptIdCounter;
 
@@ -27,28 +30,36 @@ contract SapphireAIAgent is SiweAuth {
 
   event PromptSubmitted(address indexed sender, uint256 indexed promptId);
   event AnswerSubmitted(address indexed sender, uint256 indexed promptId);
+  event AgentEscrowUpdated(address indexed newAIAgentEscrow);
+  event OracleUpdated(address indexed newOracle);
 
-  error InvalidPromptId();
-  error PromptAlreadyAnswered();
+  error ZeroAddress();
+  error AgentEscrowAlreadySet();
   error UnauthorizedUserOrOracle();
+  error UnauthorizedUser();
   error UnauthorizedOracle();
   error NotAIAgentEscrow();
+  error InvalidPromptId();
+  error PromptAlreadyAnswered();
   error MismatchedPromptId();
 
   // Sets up a chat bot smart contract where.
   // @param _domain is used for SIWE login on the frontend
   // @param _roflAppID is the attested ROFL app that is allowed to call setOracle()
   // @param _oracle only for testing, not attested; set the oracle address for accessing prompts
-  // @param _agentEscrowAddress The address of the SapphireAIAgentEscrow contract.
+  // @param _initialOwner The address that will have ownership of this contract.
   constructor(
     string memory _domain,
     bytes21 _roflAppID,
     address _oracle,
-    address _agentEscrowAddress
-  ) SiweAuth(_domain) {
+    address _initialOwner
+  ) SiweAuth(_domain) Ownable(_initialOwner) {
+    if (_oracle == address(0) || _initialOwner == address(0)) {
+      revert ZeroAddress();
+    }
+
     roflAppID = _roflAppID;
     oracle = _oracle;
-    agentEscrow = ISapphireAIAgentEscrow(_agentEscrowAddress);
   }
 
   // For the user: checks whether authToken is a valid SIWE token
@@ -62,6 +73,20 @@ contract SapphireAIAgent is SiweAuth {
       address msgSender = authMsgSender(_authToken);
       if (msgSender != _addr && msgSender != oracle) {
         revert UnauthorizedUserOrOracle();
+      }
+    }
+    _;
+  }
+
+  // For the user: checks whether authToken is a valid SIWE token
+  // corresponding to the requested address.
+  // @param _authToken The encrypted SIWE token for authentication.
+  // @param _addr The address being authenticated.
+  modifier onlyUser(bytes memory _authToken, address _addr) {
+    if (msg.sender != _addr) {
+      address msgSender = authMsgSender(_authToken);
+      if (msgSender != _addr) {
+        revert UnauthorizedUser();
       }
     }
     _;
@@ -91,28 +116,69 @@ contract SapphireAIAgent is SiweAuth {
     }
     _;
   }
+  /**
+   * @notice Sets the address of the AgentEscrow contract.
+   * @dev This can only be called once by the owner to complete the deployment linking.
+   * @param _newAIAgentEscrow The address of the deployed SapphireAIAgentEscrow contract.
+   */
+  function setAgentEscrow(address _newAIAgentEscrow) external onlyOwner {
+    if (_newAIAgentEscrow == address(0)) {
+      revert ZeroAddress();
+    }
+
+    if (address(agentEscrow) != address(0)) {
+      revert AgentEscrowAlreadySet();
+    }
+
+    agentEscrow = ISapphireAIAgentEscrow(_newAIAgentEscrow);
+    emit AgentEscrowUpdated(_newAIAgentEscrow);
+  }
+
+  // Sets the oracle address that will be allowed to read prompts and submit answers.
+  // This setter can only be called within the ROFL TEE and the keypair
+  // corresponding to the address should never leave TEE.
+  // @param _newOracle The new address for the oracle.
+  function setOracle(address _newOracle) external onlyTEE(roflAppID) {
+    if (_newOracle == address(0)) {
+      revert ZeroAddress();
+    }
+
+    oracle = _newOracle;
+    emit OracleUpdated(_newOracle);
+  }
 
   // Submits a new prompt after payment has been secured by the SapphireAIAgentEscrow contract.
   // Called by the SapphireAIAgentEscrow contract.
   // @param _promptId The unique identifier for the prompt.
+  // @param _user The original user who initiated the prompt.
   // @param _prompt The plaintext prompt from the user.
-  function submitPrompt(uint256 _promptId, string memory _prompt) external onlyAIAgentEscrow {
+  function submitPrompt(
+    uint256 _promptId,
+    address _user,
+    string memory _prompt
+  ) external onlyAIAgentEscrow {
     if (_promptId != promptIdCounter) {
       revert MismatchedPromptId();
     }
 
-    _prompts[msg.sender].push(Prompt({ promptId: _promptId, prompt: _prompt }));
+    _prompts[_user].push(Prompt({ promptId: _promptId, prompt: _prompt }));
+    promptIdToUser[_promptId] = _user;
 
     promptIdCounter++;
 
-    emit PromptSubmitted(msg.sender, _promptId);
+    emit PromptSubmitted(_user, _promptId);
   }
 
   // Clears the conversation.
   // Called by the user.
-  function clearPrompt() external {
-    delete _prompts[msg.sender];
-    delete _answers[msg.sender];
+  // @param _authToken The encrypted SIWE token for authentication.
+  // @param _addr The address of the user whose conversation is being cleared.
+  function clearPrompt(
+    bytes memory _authToken,
+    address _addr
+  ) external onlyUser(_authToken, _addr) {
+    delete _prompts[_addr];
+    delete _answers[_addr];
   }
 
   // @param _authToken The encrypted SIWE token for authentication.
@@ -146,14 +212,6 @@ contract SapphireAIAgent is SiweAuth {
     return _answers[_addr];
   }
 
-  // Sets the oracle address that will be allowed to read prompts and submit answers.
-  // This setter can only be called within the ROFL TEE and the keypair
-  // corresponding to the address should never leave TEE.
-  // @param _addr The new address for the oracle.
-  function setOracle(address _addr) external onlyTEE(roflAppID) {
-    oracle = _addr;
-  }
-
   // Submits the answer to the prompt for a given user address.
   // Called by the oracle within TEE.
   // @param _answer The plaintext AI response.
@@ -164,22 +222,15 @@ contract SapphireAIAgent is SiweAuth {
     uint256 _promptId,
     address _addr
   ) external onlyOracle {
-    bool promptExists = false;
-    for (uint256 i = 0; i < _prompts[_addr].length; i++) {
-      if (_prompts[_addr][i].promptId == _promptId) {
-        promptExists = true;
-        break;
-      }
-    }
-    if (!promptExists) {
+    if (promptIdToUser[_promptId] != _addr) {
       revert InvalidPromptId();
     }
 
-    for (uint256 i = 0; i < _answers[_addr].length; i++) {
-      if (_answers[_addr][i].promptId == _promptId) {
-        revert PromptAlreadyAnswered();
-      }
+    if (isPromptAnswered[_promptId]) {
+      revert PromptAlreadyAnswered();
     }
+
+    isPromptAnswered[_promptId] = true;
 
     _answers[_addr].push(Answer({ promptId: _promptId, answer: _answer }));
 

@@ -52,6 +52,7 @@ contract SapphireAIAgentEscrow is Ownable {
   error InsufficientDeposit();
   error NotOracle();
   error ZeroAddress();
+  error InsufficientBalanceForWithdrawal();
 
   // Sets up the escrow smart contract.
   // @param _agentAddress The address of the SapphireAIAgent contract to interact with.
@@ -123,7 +124,10 @@ contract SapphireAIAgentEscrow is Ownable {
   // Allows a user to withdraw their unused deposited funds.
   // @param _amount The amount of native tokens to withdraw.
   function withdraw(uint256 _amount) external {
-    require(deposits[msg.sender] >= _amount, "Insufficient balance for withdrawal");
+    if (deposits[msg.sender] < _amount) {
+      revert InsufficientBalanceForWithdrawal();
+    }
+
     deposits[msg.sender] -= _amount;
     payable(msg.sender).transfer(_amount);
     emit Withdrawal(msg.sender, _amount);
@@ -185,7 +189,7 @@ contract SapphireAIAgentEscrow is Ownable {
     emit PaymentEscrowed(promptId, _user, PROMPT_FEE);
 
     // Call the agent contract to store the prompt and signal the off-chain oracle.
-    SAPPHIRE_AI_AGENT.submitPrompt(promptId, _prompt);
+    SAPPHIRE_AI_AGENT.submitPrompt(promptId, _user, _prompt);
   }
 
   // Releases the escrowed payment to the treasury upon successful completion.
@@ -202,21 +206,21 @@ contract SapphireAIAgentEscrow is Ownable {
     emit PaymentFinalized(_promptId);
   }
 
-  // Refunds any pending escrows that have passed the timeout period.
-  // Called by a keeper service.
-  // @param _promptIds An array of prompt IDs to check for potential refunds.
-  function processRefunds(uint256[] calldata _promptIds) external {
-    for (uint256 i = 0; i < _promptIds.length; i++) {
-      uint256 promptId = _promptIds[i];
-      Escrow storage escrow = escrows[promptId];
+  // Refunds a single pending escrow that has passed the timeout period.
+  // Called by a keeper service. Processing one at a time prevents out-of-gas errors.
+  // @param _promptId The prompt ID to check for a potential refund.
+  function processRefund(uint256 _promptId) external {
+    Escrow storage escrow = escrows[_promptId];
 
-      if (
-        escrow.status == EscrowStatus.PENDING && block.timestamp > escrow.createdAt + REFUND_TIMEOUT
-      ) {
-        escrow.status = EscrowStatus.REFUNDED;
-        deposits[escrow.user] += escrow.amount;
-        emit PaymentRefunded(promptId);
-      }
+    if (
+      escrow.user != address(0) &&
+      escrow.status == EscrowStatus.PENDING &&
+      block.timestamp > escrow.createdAt + REFUND_TIMEOUT
+    ) {
+      escrow.status = EscrowStatus.REFUNDED;
+      // Refund the user by adding the amount back to their internal deposit balance.
+      deposits[escrow.user] += escrow.amount;
+      emit PaymentRefunded(_promptId);
     }
   }
 }

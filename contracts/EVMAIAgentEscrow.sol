@@ -3,12 +3,16 @@ pragma solidity ^0.8.21;
 
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IEVMAIAgent } from "./interfaces/IEVMAIAgent.sol";
-import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
-contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable {
+contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   IERC20 public ableToken; // The ERC20 token used for payments.
+  // The EVMAIAgent address is intentionally not immutable to support pointing this
+  // escrow contract to a new agent contract implementation via an upgrade.
   IEVMAIAgent public evmAIAgent; // The AI Agent contract this escrow serves.
+
   address public treasury; // The address where fees are collected.
   address public oracle; // The oracle address, authorized to initiate agent jobs.
 
@@ -37,6 +41,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable {
   }
 
   mapping(uint256 => Escrow) public escrows;
+  mapping(address => uint256) public pendingEscrowCount;
 
   event TreasuryUpdated(address newTreasury);
   event OracleUpdated(address newOracle);
@@ -54,10 +59,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable {
   error NotEVMAIAgent();
   error NotOracle();
   error ZeroAddress();
-
-  constructor() {
-    _disableInitializers();
-  }
+  error HasPendingPrompts();
 
   // Sets up the escrow smart contract.
   // @param _tokenAddress The address of the $ABLE token contract.
@@ -73,6 +75,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable {
     address _initialOwner
   ) public initializer {
     __Ownable_init(_initialOwner);
+    __UUPSUpgradeable_init();
 
     if (
       _tokenAddress == address(0) ||
@@ -130,13 +133,18 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable {
   }
 
   // Sets or updates a user's subscription.
-  // Called by the user.
-  // @param _allowance The total amount of tokens to approve for the subscription period.
-  // @param _expiresAt The unix timestamp when this subscription becomes invalid.
+  // @dev To ensure state integrity, a user can only set a new subscription when they
+  // have no prompts in the PENDING state. This resets their spending for a new period.
+  // @param _allowance The total amount of tokens to approve for the new subscription period.
+  // @param _expiresAt The unix timestamp when this new subscription becomes invalid.
   function setSubscription(uint256 _allowance, uint256 _expiresAt) external {
+    if (pendingEscrowCount[msg.sender] > 0) {
+      revert HasPendingPrompts();
+    }
+
     subscriptions[msg.sender] = Subscription({
       allowance: _allowance,
-      spentAmount: 0, // Reset spent amount on new subscription
+      spentAmount: 0, // Reset spent amount for the new subscription period.
       expiresAt: _expiresAt
     });
     emit SubscriptionSet(msg.sender, _allowance, _expiresAt);
@@ -202,6 +210,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable {
     }
 
     sub.spentAmount += PROMPT_FEE;
+    pendingEscrowCount[_user]++;
 
     ableToken.transferFrom(_user, address(this), PROMPT_FEE);
 
@@ -238,32 +247,42 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable {
       revert EscrowNotPending();
     }
 
+    pendingEscrowCount[escrow.user]--;
     escrow.status = EscrowStatus.COMPLETE;
     ableToken.transfer(treasury, escrow.amount);
     emit PaymentFinalized(_promptId);
   }
 
-  // Refunds any pending escrows that have passed the timeout period.
-  // Called by a keeper service.
-  // @param _promptIds An array of prompt IDs to check for potential refunds.
-  function processRefunds(uint256[] calldata _promptIds) external {
-    for (uint256 i = 0; i < _promptIds.length; i++) {
-      uint256 promptId = _promptIds[i];
-      Escrow storage escrow = escrows[promptId];
+  // Refunds a single pending escrow that has passed the timeout period.
+  // Called by a keeper service. Processing one at a time prevents out-of-gas errors.
+  // @param _promptId The prompt ID to check for a potential refund.
+  function processRefund(uint256 _promptId) external {
+    Escrow storage escrow = escrows[_promptId];
 
-      if (
-        escrow.status == EscrowStatus.PENDING && block.timestamp > escrow.createdAt + REFUND_TIMEOUT
-      ) {
-        // Update all local state first.
-        escrow.status = EscrowStatus.REFUNDED;
-        subscriptions[escrow.user].spentAmount -= escrow.amount;
+    if (
+      escrow.user != address(0) &&
+      escrow.status == EscrowStatus.PENDING &&
+      block.timestamp > escrow.createdAt + REFUND_TIMEOUT
+    ) {
+      // Update all local state first.
+      pendingEscrowCount[escrow.user]--;
+      escrow.status = EscrowStatus.REFUNDED;
+      subscriptions[escrow.user].spentAmount -= escrow.amount;
 
-        // Perform the external call last to avoid re-entrancy issues.
-        ableToken.transfer(escrow.user, escrow.amount);
+      // Perform the external call last to avoid re-entrancy issues.
+      ableToken.transfer(escrow.user, escrow.amount);
 
-        emit PaymentRefunded(promptId);
-      }
+      emit PaymentRefunded(_promptId);
     }
+  }
+
+  // @dev Authorizes an upgrade to a new implementation contract.
+  // @dev This internal function is part of the UUPS upgrade mechanism. Access is restricted to the
+  // owner via the `onlyOwner` modifier.
+  // @param _newImplementation The address of the new implementation contract.
+  function _authorizeUpgrade(address _newImplementation) internal override onlyOwner {
+    // solhint-disable-previous-line no-empty-blocks
+    // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
   uint256[49] private __gap;
