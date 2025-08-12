@@ -10,7 +10,7 @@ if (process.env.ENV_FILE) {
   dotenv.config({ path: process.env.ENV_FILE });
 }
 // Load the base .env.oracle file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, ".env.oracle") });
+dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
 // A Set for easy and efficient checking of Sapphire network names.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
@@ -67,7 +67,7 @@ function initializeOracle(networkName, privateKey, contractAddress) {
   }
 
   if (!contractAddress) {
-    throw new Error("Missing required env variable: ORACLE_CONTRACT_ADDRESS");
+    throw new Error("Missing required env variable: AI_AGENT_CONTRACT_ADDRESS");
   }
 
   const networkRpc = RPC_URL_MAP[networkName];

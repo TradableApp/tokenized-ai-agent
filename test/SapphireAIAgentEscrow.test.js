@@ -151,21 +151,23 @@ describe("SapphireAIAgentEscrow", function () {
   });
 
   describe("Deposit and Withdrawal", function () {
-    it("should accept user deposits", async function () {
+    it("should correctly credit funds to a user's deposit balance", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
+      // The fixture already performs an initial deposit of 10 TEST.
       expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT);
+
+      // Test depositing more funds
+      const additionalDeposit = ethers.parseEther("5");
+      await escrow.connect(user).deposit({ value: additionalDeposit });
+      expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT + additionalDeposit);
     });
 
-    it("should allow a user to withdraw their full balance", async function () {
+    it("should allow a user to withdraw from their deposit balance", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
-      const initialBalance = await ethers.provider.getBalance(user.address);
-      const tx = await escrow.connect(user).withdraw(INITIAL_DEPOSIT);
-      const receipt = await tx.wait();
-      const gasUsed = receipt.gasUsed * receipt.gasPrice;
+      const withdrawAmount = ethers.parseEther("3");
 
-      const finalBalance = await ethers.provider.getBalance(user.address);
-      expect(finalBalance).to.equal(initialBalance + INITIAL_DEPOSIT - gasUsed);
-      expect(await escrow.deposits(user.address)).to.equal(0);
+      await escrow.connect(user).withdraw(withdrawAmount);
+      expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT - withdrawAmount);
     });
 
     it("should revert if a user tries to withdraw more than their balance", async function () {
@@ -174,10 +176,22 @@ describe("SapphireAIAgentEscrow", function () {
         escrow.connect(user).withdraw(INITIAL_DEPOSIT + 1n),
       ).to.be.revertedWithCustomError(escrow, "InsufficientBalanceForWithdrawal");
     });
+
+    it("should revert if a user tries to withdraw while having pending prompts", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      // Set up a subscription and initiate a prompt to create a pending state.
+      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).initiatePrompt(PROMPT_TEXT);
+
+      // Attempting to withdraw any amount should now fail.
+      await expect(
+        escrow.connect(user).withdraw(ethers.parseEther("1")),
+      ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
+    });
   });
 
   describe("Subscription Management", function () {
-    it("should allow a user to set and cancel a subscription", async function () {
+    it("should allow a user to set a subscription term", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       const expiresAt = (await time.latest()) + 3600;
 
@@ -186,24 +200,62 @@ describe("SapphireAIAgentEscrow", function () {
         .withArgs(user.address, expiresAt);
 
       const sub = await escrow.subscriptions(user.address);
-      expect(sub).to.equal(expiresAt); // Assert on the value itself.
+      expect(sub).to.equal(expiresAt);
+    });
 
-      await expect(escrow.connect(user).cancelSubscription())
-        .to.emit(escrow, "SubscriptionCancelled")
-        .withArgs(user.address);
+    it("should allow a user to cancel a subscription and refund their full deposit", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      const initialUserBalance = await ethers.provider.getBalance(user.address);
 
+      // The user starts with 10 TEST deposited.
+      const tx = await escrow.connect(user).cancelSubscription();
+      const receipt = await tx.wait();
+      const gasUsed = receipt.gasUsed * receipt.gasPrice;
+
+      // After cancellation, their internal subscription and deposit should be zero.
       const finalSub = await escrow.subscriptions(user.address);
       expect(finalSub).to.equal(0);
+      expect(await escrow.deposits(user.address)).to.equal(0);
+
+      // Check that the user's external wallet balance was correctly refunded.
+      const finalUserBalance = await ethers.provider.getBalance(user.address);
+      expect(finalUserBalance).to.equal(initialUserBalance + INITIAL_DEPOSIT - gasUsed);
+    });
+
+    it("should revert when setting a subscription while having pending prompts", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      // Set up a subscription and initiate a prompt.
+      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).initiatePrompt(PROMPT_TEXT);
+
+      // Attempting to set a new subscription should now fail.
+      const newExpiresAt = (await time.latest()) + 7200;
+      await expect(
+        escrow.connect(user).setSubscription(newExpiresAt),
+      ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
+    });
+
+    it("should revert when cancelling a subscription while having pending prompts", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      // Set up a subscription and initiate a prompt.
+      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).initiatePrompt(PROMPT_TEXT);
+
+      // Attempting to cancel the subscription should now fail.
+      await expect(escrow.connect(user).cancelSubscription()).to.be.revertedWithCustomError(
+        escrow,
+        "HasPendingPrompts",
+      );
     });
   });
 
   describe("Prompt Initiation", function () {
     context("by a User (initiatePrompt)", function () {
-      it("should successfully initiate from the user's deposit", async function () {
+      it("should successfully initiate and deduct the fee from deposits", async function () {
         const { escrow, mockAgent, user } = await loadFixture(deployEscrowFixture);
         await escrow.connect(user).setSubscription((await time.latest()) + 3600);
         const promptId = await mockAgent.promptIdCounter();
-        // The user calls the non-payable function. The contract uses their deposited funds.
+
         await expect(escrow.connect(user).initiatePrompt(PROMPT_TEXT))
           .to.emit(escrow, "PaymentEscrowed")
           .withArgs(promptId, user.address, PROMPT_FEE);
@@ -310,7 +362,7 @@ describe("SapphireAIAgentEscrow", function () {
       ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
     });
 
-    it("should allow a timed-out prompt to be refunded to the user's deposit", async function () {
+    it("should refund a timed-out prompt, adding the fee back to deposits", async function () {
       const { escrow, mockAgent, deployer, user } = await loadFixture(deployEscrowFixture);
       await escrow.connect(user).setSubscription((await time.latest()) + 3600);
       const promptId = await mockAgent.promptIdCounter();

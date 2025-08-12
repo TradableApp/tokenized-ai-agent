@@ -94,12 +94,14 @@ Then edit the equivalent environment files:
 - In `./.env.localnet`, update:
   - `PRIVATE_KEY`: Use one of the private keys from the Sapphire localnet output (e.g. account 0)
   - `USER_PRIVATE_KEY`: Use a different private key (e.g. account 1) to simulate a user
-  - `ORACLE_CONTRACT_ADDRESS`: Leave this blank for now
+  - `AI_AGENT_CONTRACT_ADDRESS`: Leave this blank for now
+  - `AI_AGENT_ESCROW_CONTRACT_ADDRESS`: Leave this blank for now
 
 - In `./oracle/.env.oracle.localnet`, update:
   - `PRIVATE_KEY`: Use one of the private keys from the Sapphire localnet output (e.g. account 0)
   - `OLLAMA_URL`: Set to `http://localhost:11434`
-  - `ORACLE_CONTRACT_ADDRESS`: Leave this blank for now
+  - `AI_AGENT_CONTRACT_ADDRESS`: Leave this blank for now
+  - `AI_AGENT_ESCROW_CONTRACT_ADDRESS`: Leave this blank for now
 
 #### 3. Deploy Contracts to Localnet
 
@@ -108,7 +110,7 @@ npm run compile
 npm run deploy:localnet
 ```
 
-After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env.localnet` and `oracle/.env.oracle.localnet` to the `AIAgent deployed to` in the deploy output.
+After deployment, update your `AI_AGENT_CONTRACT_ADDRESS` and `AI_AGENT_ESCROW_CONTRACT_ADDRESS` in `.env.localnet` and `oracle/.env.oracle.localnet` to the `AIAgent/AIAgentEscrow deployed to` in the deploy output.
 
 #### 4. Run the Oracle
 
@@ -124,7 +126,7 @@ npm run start:localnet
 Use the pre-written script in a third terminal to test the flow:
 
 ```bash
-ENV_FILE=.env.localnet npx hardhat run scripts/send-prompt.js --network sapphire-localnet
+node scripts/interact.js
 ```
 
 You should see the Oracle terminal log confirm it received a prompt, queried the AI, and submitted the response on-chain.
@@ -190,14 +192,14 @@ Deploy your contract to the target network. The deployment script reads from `.e
 npm run deploy:testnet
 ```
 
-After deployment, update your `ORACLE_CONTRACT_ADDRESS` in `.env` and `./oracle/.env.oracle.testnet` to the `AIAgent deployed to` in the deploy output.
+After deployment, update your `AI_AGENT_CONTRACT_ADDRESS` and `AI_AGENT_ESCROW_CONTRACT_ADDRESS` in `.env` and `./oracle/.env.oracle.testnet` to the `AIAgent/AIAgentEscrow deployed to` in the deploy output.
 
 #### e. Confirm Deployment (Optional)
 
 After deployment, you can verify the contract exists and the Oracle address is correct:
 
 1. Visit [Oasis Testnet Explorer](https://testnet.explorer.oasis.io/?network=testnet)
-2. Search for your deployed ORACLE_CONTRACT_ADDRESS
+2. Search for your deployed AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS
 3. Confirm:
    - The contract exists at the address
    - The deployer address matches your funded wallet
@@ -213,7 +215,7 @@ const { Wallet } = require("ethers");
 const signer = new Wallet(process.env.PRIVATE_KEY, ethers.provider);
 const SapphireAIAgent = await ethers.getContractAt(
   "SapphireAIAgent",
-  process.env.ORACLE_CONTRACT_ADDRESS,
+  process.env.AI_AGENT_CONTRACT_ADDRESS,
   signer,
 );
 await SapphireAIAgent.oracle(); // Should return your wallet address
@@ -260,7 +262,7 @@ npm run rofl:set:testnet
 
 This script reads from your `oracle/.env.oracle` and `oracle/.env.oracle.testnet` files, merges them, and sets each secret using `oasis rofl secret set`.
 
-> Note: Be sure you’ve configured `PRIVATE_KEY`, `ORACLE_CONTRACT_ADDRESS`, and other secrets in the relevant `.env` files before setting.
+> Note: Be sure you’ve configured `PRIVATE_KEY`, `AI_AGENT_CONTRACT_ADDRESS`, `AI_AGENT_ESCROW_CONTRACT_ADDRESS`, and other secrets in the relevant `.env` files before setting.
 
 ### 4. Update On-Chain Configuration
 

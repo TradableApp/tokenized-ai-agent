@@ -13,26 +13,26 @@ if (process.env.ENV_FILE) {
   dotenv.config({ path: process.env.ENV_FILE });
 }
 // Load the base .env.oracle file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, ".env.oracle") });
+dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
 // --- Configuration & Initialization ---
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const NETWORK_NAME = process.env.NETWORK_NAME;
-const ORACLE_PRIVATE_KEY = process.env.PRIVATE_KEY;
-const ORACLE_PUBLIC_KEY = process.env.PUBLIC_KEY;
-const ORACLE_CONTRACT_ADDRESS = process.env.ORACLE_CONTRACT_ADDRESS;
+const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
+const AI_AGENT_PUBLIC_KEY = process.env.PUBLIC_KEY;
+const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // This single function from our utility handles all environment-specific setup.
 const { provider, signer, contract, isSapphire } = initializeOracle(
   NETWORK_NAME,
-  ORACLE_PRIVATE_KEY,
-  ORACLE_CONTRACT_ADDRESS,
+  AI_AGENT_PRIVATE_KEY,
+  AI_AGENT_CONTRACT_ADDRESS,
 );
 
 // This global session is only used by the Sapphire workflow.
 let sapphireSession;
 
-console.log(`--- ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
+console.log(`--- AI AGENT STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
 console.log(`Oracle signer address: ${signer.address}`);
 console.log(`Contract address: ${contract.target}`);
 console.log(
@@ -64,7 +64,7 @@ async function setOracleAddress() {
         const txUnsigned = await contract.setOracle.populateTransaction(signer.address);
 
         const txParams = {
-          to: ORACLE_CONTRACT_ADDRESS.replace(/^0x/, ""),
+          to: AI_AGENT_CONTRACT_ADDRESS.replace(/^0x/, ""),
           gas: 2000000, // setOracle is a simple transaction, a fixed high limit is safe
           value: 0,
           data: txUnsigned.data.replace(/^0x/, ""),
@@ -330,7 +330,7 @@ async function decryptMessage(encryptedMessage) {
   const parsedRoflKey = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.roflEncryptedKey));
   const parsedContent = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.encryptedContent));
 
-  const sessionKey = await ethCrypto.decryptWithPrivateKey(ORACLE_PRIVATE_KEY, parsedRoflKey);
+  const sessionKey = await ethCrypto.decryptWithPrivateKey(AI_AGENT_PRIVATE_KEY, parsedRoflKey);
   return await ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent);
 }
 
@@ -370,7 +370,7 @@ async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
 
       // Use the helper functions to safely clean the keys.
       const userPublicKeyClean = cleanPublicKey(userPublicKey);
-      const oraclePublicKeyClean = cleanPublicKey(ORACLE_PUBLIC_KEY);
+      const oraclePublicKeyClean = cleanPublicKey(AI_AGENT_PUBLIC_KEY);
       const sessionPublicKeyClean = cleanPublicKey(sessionPublicKey);
 
       const encryptedContent = await ethCrypto.encryptWithPublicKey(
@@ -556,7 +556,7 @@ async function pollPrompts() {
  * The entry point for the oracle service.
  */
 async function start() {
-  console.log("--- AI AGENT ORACLE SCRIPT STARTING ---");
+  console.log("--- AI AGENT SCRIPT STARTING ---");
 
   await setOracleAddress();
   await pollPrompts();

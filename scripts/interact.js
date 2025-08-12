@@ -9,6 +9,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
 const dotenv = require("dotenv");
+const { format } = require("date-fns");
+
+inquirer.registerPrompt("datetime", require("inquirer-datepicker-prompt"));
 
 // --- Configuration ---
 const envPath = path.resolve(__dirname, "../.env");
@@ -16,9 +19,9 @@ const CHAINS = {
   Sapphire: {
     isSapphire: true,
     networks: {
+      localnet: { envFile: "../.env.localnet", rpcEnvVar: "SAPPHIRE_LOCALNET_RPC" },
       testnet: { envFile: "../.env.testnet", rpcEnvVar: "SAPPHIRE_TESTNET_RPC" },
       mainnet: { envFile: "../.env.mainnet", rpcEnvVar: "SAPPHIRE_MAINNET_RPC" },
-      localnet: { envFile: "../.env.localnet", rpcEnvVar: "SAPPHIRE_LOCALNET_RPC" },
     },
   },
   Base: {
@@ -33,7 +36,9 @@ const POLLING_INTERVAL_MS = 5000;
 
 // --- Global State ---
 let signer;
-let contract;
+let aiAgentContract;
+let aiAgentEscrowContract;
+let tokenContract;
 let isSapphire;
 let networkName;
 let roflPublicKey;
@@ -66,12 +71,12 @@ function loadContractArtifact(contractName) {
  * This provides a session token required for subsequent contract interactions.
  * @param {number} chainId - The chain ID of the connected network.
  * @returns {Promise<string>} The authentication token from the contract.
- * @throws {Error} If the SIWE login process fails.
  */
 async function loginSiwe(chainId) {
   const spinner = ora("Authenticating with contract via Sign-In with Ethereum (SIWE)...").start();
+
   try {
-    const domain = await contract.domain();
+    const domain = await aiAgentContract.domain();
     const address = await signer.getAddress();
     const siweMessage = new SiweMessage({
       domain,
@@ -82,7 +87,7 @@ async function loginSiwe(chainId) {
     }).toMessage();
     const signatureString = await signer.signMessage(siweMessage);
     const signature = Signature.from(signatureString);
-    const retrievedAuthToken = await contract.login(siweMessage, signature);
+    const retrievedAuthToken = await aiAgentContract.login(siweMessage, signature);
     spinner.succeed(chalk.green("Successfully authenticated with the contract."));
     return retrievedAuthToken;
   } catch (error) {
@@ -209,18 +214,19 @@ async function waitForAnswer(promptId) {
 
   try {
     while (!userSkipped) {
-      const address = await signer.getAddress();
+      const address = signer.address;
       const rawAnswers = isSapphire
-        ? await contract.getAnswers(sapphireAuthToken, address)
-        : await contract.getAnswers(address);
+        ? await aiAgentContract.getAnswers(sapphireAuthToken, address)
+        : await aiAgentContract.getAnswers(address);
 
       const answerStruct = rawAnswers.find((answer) => Number(answer.promptId) === promptId);
+
       if (answerStruct) {
         let cleanAnswer;
         if (isSapphire) {
           cleanAnswer = answerStruct.answer.replaceAll(/<think>.*<\/think>/gs, "").trim();
         } else {
-          spinner.text = "Decrypting response...";
+          spinner.text = "Decrypting confidential response...";
           cleanAnswer = await decryptMessage(answerStruct.message);
         }
 
@@ -242,8 +248,97 @@ async function waitForAnswer(promptId) {
   if (userSkipped) {
     spinner.stopAndPersist({
       symbol: "➡️",
-      text: chalk.bold(" Skipped. You can check for the answer later."),
+      text: chalk.bold(" Skipped. Check for the answer later using 'Check conversation history'."),
     });
+  }
+}
+
+// --- CLI HANDLERS ---
+
+/**
+ * @description A helper function to check the user's allowance status before they send a prompt.
+ * If the allowance is invalid, it guides them through the setup process in a loop.
+ * @returns {Promise<boolean>} True if the user is ready to send a prompt, false if they cancel.
+ */
+async function checkAndGuideAllowance() {
+  // This function now loops until the user is ready or cancels.
+  while (true) {
+    const sub = await aiAgentEscrowContract.subscriptions(signer.address);
+
+    const expiresAt = isSapphire ? sub : sub.expiresAt;
+    const now = Math.floor(Date.now() / 1000);
+
+    const promptFee = await aiAgentEscrowContract.PROMPT_FEE();
+
+    // Check 1: Is the subscription active and not expired?
+    if (expiresAt === 0n || now >= expiresAt) {
+      console.log(chalk.yellow("\nYour usage allowance is not active or has expired."));
+
+      const { setup } = await inquirer.prompt([
+        {
+          type: "confirm",
+          name: "setup",
+          message: "You need an active allowance to send prompts. Set one up now?",
+          default: true,
+        },
+      ]);
+
+      if (setup) {
+        await handleManageAllowance();
+        continue; // Loop back to re-check the status.
+      } else {
+        return false; // User explicitly cancelled.
+      }
+    }
+
+    if (isSapphire) {
+      const deposit = await aiAgentEscrowContract.deposits(signer.address);
+
+      if (deposit < promptFee) {
+        console.log(chalk.yellow("\nYour deposited balance is too low to send a prompt."));
+
+        const { setup } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "setup",
+            message: "Would you like to deposit more funds now?",
+            default: true,
+          },
+        ]);
+
+        if (setup) {
+          await handleManageAllowance();
+          continue; // Loop back to re-check.
+        } else {
+          return false;
+        }
+      }
+    } else {
+      const allowance = sub.allowance;
+      const spent = sub.spentAmount;
+
+      if (spent + promptFee > allowance) {
+        console.log(chalk.yellow("\nYour approved allowance is too low to send another prompt."));
+
+        const { setup } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "setup",
+            message: "Would you like to increase your approval amount now?",
+            default: true,
+          },
+        ]);
+
+        if (setup) {
+          await handleManageAllowance();
+          continue; // Loop back to re-check.
+        } else {
+          return false;
+        }
+      }
+    }
+
+    return true; // All checks passed, user is ready.
   }
 }
 
@@ -252,6 +347,13 @@ async function waitForAnswer(promptId) {
  * and then waits for the AI's response.
  */
 async function handleSendPrompt() {
+  // Proactively check if the user is ready to send a prompt.
+  const isReady = await checkAndGuideAllowance();
+  if (!isReady) {
+    console.log(chalk.yellow("\nAction cancelled. Please set up your allowance to send a prompt."));
+    return;
+  }
+
   console.log("");
   const { prompt } = await inquirer.prompt([
     {
@@ -262,16 +364,20 @@ async function handleSendPrompt() {
     },
   ]);
 
-  const spinner = ora("Sending encrypted prompt to the contract...").start();
+  const spinner = ora(`Submitting your prompt${isSapphire ? "" : " confidentially"}...`).start();
 
   try {
     let tx;
     if (isSapphire) {
-      tx = await contract.appendPrompt(prompt);
+      tx = await aiAgentEscrowContract.initiatePrompt(prompt);
     } else {
       const { encryptedContent, userEncryptedKey, roflEncryptedKey } = await encryptPrompt(prompt);
 
-      tx = await contract.appendPrompt(encryptedContent, userEncryptedKey, roflEncryptedKey);
+      tx = await aiAgentEscrowContract.initiatePrompt(
+        encryptedContent,
+        userEncryptedKey,
+        roflEncryptedKey,
+      );
     }
 
     spinner.text = "Waiting for transaction to be mined...";
@@ -279,13 +385,20 @@ async function handleSendPrompt() {
     const receipt = await tx.wait();
 
     // Find the PromptSubmitted event in the transaction logs to get the new promptId.
-    const event = receipt.logs.find((log) => log.eventName === "PromptSubmitted");
+    const aiAgentInterface = new ethers.Interface(
+      loadContractArtifact(isSapphire ? "SapphireAIAgent" : "EVMAIAgent").abi,
+    );
+    const eventTopic = aiAgentInterface.getEvent("PromptSubmitted").topicHash;
+    const log = receipt.logs.find(
+      (l) => l.address === aiAgentContract.target && l.topics[0] === eventTopic,
+    );
 
-    if (!event) {
+    if (!log) {
       throw new Error("Could not find PromptSubmitted event in transaction receipt.");
     }
 
-    const newPromptId = Number(event.args.promptId);
+    const parsedLog = aiAgentInterface.parseLog({ topics: log.topics, data: log.data });
+    const newPromptId = Number(parsedLog.args.promptId);
 
     spinner.succeed(chalk.green("Prompt sent successfully!"));
     console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
@@ -300,17 +413,22 @@ async function handleSendPrompt() {
 /**
  * @description Fetches and displays all of the user's past prompts and any available answers.
  */
-async function handleCheckAnswers() {
-  const spinner = ora("Fetching prompts and answers...").start();
+async function handleCheckHistory() {
+  const spinner = ora("Fetching conversation history...").start();
+
   try {
-    const address = await signer.getAddress();
+    const address = signer.address;
     const [prompts, answers] = await Promise.all([
-      isSapphire ? contract.getPrompts(sapphireAuthToken, address) : contract.getPrompts(address),
-      isSapphire ? contract.getAnswers(sapphireAuthToken, address) : contract.getAnswers(address),
+      isSapphire
+        ? aiAgentContract.getPrompts(sapphireAuthToken, address)
+        : aiAgentContract.getPrompts(address),
+      isSapphire
+        ? aiAgentContract.getAnswers(sapphireAuthToken, address)
+        : aiAgentContract.getAnswers(address),
     ]);
 
     spinner.succeed(chalk.green("Data fetched successfully."));
-    console.log("\n--- Your Prompts and Answers ---");
+    console.log("\n--- Your Conversation History ---");
 
     if (prompts.length === 0) {
       console.log(chalk.yellow("You haven't sent any prompts yet."));
@@ -318,6 +436,7 @@ async function handleCheckAnswers() {
     }
 
     spinner.start("Decrypting conversation history...");
+
     // The prompts array now contains structs with { promptId, message/prompt }.
     const plaintextPrompts = isSapphire
       ? prompts.map((p) => ({ promptId: Number(p.promptId), prompt: p.prompt }))
@@ -358,7 +477,7 @@ async function handleCheckAnswers() {
         console.log(`   ${chalk.green.bold("Answer:")} ${chalk.green(answer)}`);
       } else {
         console.log(
-          `   ${chalk.yellow.bold("Answer:")} ${chalk.yellow("(Awaiting response from oracle...)")}`,
+          `   ${chalk.yellow.bold("Answer:")} ${chalk.yellow("(Awaiting response from AI Agent...)")}`,
         );
       }
     });
@@ -369,16 +488,281 @@ async function handleCheckAnswers() {
 }
 
 /**
+ * @description A helper function to guide a user through the initial setup or a full update
+ * of their usage allowance (Amount + Term).
+ */
+async function setupNewAllowance() {
+  if (isSapphire) {
+    // --- Sapphire: Deposit + Set Term ---
+    const chainName = Object.keys(CHAINS).find((cn) => CHAINS[cn].isSapphire === isSapphire);
+    const CURRENCY_SYMBOLS = {
+      Sapphire: { mainnet: "ROSE", default: "TEST" },
+      Base: { default: "ETH" },
+    };
+    const currency =
+      CURRENCY_SYMBOLS[chainName]?.[networkName] || CURRENCY_SYMBOLS[chainName]?.default || "TOKEN";
+
+    const { amount } = await inquirer.prompt([
+      {
+        type: "input",
+        name: "amount",
+        message: `Enter amount of ${currency} to deposit for your allowance (e.g., 5.0):`,
+        validate: (input) => !isNaN(parseFloat(input)) && parseFloat(input) >= 0,
+      },
+    ]);
+
+    if (parseFloat(amount) > 0) {
+      await handleDeposit(amount);
+    }
+
+    await setExpiryTerm();
+  } else {
+    // --- EVM: Approve + Set Subscription ---
+    const tokenSymbol = await tokenContract.symbol();
+    const { amount } = await inquirer.prompt([
+      {
+        type: "input",
+        name: "amount",
+        message: `Enter the total amount of ${tokenSymbol} to approve for your allowance:`,
+        validate: (input) => !isNaN(parseFloat(input)) && parseFloat(input) >= 0,
+      },
+    ]);
+
+    const spinner = ora(`1/2: Approving ${amount} ${tokenSymbol} for payments...`).start();
+
+    try {
+      const tx = await tokenContract.approve(
+        aiAgentEscrowContract.target,
+        ethers.parseEther(amount),
+      );
+
+      const receipt = await tx.wait();
+
+      spinner.succeed(chalk.green(`1/2: Approval successful.`));
+      console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
+
+      // Pass the approved amount to the next step
+      await setExpiryTerm(ethers.parseEther(amount));
+    } catch (e) {
+      spinner.fail(chalk.red("Approval failed."));
+      console.error(e.message);
+    }
+  }
+}
+
+/**
+ * @description Guides the user through setting up or modifying their usage allowance.
+ * The flow is state-aware and adapts based on whether an allowance is already active.
+ */
+async function handleManageAllowance() {
+  const spinner = ora("Checking current allowance status...").start();
+
+  // First, determine the current state of the user's allowance.
+  const sub = await aiAgentEscrowContract.subscriptions(signer.address);
+
+  const expiresAt = isSapphire ? sub : sub.expiresAt;
+  const now = Math.floor(Date.now() / 1000);
+  const isActive = expiresAt > now;
+
+  spinner.stop();
+
+  if (!isActive) {
+    // --- ONBOARDING FLOW: User has no active allowance ---
+    console.log(chalk.yellow("Your usage allowance is not active. Let's set one up."));
+
+    await setupNewAllowance();
+  } else {
+    // --- MANAGEMENT FLOW: User has an active allowance ---
+    const choices = isSapphire
+      ? [
+          "Deposit Funds",
+          "Withdraw Funds",
+          "Update Expiry Term",
+          new inquirer.Separator(),
+          "Cancel Usage Allowance",
+          "Back",
+        ]
+      : [
+          "Update Allowance Amount & Term",
+          "Cancel Usage Allowance",
+          new inquirer.Separator(),
+          "Back",
+        ];
+
+    const { action } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "action",
+        message: "You have an active allowance. What would you like to do?",
+        choices,
+      },
+    ]);
+
+    switch (action) {
+      case "Deposit Funds":
+        await handleDeposit();
+        break;
+      case "Withdraw Funds":
+        await handleWithdraw();
+        break;
+      case "Update Expiry Term":
+        await setExpiryTerm();
+        break;
+      case "Update Allowance Amount & Term": // EVM-only case
+        await setupNewAllowance(); // The setup flow works perfectly for updates too
+        break;
+      case "Cancel Usage Allowance":
+        await cancelAllowance();
+        break;
+      default:
+        return; // Back to main menu
+    }
+  }
+
+  // Show the user their updated status after any action.
+  await handleCheckBalance();
+}
+
+/**
+ * @description A helper function specifically for Sapphire deposits.
+ * @param {string} [amount] - The amount to deposit. If not provided, the user will be prompted.
+ */
+async function handleDeposit(amount) {
+  let depositAmount = amount;
+  if (!depositAmount) {
+    const answer = await inquirer.prompt([
+      {
+        type: "input",
+        name: "amount",
+        message: "Enter amount to deposit (e.g., 5.0):",
+        validate: (input) => !isNaN(parseFloat(input)) && parseFloat(input) > 0,
+      },
+    ]);
+
+    depositAmount = answer.amount;
+  }
+
+  const spinner = ora("Sending deposit...").start();
+
+  try {
+    const tx = await aiAgentEscrowContract.deposit({ value: ethers.parseEther(depositAmount) });
+
+    const receipt = await tx.wait();
+
+    spinner.succeed(chalk.green(`Successfully deposited ${depositAmount} tokens.`));
+    console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
+  } catch (e) {
+    spinner.fail(chalk.red("Deposit failed."));
+    console.error(e.message);
+  }
+}
+
+/**
+ * @description A helper function specifically for Sapphire withdrawals.
+ */
+async function handleWithdraw() {
+  const { amount } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "amount",
+      message: "Enter amount to withdraw (e.g., 2.5):",
+      validate: (input) => !isNaN(parseFloat(input)) && parseFloat(input) > 0,
+    },
+  ]);
+
+  const spinner = ora("Sending withdrawal...").start();
+
+  try {
+    const tx = await aiAgentEscrowContract.withdraw(ethers.parseEther(amount));
+
+    const receipt = await tx.wait();
+
+    spinner.succeed(chalk.green(`Successfully withdrew ${amount} tokens.`));
+    console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
+  } catch (e) {
+    spinner.fail(chalk.red("Withdrawal failed."));
+    console.error(e.message);
+  }
+}
+
+/**
+ * @description A helper function to set or update the expiry term of the allowance/subscription.
+ * @param {ethers.BigNumber} [evmAllowance] - (EVM only) The allowance amount to pass to the contract.
+ */
+async function setExpiryTerm(evmAllowance) {
+  const timeInOneMonth = new Date();
+  timeInOneMonth.setMonth(timeInOneMonth.getMonth() + 1);
+
+  const { dt } = await inquirer.prompt([
+    {
+      type: "datetime",
+      name: "dt",
+      message: "Set the exact date and time for the allowance to expire:",
+      initial: timeInOneMonth, // Default to 1 month from now
+      format: ["d", "/", "m", "/", "yyyy", " ", "h", ":", "MM", " ", "TT"],
+      filter: (dt) => {
+        // Set seconds to 0
+        dt.setSeconds(0);
+        return dt;
+      },
+    },
+  ]);
+
+  // The contract expects a Unix timestamp in seconds.
+  const expiresAt = Math.floor(dt.getTime() / 1000);
+
+  const spinner = ora("Setting new expiry term...").start();
+
+  try {
+    const tx = isSapphire
+      ? await aiAgentEscrowContract.setSubscription(expiresAt)
+      : await aiAgentEscrowContract.setSubscription(evmAllowance, expiresAt);
+
+    const receipt = await tx.wait();
+
+    spinner.succeed(
+      chalk.green(
+        `Allowance term set, expires on ${format(new Date(expiresAt * 1000), "d/M/yyyy h:mm a")}`,
+      ),
+    );
+    console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
+  } catch (e) {
+    spinner.fail(chalk.red("Failed to set expiry term."));
+    console.error(e.message);
+  }
+}
+
+/**
+ * @description A helper function to cancel the user's allowance/subscription.
+ */
+async function cancelAllowance() {
+  const spinner = ora("Cancelling usage allowance...").start();
+
+  try {
+    const tx = await aiAgentEscrowContract.cancelSubscription();
+
+    const receipt = await tx.wait();
+
+    spinner.succeed(chalk.green("Usage allowance cancelled."));
+    console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
+  } catch (e) {
+    spinner.fail(chalk.red("Failed to cancel allowance."));
+    console.error(e.message);
+  }
+}
+
+/**
  * @description Sends a transaction to clear all of the user's prompts and answers from the contract.
  */
-async function handleClearPrompts() {
+async function handleClearHistory() {
   console.log("");
+
   const { confirmed } = await inquirer.prompt([
     {
       type: "confirm",
       name: "confirmed",
       message: chalk.yellow(
-        "Are you sure you want to permanently clear all your prompts and answers from the contract?",
+        "Are you sure you want to permanently clear your conversation history from the contract?",
       ),
       default: false,
     },
@@ -389,13 +773,20 @@ async function handleClearPrompts() {
     return;
   }
 
-  const spinner = ora("Sending transaction to clear your data...").start();
+  const spinner = ora("Clearing conversation history on-chain...").start();
+
   try {
     // Manually set a high gas limit to overcome potential estimation issues.
-    const tx = await contract.clearPrompt({ gasLimit: 10_000_000 });
+    // const tx = await contract.clearPrompt({ gasLimit: 10_000_000 });
+
+    const tx = isSapphire
+      ? await aiAgentContract.clearPrompt(sapphireAuthToken, signer.address)
+      : await aiAgentContract.clearPrompt(signer.address);
+
     spinner.text = "Waiting for transaction to be mined...";
     const receipt = await tx.wait();
-    spinner.succeed(chalk.green("Your prompts and answers have been cleared."));
+
+    spinner.succeed(chalk.green("Your conversation history has been cleared."));
     console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
   } catch (error) {
     spinner.fail(chalk.red("Failed to clear data."));
@@ -404,16 +795,17 @@ async function handleClearPrompts() {
 }
 
 /**
- * @description Fetches and displays the user's current wallet balance.
+ * @description Fetches and displays the user's current wallet and contract balances/status.
  */
 async function handleCheckBalance() {
-  const spinner = ora("Fetching wallet balance...").start();
+  console.log("");
+  const spinner = ora("Fetching balances and status...").start();
+
   try {
-    const address = await signer.getAddress();
+    const address = signer.address;
     const balanceWei = await signer.provider.getBalance(address);
     const balance = ethers.formatEther(balanceWei);
 
-    // This logic was already correctly implemented in main(), we bring it here for consistency.
     const chainName = Object.keys(CHAINS).find((cn) => CHAINS[cn].isSapphire === isSapphire);
     const CURRENCY_SYMBOLS = {
       Sapphire: { mainnet: "ROSE", default: "TEST" },
@@ -422,11 +814,97 @@ async function handleCheckBalance() {
     const currency =
       CURRENCY_SYMBOLS[chainName]?.[networkName] || CURRENCY_SYMBOLS[chainName]?.default || "TOKEN";
 
-    spinner.succeed(chalk.green("Balance updated:"));
-    console.log(`   - Wallet: ${chalk.yellow(address)}`);
-    console.log(`   - Balance: ${chalk.bold(balance)} ${currency}`);
+    spinner.succeed(chalk.green("Balances and status:"));
+    console.log(`   - Wallet Address: ${chalk.yellow(address)}`);
+    console.log(`   - Native Balance: ${chalk.bold(balance)} ${currency}`);
+
+    let sub;
+    if (isSapphire) {
+      const depositWei = await aiAgentEscrowContract.deposits(address);
+      sub = await aiAgentEscrowContract.subscriptions(address);
+
+      console.log(
+        `   - Deposited for Allowance: ${chalk.bold(ethers.formatEther(depositWei))} ${currency}`,
+      );
+    } else {
+      const tokenSymbol = await tokenContract.symbol();
+      const tokenBalance = await tokenContract.balanceOf(address);
+      const allowanceWei = await tokenContract.allowance(address, aiAgentEscrowContract.target);
+      sub = await aiAgentEscrowContract.subscriptions(address);
+
+      console.log(
+        `   - Your Token Balance: ${chalk.bold(ethers.formatEther(tokenBalance))} ${tokenSymbol}`,
+      );
+      console.log(
+        `   - Approved for Payment Contract: ${chalk.bold(ethers.formatEther(allowanceWei))} ${tokenSymbol}`,
+      );
+      console.log(
+        `   - Allowance Spent / Limit: ${chalk.bold(ethers.formatEther(sub.spentAmount))} / ${chalk.bold(ethers.formatEther(sub.allowance))} ${tokenSymbol}`,
+      );
+    }
+
+    const expiresAt = isSapphire ? sub : sub.expiresAt;
+
+    if (expiresAt > 0) {
+      const date = new Date(Number(expiresAt) * 1000);
+
+      if (date > new Date()) {
+        console.log(
+          `   - Allowance Term: ${chalk.green("Active")} (Expires: ${format(date, "d/M/yyyy h:mm a")})`,
+        );
+      } else {
+        console.log(
+          `   - Allowance Term: ${chalk.red("Expired")} on ${format(date, "d/M/yyyy h:mm a")}`,
+        );
+      }
+    } else {
+      console.log(`   - Allowance Term: ${chalk.yellow("Inactive")}`);
+    }
   } catch (error) {
     spinner.fail(chalk.red("Failed to fetch balance."));
+    console.error(error.message);
+  }
+}
+
+/**
+ * @description Fetches and displays the details of a specific on-chain escrow record.
+ */
+async function handleCheckEscrowStatus() {
+  console.log("");
+  const { promptId } = await inquirer.prompt([
+    {
+      type: "input",
+      name: "promptId",
+      message: "Enter the Prompt ID to check its payment status:",
+      validate: (input) => !isNaN(parseInt(input)) && parseInt(input) >= 0,
+    },
+  ]);
+
+  const spinner = ora(`Fetching payment status for Prompt #${promptId}...`).start();
+
+  try {
+    const escrowData = await aiAgentEscrowContract.escrows(promptId);
+
+    if (escrowData.user === ethers.ZeroAddress) {
+      spinner.warn(chalk.yellow(`No payment record found for Prompt ID #${promptId}.`));
+      return;
+    }
+
+    const STATUS_MAP = ["Pending", "Complete", "Refunded"];
+    const status = STATUS_MAP[Number(escrowData.status)] || "Unknown";
+    const amount = ethers.formatEther(escrowData.amount);
+    const createdAt = new Date(Number(escrowData.createdAt) * 1000);
+
+    const currency = isSapphire ? "TEST/ROSE" : await tokenContract.symbol();
+
+    spinner.succeed(chalk.green("Payment status fetched successfully."));
+    console.log(`\n--- Payment Status for Prompt #${promptId} ---`);
+    console.log(`   - User: ${chalk.yellow(escrowData.user)}`);
+    console.log(`   - Amount: ${chalk.bold(amount)} ${currency}`);
+    console.log(`   - Created At: ${format(createdAt, "d/M/yyyy h:mm a")}`);
+    console.log(`   - Status: ${chalk.bold(status)}`);
+  } catch (error) {
+    spinner.fail(chalk.red("Failed to fetch payment status."));
     console.error(error.message);
   }
 }
@@ -444,10 +922,13 @@ async function mainMenu() {
         message: "What would you like to do?",
         choices: [
           "Send a new prompt",
-          "Check for new answers",
-          "Check wallet balance",
-          "Clear my prompts and answers",
+          "Check conversation history",
+          "Clear my conversation history",
+          "Check a Prompt's Payment Status",
+          "Manage Usage Allowance",
+          "Check Balances & Status",
           new inquirer.Separator(),
+          "Clear my conversation history",
           "Exit",
         ],
       },
@@ -457,14 +938,20 @@ async function mainMenu() {
       case "Send a new prompt":
         await handleSendPrompt();
         break;
-      case "Check for new answers":
-        await handleCheckAnswers();
+      case "Check conversation history":
+        await handleCheckHistory();
         break;
-      case "Check wallet balance":
+      case "Check a Prompt's Payment Status":
+        await handleCheckEscrowStatus();
+        break;
+      case "Manage Usage Allowance":
+        await handleManageAllowance();
+        break;
+      case "Check Balances & Status":
         await handleCheckBalance();
         break;
-      case "Clear my prompts and answers":
-        await handleClearPrompts();
+      case "Clear my conversation history":
+        await handleClearHistory();
         break;
       case "Exit":
         console.log(chalk.bold("\nGoodbye!\n"));
@@ -474,8 +961,7 @@ async function mainMenu() {
 }
 
 /**
- * @description Main entry point for the CLI application. Handles setup, login,
- * contract instantiation, and kicks off the main menu.
+ * @description Main entry point for the CLI application.
  */
 async function main() {
   console.log("\nWelcome to the Tradable AI Agent CLI!");
@@ -566,58 +1052,87 @@ async function main() {
     }
 
     const spinner = ora(`Connecting to ${networkName}...`).start();
+
     const provider = new ethers.JsonRpcProvider(rpcUrl);
     const baseSigner = new ethers.Wallet(privateKey, provider);
     signer = isSapphire ? wrapEthersSigner(baseSigner) : baseSigner;
 
-    const { chainId } = await provider.getNetwork();
-    const contractName = isSapphire ? "SapphireAIAgent" : "EVMAIAgent";
+    const { chainId } = await signer.provider.getNetwork();
 
-    const { abi } = loadContractArtifact(contractName);
+    // --- Contract Instantiation ---
+    const aiAgentContractName = isSapphire ? "SapphireAIAgent" : "EVMAIAgent";
+    const aiAgentEscrowContractName = isSapphire ? "SapphireAIAgentEscrow" : "EVMAIAgentEscrow";
 
-    let contractAddress = process.env.ORACLE_CONTRACT_ADDRESS;
-    if (!contractAddress) {
+    const aiAgentArtifact = loadContractArtifact(aiAgentContractName);
+    const aiAgentEscrowArtifact = loadContractArtifact(aiAgentEscrowContractName);
+
+    let aiAgentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
+    if (!aiAgentAddress) {
       spinner.stop();
-      console.log(chalk.yellow("Contract address not found in .env file."));
-      ({ contractAddress } = await inquirer.prompt([
+      console.log(chalk.yellow("AI Agent contract address not found in .env file."));
+      ({ aiAgentAddress } = await inquirer.prompt([
         {
           type: "input",
-          name: "contractAddress",
-          message: "Please enter the contract address:",
+          name: "aiAgentAddress",
+          message: "Please enter the AI Agent contract address:",
         },
       ]));
     }
 
-    if (!contractAddress) {
-      throw new Error("A contract address is required.");
+    if (!aiAgentAddress) {
+      throw new Error("An AI Agent contract address is required.");
     }
 
-    contract = new Contract(contractAddress, abi, signer);
+    let aiAgentEscrowAddress = process.env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
+    if (!aiAgentEscrowAddress) {
+      spinner.stop();
+      console.log(chalk.yellow("AI Agent Escrow contract address not found in .env file."));
+      ({ aiAgentEscrowAddress } = await inquirer.prompt([
+        {
+          type: "input",
+          name: "aiAgentEscrowAddress",
+          message: "Please enter the AI Agent Escrow contract address:",
+        },
+      ]));
+    }
 
-    const address = signer.address;
-    const balanceWei = await provider.getBalance(address);
-    const balance = ethers.formatEther(balanceWei);
+    if (!aiAgentEscrowAddress) {
+      throw new Error("An AI Agent Escrow contract address is required.");
+    }
 
-    // Correctly determine the native currency symbol based on the selected chain.
-    const CURRENCY_SYMBOLS = {
-      Sapphire: { mainnet: "ROSE", default: "TEST" },
-      Base: { default: "ETH" },
-    };
-    const currency =
-      CURRENCY_SYMBOLS[chainName]?.[networkName] || CURRENCY_SYMBOLS[chainName]?.default || "TOKEN";
+    aiAgentContract = new Contract(aiAgentAddress, aiAgentArtifact.abi, signer);
+    aiAgentEscrowContract = new Contract(aiAgentEscrowAddress, aiAgentEscrowArtifact.abi, signer);
 
     spinner.succeed(chalk.green("Connected successfully!"));
+    console.log(`\n--- Initial Account Status ---`);
     console.log(`   - Network: ${chalk.bold(networkName)} (Chain ID: ${chainId})`);
-    console.log(`   - Wallet Address: ${chalk.yellow(address)}`);
-    console.log(`   - Contract Address: ${chalk.cyan(contract.target)}`);
-    console.log(`   - Balance: ${chalk.bold(balance)} ${currency}`);
+    console.log(`   - AI Agent Contract: ${chalk.cyan(aiAgentAddress)}`);
+    console.log(`   - Payment Contract: ${chalk.cyan(aiAgentEscrowAddress)}`);
 
     if (isSapphire) {
       sapphireAuthToken = await loginSiwe(Number(chainId));
     } else {
+      // For EVM, also need the token contract and ROFL public key
+      const tokenAddress = process.env.TOKEN_CONTRACT_ADDRESS;
+      if (!tokenAddress) {
+        spinner.stop();
+        console.log(chalk.yellow("ERC20 token contract address not found in .env file."));
+        ({ tokenAddress } = await inquirer.prompt([
+          {
+            type: "input",
+            name: "tokenAddress",
+            message: "Please enter the ERC20 token contract address:",
+          },
+        ]));
+      }
+
+      if (!tokenAddress) {
+        throw new Error("An ERC20 token contract address is required.");
+      }
+
       roflPublicKey = process.env.PUBLIC_KEY;
       if (!roflPublicKey) {
-        console.log(chalk.yellow("PUBLIC_KEY for ROFL worker not found in your .env file."));
+        console.log(chalk.yellow("PUBLIC_KEY for the ROFL worker not found in your .env file."));
         ({ roflPublicKey } = await inquirer.prompt([
           {
             type: "input",
@@ -630,7 +1145,12 @@ async function main() {
       if (!roflPublicKey) {
         throw new Error("ROFL worker's public key is required for encryption.");
       }
+
+      const tokenArtifact = loadContractArtifact("AbleToken");
+      tokenContract = new Contract(tokenAddress, tokenArtifact.abi, signer);
     }
+
+    await handleCheckBalance();
 
     await mainMenu();
   } catch (error) {

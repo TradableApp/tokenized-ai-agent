@@ -33,6 +33,7 @@ contract SapphireAIAgentEscrow is Ownable {
   }
 
   mapping(uint256 => Escrow) public escrows;
+  mapping(address => uint256) public pendingEscrowCount;
 
   event TreasuryUpdated(address newTreasury);
   event OracleUpdated(address newOracle);
@@ -53,6 +54,7 @@ contract SapphireAIAgentEscrow is Ownable {
   error NotOracle();
   error ZeroAddress();
   error InsufficientBalanceForWithdrawal();
+  error HasPendingPrompts();
 
   // Sets up the escrow smart contract.
   // @param _agentAddress The address of the SapphireAIAgent contract to interact with.
@@ -122,8 +124,12 @@ contract SapphireAIAgentEscrow is Ownable {
   }
 
   // Allows a user to withdraw their unused deposited funds.
-  // @param _amount The amount of native tokens to withdraw.
+  // @dev Can only be called if there are no pending prompts to ensure funds aren't orphaned.
   function withdraw(uint256 _amount) external {
+    if (pendingEscrowCount[msg.sender] > 0) {
+      revert HasPendingPrompts();
+    }
+
     if (deposits[msg.sender] < _amount) {
       revert InsufficientBalanceForWithdrawal();
     }
@@ -136,14 +142,37 @@ contract SapphireAIAgentEscrow is Ownable {
   // Sets or updates a user's subscription period.
   // @param _expiresAt The unix timestamp when this subscription becomes invalid.
   function setSubscription(uint256 _expiresAt) external {
+    if (pendingEscrowCount[msg.sender] > 0) {
+      revert HasPendingPrompts();
+    }
+
     subscriptions[msg.sender] = Subscription({ expiresAt: _expiresAt });
     emit SubscriptionSet(msg.sender, _expiresAt);
   }
 
-  // Cancels a user's subscription.
+  /**
+   * Cancels a user's usage allowance and refunds their entire deposit.
+   * @dev This function can only be called if the user has no prompts currently
+   *      in the PENDING state to prevent orphaning funds.
+   */
   function cancelSubscription() external {
+    if (pendingEscrowCount[msg.sender] > 0) {
+      revert HasPendingPrompts();
+    }
+
+    uint256 depositAmount = deposits[msg.sender];
+
+    // Reset state first to follow the Checks-Effects-Interactions pattern.
     delete subscriptions[msg.sender];
+    delete deposits[msg.sender];
+
     emit SubscriptionCancelled(msg.sender);
+
+    // Only attempt a transfer if there is a balance to refund.
+    if (depositAmount > 0) {
+      payable(msg.sender).transfer(depositAmount);
+      emit Withdrawal(msg.sender, depositAmount);
+    }
   }
 
   // Initiates a new prompt request.
@@ -178,6 +207,7 @@ contract SapphireAIAgentEscrow is Ownable {
 
     // Deduct from their deposited balance. The funds are now held by this contract.
     deposits[_user] -= PROMPT_FEE;
+    pendingEscrowCount[_user]++;
 
     uint256 promptId = SAPPHIRE_AI_AGENT.promptIdCounter();
     escrows[promptId] = Escrow({
@@ -201,6 +231,7 @@ contract SapphireAIAgentEscrow is Ownable {
     if (escrow.user == address(0)) revert EscrowNotFound();
     if (escrow.status != EscrowStatus.PENDING) revert EscrowNotPending();
 
+    pendingEscrowCount[escrow.user]--;
     escrow.status = EscrowStatus.COMPLETE;
     payable(treasury).transfer(escrow.amount);
     emit PaymentFinalized(_promptId);
@@ -217,6 +248,7 @@ contract SapphireAIAgentEscrow is Ownable {
       escrow.status == EscrowStatus.PENDING &&
       block.timestamp > escrow.createdAt + REFUND_TIMEOUT
     ) {
+      pendingEscrowCount[escrow.user]--;
       escrow.status = EscrowStatus.REFUNDED;
       // Refund the user by adding the amount back to their internal deposit balance.
       deposits[escrow.user] += escrow.amount;

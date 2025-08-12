@@ -150,9 +150,16 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     emit SubscriptionSet(msg.sender, _allowance, _expiresAt);
   }
 
-  // Cancels a user's subscription.
-  // Called by the user.
+  /**
+   * Cancels a user's usage allowance term.
+   * @dev This function can only be called if the user has no prompts currently
+   *      in the PENDING state to prevent orphaning funds.
+   */
   function cancelSubscription() external {
+    if (pendingEscrowCount[msg.sender] > 0) {
+      revert HasPendingPrompts();
+    }
+
     delete subscriptions[msg.sender];
     emit SubscriptionCancelled(msg.sender);
   }

@@ -127,6 +127,13 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
     });
 
+    it("should revert if owner tries to set treasury to the zero address", async function () {
+      const { escrow, deployer } = await loadFixture(deployEscrowFixture);
+      await expect(
+        escrow.connect(deployer).setTreasury(ethers.ZeroAddress),
+      ).to.be.revertedWithCustomError(escrow, "ZeroAddress");
+    });
+
     it("should allow the owner to set a new oracle", async function () {
       const { escrow, deployer, unauthorizedUser } = await loadFixture(deployEscrowFixture);
       await escrow.connect(deployer).setOracle(unauthorizedUser.address);
@@ -138,13 +145,6 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       await expect(
         escrow.connect(user).setOracle(unauthorizedUser.address),
       ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
-    });
-
-    it("should revert if owner tries to set treasury to the zero address", async function () {
-      const { escrow, deployer } = await loadFixture(deployEscrowFixture);
-      await expect(
-        escrow.connect(deployer).setTreasury(ethers.ZeroAddress),
-      ).to.be.revertedWithCustomError(escrow, "ZeroAddress");
     });
 
     it("should revert if owner tries to set oracle to the zero address", async function () {
@@ -185,6 +185,20 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       await expect(
         escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 7200),
       ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
+    });
+
+    it("should revert when cancelling a subscription while having pending prompts", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await escrow
+        .connect(user)
+        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
+
+      // Attempting to cancel the subscription should now fail.
+      await expect(escrow.connect(user).cancelSubscription()).to.be.revertedWithCustomError(
+        escrow,
+        "HasPendingPrompts",
+      );
     });
   });
 

@@ -51,8 +51,7 @@
 │   ├── getPublicKey.js
 │   ├── interact.js
 │   ├── release-mainnet.sh
-│   ├── rofl-set-secrets.sh
-│   └── send-prompt.js
+│   └── rofl-set-secrets.sh
 ├── test
 │   └── SapphireAIAgent.test.js
 ├── tokenized-ai-agent.code-workspace
