@@ -260,6 +260,20 @@ async function waitForAnswer(promptId) {
   }
 }
 
+/**
+ * @description A helper function to pause and wait for the user to press Enter.
+ */
+async function pressEnterToContinue() {
+  console.log("");
+  await inquirer.prompt([
+    {
+      type: "input",
+      name: "continue",
+      message: `Press Enter to return to the main menu...`,
+    },
+  ]);
+}
+
 // --- CLI HANDLERS ---
 
 /**
@@ -268,6 +282,7 @@ async function waitForAnswer(promptId) {
  * @returns {Promise<boolean>} True if the user is ready to send a prompt, false if they cancel.
  */
 async function checkAndGuideAllowance() {
+  let skipPressEnter = true;
   // This function now loops until the user is ready or cancels.
   while (true) {
     const sub = await aiAgentEscrowContract.subscriptions(signer.address);
@@ -291,7 +306,7 @@ async function checkAndGuideAllowance() {
       ]);
 
       if (setup) {
-        await handleManageAllowance();
+        await handleManageAllowance(skipPressEnter);
         continue; // Loop back to re-check the status.
       } else {
         return false; // User explicitly cancelled.
@@ -314,7 +329,7 @@ async function checkAndGuideAllowance() {
         ]);
 
         if (setup) {
-          await handleManageAllowance();
+          await handleManageAllowance(skipPressEnter);
           continue; // Loop back to re-check.
         } else {
           return false;
@@ -337,7 +352,7 @@ async function checkAndGuideAllowance() {
         ]);
 
         if (setup) {
-          await handleManageAllowance();
+          await handleManageAllowance(skipPressEnter);
           continue; // Loop back to re-check.
         } else {
           return false;
@@ -458,9 +473,7 @@ async function handleCheckHistory() {
     const answersMap = new Map();
 
     if (isSapphire) {
-      answers.forEach((a) =>
-        answersMap.set(Number(a.promptId), a.answer.replaceAll(/<think>.*<\/think>/gs, "").trim()),
-      );
+      answers.forEach((a) => answersMap.set(Number(a.promptId), a.answer));
     } else {
       const decryptedAnswers = await Promise.all(
         answers.map(async (a) => ({
@@ -481,7 +494,13 @@ async function handleCheckHistory() {
       console.log(`   ${chalk.bold("Prompt:")} ${p.prompt}`);
 
       if (answer) {
-        console.log(`   ${chalk.green.bold("Answer:")} ${chalk.green(answer)}`);
+        // Check for the specific cancellation message and format it differently.
+        if (answer === "Prompt cancelled by user.") {
+          console.log(`   ${chalk.yellow.bold("Answer:")} ${chalk.yellow("(Cancelled by user)")}`);
+        } else {
+          const cleanAnswer = answer.replaceAll(/<think>.*<\/think>/gs, "").trim();
+          console.log(`   ${chalk.green.bold("Answer:")} ${chalk.green(cleanAnswer)}`);
+        }
       } else {
         console.log(
           `   ${chalk.yellow.bold("Answer:")} ${chalk.yellow("(Awaiting response from AI Agent...)")}`,
@@ -491,6 +510,40 @@ async function handleCheckHistory() {
   } catch (error) {
     spinner.fail(chalk.red("Failed to fetch data."));
     console.error(error.message);
+  }
+}
+
+/**
+ * @description Guides the user through setting up or modifying their usage allowance.
+ * The flow is state-aware and adapts based on whether an allowance is already active.
+ */
+async function handleManageAllowance(skipPressEnter) {
+  console.log("");
+  const spinner = ora("Checking current allowance status...").start();
+
+  // First, determine the current state of the user's allowance.
+  const sub = await aiAgentEscrowContract.subscriptions(signer.address);
+
+  const expiresAt = isSapphire ? sub : sub.expiresAt;
+  const now = Math.floor(Date.now() / 1000);
+  const isActive = expiresAt > 0 && expiresAt > now;
+
+  spinner.stop();
+
+  if (!isActive) {
+    // --- ONBOARDING FLOW: User has no active allowance ---
+    console.log(chalk.yellow("Your usage allowance is not active. Let's set one up."));
+    await setupNewAllowance();
+  } else {
+    // --- MANAGEMENT FLOW: User has an active allowance ---
+    await updateExistingAllowance();
+  }
+
+  // Show the user their updated status after any action.
+  await handleCheckBalance();
+
+  if (!skipPressEnter) {
+    await pressEnterToContinue();
   }
 }
 
@@ -558,104 +611,81 @@ async function setupNewAllowance() {
 }
 
 /**
- * @description Guides the user through setting up or modifying their usage allowance.
- * The flow is state-aware and adapts based on whether an allowance is already active.
+ * @description A guided flow for users who already have an active allowance to modify it.
  */
-async function handleManageAllowance() {
-  const spinner = ora("Checking current allowance status...").start();
+async function updateExistingAllowance() {
+  if (isSapphire) {
+    const chainName = Object.keys(CHAINS).find((cn) => CHAINS[cn].isSapphire === isSapphire);
+    const CURRENCY_SYMBOLS = {
+      Sapphire: { mainnet: "ROSE", default: "TEST" },
+      Base: { default: "ETH" },
+    };
+    const currency =
+      CURRENCY_SYMBOLS[chainName]?.[networkName] || CURRENCY_SYMBOLS[chainName]?.default || "TOKEN";
 
-  // First, determine the current state of the user's allowance.
-  const sub = await aiAgentEscrowContract.subscriptions(signer.address);
-
-  const expiresAt = isSapphire ? sub : sub.expiresAt;
-  const now = Math.floor(Date.now() / 1000);
-  const isActive = expiresAt > now;
-
-  spinner.stop();
-
-  if (!isActive) {
-    // --- ONBOARDING FLOW: User has no active allowance ---
-    console.log(chalk.yellow("Your usage allowance is not active. Let's set one up."));
-
-    await setupNewAllowance();
-  } else {
-    // --- MANAGEMENT FLOW: User has an active allowance ---
-    const choices = isSapphire
-      ? [
-          "Deposit/Withdraw Funds",
-          "Update Expiry Term",
-          new inquirer.Separator(),
-          "Cancel Usage Allowance",
-          "Back",
-        ]
-      : [
-          "Update Allowance Amount & Term",
-          "Cancel Usage Allowance",
-          new inquirer.Separator(),
-          "Back",
-        ];
+    const currentDeposit = await aiAgentEscrowContract.deposits(signer.address);
+    console.log(
+      `Your current deposited amount is ${chalk.bold(ethers.formatEther(currentDeposit))} ${currency}.`,
+    );
 
     const { action } = await inquirer.prompt([
       {
         type: "list",
         name: "action",
-        message: "You have an active allowance. What would you like to do?",
-        choices,
+        message: "How would you like to manage the allowance?",
+        choices: ["Update", "Cancel"],
       },
     ]);
 
     switch (action) {
-      case "Deposit Funds":
-        await handleDeposit();
-        break;
-      case "Withdraw Funds":
-        await handleWithdraw();
-        break;
-      case "Update Expiry Term":
-        await setExpiryTerm();
-        break;
-      case "Update Allowance Amount & Term": // EVM-only case
-        await setupNewAllowance(); // The setup flow works perfectly for updates too
-        break;
-      case "Cancel Usage Allowance":
-        await cancelAllowance();
-        break;
-      default:
-        return; // Back to main menu
-    }
-  }
+      case "Update": {
+        const { newAmount } = await inquirer.prompt([
+          {
+            type: "input",
+            name: "newAmount",
+            message: "Enter your new desired total deposit amount:",
+            default: ethers.formatEther(currentDeposit),
+            validate: (input) => !isNaN(parseFloat(input)) && parseFloat(input) >= 0,
+          },
+        ]);
 
-  // Show the user their updated status after any action.
-  await handleCheckBalance();
+        const newAmountWei = ethers.parseEther(newAmount);
+        const difference = newAmountWei - currentDeposit;
+
+        if (difference > 0) {
+          await handleDeposit(ethers.formatEther(difference));
+        } else if (difference < 0) {
+          await handleWithdraw(ethers.formatEther(-difference));
+        } else {
+          console.log(chalk.yellow("No change in deposit amount."));
+        }
+        await setExpiryTerm();
+
+        break;
+      }
+      case "Cancel": {
+        await cancelAllowance();
+
+        break;
+      }
+    }
+  } else {
+    // EVM: The flow is the same as setting up a new allowance.
+    await setupNewAllowance();
+  }
 }
 
 /**
  * @description A helper function specifically for Sapphire deposits.
- * @param {string} [amount] - The amount to deposit. If not provided, the user will be prompted.
+ * @param {string} amount - The amount to deposit as a string.
  */
 async function handleDeposit(amount) {
-  let depositAmount = amount;
-  if (!depositAmount) {
-    const answer = await inquirer.prompt([
-      {
-        type: "input",
-        name: "amount",
-        message: "Enter amount to deposit (e.g., 5.0):",
-        validate: (input) => !isNaN(parseFloat(input)) && parseFloat(input) > 0,
-      },
-    ]);
-
-    depositAmount = answer.amount;
-  }
-
-  const spinner = ora("Sending deposit...").start();
+  const spinner = ora(`Depositing ${amount} tokens into escrow...`).start();
 
   try {
-    const tx = await aiAgentEscrowContract.deposit({ value: ethers.parseEther(depositAmount) });
-
+    const tx = await aiAgentEscrowContract.deposit({ value: ethers.parseEther(amount) });
     const receipt = await tx.wait();
-
-    spinner.succeed(chalk.green(`Successfully deposited ${depositAmount} tokens.`));
+    spinner.succeed(chalk.green(`Successfully deposited ${amount} tokens.`));
     console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
   } catch (e) {
     spinner.fail(chalk.red("Deposit failed."));
@@ -665,24 +695,14 @@ async function handleDeposit(amount) {
 
 /**
  * @description A helper function specifically for Sapphire withdrawals.
+ * @param {string} amount - The amount to withdraw as a string.
  */
-async function handleWithdraw() {
-  const { amount } = await inquirer.prompt([
-    {
-      type: "input",
-      name: "amount",
-      message: "Enter amount to withdraw (e.g., 2.5):",
-      validate: (input) => !isNaN(parseFloat(input)) && parseFloat(input) > 0,
-    },
-  ]);
-
-  const spinner = ora("Sending withdrawal...").start();
+async function handleWithdraw(amount) {
+  const spinner = ora(`Withdrawing ${amount} tokens from escrow...`).start();
 
   try {
     const tx = await aiAgentEscrowContract.withdraw(ethers.parseEther(amount));
-
     const receipt = await tx.wait();
-
     spinner.succeed(chalk.green(`Successfully withdrew ${amount} tokens.`));
     console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
   } catch (e) {
@@ -758,6 +778,100 @@ async function cancelAllowance() {
 }
 
 /**
+ * @description Allows a user to cancel a pending prompt that has exceeded the cancellation timeout.
+ */
+async function handleCancelPrompt() {
+  console.log("");
+  const spinner = ora("Finding cancellable prompts...").start();
+
+  try {
+    const address = signer.address;
+    const [prompts, answers] = await Promise.all([
+      isSapphire
+        ? aiAgentContract.getPrompts(sapphireAuthToken, address)
+        : aiAgentContract.getPrompts(address),
+      isSapphire
+        ? aiAgentContract.getAnswers(sapphireAuthToken, address)
+        : aiAgentContract.getAnswers(address),
+    ]);
+
+    const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
+    const pendingPrompts = prompts.filter((p) => !answeredPromptIds.has(Number(p.promptId)));
+
+    if (pendingPrompts.length === 0) {
+      spinner.info(chalk.yellow("You have no pending prompts."));
+      return;
+    }
+
+    const cancellationTimeout = await aiAgentEscrowContract.CANCELLATION_TIMEOUT();
+    const now = Math.floor(Date.now() / 1000);
+    const cancellablePrompts = [];
+
+    for (const prompt of pendingPrompts) {
+      const promptId = Number(prompt.promptId);
+      const escrow = await aiAgentEscrowContract.escrows(promptId);
+      if (now >= Number(escrow.createdAt) + Number(cancellationTimeout)) {
+        const plaintextPrompt = isSapphire ? prompt.prompt : await decryptMessage(prompt.message);
+        cancellablePrompts.push({
+          name: `#${promptId}: "${plaintextPrompt.substring(0, 50)}..."`,
+          value: promptId,
+        });
+      }
+    }
+
+    spinner.stop();
+
+    if (cancellablePrompts.length === 0) {
+      console.log(
+        chalk.yellow("You have pending prompts, but none are old enough to be cancelled yet."),
+      );
+      return;
+    }
+
+    console.log("");
+    const { promptToCancel } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "promptToCancel",
+        message: "Choose a prompt to cancel and refund:",
+        choices: [...cancellablePrompts, new inquirer.Separator(), "Back"],
+      },
+    ]);
+
+    if (promptToCancel === "Back") return;
+
+    console.log("");
+    const { confirmed } = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "confirmed",
+        message: `Are you sure you want to cancel Prompt #${promptToCancel}? This action is irreversible.`,
+        default: true,
+      },
+    ]);
+
+    if (!confirmed) {
+      console.log("Cancellation aborted.");
+      return;
+    }
+
+    const cancelSpinner = ora(`Cancelling Prompt #${promptToCancel} on-chain...`).start();
+    const tx = await aiAgentEscrowContract.cancelAndRefundPrompt(promptToCancel);
+    const receipt = await tx.wait();
+    cancelSpinner.succeed(
+      chalk.green(`Prompt #${promptToCancel} successfully cancelled and refunded.`),
+    );
+    console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
+
+    await handleCheckBalance();
+    await pressEnterToContinue();
+  } catch (error) {
+    spinner.fail(chalk.red("Failed to find or cancel prompts."));
+    console.error(error.message);
+  }
+}
+
+/**
  * @description Sends a transaction to clear all of the user's prompts and answers from the contract.
  */
 async function handleClearHistory() {
@@ -768,7 +882,7 @@ async function handleClearHistory() {
       type: "confirm",
       name: "confirmed",
       message: chalk.yellow(
-        "Are you sure you want to permanently clear your conversation history from the contract?",
+        "Are you sure you want to permanently clear your conversation history?",
       ),
       default: false,
     },
@@ -798,6 +912,8 @@ async function handleClearHistory() {
     spinner.fail(chalk.red("Failed to clear data."));
     console.error(error);
   }
+
+  await pressEnterToContinue();
 }
 
 /**
@@ -835,17 +951,13 @@ async function handleCheckBalance() {
     } else {
       const tokenSymbol = await tokenContract.symbol();
       const tokenBalance = await tokenContract.balanceOf(address);
-      const allowanceWei = await tokenContract.allowance(address, aiAgentEscrowContract.target);
       sub = await aiAgentEscrowContract.subscriptions(address);
 
       console.log(
         `   - Your Token Balance: ${chalk.bold(ethers.formatEther(tokenBalance))} ${tokenSymbol}`,
       );
       console.log(
-        `   - Approved for Payment Contract: ${chalk.bold(ethers.formatEther(allowanceWei))} ${tokenSymbol}`,
-      );
-      console.log(
-        `   - Allowance Spent / Limit: ${chalk.bold(ethers.formatEther(sub.spentAmount))} / ${chalk.bold(ethers.formatEther(sub.allowance))} ${tokenSymbol}`,
+        `   - Usage Allowance: ${chalk.bold(ethers.formatEther(sub.spentAmount))} / ${chalk.bold(ethers.formatEther(sub.allowance))} ${tokenSymbol} Spent`,
       );
     }
 
@@ -901,7 +1013,13 @@ async function handleCheckEscrowStatus() {
     const amount = ethers.formatEther(escrowData.amount);
     const createdAt = new Date(Number(escrowData.createdAt) * 1000);
 
-    const currency = isSapphire ? "TEST/ROSE" : await tokenContract.symbol();
+    const chainName = Object.keys(CHAINS).find((cn) => CHAINS[cn].isSapphire === isSapphire);
+    const CURRENCY_SYMBOLS = {
+      Sapphire: { mainnet: "ROSE", default: "TEST" },
+      Base: { default: "ETH" },
+    };
+    const currency =
+      CURRENCY_SYMBOLS[chainName]?.[networkName] || CURRENCY_SYMBOLS[chainName]?.default || "TOKEN";
 
     spinner.succeed(chalk.green("Payment status fetched successfully."));
     console.log(`\n--- Payment Status for Prompt #${promptId} ---`);
@@ -929,11 +1047,15 @@ async function mainMenu() {
         choices: [
           "Send a new prompt",
           "Check conversation history",
+          "Clear my conversation history",
+          new inquirer.Separator(),
+
+          "Cancel a Pending Prompt",
           "Check a Prompt's Payment Status",
+          new inquirer.Separator(),
           "Manage Usage Allowance",
           "Check Balances & Status",
           new inquirer.Separator(),
-          "Clear my conversation history",
           "Exit",
         ],
       },
@@ -946,6 +1068,12 @@ async function mainMenu() {
       case "Check conversation history":
         await handleCheckHistory();
         break;
+      case "Clear my conversation history":
+        await handleClearHistory();
+        break;
+      case "Cancel a Pending Prompt":
+        await handleCancelPrompt();
+        break;
       case "Check a Prompt's Payment Status":
         await handleCheckEscrowStatus();
         break;
@@ -954,9 +1082,6 @@ async function mainMenu() {
         break;
       case "Check Balances & Status":
         await handleCheckBalance();
-        break;
-      case "Clear my conversation history":
-        await handleClearHistory();
         break;
       case "Exit":
         console.log(chalk.bold("\nGoodbye!\n"));
