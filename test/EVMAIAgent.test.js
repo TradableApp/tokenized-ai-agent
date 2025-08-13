@@ -139,7 +139,9 @@ describe("EVMAIAgent (Upgradable)", function () {
     });
 
     it("should allow the escrow contract to store a cancellation", async function () {
+      const { aiAgent, mockEscrow, deployer, user } = await loadFixture(deployAgentFixture);
       const promptId = 0;
+      await mockEscrow.connect(deployer).callSubmitPrompt(promptId, user.address, "0x", "0x", "0x");
 
       // Simulate the escrow contract calling storeCancellation.
       await mockEscrow.connect(deployer).callStoreCancellation(promptId, user.address);
@@ -147,7 +149,7 @@ describe("EVMAIAgent (Upgradable)", function () {
       // Verify state changes
       expect(await aiAgent.isPromptAnswered(promptId)).to.be.true;
 
-      const answers = await aiAgent.getAnswers(user.address);
+      const answers = await aiAgent.connect(user).getAnswers(user.address);
       expect(answers.length).to.equal(1);
       expect(answers[0].promptId).to.equal(promptId);
 
@@ -160,16 +162,18 @@ describe("EVMAIAgent (Upgradable)", function () {
     });
 
     it("should revert if an address other than the escrow contract calls storeCancellation", async function () {
+      const { aiAgent, user } = await loadFixture(deployAgentFixture);
       await expect(
         aiAgent.connect(user).storeCancellation(0, user.address),
       ).to.be.revertedWithCustomError(aiAgent, "NotAIAgentEscrow");
     });
 
     it("should revert if trying to cancel a prompt that is already answered", async function () {
+      const { aiAgent, mockEscrow, deployer, user, oracle } = await loadFixture(deployAgentFixture);
       const promptId = 0;
-      const { oracle } = await loadFixture(deployAgentFixture);
+      await mockEscrow.connect(deployer).callSubmitPrompt(promptId, user.address, "0x", "0x", "0x");
 
-      // First, the oracle submits a real answer.
+      // First, the oracle submits a real answer for the correct user.
       await aiAgent.connect(oracle).submitAnswer("0x", "0x", "0x", promptId, user.address);
 
       // Now, the escrow contract tries to store a cancellation for the same prompt.

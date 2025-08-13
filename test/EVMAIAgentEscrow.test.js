@@ -255,9 +255,22 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     });
 
     it("should revert if a user tries to cancel a prompt that is not pending", async function () {
-      const { deployer } = await loadFixture(deployEscrowFixture);
-      await mockAgent.connect(deployer).callFinalizePayment(await escrow.getAddress(), promptId);
+      const { escrow, mockAgent, user } = await loadFixture(deployEscrowFixture);
+      const promptId = 0;
+      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await escrow
+        .connect(user)
+        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
 
+      // Finalize the prompt so its status is COMPLETE.
+      const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
+      await ethers.provider.send("hardhat_setBalance", [
+        agentSigner.address,
+        "0x1000000000000000000",
+      ]);
+      await escrow.connect(agentSigner).finalizePayment(promptId);
+
+      // Attempting to cancel it now should fail.
       await expect(
         escrow.connect(user).cancelAndRefundPrompt(promptId),
       ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");

@@ -7,12 +7,10 @@ import { IEVMAIAgent } from "../../contracts/interfaces/IEVMAIAgent.sol";
 contract MockEVMAIAgentEscrow {
   IEVMAIAgent public immutable EVM_AI_AGENT;
 
-  // State variables to record calls for test assertions.
   uint256 public lastFinalizedPromptId;
   uint256 public finalizePaymentCallCount;
   event PaymentFinalized(uint256 promptId);
 
-  // Simplified constructor for mock purposes.
   constructor(address _agentAddress) {
     EVM_AI_AGENT = IEVMAIAgent(_agentAddress);
   }
@@ -32,6 +30,10 @@ contract MockEVMAIAgentEscrow {
       _userEncryptedKey,
       _roflEncryptedKey
     );
+  }
+
+  function callStoreCancellation(uint256 _promptId, address _user) external {
+    EVM_AI_AGENT.storeCancellation(_promptId, _user);
   }
 
   // This function now records the call so we can make assertions in our tests.

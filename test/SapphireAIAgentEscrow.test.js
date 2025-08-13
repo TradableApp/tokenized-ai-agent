@@ -301,9 +301,20 @@ describe("SapphireAIAgentEscrow", function () {
     });
 
     it("should revert if a user tries to cancel a prompt that is not pending", async function () {
+      const { escrow, mockAgent, user } = await loadFixture(deployEscrowFixture);
+      const promptId = 0;
+      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).initiatePrompt(PROMPT_TEXT);
+
       // Finalize the prompt so its status is COMPLETE.
-      const { deployer } = await loadFixture(deployEscrowFixture);
-      await mockAgent.connect(deployer).callFinalizePayment(await escrow.getAddress(), promptId);
+      // We need to impersonate the agent contract to call finalizePayment.
+      const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
+      // Fund the impersonated account so it can pay for gas.
+      await ethers.provider.send("hardhat_setBalance", [
+        agentSigner.address,
+        "0x1000000000000000000", // 1 ETH
+      ]);
+      await escrow.connect(agentSigner).finalizePayment(promptId);
 
       // Attempting to cancel it now should fail.
       await expect(
@@ -440,19 +451,16 @@ describe("SapphireAIAgentEscrow", function () {
     });
 
     it("should not refund a prompt that has not timed out", async function () {
-      const { escrow, mockAgent, deployer, user } = await loadFixture(deployEscrowFixture);
+      const { escrow, deployer, user } = await loadFixture(deployEscrowFixture);
       await escrow.connect(user).setSubscription((await time.latest()) + 3600);
-      const promptId = await mockAgent.promptIdCounter();
       await escrow.connect(user).initiatePrompt(PROMPT_TEXT);
+      const promptId = 0;
 
-      const initialUserDeposit = await escrow.deposits(user.address);
-      // Attempt to refund immediately, without waiting for the timeout.
-      await escrow.connect(deployer).processRefund(promptId);
-
-      // The user's deposit should be unchanged.
-      expect(await escrow.deposits(user.address)).to.equal(initialUserDeposit);
-      const escrowRecord = await escrow.escrows(promptId);
-      expect(escrowRecord.status).to.equal(0); // Enum PENDING
+      // FIX: The test must assert that the transaction reverts with the correct error.
+      await expect(escrow.connect(deployer).processRefund(promptId)).to.be.revertedWithCustomError(
+        escrow,
+        "PromptNotRefundableYet",
+      );
     });
   });
 });

@@ -20,6 +20,10 @@ contract MockSapphireAIAgentEscrow {
     AI_AGENT.submitPrompt(_promptId, _user, _prompt);
   }
 
+  function callStoreCancellation(uint256 _promptId, address _user) external {
+    AI_AGENT.storeCancellation(_promptId, _user);
+  }
+
   // This function now records the call for better testing.
   function finalizePayment(uint256 _promptId) external {
     lastFinalizedPromptId = _promptId;
