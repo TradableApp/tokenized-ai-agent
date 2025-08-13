@@ -163,10 +163,17 @@ async function encryptPrompt(plaintext) {
 /**
  * [EVM ONLY]
  * @description Decrypts an EncryptedMessage or EncryptedAnswer struct.
+ *              It handles a special case for cancelled prompts where the content is plaintext.
  * @param {object} encryptedMessage - The struct fetched from the contract.
  * @returns {Promise<string>} The decrypted plaintext.
  */
 async function decryptMessage(encryptedMessage) {
+  // By convention, if the key fields are empty, the content is treated as plaintext.
+  // This handles messages like "Prompt cancelled by user."
+  if (!encryptedMessage.userEncryptedKey || encryptedMessage.userEncryptedKey === "0x") {
+    return ethers.toUtf8String(encryptedMessage.encryptedContent);
+  }
+
   const userPrivateKey = signer.privateKey;
   // Use the helper to safely remove the "0x" prefix before parsing.
   const parsedUserKey = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.userEncryptedKey));
@@ -575,8 +582,7 @@ async function handleManageAllowance() {
     // --- MANAGEMENT FLOW: User has an active allowance ---
     const choices = isSapphire
       ? [
-          "Deposit Funds",
-          "Withdraw Funds",
+          "Deposit/Withdraw Funds",
           "Update Expiry Term",
           new inquirer.Separator(),
           "Cancel Usage Allowance",
@@ -923,7 +929,6 @@ async function mainMenu() {
         choices: [
           "Send a new prompt",
           "Check conversation history",
-          "Clear my conversation history",
           "Check a Prompt's Payment Status",
           "Manage Usage Allowance",
           "Check Balances & Status",

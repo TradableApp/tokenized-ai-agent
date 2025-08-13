@@ -7,6 +7,9 @@ import { ISapphireAIAgentEscrow } from "../../contracts/interfaces/ISapphireAIAg
 // A mock contract to simulate the SapphireAIAgent for testing the escrow.
 contract MockSapphireAIAgent is ISapphireAIAgent {
   uint256 private _promptIdCounter; // Make it private to force use of the getter
+  uint256 public lastCancelledPromptId;
+  uint256 public cancellationCallCount;
+
   event PromptSubmitted(uint256 promptId, address user);
 
   // This view function is essential for the escrow contract.
@@ -24,7 +27,12 @@ contract MockSapphireAIAgent is ISapphireAIAgent {
     emit PromptSubmitted(_promptId, _user);
   }
 
-  // A helper for the test suite to simulate the agent calling back to finalize payment.
+  // Implementation of the storeCancellation function for the mock.
+  function storeCancellation(uint256 _promptId, address /*_user*/) external override {
+    lastCancelledPromptId = _promptId;
+    cancellationCallCount++;
+  }
+
   function callFinalizePayment(address _escrow, uint256 _promptId) external {
     ISapphireAIAgentEscrow(_escrow).finalizePayment(_promptId);
   }

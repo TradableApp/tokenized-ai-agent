@@ -249,6 +249,69 @@ describe("SapphireAIAgentEscrow", function () {
     });
   });
 
+  describe("Prompt Cancellation", function () {
+    let escrow, user, unauthorizedUser, mockAgent;
+    const promptId = 0;
+
+    beforeEach(async function () {
+      // Use the fixture to get a clean state for each test.
+      const fixtures = await loadFixture(deployEscrowFixture);
+      escrow = fixtures.escrow;
+      user = fixtures.user;
+      unauthorizedUser = fixtures.unauthorizedUser;
+      mockAgent = fixtures.mockAgent;
+
+      // Set up a subscription and initiate a prompt to create a pending state.
+      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).initiatePrompt(PROMPT_TEXT);
+    });
+
+    it("should allow the prompt owner to cancel a pending prompt after the timeout", async function () {
+      // Fast-forward time past the cancellation timeout.
+      const CANCELLATION_TIMEOUT = 15 * 60; // 15 minutes in seconds
+      await time.increase(CANCELLATION_TIMEOUT + 1);
+
+      const initialDeposit = await escrow.deposits(user.address);
+
+      await expect(escrow.connect(user).cancelAndRefundPrompt(promptId))
+        .to.emit(escrow, "PromptCancelled")
+        .withArgs(promptId, user.address);
+
+      // Verify state changes
+      const escrowRecord = await escrow.escrows(promptId);
+      expect(escrowRecord.status).to.equal(2); // 2 is Enum.REFUNDED
+      expect(await escrow.pendingEscrowCount(user.address)).to.equal(0);
+      expect(await escrow.deposits(user.address)).to.equal(initialDeposit + PROMPT_FEE);
+
+      // Verify interaction with the AI Agent contract
+      expect(await mockAgent.cancellationCallCount()).to.equal(1);
+      expect(await mockAgent.lastCancelledPromptId()).to.equal(promptId);
+    });
+
+    it("should revert if a user tries to cancel a prompt they do not own", async function () {
+      await expect(
+        escrow.connect(unauthorizedUser).cancelAndRefundPrompt(promptId),
+      ).to.be.revertedWithCustomError(escrow, "NotPromptOwner");
+    });
+
+    it("should revert if a user tries to cancel before the timeout has passed", async function () {
+      await expect(
+        escrow.connect(user).cancelAndRefundPrompt(promptId),
+      ).to.be.revertedWithCustomError(escrow, "PromptNotCancellableYet");
+    });
+
+    it("should revert if a user tries to cancel a prompt that is not pending", async function () {
+      // Finalize the prompt so its status is COMPLETE.
+      const { deployer } = await loadFixture(deployEscrowFixture);
+      await mockAgent.connect(deployer).callFinalizePayment(await escrow.getAddress(), promptId);
+
+      // Attempting to cancel it now should fail.
+      await expect(
+        escrow.connect(user).cancelAndRefundPrompt(promptId),
+      ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
+    });
+  });
+
   describe("Prompt Initiation", function () {
     context("by a User (initiatePrompt)", function () {
       it("should successfully initiate and deduct the fee from deposits", async function () {

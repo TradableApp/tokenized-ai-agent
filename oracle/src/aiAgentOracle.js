@@ -53,7 +53,7 @@ async function setOracleAddress() {
 
   try {
     if (isSapphire) {
-      const isLocalnet = process.env.NETWORK_NAME === "sapphire-localnet";
+      const isLocalnet = NETWORK_NAME === "sapphire-localnet";
 
       if (isLocalnet) {
         const tx = await contract.setOracle(signer.address, { gasLimit: 1000000 });
@@ -185,17 +185,17 @@ async function retrieveAnswers(address) {
 
 /**
  * Query the DeepSeek model via a local Ollama server.
- * @param {string[]} prompts - The array of prompts forming the conversation history.
+ * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryDeepSeek(prompts) {
+async function queryDeepSeek(conversationHistory) {
   if (!process.env.OLLAMA_URL) {
     throw new Error("OLLAMA_URL is not set in the environment file.");
   }
 
-  const messages = prompts.map((p) => ({
-    role: "user",
-    content: p,
+  const messages = conversationHistory.map((turn) => ({
+    role: turn.type === "prompt" ? "user" : "assistant",
+    content: turn.text,
   }));
 
   const res = await fetch(`${process.env.OLLAMA_URL}/api/chat`, {
@@ -216,22 +216,24 @@ async function queryDeepSeek(prompts) {
 
 /**
  * Query the ChainGPT API for a response.
- * @param {string[]} prompts - The array of prompts forming the conversation history.
+ * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryChainGPT(prompts, userAddress) {
+async function queryChainGPT(conversationHistory, userAddress) {
   if (!process.env.CHAIN_GPT_API_KEY) {
     throw new Error("CHAIN_GPT_API_KEY is not set in the environment file.");
   }
-  if (!prompts || prompts.length === 0) {
+
+  const userPrompts = conversationHistory.filter((item) => item.type === "prompt");
+  if (userPrompts.length === 0) {
     throw new Error("Cannot query with an empty prompt list.");
   }
 
   // The user's current question is the last prompt.
-  const question = prompts[prompts.length - 1];
+  const question = userPrompts[userPrompts.length - 1].text;
 
   // The first prompt defines the unique ID for this entire conversation history.
-  const firstPrompt = prompts[0];
+  const firstPrompt = userPrompts[0].text;
 
   // Generate a deterministic UUID for this conversation.
   // The same user + same first prompt will ALWAYS result in the same UUID.
@@ -262,23 +264,23 @@ async function queryChainGPT(prompts, userAddress) {
 
 /**
  * A dispatcher for querying the AI model specified by the AI_PROVIDER env variable.
- * @param {string[]} prompts - The array of prompts to send to the AI.
+ * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} userAddress - The address of the user submitting the prompt.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryAIModel(prompts, userAddress) {
+async function queryAIModel(conversationHistory, userAddress) {
   const aiProvider = process.env.AI_PROVIDER || "DeepSeek";
   console.log(`Querying AI model via: ${aiProvider}`);
 
   try {
     switch (aiProvider.toLowerCase()) {
       case "chaingpt":
-        return await queryChainGPT(prompts, userAddress);
+        return await queryChainGPT(conversationHistory, userAddress);
       case "deepseek":
-        return await queryDeepSeek(prompts);
+        return await queryDeepSeek(conversationHistory);
       default:
         console.error(`Unknown AI_PROVIDER: "${aiProvider}". Defaulting to DeepSeek.`);
-        return await queryDeepSeek(prompts);
+        return await queryDeepSeek(conversationHistory);
     }
   } catch (err) {
     console.error(`Error querying ${aiProvider}:`, err);
@@ -326,6 +328,12 @@ function strip0xPrefix(hexString) {
  * @returns {Promise<string>} The decrypted plaintext.
  */
 async function decryptMessage(encryptedMessage) {
+  // By convention, if the key fields are empty, the content is treated as plaintext.
+  // This handles messages like "Prompt cancelled by user."
+  if (!encryptedMessage.roflEncryptedKey || encryptedMessage.roflEncryptedKey === "0x") {
+    return ethers.toUtf8String(encryptedMessage.encryptedContent);
+  }
+
   // Use the helper to safely remove the "0x" prefix before parsing.
   const parsedRoflKey = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.roflEncryptedKey));
   const parsedContent = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.encryptedContent));
@@ -458,7 +466,6 @@ async function pollPrompts() {
 
               if (!prompts || prompts.length === 0) continue;
 
-              const plaintextPrompts = prompts.map((p) => p.prompt);
               const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
 
               // Find ALL unanswered prompts for this user and process them.
@@ -471,12 +478,32 @@ async function pollPrompts() {
                 continue;
               }
 
-              for (const promptToAnswer of unansweredPrompts) {
-                const nextPromptId = Number(promptToAnswer.promptId);
-                console.log(`Found unanswered prompt #${nextPromptId}. Querying AI model...`);
+              // Build a complete, sorted history of all past interactions.
+              const fullHistory = [];
+              prompts.forEach((p) =>
+                fullHistory.push({ type: "prompt", text: p.prompt, id: Number(p.promptId) }),
+              );
+              answers.forEach((a) =>
+                fullHistory.push({ type: "answer", text: a.answer, id: Number(a.promptId) }),
+              );
+              fullHistory.sort((a, b) => a.id - b.id);
 
-                const answerText = await queryAIModel(plaintextPrompts, sender);
-                await submitAnswer(answerText, nextPromptId, sender);
+              // Process each unanswered prompt chronologically.
+              for (const promptToAnswer of unansweredPrompts) {
+                const currentPromptId = Number(promptToAnswer.promptId);
+
+                // Build the specific context FOR THIS prompt. It includes all history that occurred before this prompt, plus the current prompt itself.
+                const historyForThisQuery = fullHistory.filter(
+                  (turn) => turn.id <= currentPromptId,
+                );
+
+                console.log(`Found unanswered prompt #${currentPromptId}. Querying AI model...`);
+                const answerText = await queryAIModel(historyForThisQuery, sender);
+                await submitAnswer(answerText, currentPromptId, sender);
+
+                // Add the new answer to the full history so it becomes context for the next prompt in this batch.
+                fullHistory.push({ type: "answer", text: answerText, id: currentPromptId });
+                fullHistory.sort((a, b) => a.id - b.id);
               }
             } catch (err) {
               console.error(`Error processing prompts for sender ${sender}:`, err);
@@ -524,13 +551,30 @@ async function pollPrompts() {
                 );
                 continue;
               }
-
-              const plaintextPrompts = await Promise.all(
-                encryptedPrompts.map((p) => decryptMessage(p.message)),
-              );
               console.log(`Found unanswered prompt #${promptId}. Querying AI...`);
 
-              const answerText = await queryAIModel(plaintextPrompts, sender);
+              // Decrypt and build the full conversation history for EVM.
+              const fullHistory = [];
+              const decryptedPrompts = await Promise.all(
+                encryptedPrompts.map(async (p) => ({
+                  type: "prompt",
+                  text: await decryptMessage(p.message),
+                  id: Number(p.promptId),
+                })),
+              );
+              const decryptedAnswers = await Promise.all(
+                encryptedAnswers.map(async (a) => ({
+                  type: "answer",
+                  text: await decryptMessage(a.message),
+                  id: Number(a.promptId),
+                })),
+              );
+              fullHistory.push(...decryptedPrompts, ...decryptedAnswers);
+              fullHistory.sort((a, b) => a.id - b.id);
+
+              const historyForThisQuery = fullHistory.filter((turn) => turn.id <= promptId);
+
+              const answerText = await queryAIModel(historyForThisQuery, sender);
               await submitAnswer(answerText, promptId, sender, userPublicKey);
             } catch (err) {
               console.error(

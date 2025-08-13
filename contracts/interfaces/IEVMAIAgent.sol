@@ -7,6 +7,8 @@ interface IEVMAIAgent {
    */
   function promptIdCounter() external view returns (uint256);
 
+  function storeCancellation(uint256 _promptId, address _user) external;
+
   /**
    * @notice Submits a new prompt after payment has been secured.
    * @param _promptId The unique identifier for the prompt.

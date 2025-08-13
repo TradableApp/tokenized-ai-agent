@@ -99,28 +99,54 @@ describe("SapphireAIAgent", function () {
     });
   });
 
-  describe("Clear prompts and answers", function () {
-    it("should allow a user to clear their own prompts and answers", async function () {
-      const { aiAgent, mockEscrow, deployer, user } = await loadFixture(deployAgentFixture);
+  describe("Cancellations", function () {
+    let aiAgent, mockEscrow, deployer, user;
+
+    beforeEach(async function () {
+      const fixtures = await loadFixture(deployAgentFixture);
+      aiAgent = fixtures.aiAgent;
+      mockEscrow = fixtures.mockEscrow;
+      deployer = fixtures.deployer;
+      user = fixtures.user;
+
+      // Set up a prompt to be cancelled.
       const promptId = await aiAgent.promptIdCounter();
-      await mockEscrow.connect(deployer).callSubmitPrompt(promptId, user.address, PROMPT_TEXT);
-
-      // The user clears their own data using their auth token.
-      await aiAgent.connect(user).clearPrompt(mockAuthToken, user.address);
-
-      const prompts = await aiAgent.connect(user).getPrompts(mockAuthToken, user.address);
-      expect(prompts.length).to.equal(0);
+      // The mock escrow calls submitPrompt for the user.
+      await mockEscrow.connect(deployer).callSubmitPrompt(promptId, user.address, "Test Prompt");
     });
 
-    it("should prevent a user from clearing another user's data", async function () {
-      const { aiAgent, mockEscrow, deployer, user, unauthorizedUser } =
-        await loadFixture(deployAgentFixture);
-      await mockEscrow.connect(deployer).callSubmitPrompt(0, user.address, PROMPT_TEXT);
+    it("should allow the escrow contract to store a cancellation", async function () {
+      const promptId = 0;
 
-      // An unauthorized user tries to clear the data of the original user.
+      // Simulate the escrow contract calling storeCancellation.
+      await mockEscrow.connect(deployer).callStoreCancellation(promptId, user.address);
+
+      // Verify state changes
+      expect(await aiAgent.isPromptAnswered(promptId)).to.be.true;
+
+      const answers = await aiAgent.getAnswers("0x", user.address);
+      expect(answers.length).to.equal(1);
+      expect(answers[0].promptId).to.equal(promptId);
+      expect(answers[0].answer).to.equal("Prompt cancelled by user.");
+    });
+
+    it("should revert if an address other than the escrow contract calls storeCancellation", async function () {
       await expect(
-        aiAgent.connect(unauthorizedUser).clearPrompt(mockAuthToken, user.address),
-      ).to.be.revertedWithCustomError(aiAgent, "UnauthorizedUser");
+        aiAgent.connect(user).storeCancellation(0, user.address),
+      ).to.be.revertedWithCustomError(aiAgent, "NotAIAgentEscrow");
+    });
+
+    it("should revert if trying to cancel a prompt that is already answered", async function () {
+      const promptId = 0;
+      const { oracle } = await loadFixture(deployAgentFixture);
+
+      // First, the oracle submits a real answer.
+      await aiAgent.connect(oracle).submitAnswer("A real answer.", promptId, user.address);
+
+      // Now, the escrow contract tries to store a cancellation for the same prompt.
+      await expect(
+        mockEscrow.connect(deployer).callStoreCancellation(promptId, user.address),
+      ).to.be.revertedWithCustomError(aiAgent, "PromptAlreadyAnswered");
     });
   });
 
@@ -189,6 +215,31 @@ describe("SapphireAIAgent", function () {
           aiAgentWithUnauthorized.submitAnswer(ANSWER_TEXT, 0, user.address),
         ).to.be.revertedWithCustomError(aiAgent, "UnauthorizedOracle");
       });
+    });
+  });
+
+  describe("Clear prompts and answers", function () {
+    it("should allow a user to clear their own prompts and answers", async function () {
+      const { aiAgent, mockEscrow, deployer, user } = await loadFixture(deployAgentFixture);
+      const promptId = await aiAgent.promptIdCounter();
+      await mockEscrow.connect(deployer).callSubmitPrompt(promptId, user.address, PROMPT_TEXT);
+
+      // The user clears their own data using their auth token.
+      await aiAgent.connect(user).clearPrompt(mockAuthToken, user.address);
+
+      const prompts = await aiAgent.connect(user).getPrompts(mockAuthToken, user.address);
+      expect(prompts.length).to.equal(0);
+    });
+
+    it("should prevent a user from clearing another user's data", async function () {
+      const { aiAgent, mockEscrow, deployer, user, unauthorizedUser } =
+        await loadFixture(deployAgentFixture);
+      await mockEscrow.connect(deployer).callSubmitPrompt(0, user.address, PROMPT_TEXT);
+
+      // An unauthorized user tries to clear the data of the original user.
+      await expect(
+        aiAgent.connect(unauthorizedUser).clearPrompt(mockAuthToken, user.address),
+      ).to.be.revertedWithCustomError(aiAgent, "UnauthorizedUser");
     });
   });
 
