@@ -97,4 +97,6 @@ function initializeOracle(networkName, privateKey, contractAddress) {
 
 module.exports = {
   initializeOracle,
+  // Export internal functions for testing purposes
+  loadContractArtifact,
 };

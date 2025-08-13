@@ -103,6 +103,18 @@ Then edit the equivalent environment files:
   - `AI_AGENT_CONTRACT_ADDRESS`: Leave this blank for now
   - `AI_AGENT_ESCROW_CONTRACT_ADDRESS`: Leave this blank for now
 
+Next, generate the corresponding public key:
+
+Run the following command from your project root. It will read the PRIVATE_KEY from your .env.localnet file and derive the public key.
+
+```bash
+ENV_FILE=.env.localnet node scripts/getPublicKey.js
+```
+
+Copy the Uncompressed Public Key from the output, then edit the `./.env.localnet` file:
+
+- `PUBLIC_KEY`: Use the public key you just generated.
+
 #### 3. Deploy Contracts to Localnet
 
 ```bash
@@ -176,7 +188,11 @@ cp .env.example .env.testnet
 cp ./oracle/.env.oracle.example ./oracle/.env.oracle.testnet
 ```
 
-Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`.
+Note: The `PRIVATE_KEY` should be the `Derived secret key` from your `oasis wallet export` output, prefixed with `0x`. To generate the corresponding public key, run the following command from your project root. It will read the PRIVATE_KEY from your .env.testnet file and derive the public key.
+
+```bash
+ENV_FILE=.env.testnet node scripts/getPublicKey.js
+```
 
 #### d. Deploy Your Smart Contract
 
@@ -207,7 +223,7 @@ After deployment, you can verify the contract exists and the Oracle address is c
 To inspect the contract via Hardhat console:
 
 ```bash
-npx hardhat console --network sapphire-testnet
+ENV_FILE=.env.testnet npx hardhat console --network sapphire-testnet
 ```
 
 ```javascript

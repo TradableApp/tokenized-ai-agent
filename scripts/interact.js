@@ -846,7 +846,7 @@ async function handleCancelPrompt() {
         type: "confirm",
         name: "confirmed",
         message: `Are you sure you want to cancel Prompt #${promptToCancel}? This action is irreversible.`,
-        default: true,
+        default: false,
       },
     ]);
 
@@ -882,7 +882,7 @@ async function handleClearHistory() {
       type: "confirm",
       name: "confirmed",
       message: chalk.yellow(
-        "Are you sure you want to permanently clear your conversation history?",
+        "Are you sure you want to permanently clear your conversation history? This action is irreversible.",
       ),
       default: false,
     },

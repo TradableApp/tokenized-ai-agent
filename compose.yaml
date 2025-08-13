@@ -11,9 +11,9 @@ services:
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
-    image: ghcr.io/tradableapp/tokenized-ai-agent:base-testnet
+    image: ghcr.io/tradableapp/tokenized-ai-agent:testnet
     platform: linux/amd64
-    entrypoint: /bin/sh -c 'node src/index.js --network baseSepolia --ollama-address http://ollama:11434'
+    entrypoint: /bin/sh -c 'node src/index.js --network sapphire-testnet --ollama-address http://ollama:11434'
     restart: on-failure
     volumes:
       - /run/rofl-appd.sock:/run/rofl-appd.sock
