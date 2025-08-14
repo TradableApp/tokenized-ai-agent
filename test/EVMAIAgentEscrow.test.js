@@ -203,7 +203,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
   });
 
   describe("Prompt Cancellation", function () {
-    let escrow, user, unauthorizedUser, mockAgent;
+    let escrow, user, unauthorizedUser, mockAgent, mockToken;
     const promptId = 0;
 
     beforeEach(async function () {
@@ -212,6 +212,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       user = fixtures.user;
       unauthorizedUser = fixtures.unauthorizedUser;
       mockAgent = fixtures.mockAgent;
+      mockToken = fixtures.mockToken;
 
       await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
       await escrow
@@ -219,23 +220,34 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
     });
 
-    it("should allow the prompt owner to cancel a pending prompt after the timeout", async function () {
+    it("should allow the prompt owner to cancel, refunding tokens and reducing the total allowance", async function () {
       const CANCELLATION_TIMEOUT = 5 * 60; // 5 minutes in seconds
       await time.increase(CANCELLATION_TIMEOUT + 1);
 
       const initialSub = await escrow.subscriptions(user.address);
+      const initialUserTokenBalance = await mockToken.balanceOf(user.address);
 
-      await expect(escrow.connect(user).cancelAndRefundPrompt(promptId))
-        .to.emit(escrow, "PromptCancelled")
-        .withArgs(promptId, user.address);
+      // Perform the cancellation
+      const tx = escrow.connect(user).cancelAndRefundPrompt(promptId);
+
+      // Check for both cancellation and refund events
+      await expect(tx).to.emit(escrow, "PromptCancelled").withArgs(promptId, user.address);
 
       // Verify state changes
       const escrowRecord = await escrow.escrows(promptId);
       expect(escrowRecord.status).to.equal(2); // REFUNDED
       expect(await escrow.pendingEscrowCount(user.address)).to.equal(0);
 
+      // Verify allowance credit
       const finalSub = await escrow.subscriptions(user.address);
       expect(finalSub.spentAmount).to.equal(initialSub.spentAmount - PROMPT_FEE);
+
+      // Verify the total allowance for the period is correctly reduced
+      expect(finalSub.allowance).to.equal(initialSub.allowance - PROMPT_FEE);
+
+      // Verify token refund
+      const finalUserTokenBalance = await mockToken.balanceOf(user.address);
+      expect(finalUserTokenBalance).to.equal(initialUserTokenBalance + PROMPT_FEE);
 
       // Verify interaction with the AI Agent contract
       expect(await mockAgent.cancellationCallCount()).to.equal(1);
@@ -386,10 +398,12 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       expect(escrowRecord.status).to.equal(1); // Enum COMPLETE
     });
 
-    it("should allow a timed-out prompt to be refunded", async function () {
+    it("should allow a timed-out prompt to be refunded, refunding tokens and reducing total allowance", async function () {
       const { escrow, mockAgent, mockToken, deployer, user } =
         await loadFixture(deployEscrowFixture);
       await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
+      const initialSub = await escrow.subscriptions(user.address);
+
       const promptId = await mockAgent.promptIdCounter();
       await escrow
         .connect(user)
@@ -399,8 +413,15 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       const initialUserBalance = await mockToken.balanceOf(user.address);
       await escrow.connect(deployer).processRefund(promptId);
       expect(await mockToken.balanceOf(user.address)).to.equal(initialUserBalance + PROMPT_FEE);
-      const sub = await escrow.subscriptions(user.address);
-      expect(sub.spentAmount).to.equal(0);
+
+      const finalSub = await escrow.subscriptions(user.address);
+
+      // Verify spent amount is now 0 (since it was the only prompt)
+      expect(finalSub.spentAmount).to.equal(0);
+
+      // Verify the total allowance for the period is correctly reduced
+      expect(finalSub.allowance).to.equal(initialSub.allowance - PROMPT_FEE);
+
       const escrowRecord = await escrow.escrows(promptId);
       expect(escrowRecord.status).to.equal(2); // Enum REFUNDED
     });

@@ -44,7 +44,7 @@ contract SapphireAIAgent is SiweAuth, Ownable {
   ISapphireAIAgentEscrow public agentEscrow;
 
   /// @notice Emitted when a new prompt is successfully submitted via the escrow contract.
-  event PromptSubmitted(address indexed sender, uint256 indexed promptId);
+  event PromptSubmitted(address indexed user, uint256 indexed promptId);
   /// @notice Emitted when the oracle successfully submits an answer.
   event AnswerSubmitted(address indexed sender, uint256 indexed promptId);
   /// @notice Emitted when the linked escrow contract address is updated.

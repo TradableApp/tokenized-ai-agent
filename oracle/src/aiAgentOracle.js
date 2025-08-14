@@ -443,25 +443,25 @@ async function pollPrompts() {
         );
 
         if (isSapphire) {
-          // Group events by sender to efficiently fetch history once.
-          const promptsBySender = new Map();
+          // Group events by user to efficiently fetch history once.
+          const promptsByUser = new Map();
           for (const log of logs) {
-            const sender = log.args.sender;
+            const user = log.args.user;
 
-            if (!promptsBySender.has(sender)) {
-              promptsBySender.set(sender, []);
+            if (!promptsByUser.has(user)) {
+              promptsByUser.set(user, []);
             }
 
-            promptsBySender.get(sender).push(log);
+            promptsByUser.get(user).push(log);
           }
 
-          for (const [sender, userLogs] of promptsBySender.entries()) {
+          for (const [user, userLogs] of promptsByUser.entries()) {
             try {
-              console.log(`Processing ${userLogs.length} new prompt(s) from ${sender}...`);
+              console.log(`Processing ${userLogs.length} new prompt(s) from ${user}...`);
 
               const [prompts, answers] = await Promise.all([
-                retrievePrompts(sender),
-                retrieveAnswers(sender),
+                retrievePrompts(user),
+                retrieveAnswers(user),
               ]);
 
               if (!prompts || prompts.length === 0) continue;
@@ -474,7 +474,7 @@ async function pollPrompts() {
               );
 
               if (unansweredPrompts.length === 0) {
-                console.log(`All prompts for ${sender} appear to be answered. Skipping.`);
+                console.log(`All prompts for ${user} appear to be answered. Skipping.`);
                 continue;
               }
 
@@ -498,23 +498,23 @@ async function pollPrompts() {
                 );
 
                 console.log(`Found unanswered prompt #${currentPromptId}. Querying AI model...`);
-                const answerText = await queryAIModel(historyForThisQuery, sender);
-                await submitAnswer(answerText, currentPromptId, sender);
+                const answerText = await queryAIModel(historyForThisQuery, user);
+                await submitAnswer(answerText, currentPromptId, user);
 
                 // Add the new answer to the full history so it becomes context for the next prompt in this batch.
                 fullHistory.push({ type: "answer", text: answerText, id: currentPromptId });
                 fullHistory.sort((a, b) => a.id - b.id);
               }
             } catch (err) {
-              console.error(`Error processing prompts for sender ${sender}:`, err);
+              console.error(`Error processing prompts for user ${user}:`, err);
             }
           }
         } else {
           // On public EVM, each event corresponds to a single new prompt.
           for (const event of logs) {
-            const sender = event.args.sender;
+            const user = event.args.user;
             const promptId = Number(event.args.promptId);
-            console.log(`[EVENT] Detected new prompt #${promptId} from: ${sender}`);
+            console.log(`[EVENT] Detected new prompt #${promptId} from: ${user}`);
 
             try {
               // Fetch the full transaction details to access its signature.
@@ -526,7 +526,7 @@ async function pollPrompts() {
               // Create a static Transaction object to access cryptographic properties.
               const tx = ethers.Transaction.from(txResponse);
 
-              // Recover the sender's public key from the transaction's signature and unsigned hash.
+              // Recover the user's public key from the transaction's signature and unsigned hash.
               // This is necessary to encrypt the AI's response for the user.
               const userPublicKey = ethers.SigningKey.recoverPublicKey(
                 tx.unsignedHash,
@@ -537,8 +537,8 @@ async function pollPrompts() {
               }
 
               const [encryptedPrompts, encryptedAnswers] = await Promise.all([
-                retrievePrompts(sender),
-                retrieveAnswers(sender),
+                retrievePrompts(user),
+                retrieveAnswers(user),
               ]);
 
               if (!encryptedPrompts || encryptedPrompts.length === 0) continue;
@@ -546,9 +546,7 @@ async function pollPrompts() {
               const answeredPromptIds = new Set(encryptedAnswers.map((a) => Number(a.promptId)));
 
               if (answeredPromptIds.has(promptId)) {
-                console.log(
-                  `Prompt #${promptId} for ${sender} has already been answered. Skipping.`,
-                );
+                console.log(`Prompt #${promptId} for ${user} has already been answered. Skipping.`);
                 continue;
               }
               console.log(`Found unanswered prompt #${promptId}. Querying AI...`);
@@ -574,11 +572,11 @@ async function pollPrompts() {
 
               const historyForThisQuery = fullHistory.filter((turn) => turn.id <= promptId);
 
-              const answerText = await queryAIModel(historyForThisQuery, sender);
-              await submitAnswer(answerText, promptId, sender, userPublicKey);
+              const answerText = await queryAIModel(historyForThisQuery, user);
+              await submitAnswer(answerText, promptId, user, userPublicKey);
             } catch (err) {
               console.error(
-                `Error processing prompt from ${sender} from tx ${event.transactionHash}:`,
+                `Error processing prompt from ${user} from tx ${event.transactionHash}:`,
                 err,
               );
             }

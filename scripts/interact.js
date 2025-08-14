@@ -10,6 +10,7 @@ const path = require("node:path");
 const readline = require("node:readline");
 const dotenv = require("dotenv");
 const { format } = require("date-fns");
+const axios = require("axios");
 
 inquirer.registerPrompt("datetime", require("inquirer-datepicker-prompt"));
 
@@ -19,20 +20,53 @@ const CHAINS = {
   Sapphire: {
     isSapphire: true,
     networks: {
-      localnet: { envFile: "../.env.localnet", rpcEnvVar: "SAPPHIRE_LOCALNET_RPC" },
-      testnet: { envFile: "../.env.testnet", rpcEnvVar: "SAPPHIRE_TESTNET_RPC" },
-      mainnet: { envFile: "../.env.mainnet", rpcEnvVar: "SAPPHIRE_MAINNET_RPC" },
+      localnet: {
+        label: "sapphire-localnet",
+        envFile: "../.env.localnet",
+        rpcEnvVar: "SAPPHIRE_LOCALNET_RPC",
+      },
+      testnet: {
+        label: "sapphire-testnet",
+        envFile: "../.env.testnet",
+        rpcEnvVar: "SAPPHIRE_TESTNET_RPC",
+      },
+      mainnet: {
+        label: "sapphire-mainnet",
+        envFile: "../.env.mainnet",
+        rpcEnvVar: "SAPPHIRE_MAINNET_RPC",
+      },
     },
   },
   Base: {
     isSapphire: false,
     networks: {
-      testnet: { envFile: "../.env.base-testnet", rpcEnvVar: "BASE_SEPOLIA_TESTNET_RPC" },
-      mainnet: { envFile: "../.env.base-mainnet", rpcEnvVar: "BASE_MAINNET_RPC" },
+      testnet: {
+        label: "baseSepolia",
+        envFile: "../.env.base-testnet",
+        rpcEnvVar: "BASE_SEPOLIA_TESTNET_RPC",
+        explorerApiUrl: "https://api.etherscan.io/v2/api",
+        explorerChainId: 84532, // Base Sepolia
+      },
+      mainnet: {
+        label: "base",
+        envFile: "../.env.base-mainnet",
+        rpcEnvVar: "BASE_MAINNET_RPC",
+        explorerApiUrl: "https://api.etherscan.io/v2/api",
+        explorerChainId: 8453, // Base mainnet
+      },
     },
   },
 };
 const POLLING_INTERVAL_MS = 5000;
+
+// EIP-1967 implementation slot: keccak256("eip1967.proxy.implementation") - 1
+const ERC1967_IMPL_SLOT = "0x360894A13BA1A3210667C828492DB98DCA3E2076CC3735A920A3CA505D382BBC";
+
+function getRpcUrlFor(chainName, networkName) {
+  const net = CHAINS[chainName]?.networks?.[networkName];
+  if (!net) return null;
+  return process.env[net.rpcEnvVar] || null;
+}
 
 // --- Global State ---
 let signer;
@@ -45,6 +79,106 @@ let roflPublicKey;
 let sapphireAuthToken; // Only used by the Sapphire workflow
 
 // --- Utility Functions ---
+/**
+ * @description Fetches a contract's ABI from Etherscan v2. If the address is a proxy, it will
+ * resolve the current implementation and return the implementation ABI. Falls back to reading
+ * the EIP-1967 implementation slot on-chain if the explorer hasn't linked it yet.
+ * @param {string} contractAddress The proxy or logic contract address
+ * @param {string} chainName 'Base'
+ * @param {string} networkName 'testnet' | 'mainnet'
+ * @returns {Promise<object>} The resolved ABI (implementation ABI if proxy, else the direct ABI)
+ */
+async function fetchAbiFromBlockExplorer(contractAddress, chainName, networkName) {
+  const netConfig = CHAINS[chainName]?.networks?.[networkName];
+  const apiUrl = netConfig?.explorerApiUrl;
+  const chainid = netConfig?.explorerChainId;
+
+  if (!apiUrl || !chainid) {
+    throw new Error(
+      `Block explorer API or chainid for network "${networkName}" on chain "${chainName}" is not configured.`,
+    );
+  }
+
+  const apiKey = process.env.ETHERSCAN_API_KEY;
+  if (!apiKey) {
+    throw new Error("ETHERSCAN_API_KEY must be set in your .env file to fetch ABIs.");
+  }
+
+  const spinner = ora(`Fetching ABI for token at ${contractAddress}...`).start();
+
+  try {
+    const addr = ethers.getAddress(contractAddress);
+
+    // 1) Ask the explorer for source info (this reveals Implementation if it's a proxy)
+    const metaRes = await axios.get(apiUrl, {
+      params: {
+        chainid,
+        module: "contract",
+        action: "getsourcecode",
+        address: addr,
+        apikey: apiKey,
+      },
+    });
+
+    if (metaRes?.data?.status !== "1" || !Array.isArray(metaRes?.data?.result)) {
+      throw new Error(
+        `Explorer error: ${metaRes?.data?.message || "unknown"} (${metaRes?.data?.status})`,
+      );
+    }
+
+    const info = metaRes.data.result[0] || {};
+    let implementation = info.Implementation && ethers.getAddress(info.Implementation);
+    const isProxy = info.Proxy === "1" || !!info.Implementation;
+
+    // 2) If explorer didn’t expose the implementation yet, fall back to reading EIP-1967 slot
+    if (isProxy && !implementation) {
+      const rpcUrl = getRpcUrlFor(chainName, networkName);
+      if (rpcUrl) {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const raw = await provider.getStorage(addr, ERC1967_IMPL_SLOT); // hex string
+        if (raw && raw !== "0x") {
+          implementation = ethers.getAddress("0x" + raw.slice(-40));
+        }
+      }
+    }
+
+    // 3) Decide which address to fetch ABI for: implementation (if found), else the address itself
+    const targetForAbi = implementation || addr;
+
+    const abiRes = await axios.get(apiUrl, {
+      params: {
+        chainid,
+        module: "contract",
+        action: "getabi",
+        address: targetForAbi,
+        apikey: apiKey,
+      },
+    });
+
+    if (abiRes.data?.status !== "1") {
+      const extra =
+        isProxy && !implementation
+          ? " (proxy detected but explorer didn’t expose implementation yet — ensure implementation is verified)"
+          : "";
+      throw new Error(`getabi failed: ${abiRes.data?.message} - ${abiRes.data?.result}${extra}`);
+    }
+
+    const abi = JSON.parse(abiRes.data.result);
+
+    spinner.succeed(
+      implementation
+        ? `Successfully fetched implementation ABI (${implementation}).`
+        : "Successfully fetched contract ABI.",
+    );
+
+    return abi;
+  } catch (error) {
+    spinner.fail("Failed to fetch ABI.");
+    throw new Error(
+      `Could not fetch ABI for ${contractAddress} on ${networkName}. Details: ${error.message}`,
+    );
+  }
+}
 
 /**
  * @description Loads the contract's ABI from the artifacts directory.
@@ -863,6 +997,11 @@ async function handleCancelPrompt() {
     );
     console.log(`   - Transaction Hash: ${chalk.cyan(receipt.hash)}`);
 
+    // Add a short delay to allow the RPC node's state to propagate before re-querying balances.
+    const stateSyncSpinner = ora("Waiting for node to sync state...").start();
+    await new Promise((resolve) => setTimeout(resolve, 3000)); // 3-second delay
+    stateSyncSpinner.stop();
+
     await handleCheckBalance();
     await pressEnterToContinue();
   } catch (error) {
@@ -870,7 +1009,6 @@ async function handleCancelPrompt() {
     console.error(error.message);
   }
 }
-
 /**
  * @description Sends a transaction to clear all of the user's prompts and answers from the contract.
  */
@@ -1123,6 +1261,7 @@ async function main() {
     ]);
     networkName = networkChoice;
     const selectedNetwork = selectedChain.networks[networkName];
+    const networkLabel = CHAINS[chainName]?.networks?.[networkName].label;
 
     const envFilePath = path.resolve(__dirname, selectedNetwork.envFile);
     if (!fs.existsSync(envFilePath)) {
@@ -1235,7 +1374,8 @@ async function main() {
 
     spinner.succeed(chalk.green("Connected successfully!"));
     console.log(`\n--- Initial Account Status ---`);
-    console.log(`   - Network: ${chalk.bold(networkName)} (Chain ID: ${chainId})`);
+    console.log(`   - Chain: ${chalk.bold(chainName)}`);
+    console.log(`   - Network: ${chalk.bold(networkLabel)} (Chain ID: ${chainId})`);
     console.log(`   - AI Agent Contract: ${chalk.cyan(aiAgentAddress)}`);
     console.log(`   - Payment Contract: ${chalk.cyan(aiAgentEscrowAddress)}`);
 
@@ -1276,8 +1416,8 @@ async function main() {
         throw new Error("ROFL worker's public key is required for encryption.");
       }
 
-      const tokenArtifact = loadContractArtifact("AbleToken");
-      tokenContract = new Contract(tokenAddress, tokenArtifact.abi, signer);
+      const tokenAbi = await fetchAbiFromBlockExplorer(tokenAddress, chainName, networkName);
+      tokenContract = new Contract(tokenAddress, tokenAbi, signer);
     }
 
     await handleCheckBalance();

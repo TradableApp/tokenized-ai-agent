@@ -230,9 +230,14 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
     pendingEscrowCount[msg.sender]--;
     escrow.status = EscrowStatus.REFUNDED;
+
+    // Decrease both the spent amount AND the total allowance for this subscription period.
+    // This keeps our internal accounting synchronized with the external ERC20 allowance.
     subscriptions[msg.sender].spentAmount -= escrow.amount;
+    subscriptions[msg.sender].allowance -= escrow.amount;
     emit PromptCancelled(_promptId, msg.sender);
     evmAIAgent.storeCancellation(_promptId, msg.sender);
+    ableToken.transfer(escrow.user, escrow.amount);
   }
 
   /**
@@ -342,7 +347,12 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
     pendingEscrowCount[escrow.user]--;
     escrow.status = EscrowStatus.REFUNDED;
+
+    // Decrease both the spent amount AND the total allowance for this subscription period.
+    // This keeps our internal accounting synchronized with the external ERC20 allowance.
     subscriptions[escrow.user].spentAmount -= escrow.amount;
+    subscriptions[escrow.user].allowance -= escrow.amount;
+
     emit PaymentRefunded(_promptId);
     ableToken.transfer(escrow.user, escrow.amount);
   }

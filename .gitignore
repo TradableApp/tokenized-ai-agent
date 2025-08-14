@@ -156,6 +156,7 @@ node_modules
 # Hardhat files
 /cache
 /artifacts
+/.openzeppelin
 
 # Environment specific compose.*.yaml files
 compose.testnet.yaml

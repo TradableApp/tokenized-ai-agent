@@ -35,46 +35,48 @@ deployments:
           min_tcb_evaluation_data_number: 18
           tdx: {}
       enclaves:
-        - id: ionezXRKSy/1yBSNrY1hK+NUwayBsZdQLpeXthPrEZ4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
-        - id: zJAx/KB8cnzVou+AuOl3piiKCzZh7ZJ65fWdIM5NFIgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: VaJrSYlbIT84ZesTRCNwAHiAxT7B4xN5mgpp8y9+KJUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: Krmd2JxpXf4kznABTynArSLPPqmXQLNQ2JFYbxp2TPkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
       endorsements:
         - any: {}
       fees: endorsing_node
       max_expiration: 3
     secrets:
       - name: BASE_MAINNET_RPC
-        value: pGJwa1gg1sculuFCBpIzfY0irv9q932I+xeb1Q1I6YkG9CRFG1tkbmFtZVggeWnb4eT7DI/tgkEXrGVaexGwgG1q2IFl9buoEhiDOvNlbm9uY2VPhnlHuS6XGY3wCPgg/t79ZXZhbHVlWCjKFGBmxYa3GnwHlnG8tt7ElRTsUqT8W7pbe+hKNOf7LwYpoFTwu2ia
+        value: pGJwa1ggj4j5wxHLihocpYRSIkXmdUa51GAmBBrOM6kWrXpN0UpkbmFtZVggGKsTOPSJyni4Pxes5017z7h6h9/L3A48+6Y+HzaBgXFlbm9uY2VPknCsufiYznT2vU2WYGZiZXZhbHVlWChq6jdHDHyRaWQn8NSxGgjLl3uXwbHEdf55gsS2VY37D/Z4fogAawUo
       - name: BASE_SEPOLIA_TESTNET_RPC
-        value: pGJwa1ggEYW+bpC4RyVE9gxz/QOimoHq+RAdHSC7oolvguxs6DRkbmFtZVgokrUbYfKi/e6DZXeqUD07SfNCCEzB45O/M5jbfYJ+bIOM+WUECcWb22Vub25jZU9HM42mycqnus4fhj1GsEBldmFsdWVYKDPTsgVTaX0wXzDzL8d4roE7Zx3jLJSYnOkmpN9W0+mC4PbFVYCJ+OQ=
+        value: pGJwa1gg/3Ocw6VoV5t5SEKo76af5FJHnSCi2HCX2PyUFin6ASBkbmFtZVgoeslBGLDWzktSEHugIhYN9NB6mKcFja3dhViMOgR+A00GNVw8+SPByWVub25jZU9tI65SouMOOQo3ORojnf5ldmFsdWVYKJ+GQ9KrhnVDodmxZ8CIwRwyZb8NWPsINuo5nYHFTCu5jdrI29E/jNQ=
       - name: SAPPHIRE_MAINNET_RPC
-        value: pGJwa1ggK7Umz+95+H9e8+4pCwztxCukD/oN9SaAzc2/iZQsfhtkbmFtZVgk8X2T2WONUKdhXW7XIjAjjGoTrEP9+P++HwZbSZRnT7tUKjucZW5vbmNlT7ZwWrgfUtg2AwzOW9i7m2V2YWx1ZVgpzGBvxNHtZbkIGuYfmTTEli1RNff7xoJwKL1w+cq+zACoQanS0tZSy4w=
+        value: pGJwa1gg+rAW+9XDdHZZLD5Cn5QDCXOU/N7REbP6K1PeRfciSF9kbmFtZVgkmmYBmxEnBl1LbTmqEDgnxnsXewjER7X5Gfa0B1NFs9AVPTSlZW5vbmNlTz5qwQ1zLuzP1OIns9ogu2V2YWx1ZVgpr7bMH6lVkZ1NU1CWBpFBoO7jK+Jx3bMKE9DK4FwQ5icScof2tYc5+jA=
       - name: SAPPHIRE_TESTNET_RPC
-        value: pGJwa1ggyh1TBEGmlk1MpivtvmXWjasz+X7CBRd5qt3oiFqE9S9kbmFtZVgkhcQqawGvPb8/eS5n+++8y3y9cQrKVWNIpSQqeTSj7siQt2D1ZW5vbmNlT/yfYHeG1bH8vYBl9RH8bmV2YWx1ZVgxm/3n09fVEsVpxJdUeH+eUWhp9sY85sroSoJDyd5380tnXspGnuBLhn/rrF7ot1YtCw==
+        value: pGJwa1ggmT1mRMgMfOoZzoElWOT5CwDFrwulvlxWi+BGuNeTGVxkbmFtZVgkePhJxpON/4IdB2YWOlxBZyMPQOQHNb2u6LnNBE3L1X8jZE0DZW5vbmNlT1HxFmipESGoAPX/6HyqIWV2YWx1ZVgxo/fy7jDKgpIidEE6GfECXDw+gZGRRksFWPpDXF/ExbifzgQuOBpf4mz4/UT5DzG9vQ==
       - name: SAPPHIRE_LOCALNET_RPC
-        value: pGJwa1gg7gtAarDWEq9hf9yVDhvfLUYeJbRtNKHllhw8cbyJnlJkbmFtZVglGhJ+b92j+hNnrfGM2dmUljZnZUvJRRxGY1ycNsfAqMehGo+4s2Vub25jZU+za7rob6dB7vmiJWmypBFldmFsdWVYJbODASeZthYJbrn/yRL6/oWIYYfUjXuA+zXiWY03Q5IrAg+67Pk=
+        value: pGJwa1ggxSEmgQNs9a88aOX3lJRXZ3N6QPVkcJJ1TyPLEBHlMy1kbmFtZVglynBPvroSdXFOuaJurPxeCTdWI1wcnn+2XgLq5wXt7wAoCoF8v2Vub25jZU+yofD6OP0jxov7PNhg249ldmFsdWVYJbQB8CgtzjbVLL5HIDvi6LcQQxzNVgh5cKqP2ohp+BQc2OgWgzw=
       - name: NETWORK_NAME
-        value: pGJwa1gg/ruqcC+JKAcfvE9vfUwvUY2ndZFMRqauwen9oyw68DlkbmFtZVgc6veSnHh1nt6vbk9PKAlUpTc3+u7HOQywT3AS3mVub25jZU+O9JhtbiH4Aaq3FEmRDQdldmFsdWVYG+SSabpkVNn8wcO5huNytWp1NuY3M9wtmDwijQ==
+        value: pGJwa1ggBg6Vg8vIyUAgAF9IgiEYmKLzkxf/CMcymnRN/pzOzEJkbmFtZVgcs8BenkKrP6dBHg1JjIk5iWup5mdYDG7FNnHeO2Vub25jZU915gyzOt7rnmNDLtzygl1ldmFsdWVYG1aSlNQ7x2sKD46cu4c7qbD7EP/IlEgfeW00UQ==
       - name: PRIVATE_KEY
-        value: pGJwa1gg59a5Re3z4ijW2h+olLpxbesEBPHMdymMH8bDnSA21wFkbmFtZVgbklaWB2EDDSCjQwRXSiXZLWwM5Ise8SqbXOuHZW5vbmNlT3Q/LMRHcAcnZ6uTWsQS8GV2YWx1ZVhQ5FzFy9+cNOqcVl+91dD9Mv8vq/R4chZ4RokD4XZfM77PcqUPQdHWiksKI7E4n6TGnimm6qWCY/72ow7mTaYdQovOF7VH+iLB93oGGLRImdo=
+        value: pGJwa1ggfq72wBk70v8ByUBmfjRdHl2lKl9hY3KyHcDb4XiYhHtkbmFtZVgbPAPSrLuBLq8fEJyIERAnkvObfSj0feGjLEV/ZW5vbmNlT9jDUna56RXpU6U7ltLmemV2YWx1ZVhQicD3Ooo9WZlcWV/n+z7bYG8w+1bdIrAIYXeDZvXD1yigCNAaBv8/U+Ksp5BjTouHat1Qoj6GKNTelD6Vc7LfyZf4DKIg2QFSATv9/EXtH5Q=
       - name: PUBLIC_KEY
-        value: pGJwa1ggl/KNiWGCZY8ehPnz+6RQa2DGYVh0OSK6wlRWoRQJ8XZkbmFtZVgaP7yrFdX14cc9KCTpDcZhWyQR8D2fbz+dkXhlbm9uY2VPmJAhehxbUOKfRU/UvrQBZXZhbHVlWJSWYMrsM17cyGqeqX50AdjhFWwjK43aJD5oTC0kaw6y8q7vrOKbvCp9vsJ13Hh937QwPbA/ODkLWCtHhLAJsetPUe1KytUAO4WXRuRlYu9IwcjWv9rFHrANt0gLdNw3xMVBVgUr5Tdhz/35WRke/BqpS/QhvxoEhjbhlh2/BMT67Ni7f7msCbxVfwnCArdm59mYx5hP
+        value: pGJwa1ggf/XEzAevXhPSI1VSVIMV5G+MZzJVG8gmIkb/iNrvOVtkbmFtZVga/XeGUnhpBvo+HIgfIeTs98OmxrjQ0Lh9E2tlbm9uY2VPo3TrNEU5CX/VRt552sqxZXZhbHVlWJQ9W83zern7hEzmVizMVvHp/ItkVPSxtKHNoiVaadE2Z3kstr00QIAATOYgr6fbxB6qCobUgddhd3b5L/hBkLx/PCXqxPSzuwZaiio8FfqWeuUR7JDPV+sD7isAwmjiYBKvLx48FO3dQGFw04mFzgaR5MwIeoThY9Mg9CYPCDMLMH4NicmwYc7Yf3KD18GjPXii5rn9
       - name: AI_AGENT_CONTRACT_ADDRESS
-        value: pGJwa1ggI1iYDT/mpmrpuVi3Ei5XzZyDI65tmqC0Z8HYNgiEvW5kbmFtZVgnQuzcHhthTfoFHr5AQZgG7Crj8zJRd1XEd43VgJANGm/R2ZSrR4gfZW5vbmNlT9wNsNsojMktfAX4wfx27WV2YWx1ZVg6nC7pj9OHvRog/RmFSrrf5HEjA/l32rQc9VMFLxe0l1+GkTiO3A/BnqozH2BTFttFou5x4z5enUM6MA==
+        value: pGJwa1ggPhq5lv7GW414e7vjJsHeszZ+KzeMpKMAqpEa4IIxsWFkbmFtZVgp6uJxqgROZwC/jDu8Flb87cvIStg3VOwW5jop+jdbM9Rwnbslt+9LsEhlbm9uY2VPg7k9OFknZd8LaJF4XiPlZXZhbHVlWDqzeQIqn1Z0gwk8efxM72E6psEuFlioxOe6rynbuFBpHpsRct9tfhMAWm+SFOO0zAkr3tA2HWOucZ+r
+      - name: AI_AGENT_ESCROW_CONTRACT_ADDRESS
+        value: pGJwa1ggx9/H7iA71ZMOd1jluJR1a0WeYWNOsGAvXa3f2YhEdjNkbmFtZVgw8qsHfxnzwAUR/F+kp3r9rFbuELh7cYd8BE36cFAMiZ93phJ8tpG4CflyKqS8H2k1ZW5vbmNlTy9/FDxuy7BmBLd3xdHwimV2YWx1ZVg6yOKcQO5mv9Qph8dRUyNnOWtQpZI1hsulj6FSv6+j+eIFY0yCpVEcQVW7cvG73mpsz/+qsP78Mp3zew==
       - name: TOKEN_CONTRACT_ADDRESS
-        value: pGJwa1gggmxNeUCMEmtksM3CArraEFlFvQt0Op4Eeigip6Arnx5kbmFtZVgmS7AtnHTw9QLFk+pbCIocO2lGo4nlUukFfK/tTyyNfgcG/OnN//plbm9uY2VPB+xgZXsmiEoNOLIQasP1ZXZhbHVlWJEoAD7hRuNV1QgJIc0vOYBlFL5C97VAlBYSr4Lf9WFdCG9fQnapleg8b0HG9VDavK3SDR5wo0zMXDUK+XoB2jhMFJPZxXafVec089ubDZZuAnfu5R2jxv5psFGFRlpgW8UarCa7RuY0AOp3+vd8/+0xc+LTYSnq6jzJeDzGk2xchbpaZ4uUHawcM2PKY8k6fRYP
+        value: pGJwa1ggm+yLe6xepsOyjrfn9UnjnD4R2UJ8gqN9xpMHJqDD1y9kbmFtZVgmuFcLhripT3gpZ3UykjCuoLxEWrnKsQsUyTMaXsQLaNIrAXUPCFdlbm9uY2VPS04wupXln1seAki+Y3moZXZhbHVlWKAteAcgRDkHIKtDss5jog+53bB6CPw5Gg+AnG3YBzrOyh0DOc6urrAdURYKOd2PgIfkdZI+nTb0/se53dEUxO+bs+fouG8v6eFAMT/NtzElymRTl7QocKuX9QMSkpi2Q2oTOcNBGmM9mQksYr+1CS58UbWqdEfnOND7Gut7NtqhXidm99SMJt89PIkKsBJkkTtH6ISXBR596MxTuumxeaBt
       - name: DOMAIN
-        value: pGJwa1ggaDSACUmcgPCBDMlUGqfc4asC7gLJXf7qRCNlRQv1SnNkbmFtZVZN3JVCbINz9dgTh2VK66KXyv9pIcz+ZW5vbmNlT5ZHjuIHQytVKn0ZyCcY1mV2YWx1ZVgkAJ3NgjLr/NZeQBxmXQ1BPpmG9r307NeZWX0ctt69aHT8hmlx
+        value: pGJwa1gg0sIJV5JltE1IavNYd2tvyDBqcl0WkQY6KeX7zdAWbVRkbmFtZVZtOUaFZMJslGwg17S74vjfrHEsVUTKZW5vbmNlT1RokR1WXDA3RXsTneaxk2V2YWx1ZVgkzpjihtEt5cG82LuqouH3OqgEq+sp60sSXuMgUlGtTTHWM7y4
       - name: AI_PROVIDER
-        value: pGJwa1gga4s6FZIuzOUb+RMgJezrr3davF7yGCGF2REOI3vHHiJkbmFtZVgbzLItMtIuey15DX2u01ip2ocRLgMyF4voCX6WZW5vbmNlT1zS6/WcHGrxc/93EcE25GV2YWx1ZVgYwyZseSg8z9QzlVwu5pUeaBgf74KYN5Bl
+        value: pGJwa1ggQmNkUjpq+ohGqZr6ZmGFGbcWDcXAjLHNGUUTOS7WmVRkbmFtZVgbZwrRMZ8EfHgx1itDQvu2QoKRJhT/ynnnfedPZW5vbmNlT7E04vy17Taxekm8CiMmDmV2YWx1ZVgYgyHChELhTvVTdEqY31XeW+Eq6M1MF3lx
       - name: CHAIN_GPT_API_KEY
-        value: pGJwa1ggFNAkU4MLknKpir/vcvpnYe1VMx5cP0QnvMcO5zBSdR9kbmFtZVgh6VydKtSHgXjM6rTWd+d+IS7MztSwCaRO9r6ZtYDSQL8tZW5vbmNlTyDeQLyUuWWzImO1IKwWTWV2YWx1ZVg026Nf1E/IahOSoXYcdRh5TwC4WVDjX7ssVflk0VyfFGe2GaVfKQJysd5wlaYwEr8JL7DT7w==
+        value: pGJwa1ggUEVtGkdEtiomdujBuNSguvhdZwnXWxImcTeRudpeEUZkbmFtZVghmhDPOD9fmJKNKx90oVKZoGXG9szpo9QLqrgvGEF3TcrUZW5vbmNlTyNKZj7ohJAdpPuLjVi1EGV2YWx1ZVg0AvzQotKqIsKOYWYtM04S8I9pAbxKVXWGp7ROWl5OFN2fzpYV4qSey+ZJHv4kquWXZSnw5g==
       - name: OLLAMA_URL
-        value: pGJwa1ggm+hPGqjZWGxF6nhrJjMs2pBtIlcihuKZ87mM2oRVU3dkbmFtZVgai42Awa2o0Oattxhau3V7mYCA5V3jKSDy0XJlbm9uY2VPkR3TOIAo60LiFg8edTZ3ZXZhbHVlWCPCYG30d1pCjSLiqb81z0pqLw11sTkbQ4/oKXdTNDBrxP/N0w==
+        value: pGJwa1ggI9WrCrd2sDeYuDYR1nTx6ky36Oo3Ztt9hz0ObRLuHCJkbmFtZVgalVUbnFkFC/hPnvem3nmhNyWYpd9DWrkI0V5lbm9uY2VPeduyqqsUqvoP3/DXE1J5ZXZhbHVlWCOJEPPUOu0JiHvML6je7MzGD0i7Ex9R3AA2PBQA+qKQPEeayg==
     machines:
       default:
         provider: oasis1qp2ens0hsp7gh23wajxa4hpetkdek3swyyulyrmz
         offer: playground_short
-        id: 000000000000021e
+        id: "0000000000000246"
   testnet:
     app_id: rofl1qqpuk4ke7d2nk5tx736tcpxm6kjtstndyu79pk2g
     network: testnet
