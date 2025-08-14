@@ -21,9 +21,9 @@
 ├── compose.testnet.yaml
 ├── compose.yaml
 ├── contracts
-│   ├── EVMChatBot.sol
+│   ├── EVMAIAgent.sol
 │   ├── README.md
-│   └── SapphireChatBot.sol
+│   └── SapphireAIAgent.sol
 ├── file-structure.txt
 ├── gas-report.txt
 ├── hardhat.config.js
@@ -37,7 +37,7 @@
 │   ├── package-lock.json
 │   ├── package.json
 │   ├── src
-│   │   ├── chatBotOracle.js
+│   │   ├── aiAgentOracle.js
 │   │   ├── contractUtility.js
 │   │   ├── index.js
 │   │   └── roflUtility.js
@@ -51,10 +51,9 @@
 │   ├── getPublicKey.js
 │   ├── interact.js
 │   ├── release-mainnet.sh
-│   ├── rofl-set-secrets.sh
-│   └── send-prompt.js
+│   └── rofl-set-secrets.sh
 ├── test
-│   └── SapphireChatBot.test.js
+│   └── SapphireAIAgent.test.js
 ├── tokenized-ai-agent.code-workspace
 ├── tokenized-ai-agent.default.orc
 └── tokenized-ai-agent.testnet.orc

@@ -10,7 +10,7 @@ if (process.env.ENV_FILE) {
   dotenv.config({ path: process.env.ENV_FILE });
 }
 // Load the base .env.oracle file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, ".env.oracle") });
+dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
 // A Set for easy and efficient checking of Sapphire network names.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
@@ -26,7 +26,7 @@ const RPC_URL_MAP = {
 
 /**
  * An internal helper to load a contract's ABI from the artifacts directory.
- * @param {string} contractName The name of the contract (e.g., 'EVMChatBot').
+ * @param {string} contractName The name of the contract (e.g., 'EVMAIAgent').
  * @returns {{abi: object}} An object containing the contract's ABI.
  * @throws {Error} If the contract artifact file cannot be found.
  */
@@ -53,7 +53,7 @@ function loadContractArtifact(contractName) {
  *
  * @param {string} networkName - The name of the target network (e.g., 'sapphire-testnet', 'baseSepolia').
  * @param {string} privateKey - The private key of the oracle's wallet.
- * @param {string} contractAddress - The address of the deployed ChatBot contract.
+ * @param {string} contractAddress - The address of the deployed AIAgent contract.
  * @returns {{
  *   provider: ethers.Provider,
  *   signer: ethers.Signer,
@@ -67,7 +67,7 @@ function initializeOracle(networkName, privateKey, contractAddress) {
   }
 
   if (!contractAddress) {
-    throw new Error("Missing required env variable: ORACLE_CONTRACT_ADDRESS");
+    throw new Error("Missing required env variable: AI_AGENT_CONTRACT_ADDRESS");
   }
 
   const networkRpc = RPC_URL_MAP[networkName];
@@ -78,7 +78,7 @@ function initializeOracle(networkName, privateKey, contractAddress) {
   }
 
   const isSapphire = SAPPHIRE_NETWORKS.has(networkName);
-  const contractName = isSapphire ? "SapphireChatBot" : "EVMChatBot";
+  const contractName = isSapphire ? "SapphireAIAgent" : "EVMAIAgent";
   const { abi } = loadContractArtifact(contractName);
 
   let provider = new ethers.JsonRpcProvider(networkRpc);
@@ -97,4 +97,6 @@ function initializeOracle(networkName, privateKey, contractAddress) {
 
 module.exports = {
   initializeOracle,
+  // Export internal functions for testing purposes
+  loadContractArtifact,
 };

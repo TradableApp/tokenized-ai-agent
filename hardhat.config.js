@@ -10,6 +10,7 @@ const {
   SAPPHIRE_MAINNET_RPC,
   SAPPHIRE_TESTNET_RPC,
   SAPPHIRE_LOCALNET_RPC,
+  ETHERSCAN_API_KEY,
   COINMARKETCAP_API_KEY,
   REPORT_GAS,
 } = process.env;
@@ -25,11 +26,23 @@ module.exports = {
       url: BASE_MAINNET_RPC || "https://mainnet.base.org",
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
       chainId: 8453,
+      verify: {
+        etherscan: {
+          apiUrl: "https://api-sepolia.basescan.org",
+          apiKey: ETHERSCAN_API_KEY, // single Etherscan.io key
+        },
+      },
     },
     baseSepolia: {
       url: BASE_SEPOLIA_TESTNET_RPC || "https://sepolia.base.org",
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
       chainId: 84532,
+      verify: {
+        etherscan: {
+          apiUrl: "https://api-sepolia.basescan.org",
+          apiKey: ETHERSCAN_API_KEY, // single Etherscan.io key
+        },
+      },
     },
     sapphire: {
       url: SAPPHIRE_MAINNET_RPC || "https://sapphire.oasis.io",
@@ -61,25 +74,7 @@ module.exports = {
   // Configuration for Etherscan contract verification
   etherscan: {
     // It's good practice to provide a fallback to prevent errors
-    apiKey: process.env.ETHERSCAN_API_KEY || "",
-    customChains: [
-      {
-        network: "base",
-        chainId: 8453,
-        urls: {
-          apiURL: "https://api.basescan.org/api",
-          browserURL: "https://basescan.org",
-        },
-      },
-      {
-        network: "baseSepolia",
-        chainId: 84532,
-        urls: {
-          apiURL: "https://api-sepolia.basescan.org/api",
-          browserURL: "https://sepolia.basescan.org",
-        },
-      },
-    ],
+    apiKey: ETHERSCAN_API_KEY || "",
   },
 
   gasReporter: {

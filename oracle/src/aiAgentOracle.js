@@ -13,26 +13,26 @@ if (process.env.ENV_FILE) {
   dotenv.config({ path: process.env.ENV_FILE });
 }
 // Load the base .env.oracle file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, ".env.oracle") });
+dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
 // --- Configuration & Initialization ---
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const NETWORK_NAME = process.env.NETWORK_NAME;
-const ORACLE_PRIVATE_KEY = process.env.PRIVATE_KEY;
-const ORACLE_PUBLIC_KEY = process.env.PUBLIC_KEY;
-const ORACLE_CONTRACT_ADDRESS = process.env.ORACLE_CONTRACT_ADDRESS;
+const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
+const AI_AGENT_PUBLIC_KEY = process.env.PUBLIC_KEY;
+const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // This single function from our utility handles all environment-specific setup.
 const { provider, signer, contract, isSapphire } = initializeOracle(
   NETWORK_NAME,
-  ORACLE_PRIVATE_KEY,
-  ORACLE_CONTRACT_ADDRESS,
+  AI_AGENT_PRIVATE_KEY,
+  AI_AGENT_CONTRACT_ADDRESS,
 );
 
 // This global session is only used by the Sapphire workflow.
 let sapphireSession;
 
-console.log(`--- ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
+console.log(`--- AI AGENT STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
 console.log(`Oracle signer address: ${signer.address}`);
 console.log(`Contract address: ${contract.target}`);
 console.log(
@@ -53,7 +53,7 @@ async function setOracleAddress() {
 
   try {
     if (isSapphire) {
-      const isLocalnet = process.env.NETWORK_NAME === "sapphire-localnet";
+      const isLocalnet = NETWORK_NAME === "sapphire-localnet";
 
       if (isLocalnet) {
         const tx = await contract.setOracle(signer.address, { gasLimit: 1000000 });
@@ -64,7 +64,7 @@ async function setOracleAddress() {
         const txUnsigned = await contract.setOracle.populateTransaction(signer.address);
 
         const txParams = {
-          to: ORACLE_CONTRACT_ADDRESS.replace(/^0x/, ""),
+          to: AI_AGENT_CONTRACT_ADDRESS.replace(/^0x/, ""),
           gas: 2000000, // setOracle is a simple transaction, a fixed high limit is safe
           value: 0,
           data: txUnsigned.data.replace(/^0x/, ""),
@@ -75,7 +75,7 @@ async function setOracleAddress() {
       }
     } else {
       // On a standard EVM, the oracle sends a regular transaction from its own wallet.
-      // Note: This requires the `setOracle` function on the EVMChatBot contract to be
+      // Note: This requires the `setOracle` function on the EVMAIAgent contract to be
       // either unprotected or callable by the current oracle address.
       const tx = await contract.setOracle(signer.address);
       await tx.wait();
@@ -87,6 +87,7 @@ async function setOracleAddress() {
     throw err; // Throw to prevent the oracle from running in a bad state.
   }
 }
+
 /**
  * Performs a SIWE login against the Sapphire contract to receive an encrypted authentication token.
  * This token is used to authenticate view calls, as `msg.sender` is not reliable for those on Sapphire.
@@ -106,7 +107,7 @@ async function loginToContract() {
   const siweMessage = new SiweMessage({
     domain,
     address: signer.address,
-    statement: "Oracle authentication for ChatBot",
+    statement: "Oracle authentication for AIAgent",
     uri: `http://${domain}`,
     version: "1",
     chainId: Number(chainId),
@@ -138,7 +139,7 @@ async function loginToContract() {
  * Retrieve prompts from the contract for the given address.
  * Handles both Sapphire (with authToken) and public EVM (without authToken) workflows.
  * @param {string} address - The address to retrieve prompts for.
- * @returns {Promise<Array>} An array of prompts (either string[] or EncryptedMessage[]).
+ * @returns {Promise<Array>} An array of prompts (either Prompt[] or EncryptedPrompt[]).
  */
 async function retrievePrompts(address) {
   try {
@@ -184,17 +185,17 @@ async function retrieveAnswers(address) {
 
 /**
  * Query the DeepSeek model via a local Ollama server.
- * @param {string[]} prompts - The array of prompts forming the conversation history.
+ * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryDeepSeek(prompts) {
+async function queryDeepSeek(conversationHistory) {
   if (!process.env.OLLAMA_URL) {
     throw new Error("OLLAMA_URL is not set in the environment file.");
   }
 
-  const messages = prompts.map((p) => ({
-    role: "user",
-    content: p,
+  const messages = conversationHistory.map((turn) => ({
+    role: turn.type === "prompt" ? "user" : "assistant",
+    content: turn.text,
   }));
 
   const res = await fetch(`${process.env.OLLAMA_URL}/api/chat`, {
@@ -215,22 +216,24 @@ async function queryDeepSeek(prompts) {
 
 /**
  * Query the ChainGPT API for a response.
- * @param {string[]} prompts - The array of prompts forming the conversation history.
+ * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryChainGPT(prompts, userAddress) {
+async function queryChainGPT(conversationHistory, userAddress) {
   if (!process.env.CHAIN_GPT_API_KEY) {
     throw new Error("CHAIN_GPT_API_KEY is not set in the environment file.");
   }
-  if (!prompts || prompts.length === 0) {
+
+  const userPrompts = conversationHistory.filter((item) => item.type === "prompt");
+  if (userPrompts.length === 0) {
     throw new Error("Cannot query with an empty prompt list.");
   }
 
   // The user's current question is the last prompt.
-  const question = prompts[prompts.length - 1];
+  const question = userPrompts[userPrompts.length - 1].text;
 
   // The first prompt defines the unique ID for this entire conversation history.
-  const firstPrompt = prompts[0];
+  const firstPrompt = userPrompts[0].text;
 
   // Generate a deterministic UUID for this conversation.
   // The same user + same first prompt will ALWAYS result in the same UUID.
@@ -261,23 +264,23 @@ async function queryChainGPT(prompts, userAddress) {
 
 /**
  * A dispatcher for querying the AI model specified by the AI_PROVIDER env variable.
- * @param {string[]} prompts - The array of prompts to send to the AI.
+ * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} userAddress - The address of the user submitting the prompt.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryAIModel(prompts, userAddress) {
+async function queryAIModel(conversationHistory, userAddress) {
   const aiProvider = process.env.AI_PROVIDER || "DeepSeek";
   console.log(`Querying AI model via: ${aiProvider}`);
 
   try {
     switch (aiProvider.toLowerCase()) {
       case "chaingpt":
-        return await queryChainGPT(prompts, userAddress);
+        return await queryChainGPT(conversationHistory, userAddress);
       case "deepseek":
-        return await queryDeepSeek(prompts);
+        return await queryDeepSeek(conversationHistory);
       default:
         console.error(`Unknown AI_PROVIDER: "${aiProvider}". Defaulting to DeepSeek.`);
-        return await queryDeepSeek(prompts);
+        return await queryDeepSeek(conversationHistory);
     }
   } catch (err) {
     console.error(`Error querying ${aiProvider}:`, err);
@@ -286,8 +289,7 @@ async function queryAIModel(prompts, userAddress) {
 }
 
 /**
- * [EVM ONLY]
- * @description A helper to remove the '0x04' or '04' prefix from a public key string,
+ * [EVM ONLY] A helper to remove the '0x04' or '04' prefix from a public key string,
  * preparing it for use with the eth-crypto library.
  * @param {string} publicKey - The public key string.
  * @returns {string} The cleaned, raw public key.
@@ -303,8 +305,7 @@ function cleanPublicKey(publicKey) {
 }
 
 /**
- * [EVM ONLY]
- * @description Ensures a hex string has a '0x' prefix, which is required by ethers.js for `bytes` types.
+ * [EVM ONLY] Ensures a hex string has a '0x' prefix, which is required by ethers.js for `bytes` types.
  * @param {string} hexString - The hex string.
  * @returns {string} The hex string with a '0x' prefix.
  */
@@ -313,8 +314,7 @@ function ensure0xPrefix(hexString) {
 }
 
 /**
- * [EVM ONLY]
- * @description Removes the '0x' prefix from a hex string, which is required by eth-crypto.
+ * [EVM ONLY] Removes the '0x' prefix from a hex string, which is required by eth-crypto.
  * @param {string} hexString - The hex string, which may or may not have a '0x' prefix.
  * @returns {string} The raw hex string without the '0x' prefix.
  */
@@ -328,11 +328,17 @@ function strip0xPrefix(hexString) {
  * @returns {Promise<string>} The decrypted plaintext.
  */
 async function decryptMessage(encryptedMessage) {
+  // By convention, if the key fields are empty, the content is treated as plaintext.
+  // This handles messages like "Prompt cancelled by user."
+  if (!encryptedMessage.roflEncryptedKey || encryptedMessage.roflEncryptedKey === "0x") {
+    return ethers.toUtf8String(encryptedMessage.encryptedContent);
+  }
+
   // Use the helper to safely remove the "0x" prefix before parsing.
   const parsedRoflKey = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.roflEncryptedKey));
   const parsedContent = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.encryptedContent));
 
-  const sessionKey = await ethCrypto.decryptWithPrivateKey(ORACLE_PRIVATE_KEY, parsedRoflKey);
+  const sessionKey = await ethCrypto.decryptWithPrivateKey(AI_AGENT_PRIVATE_KEY, parsedRoflKey);
   return await ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent);
 }
 
@@ -345,7 +351,7 @@ async function decryptMessage(encryptedMessage) {
  * @param {string} [userPublicKey] - (EVM only) The user's public key, recovered from their transaction signature.
  */
 async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
-  console.log(`Submitting answer for prompt ${promptId} to ${userAddress}...`);
+  console.log(`Submitting answer for prompt #${promptId} to ${userAddress}...`);
 
   try {
     if (isSapphire) {
@@ -372,7 +378,7 @@ async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
 
       // Use the helper functions to safely clean the keys.
       const userPublicKeyClean = cleanPublicKey(userPublicKey);
-      const oraclePublicKeyClean = cleanPublicKey(ORACLE_PUBLIC_KEY);
+      const oraclePublicKeyClean = cleanPublicKey(AI_AGENT_PUBLIC_KEY);
       const sessionPublicKeyClean = cleanPublicKey(sessionPublicKey);
 
       const encryptedContent = await ethCrypto.encryptWithPublicKey(
@@ -398,7 +404,7 @@ async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
 
     console.log(`Answer for prompt #${promptId} submitted successfully.`);
   } catch (err) {
-    console.error(`Failed to submit answer for prompt ${promptId}:`, err);
+    console.error(`Failed to submit answer for prompt #${promptId}:`, err);
   }
 }
 
@@ -437,45 +443,78 @@ async function pollPrompts() {
         );
 
         if (isSapphire) {
-          const uniqueSenders = new Set(logs.map((log) => log.args.sender));
+          // Group events by user to efficiently fetch history once.
+          const promptsByUser = new Map();
+          for (const log of logs) {
+            const user = log.args.user;
 
-          for (const sender of uniqueSenders) {
-            // This inner try...catch ensures that an error for one user
-            // does not stop the oracle from processing prompts for other users.
+            if (!promptsByUser.has(user)) {
+              promptsByUser.set(user, []);
+            }
+
+            promptsByUser.get(user).push(log);
+          }
+
+          for (const [user, userLogs] of promptsByUser.entries()) {
             try {
-              console.log(`Checking for new prompts from ${sender}...`);
+              console.log(`Processing ${userLogs.length} new prompt(s) from ${user}...`);
 
               const [prompts, answers] = await Promise.all([
-                retrievePrompts(sender),
-                retrieveAnswers(sender),
+                retrievePrompts(user),
+                retrieveAnswers(user),
               ]);
 
               if (!prompts || prompts.length === 0) continue;
 
-              // Find the *next* unanswered prompt, not just the last one
               const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
-              const nextPromptId = prompts.findIndex((_, i) => !answeredPromptIds.has(i));
 
-              if (nextPromptId === -1) {
-                console.log(`All prompts for ${sender} have been answered. Skipping.`);
+              // Find ALL unanswered prompts for this user and process them.
+              const unansweredPrompts = prompts.filter(
+                (p) => !answeredPromptIds.has(Number(p.promptId)),
+              );
+
+              if (unansweredPrompts.length === 0) {
+                console.log(`All prompts for ${user} appear to be answered. Skipping.`);
                 continue;
               }
-              console.log(`Found unanswered prompt #${nextPromptId}. Querying AI model...`);
 
-              const answerText = await queryAIModel(prompts, sender);
+              // Build a complete, sorted history of all past interactions.
+              const fullHistory = [];
+              prompts.forEach((p) =>
+                fullHistory.push({ type: "prompt", text: p.prompt, id: Number(p.promptId) }),
+              );
+              answers.forEach((a) =>
+                fullHistory.push({ type: "answer", text: a.answer, id: Number(a.promptId) }),
+              );
+              fullHistory.sort((a, b) => a.id - b.id);
 
-              console.log(`Storing AI answer for prompt #${nextPromptId} for ${sender}...`);
-              await submitAnswer(answerText, nextPromptId, sender);
+              // Process each unanswered prompt chronologically.
+              for (const promptToAnswer of unansweredPrompts) {
+                const currentPromptId = Number(promptToAnswer.promptId);
+
+                // Build the specific context FOR THIS prompt. It includes all history that occurred before this prompt, plus the current prompt itself.
+                const historyForThisQuery = fullHistory.filter(
+                  (turn) => turn.id <= currentPromptId,
+                );
+
+                console.log(`Found unanswered prompt #${currentPromptId}. Querying AI model...`);
+                const answerText = await queryAIModel(historyForThisQuery, user);
+                await submitAnswer(answerText, currentPromptId, user);
+
+                // Add the new answer to the full history so it becomes context for the next prompt in this batch.
+                fullHistory.push({ type: "answer", text: answerText, id: currentPromptId });
+                fullHistory.sort((a, b) => a.id - b.id);
+              }
             } catch (err) {
-              console.error(`Error processing prompts for sender ${sender}:`, err);
+              console.error(`Error processing prompts for user ${user}:`, err);
             }
           }
         } else {
+          // On public EVM, each event corresponds to a single new prompt.
           for (const event of logs) {
-            const sender = event.args.sender;
-            console.log(
-              `[EVENT] Detected new prompt from: ${sender} in block ${event.blockNumber}`,
-            );
+            const user = event.args.user;
+            const promptId = Number(event.args.promptId);
+            console.log(`[EVENT] Detected new prompt #${promptId} from: ${user}`);
 
             try {
               // Fetch the full transaction details to access its signature.
@@ -487,7 +526,7 @@ async function pollPrompts() {
               // Create a static Transaction object to access cryptographic properties.
               const tx = ethers.Transaction.from(txResponse);
 
-              // Recover the sender's public key from the transaction's signature and unsigned hash.
+              // Recover the user's public key from the transaction's signature and unsigned hash.
               // This is necessary to encrypt the AI's response for the user.
               const userPublicKey = ethers.SigningKey.recoverPublicKey(
                 tx.unsignedHash,
@@ -498,29 +537,46 @@ async function pollPrompts() {
               }
 
               const [encryptedPrompts, encryptedAnswers] = await Promise.all([
-                retrievePrompts(sender),
-                retrieveAnswers(sender),
+                retrievePrompts(user),
+                retrieveAnswers(user),
               ]);
 
               if (!encryptedPrompts || encryptedPrompts.length === 0) continue;
 
-              // Decrypt the full prompt history for the AI's context.
-              const plaintextPrompts = await Promise.all(encryptedPrompts.map(decryptMessage));
-
               const answeredPromptIds = new Set(encryptedAnswers.map((a) => Number(a.promptId)));
-              const nextPromptId = plaintextPrompts.findIndex((_, i) => !answeredPromptIds.has(i));
 
-              if (nextPromptId === -1) {
-                console.log(`All prompts for ${sender} have been answered. Skipping.`);
+              if (answeredPromptIds.has(promptId)) {
+                console.log(`Prompt #${promptId} for ${user} has already been answered. Skipping.`);
                 continue;
               }
-              console.log(`Found unanswered prompt #${nextPromptId}. Querying AI...`);
+              console.log(`Found unanswered prompt #${promptId}. Querying AI...`);
 
-              const answerText = await queryAIModel(plaintextPrompts, sender);
-              await submitAnswer(answerText, nextPromptId, sender, userPublicKey);
+              // Decrypt and build the full conversation history for EVM.
+              const fullHistory = [];
+              const decryptedPrompts = await Promise.all(
+                encryptedPrompts.map(async (p) => ({
+                  type: "prompt",
+                  text: await decryptMessage(p.message),
+                  id: Number(p.promptId),
+                })),
+              );
+              const decryptedAnswers = await Promise.all(
+                encryptedAnswers.map(async (a) => ({
+                  type: "answer",
+                  text: await decryptMessage(a.message),
+                  id: Number(a.promptId),
+                })),
+              );
+              fullHistory.push(...decryptedPrompts, ...decryptedAnswers);
+              fullHistory.sort((a, b) => a.id - b.id);
+
+              const historyForThisQuery = fullHistory.filter((turn) => turn.id <= promptId);
+
+              const answerText = await queryAIModel(historyForThisQuery, user);
+              await submitAnswer(answerText, promptId, user, userPublicKey);
             } catch (err) {
               console.error(
-                `Error processing prompt from ${sender} from tx ${event.transactionHash}:`,
+                `Error processing prompt from ${user} from tx ${event.transactionHash}:`,
                 err,
               );
             }
@@ -542,7 +598,7 @@ async function pollPrompts() {
  * The entry point for the oracle service.
  */
 async function start() {
-  console.log("--- CHATBOT ORACLE SCRIPT STARTING ---");
+  console.log("--- AI AGENT SCRIPT STARTING ---");
 
   await setOracleAddress();
   await pollPrompts();
