@@ -68,7 +68,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     EscrowStatus status;
   }
 
-  /// @notice Maps a message ID or trigger ID to its escrow details.
+  /// @notice Maps a unique escrow ID to its escrow details.
   mapping(uint256 => Escrow) public escrows;
 
   // --- Events ---
@@ -90,11 +90,11 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   /// @notice Emitted when a user cancels their allowance.
   event SubscriptionCancelled(address indexed user);
   /// @notice Emitted when a user's payment is successfully placed in escrow.
-  event PaymentEscrowed(uint256 indexed answerMessageId, address indexed user, uint256 amount);
+  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 amount);
   /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
-  event PaymentFinalized(uint256 indexed answerMessageId);
+  event PaymentFinalized(uint256 indexed escrowId);
   /// @notice Emitted when a timed-out escrowed payment is refunded to the user's wallet.
-  event PaymentRefunded(uint256 indexed answerMessageId);
+  event PaymentRefunded(uint256 indexed escrowId);
   /// @notice Emitted when a user cancels their own pending prompt.
   event PromptCancelled(uint256 indexed answerMessageId, address indexed user);
 
@@ -309,32 +309,20 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
-    Subscription storage sub = subscriptions[msg.sender];
-
-    if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
-    }
-    if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
-    }
-    if (sub.spentAmount + promptFee > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
-    }
-
-    sub.spentAmount += promptFee;
-    pendingEscrowCount[msg.sender]++;
-    ableToken.transferFrom(msg.sender, address(this), promptFee);
+    _processEscrowPayment(msg.sender, promptFee);
 
     uint256 promptMessageId = evmAIAgent.reserveMessageId();
+    // The answer message ID will also serve as the escrow ID.
     uint256 answerMessageId = evmAIAgent.reserveMessageId();
-    escrows[answerMessageId] = Escrow({
+    uint256 escrowId = answerMessageId;
+    escrows[escrowId] = Escrow({
       user: msg.sender,
       amount: promptFee,
       createdAt: block.timestamp,
       status: EscrowStatus.PENDING
     });
 
-    emit PaymentEscrowed(answerMessageId, msg.sender, promptFee);
+    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
     evmAIAgent.submitPrompt(
       promptMessageId,
       answerMessageId,
@@ -360,33 +348,19 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
-    Subscription storage sub = subscriptions[msg.sender];
+    _processEscrowPayment(msg.sender, promptFee);
 
-    if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
-    }
-    if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
-    }
-    if (sub.spentAmount + promptFee > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
-    }
-
-    sub.spentAmount += promptFee;
-    pendingEscrowCount[msg.sender]++;
-    ableToken.transferFrom(msg.sender, address(this), promptFee);
-
+    // The answer message ID will also serve as the escrow ID.
     uint256 answerMessageId = evmAIAgent.reserveMessageId();
-
-    escrows[answerMessageId] = Escrow({
+    uint256 escrowId = answerMessageId;
+    escrows[escrowId] = Escrow({
       user: msg.sender,
       amount: promptFee,
       createdAt: block.timestamp,
       status: EscrowStatus.PENDING
     });
 
-    emit PaymentEscrowed(answerMessageId, msg.sender, promptFee);
-
+    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
     evmAIAgent.submitRegenerationRequest(
       msg.sender,
       _promptMessageId,
@@ -411,31 +385,19 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external onlyOracle {
-    Subscription storage sub = subscriptions[_user];
+    _processEscrowPayment(_user, promptFee);
 
-    if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
-    }
-    if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
-    }
-    if (sub.spentAmount + promptFee > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
-    }
-
-    sub.spentAmount += promptFee;
-    pendingEscrowCount[_user]++;
-    ableToken.transferFrom(_user, address(this), promptFee);
-
+    // The trigger ID will also serve as the escrow ID.
     uint256 triggerId = evmAIAgent.reserveTriggerId();
-    escrows[triggerId] = Escrow({
+    uint256 escrowId = triggerId;
+    escrows[escrowId] = Escrow({
       user: _user,
       amount: promptFee,
       createdAt: block.timestamp,
       status: EscrowStatus.PENDING
     });
 
-    emit PaymentEscrowed(triggerId, _user, promptFee);
+    emit PaymentEscrowed(escrowId, _user, promptFee);
     evmAIAgent.submitAgentJob(triggerId, _jobId, _user, _encryptedPayload, _roflEncryptedKey);
   }
 
@@ -446,20 +408,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param _branchPointMessageId The ID of the message where the branch occurs.
    */
   function initiateBranch(uint256 _originalConversationId, uint256 _branchPointMessageId) external {
-    Subscription storage sub = subscriptions[msg.sender];
-    if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
-    }
-    if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
-    }
-    if (sub.spentAmount + branchFee > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
-    }
-
-    sub.spentAmount += branchFee;
-    sub.allowance -= branchFee;
-    ableToken.transferFrom(msg.sender, treasury, branchFee);
+    _processDirectPayment(msg.sender, branchFee);
 
     evmAIAgent.submitBranchRequest(msg.sender, _originalConversationId, _branchPointMessageId);
   }
@@ -470,7 +419,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param _answerMessageId The ID of the answer message to cancel.
    */
   function cancelPrompt(uint256 _answerMessageId) external {
-    Escrow storage escrow = escrows[_answerMessageId];
+    uint256 escrowId = _answerMessageId;
+    Escrow storage escrow = escrows[escrowId];
     Subscription storage sub = subscriptions[msg.sender];
 
     if (escrow.user != msg.sender) {
@@ -514,22 +464,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
-    Subscription storage sub = subscriptions[msg.sender];
+    _processDirectPayment(msg.sender, metadataUpdateFee);
 
-    if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
-    }
-    if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
-    }
-    if (sub.spentAmount + metadataUpdateFee > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
-    }
-
-    sub.spentAmount += metadataUpdateFee;
-    sub.allowance -= metadataUpdateFee;
-
-    ableToken.transferFrom(msg.sender, treasury, metadataUpdateFee);
     evmAIAgent.submitMetadataUpdate(
       _conversationId,
       msg.sender,
@@ -543,10 +479,10 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   /**
    * @notice Releases the escrowed payment to the treasury upon successful completion.
    * @dev Called by the EVMAIAgent contract.
-   * @param _answerMessageId The unique identifier of the prompt to finalize.
+   * @param _escrowId The unique identifier of the job to finalize.
    */
-  function finalizePayment(uint256 _answerMessageId) external onlyEVMAIAgent {
-    Escrow storage escrow = escrows[_answerMessageId];
+  function finalizePayment(uint256 _escrowId) external onlyEVMAIAgent {
+    Escrow storage escrow = escrows[_escrowId];
 
     if (escrow.user == address(0)) {
       revert EscrowNotFound();
@@ -557,17 +493,18 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
     pendingEscrowCount[escrow.user]--;
     escrow.status = EscrowStatus.COMPLETE;
-    emit PaymentFinalized(_answerMessageId);
+    emit PaymentFinalized(_escrowId);
     ableToken.transfer(treasury, escrow.amount);
   }
 
   /**
    * @notice Refunds any pending escrows that have passed the timeout period.
    * @dev Called by a keeper service to prevent funds from being stuck.
-   * @param _answerMessageId The message ID to check for a potential refund.
+   * @param _answerMessageId The ID of the answer message to refund.
    */
   function processRefund(uint256 _answerMessageId) external {
-    Escrow storage escrow = escrows[_answerMessageId];
+    uint256 escrowId = _answerMessageId;
+    Escrow storage escrow = escrows[escrowId];
 
     if (escrow.user == address(0)) {
       return; // Silently ignore if no escrow exists
@@ -581,12 +518,61 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
     pendingEscrowCount[escrow.user]--;
     escrow.status = EscrowStatus.REFUNDED;
-
     subscriptions[escrow.user].spentAmount -= escrow.amount;
     subscriptions[escrow.user].allowance -= escrow.amount;
 
-    emit PaymentRefunded(_answerMessageId);
+    emit PaymentRefunded(escrowId);
     ableToken.transfer(escrow.user, escrow.amount);
+  }
+
+  // --- Internal Helper Functions ---
+
+  /**
+   * @dev Internal function to handle the subscription checks and state changes for an escrowed payment.
+   * @param _user The user address initiating the action.
+   * @param _fee The fee for the action.
+   */
+  function _processEscrowPayment(address _user, uint256 _fee) private {
+    Subscription storage sub = subscriptions[_user];
+
+    if (sub.expiresAt == 0) {
+      revert NoActiveSubscription();
+    }
+    if (block.timestamp >= sub.expiresAt) {
+      revert SubscriptionExpired();
+    }
+    if (sub.spentAmount + _fee > sub.allowance) {
+      revert InsufficientSubscriptionAllowance();
+    }
+
+    sub.spentAmount += _fee;
+    pendingEscrowCount[_user]++;
+    ableToken.transferFrom(_user, address(this), _fee);
+  }
+
+  /**
+   * @dev Internal function to handle the subscription checks and state changes for a direct-to-treasury payment.
+   * @param _user The user address initiating the action.
+   * @param _fee The fee for the action.
+   */
+  function _processDirectPayment(address _user, uint256 _fee) private {
+    Subscription storage sub = subscriptions[_user];
+
+    if (sub.expiresAt == 0) {
+      revert NoActiveSubscription();
+    }
+    if (block.timestamp >= sub.expiresAt) {
+      revert SubscriptionExpired();
+    }
+    if (sub.spentAmount + _fee > sub.allowance) {
+      revert InsufficientSubscriptionAllowance();
+    }
+
+    sub.spentAmount += _fee;
+    // For direct, non-refundable payments, we also decrement the total allowance to keep
+    // our internal accounting synchronized with the external ERC20 allowance.
+    sub.allowance -= _fee;
+    ableToken.transferFrom(_user, treasury, _fee);
   }
 
   // --- Upgradability ---
@@ -601,5 +587,5 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[36] private __gap;
+  uint256[37] private __gap;
 }

@@ -263,7 +263,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    * @dev This can only be called by the trusted escrow contract.
    * @return The newly reserved trigger ID.
    */
-  function reserveNewTriggerId() external onlyAIAgentEscrow returns (uint256) {
+  function reserveTriggerId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newTriggerId = triggerIdCounter;
     triggerIdCounter++;
     return newTriggerId;
@@ -416,6 +416,8 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     if (bytes(_promptMessageCID).length > 0) {
       emit PromptMessageAdded(conversationId, _promptMessageId, _promptMessageCID);
       emit SearchIndexDeltaAdded(_promptMessageId, _searchDeltaCID);
+    } else if (isRegenerationPending[_promptMessageId]) {
+      isRegenerationPending[_promptMessageId] = false;
     }
 
     messageToConversation[_answerMessageId] = conversationId;
