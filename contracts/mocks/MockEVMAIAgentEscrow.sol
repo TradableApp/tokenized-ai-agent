@@ -7,39 +7,101 @@ import { IEVMAIAgent } from "../../contracts/interfaces/IEVMAIAgent.sol";
 contract MockEVMAIAgentEscrow {
   IEVMAIAgent public immutable EVM_AI_AGENT;
 
-  uint256 public lastFinalizedPromptId;
+  uint256 public lastFinalizedEscrowId;
   uint256 public finalizePaymentCallCount;
-  event PaymentFinalized(uint256 promptId);
+  event PaymentFinalized(uint256 escrowId);
+
+  error NotEVMAIAgent();
 
   constructor(address _agentAddress) {
     EVM_AI_AGENT = IEVMAIAgent(_agentAddress);
   }
 
-  // This function simulates the real escrow calling the agent.
+  // --- Helper functions to simulate calls from the Escrow to the Agent ---
+
+  function callReserveMessageId() external returns (uint256) {
+    return EVM_AI_AGENT.reserveMessageId();
+  }
+
+  function callReserveTriggerId() external returns (uint256) {
+    return EVM_AI_AGENT.reserveTriggerId();
+  }
+
   function callSubmitPrompt(
-    uint256 _promptId,
+    uint256 _promptMessageId,
+    uint256 _answerMessageId,
+    uint256 _conversationId,
     address _user,
-    bytes calldata _encryptedContent,
-    bytes calldata _userEncryptedKey,
+    bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
     EVM_AI_AGENT.submitPrompt(
-      _promptId,
+      _promptMessageId,
+      _answerMessageId,
+      _conversationId,
       _user,
-      _encryptedContent,
-      _userEncryptedKey,
+      _encryptedPayload,
       _roflEncryptedKey
     );
   }
 
-  function callStoreCancellation(uint256 _promptId, address _user) external {
-    EVM_AI_AGENT.storeCancellation(_promptId, _user);
+  function callSubmitRegenerationRequest(
+    address _user,
+    uint256 _promptMessageId,
+    uint256 _originalAnswerMessageId,
+    uint256 _answerMessageId,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external {
+    EVM_AI_AGENT.submitRegenerationRequest(
+      _user,
+      _promptMessageId,
+      _originalAnswerMessageId,
+      _answerMessageId,
+      _encryptedPayload,
+      _roflEncryptedKey
+    );
   }
 
-  // This function now records the call so we can make assertions in our tests.
-  function finalizePayment(uint256 _promptId) external {
-    lastFinalizedPromptId = _promptId;
+  function callSubmitAgentJob(
+    uint256 _triggerId,
+    uint256 _jobId,
+    address _user,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external {
+    EVM_AI_AGENT.submitAgentJob(_triggerId, _jobId, _user, _encryptedPayload, _roflEncryptedKey);
+  }
+
+  function callSubmitMetadataUpdate(
+    uint256 _conversationId,
+    address _user,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external {
+    EVM_AI_AGENT.submitMetadataUpdate(_conversationId, _user, _encryptedPayload, _roflEncryptedKey);
+  }
+
+  function callSubmitBranchRequest(
+    address _user,
+    uint256 _originalConversationId,
+    uint256 _branchPointMessageId
+  ) external {
+    EVM_AI_AGENT.submitBranchRequest(_user, _originalConversationId, _branchPointMessageId);
+  }
+
+  function callRecordCancellation(uint256 _answerMessageId, address _user) external {
+    EVM_AI_AGENT.recordCancellation(_answerMessageId, _user);
+  }
+
+  // --- Implementation of the callback from the Agent ---
+
+  function finalizePayment(uint256 _escrowId) external {
+    if (msg.sender != address(EVM_AI_AGENT)) {
+      revert NotEVMAIAgent();
+    }
+    lastFinalizedEscrowId = _escrowId;
     finalizePaymentCallCount++;
-    emit PaymentFinalized(_promptId);
+    emit PaymentFinalized(_escrowId);
   }
 }
