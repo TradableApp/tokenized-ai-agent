@@ -2,39 +2,20 @@
 pragma solidity ^0.8.21;
 
 import { Subcall } from "@oasisprotocol/sapphire-contracts/contracts/Subcall.sol";
-import { SiweAuth } from "@oasisprotocol/sapphire-contracts/contracts/auth/SiweAuth.sol";
 import { ISapphireAIAgentEscrow } from "./interfaces/ISapphireAIAgentEscrow.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-
-/// @notice Represents a user's prompt with its unique ID.
-struct Prompt {
-  uint256 promptId;
-  string prompt;
-}
-
-/// @notice Represents an AI-generated answer with the corresponding prompt ID.
-struct Answer {
-  uint256 promptId;
-  string answer;
-}
+import { Structs } from "./libraries/Structs.sol";
 
 /**
  * @title Sapphire AI Agent Contract
- * @dev This contract manages the storage of prompts and AI-generated answers in a confidential
- *      environment provided by the Oasis Sapphire runtime. It works in tandem with an Escrow contract.
+ * @dev This contract acts as an on-chain registry for a decentralized AI agent system.
+ *      It manages ownership of conversations and messages, emitting events that allow
+ *      off-chain indexers (like The Graph) to build a queryable history of interactions.
+ *      Content is stored off-chain (e.g., on Arweave) and referenced by Content IDs (CIDs).
+ *      All event payloads are confidentially stored by the Sapphire runtime.
  */
-contract SapphireAIAgent is SiweAuth, Ownable {
-  /// @notice Stores all prompts submitted by a user.
-  mapping(address => Prompt[]) private _prompts;
-  /// @notice Stores all answers received for a user.
-  mapping(address => Answer[]) private _answers;
-  /// @notice Maps a prompt ID to the user who created it for efficient lookups.
-  mapping(uint256 => address) public promptIdToUser;
-  /// @notice Tracks whether a prompt has been answered or cancelled to prevent duplicates.
-  mapping(uint256 => bool) public isPromptAnswered;
-
-  /// @notice A counter to ensure each prompt gets a unique ID.
-  uint256 public promptIdCounter;
+contract SapphireAIAgent is Ownable {
+  // --- State Variables ---
 
   /// @notice The TEE-based oracle address authorized to submit answers.
   address public oracle;
@@ -42,85 +23,165 @@ contract SapphireAIAgent is SiweAuth, Ownable {
   bytes21 public roflAppID;
   /// @notice The associated escrow contract that handles all payments.
   ISapphireAIAgentEscrow public agentEscrow;
+  /// @notice The domain used for off-chain SIWE validation.
+  string public domain;
 
-  /// @notice Emitted when a new prompt is successfully submitted via the escrow contract.
-  event PromptSubmitted(address indexed user, uint256 indexed promptId);
-  /// @notice Emitted when the oracle successfully submits an answer.
-  event AnswerSubmitted(address indexed sender, uint256 indexed promptId);
+  /// @notice A counter to ensure each conversation gets a unique ID.
+  uint256 public conversationIdCounter;
+  /// @notice A counter to ensure each message gets a unique ID.
+  uint256 public messageIdCounter;
+  /// @notice A counter to ensure each autonomous agent job gets a unique ID.
+  uint256 public jobIdCounter;
+  /// @notice A counter to ensure each job trigger gets a unique ID.
+  uint256 public triggerIdCounter;
+
+  /// @notice Maps a conversation ID to the owner's address for on-chain ownership verification.
+  mapping(uint256 => address) public conversationToOwner;
+  /// @notice Maps a job ID to the owner's address for on-chain ownership verification.
+  mapping(uint256 => address) public jobToOwner;
+  /// @notice Maps a message ID to its parent conversation ID for relational integrity checks.
+  mapping(uint256 => uint256) public messageToConversation;
+  /// @notice Maps a trigger ID to its parent job ID for relational integrity checks.
+  mapping(uint256 => uint256) public triggerToJob;
+  /// @notice Tracks whether an escrowed job (by its answer/trigger ID) has been completed or cancelled.
+  mapping(uint256 => bool) public isJobFinalized;
+  /// @notice Tracks whether a prompt message is currently pending a regeneration response.
+  mapping(uint256 => bool) public isRegenerationPending;
+
+  // --- Events ---
+
+  // TEE Trigger Events
+  /// @notice Emitted when a new user prompt is submitted. This is the primary trigger for the TEE.
+  event PromptSubmitted(
+    address indexed user,
+    uint256 indexed promptMessageId,
+    uint256 answerMessageId,
+    uint256 conversationId,
+    string payload
+  );
+  /// @notice Emitted when a new agent job is submitted. This is a trigger for the TEE.
+  event AgentJobSubmitted(
+    address indexed user,
+    uint256 indexed triggerId,
+    uint256 jobId,
+    string payload
+  );
+  /// @notice Emitted when a user requests the TEE to regenerate an answer.
+  event RegenerationRequested(
+    address indexed user,
+    uint256 indexed promptMessageId,
+    uint256 originalAnswerMessageId,
+    uint256 answerMessageId,
+    string payload
+  );
+  /// @notice Emitted when a user requests the TEE to branch a conversation.
+  event BranchRequested(
+    address indexed user,
+    uint256 indexed originalConversationId,
+    uint256 branchPointMessageId
+  );
+  /// @notice Emitted when a user successfully cancels a pending prompt. This instructs the TEE to halt processing.
+  event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
+  /// @notice Emitted when a user requests a metadata update. This instructs the TEE to update Arweave.
+  event MetadataUpdateRequested(
+    address indexed user,
+    uint256 indexed conversationId,
+    string payload
+  );
+
+  // Graph Historical Record Events
+  /// @notice Emitted when a new conversation is started.
+  event ConversationAdded(
+    address indexed user,
+    uint256 indexed conversationId,
+    string conversationCID,
+    string metadataCID
+  );
+  /// @notice Emitted when a new conversation is forked from an existing one.
+  event ConversationBranched(
+    address indexed user,
+    uint256 indexed conversationId,
+    uint256 originalConversationId,
+    uint256 branchPointMessageId,
+    string conversationCID,
+    string metadataCID
+  );
+  /// @notice Emitted when a user adds a new prompt to a conversation.
+  event PromptMessageAdded(
+    uint256 indexed conversationId,
+    uint256 indexed messageId,
+    string messageCID
+  );
+  /// @notice Emitted when the oracle submits an answer to a prompt.
+  event AnswerMessageAdded(
+    uint256 indexed conversationId,
+    uint256 indexed messageId,
+    string messageCID
+  );
+  /// @notice Emitted with a prompt to provide keywords for off-chain search indexing.
+  event SearchIndexDeltaAdded(uint256 indexed messageId, string searchDeltaCID);
+  /// @notice Emitted when a conversation's metadata CID is updated by the TEE.
+  event ConversationMetadataUpdated(
+    uint256 indexed conversationId,
+    string newConversationMetadataCID
+  );
+
+  // Admin Events
   /// @notice Emitted when the linked escrow contract address is updated.
   event AgentEscrowUpdated(address indexed newAIAgentEscrow);
   /// @notice Emitted when the oracle address is updated by a TEE.
   event OracleUpdated(address indexed newOracle);
 
+  // --- Errors ---
+
+  // Admin and Setup Errors
   /// @notice Reverts if an address parameter is the zero address.
   error ZeroAddress();
   /// @notice Reverts if an attempt is made to set the escrow address more than once.
   error AgentEscrowAlreadySet();
-  /// @notice Reverts if a function is called by an unauthorized user or oracle.
-  error UnauthorizedUserOrOracle();
-  /// @notice Reverts if a function is called by an address that is not the authorized user.
-  error UnauthorizedUser();
+
+  // Access Control Errors
+  /// @notice Reverts if a function is called by an unauthorized user.
+  error Unauthorized();
   /// @notice Reverts if a function is called by an address that is not the authorized oracle.
   error UnauthorizedOracle();
   /// @notice Reverts if a function is called by an address other than the linked escrow contract.
   error NotAIAgentEscrow();
-  /// @notice Reverts if a prompt ID is not valid or does not exist.
-  error InvalidPromptId();
-  /// @notice Reverts if an answer or cancellation is submitted for an already-answered prompt.
-  error PromptAlreadyAnswered();
-  /// @notice Reverts if the prompt ID from escrow does not match the expected next ID.
-  error MismatchedPromptId();
+
+  // Input Validation Errors
+  /// @notice Reverts if the oracle attempts to answer a prompt that does not exist.
+  error InvalidPromptMessageId();
+  /// @notice Reverts if the oracle submits an answer without providing a CID for the answer message.
+  error AnswerCIDRequired();
+
+  // State Machine Errors
+  /// @notice Reverts if an answer or cancellation is submitted for an already-answered job.
+  error JobAlreadyFinalized();
+  /// @notice Reverts if a regeneration is requested for a prompt that already has one pending.
+  error RegenerationAlreadyPending();
+
+  // --- Constructor ---
 
   /**
    * @notice Sets up the AI Agent smart contract.
-   * @param _domain The domain used for SIWE login on the frontend.
+   * @param _domain The domain used for off-chain SIWE validation.
    * @param _roflAppID The attested ROFL app that is allowed to call setOracle().
-   * @param _oracle The initial TEE oracle address for accessing prompts.
    * @param _initialOwner The address that will have ownership of this contract.
    */
   constructor(
     string memory _domain,
     bytes21 _roflAppID,
-    address _oracle,
     address _initialOwner
-  ) SiweAuth(_domain) Ownable(_initialOwner) {
-    if (_oracle == address(0)) {
-      revert ZeroAddress();
-    }
+  ) Ownable(_initialOwner) {
+    domain = _domain;
     roflAppID = _roflAppID;
-    oracle = _oracle;
+
+    // Initialize counters to start from 1 to avoid Zero ID Problem when creating new entities
+    conversationIdCounter = 1;
+    jobIdCounter = 1;
   }
 
-  /**
-   * @notice For the user: checks whether `_authToken` corresponds to `_addr`.
-   * @notice For the oracle: checks whether `msg.sender` is the authorized oracle.
-   * @param _authToken The encrypted SIWE token for authentication.
-   * @param _addr The address being authenticated.
-   */
-  modifier onlyUserOrOracle(bytes memory _authToken, address _addr) {
-    if (msg.sender != _addr && msg.sender != oracle) {
-      address msgSender = authMsgSender(_authToken);
-      if (msgSender != _addr && msgSender != oracle) {
-        revert UnauthorizedUserOrOracle();
-      }
-    }
-    _;
-  }
-
-  /**
-   * @notice Checks whether `_authToken` is a valid SIWE token corresponding to `_addr`.
-   * @param _authToken The encrypted SIWE token for authentication.
-   * @param _addr The address being authenticated.
-   */
-  modifier onlyUser(bytes memory _authToken, address _addr) {
-    if (msg.sender != _addr) {
-      address msgSender = authMsgSender(_authToken);
-      if (msgSender != _addr) {
-        revert UnauthorizedUser();
-      }
-    }
-    _;
-  }
+  // --- Modifiers ---
 
   /**
    * @notice Checks whether the transaction was signed by the oracle's private key.
@@ -128,6 +189,16 @@ contract SapphireAIAgent is SiweAuth, Ownable {
   modifier onlyOracle() {
     if (msg.sender != oracle) {
       revert UnauthorizedOracle();
+    }
+    _;
+  }
+
+  /**
+   * @notice Checks that the caller is the registered SapphireAIAgentEscrow contract.
+   */
+  modifier onlyAIAgentEscrow() {
+    if (msg.sender != address(agentEscrow)) {
+      revert NotAIAgentEscrow();
     }
     _;
   }
@@ -141,15 +212,7 @@ contract SapphireAIAgent is SiweAuth, Ownable {
     _;
   }
 
-  /**
-   * @notice Checks that the caller is the registered AIAgentEscrow contract.
-   */
-  modifier onlyAIAgentEscrow() {
-    if (msg.sender != address(agentEscrow)) {
-      revert NotAIAgentEscrow();
-    }
-    _;
-  }
+  // --- Administrative Functions ---
 
   /**
    * @notice Sets the address of the AgentEscrow contract.
@@ -169,8 +232,7 @@ contract SapphireAIAgent is SiweAuth, Ownable {
 
   /**
    * @notice Sets the oracle address that will be allowed to read prompts and submit answers.
-   * @dev This setter can only be called from within an authorized ROFL TEE. The keypair
-   *      corresponding to the address should never leave the TEE.
+   * @dev This setter can only be called from within an authorized ROFL TEE, verified by Sapphire.
    * @param _newOracle The new address for the oracle.
    */
   function setOracle(address _newOracle) external onlyTEE(roflAppID) {
@@ -181,117 +243,270 @@ contract SapphireAIAgent is SiweAuth, Ownable {
     emit OracleUpdated(_newOracle);
   }
 
+  // --- Core Functions ---
+
   /**
-   * @notice Stores a new prompt after payment has been secured by the escrow contract.
+   * @notice Atomically reserves a new message ID for an upcoming action.
+   * @dev This can only be called by the trusted escrow contract to prevent ID griefing.
+   *      It ensures that every ID retrieved is unique and the counter is immediately updated.
+   * @return The newly reserved message ID.
+   */
+  function reserveMessageId() external onlyAIAgentEscrow returns (uint256) {
+    uint256 newMessageId = messageIdCounter;
+    messageIdCounter++;
+    return newMessageId;
+  }
+
+  /**
+   * @notice Atomically reserves a new trigger ID for an upcoming agent job.
+   * @dev This can only be called by the trusted escrow contract.
+   * @return The newly reserved trigger ID.
+   */
+  function reserveTriggerId() external onlyAIAgentEscrow returns (uint256) {
+    uint256 newTriggerId = triggerIdCounter;
+    triggerIdCounter++;
+    return newTriggerId;
+  }
+
+  /**
+   * @notice Records a new user prompt after IDs have been reserved and payment secured.
    * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract.
-   * @param _promptId The unique identifier for the prompt.
-   * @param _user The original user who initiated the prompt.
-   * @param _prompt The plaintext prompt from the user.
+   * @param _promptMessageId The unique, pre-reserved ID for this prompt message.
+   * @param _answerMessageId The unique, pre-reserved ID for the future answer.
+   * @param _conversationId The ID of the conversation. If 0, a new conversation will be created.
+   * @param _user The address of the user who initiated the prompt.
+   * @param _payload The plaintext prompt data for the TEE, handled confidentially by Sapphire.
    */
   function submitPrompt(
-    uint256 _promptId,
+    uint256 _promptMessageId,
+    uint256 _answerMessageId,
+    uint256 _conversationId,
     address _user,
-    string memory _prompt
+    string calldata _payload
   ) external onlyAIAgentEscrow {
-    if (_promptId != promptIdCounter) {
-      revert MismatchedPromptId();
+    uint256 conversationId = _conversationId;
+
+    // Zero ID indicates a new conversation should be created
+    if (conversationId == 0) {
+      conversationId = conversationIdCounter++;
+      conversationToOwner[conversationId] = _user;
+    } else {
+      if (conversationToOwner[conversationId] != _user) {
+        revert Unauthorized();
+      }
     }
-    _prompts[_user].push(Prompt({ promptId: _promptId, prompt: _prompt }));
-    promptIdToUser[_promptId] = _user;
-    promptIdCounter++;
-    emit PromptSubmitted(_user, _promptId);
+
+    messageToConversation[_promptMessageId] = conversationId;
+    emit PromptSubmitted(_user, _promptMessageId, _answerMessageId, conversationId, _payload);
   }
 
   /**
-   * @notice Clears the conversation history for the calling user.
-   * @param _authToken The encrypted SIWE token for authentication.
-   * @param _addr The address of the user whose conversation is being cleared.
+   * @notice Records a user's request to regenerate an answer after payment is secured.
+   * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract. It places a
+   *      lock on the original prompt to prevent multiple simultaneous regenerations.
+   * @param _user The address of the user requesting the regeneration.
+   * @param _promptMessageId The ID of the user's prompt being regenerated.
+   * @param _originalAnswerMessageId The ID of the AI answer to regenerate from.
+   * @param _answerMessageId The unique, pre-reserved ID for the future answer.
+   * @param _payload The plaintext instructions for the TEE, handled confidentially by Sapphire.
    */
-  function clearPrompt(
-    bytes memory _authToken,
-    address _addr
-  ) external onlyUser(_authToken, _addr) {
-    delete _prompts[_addr];
-    delete _answers[_addr];
-  }
-
-  /**
-   * @notice Gets the total number of prompts a user has submitted.
-   * @param _authToken The encrypted SIWE token for authentication.
-   * @param _addr The address of the user whose prompt count is being checked.
-   * @return The total number of prompts.
-   */
-  function getPromptsCount(
-    bytes memory _authToken,
-    address _addr
-  ) external view onlyUserOrOracle(_authToken, _addr) returns (uint256) {
-    return _prompts[_addr].length;
-  }
-
-  /**
-   * @notice Returns all prompts for a given user address.
-   * @dev Called by the user in the frontend and by the oracle to generate the answer.
-   * @param _authToken The encrypted SIWE token for authentication.
-   * @param _addr The address of the user whose prompts are being retrieved.
-   * @return An array of `Prompt` structs.
-   */
-  function getPrompts(
-    bytes memory _authToken,
-    address _addr
-  ) external view onlyUserOrOracle(_authToken, _addr) returns (Prompt[] memory) {
-    return _prompts[_addr];
-  }
-
-  /**
-   * @notice Returns all answers for a given user address.
-   * @param _authToken The encrypted SIWE token for authentication.
-   * @param _addr The address of the user whose answers are being retrieved.
-   * @return An array of `Answer` structs.
-   */
-  function getAnswers(
-    bytes memory _authToken,
-    address _addr
-  ) external view onlyUserOrOracle(_authToken, _addr) returns (Answer[] memory) {
-    return _answers[_addr];
-  }
-
-  /**
-   * @notice Stores a cancellation record for a given prompt.
-   * @dev This is called by the Escrow contract when a user cancels a pending prompt.
-   *      It creates an "answer" record to provide clarity in the user's history
-   *      and prevents the oracle from submitting a real answer later.
-   * @param _promptId The ID of the prompt that was cancelled.
-   * @param _user The address of the user who cancelled.
-   */
-  function storeCancellation(uint256 _promptId, address _user) external onlyAIAgentEscrow {
-    if (isPromptAnswered[_promptId]) {
-      revert PromptAlreadyAnswered();
+  function submitRegenerationRequest(
+    address _user,
+    uint256 _promptMessageId,
+    uint256 _originalAnswerMessageId,
+    uint256 _answerMessageId,
+    string calldata _payload
+  ) external onlyAIAgentEscrow {
+    if (isRegenerationPending[_promptMessageId]) {
+      revert RegenerationAlreadyPending();
     }
-    isPromptAnswered[_promptId] = true;
-    _answers[_user].push(Answer({ promptId: _promptId, answer: "Prompt cancelled by user." }));
+
+    isRegenerationPending[_promptMessageId] = true;
+
+    emit RegenerationRequested(
+      _user,
+      _promptMessageId,
+      _originalAnswerMessageId,
+      _answerMessageId,
+      _payload
+    );
   }
 
   /**
-   * @notice Submits the answer to the prompt for a given user address.
-   * @dev Called by the oracle from within its TEE.
-   * @param _answer The plaintext AI response.
-   * @param _promptId The unique identifier of the prompt being answered.
-   * @param _addr The address of the user who initiated the prompt.
+   * @notice Records a new autonomous agent job after payment has been secured by the escrow contract.
+   * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract.
+   * @param _triggerId The unique identifier for this specific job trigger.
+   * @param _jobId The ID of the parent job. If 0, a new job will be created.
+   * @param _user The address of the user for whom the job is being run.
+   * @param _payload The plaintext job data for the TEE, handled confidentially by Sapphire.
+   */
+  function submitAgentJob(
+    uint256 _triggerId,
+    uint256 _jobId,
+    address _user,
+    string calldata _payload
+  ) external onlyAIAgentEscrow {
+    uint256 jobId = _jobId;
+
+    // Zero ID indicates a new job should be created
+    if (jobId == 0) {
+      jobId = jobIdCounter++;
+      jobToOwner[jobId] = _user;
+    } else {
+      if (jobToOwner[jobId] != _user) {
+        revert Unauthorized();
+      }
+    }
+
+    triggerToJob[_triggerId] = jobId;
+    emit AgentJobSubmitted(_user, _triggerId, jobId, _payload);
+  }
+
+  /**
+   * @notice Submits the final answer and all related Arweave CIDs for a prompt.
+   * @dev Called by the oracle from within its TEE. The answer ID was pre-reserved.
+   * @param _promptMessageId The ID of the user's prompt being answered.
+   * @param _answerMessageId The pre-reserved ID that must be used for this answer message.
+   * @param _cids A struct containing all the Arweave CIDs for the relevant files.
    */
   function submitAnswer(
-    string memory _answer,
-    uint256 _promptId,
-    address _addr
+    uint256 _promptMessageId,
+    uint256 _answerMessageId,
+    Structs.CidBundle calldata _cids
   ) external onlyOracle {
-    if (promptIdToUser[_promptId] != _addr) {
-      revert InvalidPromptId();
+    if (isJobFinalized[_answerMessageId]) {
+      revert JobAlreadyFinalized();
     }
-    if (isPromptAnswered[_promptId]) {
-      revert PromptAlreadyAnswered();
+
+    if (bytes(_cids.answerMessageCID).length == 0) {
+      revert AnswerCIDRequired();
     }
-    isPromptAnswered[_promptId] = true;
-    _answers[_addr].push(Answer({ promptId: _promptId, answer: _answer }));
-    emit AnswerSubmitted(_addr, _promptId);
-    agentEscrow.finalizePayment(_promptId);
+
+    uint256 conversationId = messageToConversation[_promptMessageId];
+
+    if (conversationToOwner[conversationId] == address(0)) {
+      revert InvalidPromptMessageId();
+    }
+
+    isJobFinalized[_answerMessageId] = true;
+    address user = conversationToOwner[conversationId];
+
+    if (bytes(_cids.conversationCID).length > 0) {
+      emit ConversationAdded(user, conversationId, _cids.conversationCID, _cids.metadataCID);
+    }
+
+    if (bytes(_cids.promptMessageCID).length > 0) {
+      emit PromptMessageAdded(conversationId, _promptMessageId, _cids.promptMessageCID);
+      emit SearchIndexDeltaAdded(_promptMessageId, _cids.searchDeltaCID);
+    } else if (isRegenerationPending[_promptMessageId]) {
+      // This is a regeneration response, so unlock the original prompt.
+      isRegenerationPending[_promptMessageId] = false;
+    }
+
+    messageToConversation[_answerMessageId] = conversationId;
+    emit AnswerMessageAdded(conversationId, _answerMessageId, _cids.answerMessageCID);
+    agentEscrow.finalizePayment(_answerMessageId);
+  }
+
+  /**
+   * @notice Records a user's request to update a conversation's metadata.
+   * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract after charging a fee.
+   * @param _conversationId The ID of the conversation to update.
+   * @param _user The address of the user requesting the update.
+   * @param _payload The plaintext ABI-encoded update instructions (e.g., new title).
+   */
+  function submitMetadataUpdate(
+    uint256 _conversationId,
+    address _user,
+    string calldata _payload
+  ) external onlyAIAgentEscrow {
+    if (conversationToOwner[_conversationId] != _user) {
+      revert Unauthorized();
+    }
+
+    emit MetadataUpdateRequested(_user, _conversationId, _payload);
+  }
+
+  /**
+   * @notice Reveals the new metadata CID after the TEE has updated Arweave.
+   * @dev This function can only be called by the authorized oracle.
+   * @param _conversationId The ID of the conversation that was updated.
+   * @param _newConversationMetadataCID The Arweave CID of the new metadata file.
+   */
+  function submitConversationMetadata(
+    uint256 _conversationId,
+    string calldata _newConversationMetadataCID
+  ) external onlyOracle {
+    emit ConversationMetadataUpdated(_conversationId, _newConversationMetadataCID);
+  }
+
+  /**
+   * @notice Records a user's request to branch a conversation after the fee is paid.
+   * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract.
+   * @param _user The address of the user who is branching the conversation.
+   * @param _originalConversationId The ID of the conversation being branched from.
+   * @param _branchPointMessageId The ID of the message where the branch occurs.
+   */
+  function submitBranchRequest(
+    address _user,
+    uint256 _originalConversationId,
+    uint256 _branchPointMessageId
+  ) external onlyAIAgentEscrow {
+    if (conversationToOwner[_originalConversationId] != _user) {
+      revert Unauthorized();
+    }
+
+    emit BranchRequested(_user, _originalConversationId, _branchPointMessageId);
+  }
+
+  /**
+   * @notice Submits the final CIDs for a newly branched conversation.
+   * @dev Called by the oracle after processing a `BranchRequested` event and uploading files to Arweave.
+   *      This function emits the `ConversationBranched` event that The Graph ingests.
+   * @param _user The address of the user who initiated the branch.
+   * @param _originalConversationId The ID of the conversation that was branched from.
+   * @param _branchPointMessageId The ID of the message where the branch occurred.
+   * @param _conversationCID The Arweave CID for the new branched conversation's data.
+   * @param _metadataCID The Arweave CID for the new branched conversation's metadata.
+   * @return conversationId The ID of the newly created conversation.
+   */
+  function submitBranch(
+    address _user,
+    uint256 _originalConversationId,
+    uint256 _branchPointMessageId,
+    string calldata _conversationCID,
+    string calldata _metadataCID
+  ) external onlyOracle returns (uint256 conversationId) {
+    if (conversationToOwner[_originalConversationId] != _user) {
+      revert Unauthorized();
+    }
+
+    conversationId = conversationIdCounter++;
+    conversationToOwner[conversationId] = _user;
+
+    emit ConversationBranched(
+      _user,
+      conversationId,
+      _originalConversationId,
+      _branchPointMessageId,
+      _conversationCID,
+      _metadataCID
+    );
+  }
+
+  /**
+   * @notice Records that a prompt was cancelled by the user.
+   * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract.
+   *      It sets the answered flag to prevent the oracle from submitting a late answer.
+   * @param _answerMessageId The ID of the answer that was cancelled.
+   * @param _user The address of the user who cancelled.
+   */
+  function recordCancellation(uint256 _answerMessageId, address _user) external onlyAIAgentEscrow {
+    if (isJobFinalized[_answerMessageId]) {
+      revert JobAlreadyFinalized();
+    }
+
+    isJobFinalized[_answerMessageId] = true;
+    emit PromptCancelled(_user, _answerMessageId);
   }
 }

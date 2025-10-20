@@ -10,21 +10,30 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
  *      It holds funds in escrow while a prompt is being processed by the off-chain oracle.
  */
 contract SapphireAIAgentEscrow is Ownable {
-  /// @notice The immutable address of the AI Agent contract this escrow serves.
-  ISapphireAIAgent public immutable SAPPHIRE_AI_AGENT;
-  /// @notice The address where collected fees are sent upon successful prompt completion.
-  address public treasury;
-  /// @notice The address of the authorized off-chain oracle.
-  address public oracle;
+  // --- Constants ---
 
-  /// @notice The fee in wei required for one AI prompt.
-  uint256 public constant PROMPT_FEE = 1 * 1e18;
-  /// @notice The time after which a user can cancel their own pending prompt.
-  uint256 public constant CANCELLATION_TIMEOUT = 5 minutes;
+  /// @notice The time after which a user can cancel their own pending prompt to prevent mis-clicks.
+  uint256 public constant CANCELLATION_TIMEOUT = 3 seconds;
   /// @notice The time after which a keeper can refund any timed-out pending prompt.
   uint256 public constant REFUND_TIMEOUT = 1 hours;
 
-  /// @notice Represents a user's allowance term.
+  // --- State Variables ---
+
+  /// @notice The AI Agent contract this escrow serves.
+  ISapphireAIAgent public sapphireAIAgent;
+  /// @notice The address where collected fees are sent.
+  address public treasury;
+
+  /// @notice The fee in the token's smallest unit required for one AI prompt.
+  uint256 public promptFee;
+  /// @notice The fee charged to a user for cancelling a pending prompt.
+  uint256 public cancellationFee;
+  /// @notice The fee charged to a user for updating conversation metadata.
+  uint256 public metadataUpdateFee;
+  /// @notice The fee charged to a user for branching a conversation.
+  uint256 public branchFee;
+
+  /// @notice Represents a user's usage allowance term.
   struct Subscription {
     uint256 expiresAt; // The unix timestamp when the subscription expires.
   }
@@ -51,13 +60,21 @@ contract SapphireAIAgentEscrow is Ownable {
     EscrowStatus status;
   }
 
-  /// @notice Maps a prompt ID to its escrow details.
+  /// @notice Maps a unique escrow ID to its escrow details.
   mapping(uint256 => Escrow) public escrows;
+
+  // --- Events ---
 
   /// @notice Emitted when the treasury address is updated.
   event TreasuryUpdated(address newTreasury);
-  /// @notice Emitted when the oracle address is updated.
-  event OracleUpdated(address newOracle);
+  /// @notice Emitted when the prompt fee is updated.
+  event PromptFeeUpdated(uint256 newFee);
+  /// @notice Emitted when the cancellation fee is updated.
+  event CancellationFeeUpdated(uint256 newFee);
+  /// @notice Emitted when the metadata update fee is updated.
+  event MetadataUpdateFeeUpdated(uint256 newFee);
+  /// @notice Emitted when the conversation branch fee is updated.
+  event BranchFeeUpdated(uint256 newFee);
   /// @notice Emitted when a user sets or updates their allowance term.
   event SubscriptionSet(address indexed user, uint256 expiresAt);
   /// @notice Emitted when a user cancels their allowance.
@@ -67,69 +84,91 @@ contract SapphireAIAgentEscrow is Ownable {
   /// @notice Emitted when a user withdraws funds or they are refunded on cancellation.
   event Withdrawal(address indexed user, uint256 amount);
   /// @notice Emitted when a user's payment is successfully placed in escrow.
-  event PaymentEscrowed(uint256 indexed promptId, address indexed user, uint256 amount);
+  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 amount);
   /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
-  event PaymentFinalized(uint256 indexed promptId);
+  event PaymentFinalized(uint256 indexed escrowId);
   /// @notice Emitted when a timed-out escrowed payment is refunded to the user's deposit.
-  event PaymentRefunded(uint256 indexed promptId);
+  event PaymentRefunded(uint256 indexed escrowId);
   /// @notice Emitted when a user cancels their own pending prompt.
-  event PromptCancelled(uint256 indexed promptId, address indexed user);
+  event PromptCancelled(uint256 indexed answerMessageId, address indexed user);
 
-  /// @notice Reverts if an escrow record is not found for a given prompt ID.
-  error EscrowNotFound();
-  /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
-  error EscrowNotPending();
+  // --- Errors ---
+
+  // Admin and Setup Errors
+  /// @notice Reverts if an address parameter is the zero address.
+  error ZeroAddress();
+
+  // Access Control Errors
   /// @notice Reverts if a function is called by an address other than the linked AI Agent contract.
   error NotSapphireAIAgent();
+  /// @notice Reverts if a function is called by an address that is not the authorized oracle.
+  error NotOracle();
+  /// @notice Reverts if a user tries to cancel a prompt they do not own.
+  error NotPromptOwner();
+
+  // Subscription Errors
   /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
   error NoActiveSubscription();
   /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
   error SubscriptionExpired();
-  /// @notice Reverts if a user's deposit balance is insufficient to cover the prompt fee.
+  /// @notice Reverts if a user's deposit balance is insufficient to cover a fee.
   error InsufficientDeposit();
-  /// @notice Reverts if a function is called by an address that is not the authorized oracle.
-  error NotOracle();
-  /// @notice Reverts if an address parameter is the zero address.
-  error ZeroAddress();
+
+  // State Machine Errors
+  /// @notice Reverts if an escrow record is not found for a given ID.
+  error EscrowNotFound();
+  /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
+  error EscrowNotPending();
+  /// @notice Reverts if a user tries to manage a subscription while having pending prompts.
+  error HasPendingPrompts();
   /// @notice Reverts if a user attempts to withdraw more funds than they have deposited.
   error InsufficientBalanceForWithdrawal();
-  /// @notice Reverts if a user tries to withdraw, cancel, or set a subscription while having pending prompts.
-  error HasPendingPrompts();
+
+  // Timeout Errors
   /// @notice Reverts if a user tries to cancel a prompt before the cancellation timeout has passed.
   error PromptNotCancellableYet();
   /// @notice Reverts if a keeper tries to refund a prompt before the refund timeout has passed.
   error PromptNotRefundableYet();
-  /// @notice Reverts if a user tries to cancel a prompt they do not own.
-  error NotPromptOwner();
+
+  // --- Constructor ---
 
   /**
    * @notice Sets up the escrow smart contract.
    * @param _agentAddress The address of the SapphireAIAgent contract to interact with.
    * @param _treasuryAddress The initial address where collected fees will be sent.
-   * @param _oracleAddress The initial address of the authorized oracle.
    * @param _initialOwner The address that will have ownership of this contract.
+   * @param _initialPromptFee The initial fee for a single AI prompt.
+   * @param _initialCancellationFee The initial fee for cancelling a prompt.
+   * @param _initialMetadataUpdateFee The initial fee for updating metadata.
+   * @param _initialBranchFee The initial fee for branching a conversation.
    */
   constructor(
     address _agentAddress,
     address _treasuryAddress,
-    address _oracleAddress,
-    address _initialOwner
+    address _initialOwner,
+    uint256 _initialPromptFee,
+    uint256 _initialCancellationFee,
+    uint256 _initialMetadataUpdateFee,
+    uint256 _initialBranchFee
   ) Ownable(_initialOwner) {
-    if (
-      _agentAddress == address(0) || _treasuryAddress == address(0) || _oracleAddress == address(0)
-    ) {
+    if (_agentAddress == address(0) || _treasuryAddress == address(0)) {
       revert ZeroAddress();
     }
-    SAPPHIRE_AI_AGENT = ISapphireAIAgent(_agentAddress);
+    sapphireAIAgent = ISapphireAIAgent(_agentAddress);
     treasury = _treasuryAddress;
-    oracle = _oracleAddress;
+    promptFee = _initialPromptFee;
+    cancellationFee = _initialCancellationFee;
+    metadataUpdateFee = _initialMetadataUpdateFee;
+    branchFee = _initialBranchFee;
   }
+
+  // --- Modifiers ---
 
   /**
    * @notice Checks that the caller is the registered SapphireAIAgent contract.
    */
   modifier onlySapphireAIAgent() {
-    if (msg.sender != address(SAPPHIRE_AI_AGENT)) {
+    if (msg.sender != address(sapphireAIAgent)) {
       revert NotSapphireAIAgent();
     }
     _;
@@ -139,11 +178,13 @@ contract SapphireAIAgentEscrow is Ownable {
    * @notice Checks that the caller is the authorized oracle.
    */
   modifier onlyOracle() {
-    if (msg.sender != oracle) {
+    if (msg.sender != sapphireAIAgent.oracle()) {
       revert NotOracle();
     }
     _;
   }
+
+  // --- Administrative Functions ---
 
   /**
    * @notice Updates the treasury address where collected fees will be sent.
@@ -159,17 +200,46 @@ contract SapphireAIAgentEscrow is Ownable {
   }
 
   /**
-   * @notice Updates the oracle address that can initiate agent jobs.
+   * @notice Sets the fee required for one AI prompt.
    * @dev Only the contract owner can call this function.
-   * @param _newOracle The new oracle address.
+   * @param _newFee The new prompt fee.
    */
-  function setOracle(address _newOracle) external onlyOwner {
-    if (_newOracle == address(0)) {
-      revert ZeroAddress();
-    }
-    oracle = _newOracle;
-    emit OracleUpdated(_newOracle);
+  function setPromptFee(uint256 _newFee) external onlyOwner {
+    promptFee = _newFee;
+    emit PromptFeeUpdated(_newFee);
   }
+
+  /**
+   * @notice Sets the fee required for a user to cancel a pending prompt.
+   * @dev Only the contract owner can call this function.
+   * @param _newFee The new cancellation fee.
+   */
+  function setCancellationFee(uint256 _newFee) external onlyOwner {
+    cancellationFee = _newFee;
+    emit CancellationFeeUpdated(_newFee);
+  }
+
+  /**
+   * @notice Sets the fee required for a user to update conversation metadata.
+   * @dev Only the contract owner can call this function.
+   * @param _newFee The new metadata update fee.
+   */
+  function setMetadataUpdateFee(uint256 _newFee) external onlyOwner {
+    metadataUpdateFee = _newFee;
+    emit MetadataUpdateFeeUpdated(_newFee);
+  }
+
+  /**
+   * @notice Sets the fee required for a user to branch a conversation.
+   * @dev Only the contract owner can call this function.
+   * @param _newFee The new branch fee.
+   */
+  function setBranchFee(uint256 _newFee) external onlyOwner {
+    branchFee = _newFee;
+    emit BranchFeeUpdated(_newFee);
+  }
+
+  // --- Subscription and Deposit Management ---
 
   /**
    * @notice Allows a user to deposit native tokens (e.g., ROSE/TEST) to fund their usage.
@@ -197,7 +267,7 @@ contract SapphireAIAgentEscrow is Ownable {
   }
 
   /**
-   * @notice Sets or updates a user's allowance term.
+   * @notice Sets or updates a user's usage allowance term.
    * @dev Can only be called if there are no pending prompts.
    * @param _expiresAt The unix timestamp when this allowance term becomes invalid.
    */
@@ -228,14 +298,123 @@ contract SapphireAIAgentEscrow is Ownable {
     }
   }
 
+  // --- Core User and Agent Functions ---
+
   /**
-   * @notice Allows a user to cancel their own pending prompt after a timeout.
-   * @dev This refunds the user's deposit and records the cancellation on the AIAgent contract.
-   *      The timeout prevents griefing attacks against the oracle.
-   * @param _promptId The ID of the prompt to cancel.
+   * @notice Initiates a new prompt request from a user.
+   * @dev This is the main entry point for all user prompts. It handles payment escrow
+   *      and triggers the AI Agent contract to log the prompt.
+   * @param _conversationId The ID of the conversation. Pass 0 to start a new conversation.
+   * @param _payload The plaintext user prompt intended for the TEE.
    */
-  function cancelAndRefundPrompt(uint256 _promptId) external {
-    Escrow storage escrow = escrows[_promptId];
+  function initiatePrompt(uint256 _conversationId, string calldata _payload) external {
+    _processEscrowPayment(msg.sender, promptFee);
+
+    uint256 promptMessageId = sapphireAIAgent.reserveMessageId();
+    // The answer message ID will also serve as the escrow ID.
+    uint256 answerMessageId = sapphireAIAgent.reserveMessageId();
+    uint256 escrowId = answerMessageId;
+    escrows[escrowId] = Escrow({
+      user: msg.sender,
+      amount: promptFee,
+      createdAt: block.timestamp,
+      status: EscrowStatus.PENDING
+    });
+
+    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
+    sapphireAIAgent.submitPrompt(
+      promptMessageId,
+      answerMessageId,
+      _conversationId,
+      msg.sender,
+      _payload
+    );
+  }
+
+  /**
+   * @notice Initiates a new regeneration request for a previous answer.
+   * @dev This function escrows the standard prompt fee and triggers the AI Agent contract
+   *      to log the regeneration request for the TEE.
+   * @param _promptMessageId The ID of the user's prompt that is being regenerated.
+   * @param _previousAnswerMessageId The ID of the specific AI answer the user wants to regenerate from.
+   * @param _payload The plaintext instructions for the TEE (e.g., "make it more concise").
+   */
+  function initiateRegeneration(
+    uint256 _promptMessageId,
+    uint256 _previousAnswerMessageId,
+    string calldata _payload
+  ) external {
+    _processEscrowPayment(msg.sender, promptFee);
+
+    // The answer message ID will also serve as the escrow ID.
+    uint256 answerMessageId = sapphireAIAgent.reserveMessageId();
+    uint256 escrowId = answerMessageId;
+    escrows[escrowId] = Escrow({
+      user: msg.sender,
+      amount: promptFee,
+      createdAt: block.timestamp,
+      status: EscrowStatus.PENDING
+    });
+
+    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
+    sapphireAIAgent.submitRegenerationRequest(
+      msg.sender,
+      _promptMessageId,
+      _previousAnswerMessageId,
+      answerMessageId,
+      _payload
+    );
+  }
+
+  /**
+   * @notice Initiates a new autonomous agent job on behalf of a user.
+   * @dev Called by the oracle for event- or schedule-triggered jobs.
+   * @param _user The address of the user for whom the job is being run.
+   * @param _jobId The ID of the parent job. Pass 0 to start a new job.
+   * @param _payload The plaintext prompt data for the TEE.
+   */
+  function initiateAgentJob(
+    address _user,
+    uint256 _jobId,
+    string calldata _payload
+  ) external onlyOracle {
+    _processEscrowPayment(_user, promptFee);
+
+    // The trigger ID will also serve as the escrow ID.
+    uint256 triggerId = sapphireAIAgent.reserveTriggerId();
+    uint256 escrowId = triggerId;
+    escrows[escrowId] = Escrow({
+      user: _user,
+      amount: promptFee,
+      createdAt: block.timestamp,
+      status: EscrowStatus.PENDING
+    });
+
+    emit PaymentEscrowed(escrowId, _user, promptFee);
+    sapphireAIAgent.submitAgentJob(triggerId, _jobId, _user, _payload);
+  }
+
+  /**
+   * @notice Allows a user to initiate the process of branching a conversation.
+   * @dev Charges a fixed `branchFee` and emits an event for the TEE to process the request.
+   * @param _originalConversationId The ID of the conversation being branched from.
+   * @param _branchPointMessageId The ID of the message where the branch occurs.
+   */
+  function initiateBranch(uint256 _originalConversationId, uint256 _branchPointMessageId) external {
+    _processDirectPayment(msg.sender, branchFee);
+
+    sapphireAIAgent.submitBranchRequest(msg.sender, _originalConversationId, _branchPointMessageId);
+  }
+
+  /**
+   * @notice Allows a user to cancel their own pending prompt.
+   * @dev Charges a fixed `cancellationFee` from the user's deposit and refunds the original `promptFee`.
+   * @param _answerMessageId The ID of the answer message to cancel.
+   */
+  function cancelPrompt(uint256 _answerMessageId) external {
+    uint256 escrowId = _answerMessageId;
+    Escrow storage escrow = escrows[escrowId];
+
     if (escrow.user != msg.sender) {
       revert NotPromptOwner();
     }
@@ -245,86 +424,67 @@ contract SapphireAIAgentEscrow is Ownable {
     if (block.timestamp < escrow.createdAt + CANCELLATION_TIMEOUT) {
       revert PromptNotCancellableYet();
     }
-    pendingEscrowCount[msg.sender]--;
-    escrow.status = EscrowStatus.REFUNDED;
-    deposits[msg.sender] += escrow.amount;
-    emit PromptCancelled(_promptId, msg.sender);
-    SAPPHIRE_AI_AGENT.storeCancellation(_promptId, msg.sender);
-  }
-
-  /**
-   * @notice Initiates a new prompt request. Called by the user.
-   * @param _prompt The plaintext prompt from the user.
-   */
-  function initiatePrompt(string calldata _prompt) external {
-    _initiateJob(msg.sender, _prompt);
-  }
-
-  /**
-   * @notice Initiates a new prompt request on behalf of a user.
-   * @dev Called by the oracle for autonomous/scheduled jobs.
-   * @param _user The address of the user for whom the job is being initiated.
-   * @param _prompt The plaintext prompt for the user.
-   */
-  function initiateAgentJob(address _user, string calldata _prompt) external onlyOracle {
-    _initiateJob(_user, _prompt);
-  }
-
-  /**
-   * @dev Internal function to handle the core logic for any new job.
-   */
-  function _initiateJob(address _user, string calldata _prompt) private {
-    Subscription storage sub = subscriptions[_user];
-    if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
-    }
-    if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
-    }
-    if (deposits[_user] < PROMPT_FEE) {
+    if (deposits[msg.sender] < cancellationFee) {
       revert InsufficientDeposit();
     }
-    deposits[_user] -= PROMPT_FEE;
-    pendingEscrowCount[_user]++;
-    uint256 promptId = SAPPHIRE_AI_AGENT.promptIdCounter();
-    escrows[promptId] = Escrow({
-      user: _user,
-      amount: PROMPT_FEE,
-      createdAt: block.timestamp,
-      status: EscrowStatus.PENDING
-    });
-    emit PaymentEscrowed(promptId, _user, PROMPT_FEE);
-    SAPPHIRE_AI_AGENT.submitPrompt(promptId, _user, _prompt);
+
+    pendingEscrowCount[msg.sender]--;
+    escrow.status = EscrowStatus.REFUNDED;
+    // Charge cancellation fee and refund original prompt fee in one operation.
+    deposits[msg.sender] = deposits[msg.sender] + escrow.amount - cancellationFee;
+
+    payable(treasury).transfer(cancellationFee);
+    sapphireAIAgent.recordCancellation(_answerMessageId, msg.sender);
+
+    emit PromptCancelled(_answerMessageId, msg.sender);
   }
+
+  /**
+   * @notice Allows a user to request an update to a conversation's metadata, such as its title.
+   * @dev Charges a fixed `metadataUpdateFee` from the user's deposit.
+   * @param _conversationId The ID of the conversation to update.
+   * @param _payload The plaintext ABI-encoded update instructions for the TEE.
+   */
+  function initiateMetadataUpdate(uint256 _conversationId, string calldata _payload) external {
+    _processDirectPayment(msg.sender, metadataUpdateFee);
+
+    sapphireAIAgent.submitMetadataUpdate(_conversationId, msg.sender, _payload);
+  }
+
+  // --- Core System Functions ---
 
   /**
    * @notice Releases the escrowed payment to the treasury upon successful completion.
    * @dev Called by the SapphireAIAgent contract.
-   * @param _promptId The unique identifier of the prompt to finalize.
+   * @param _escrowId The unique identifier of the job to finalize.
    */
-  function finalizePayment(uint256 _promptId) external onlySapphireAIAgent {
-    Escrow storage escrow = escrows[_promptId];
+  function finalizePayment(uint256 _escrowId) external onlySapphireAIAgent {
+    Escrow storage escrow = escrows[_escrowId];
+
     if (escrow.user == address(0)) {
       revert EscrowNotFound();
     }
     if (escrow.status != EscrowStatus.PENDING) {
       revert EscrowNotPending();
     }
+
     pendingEscrowCount[escrow.user]--;
     escrow.status = EscrowStatus.COMPLETE;
-    emit PaymentFinalized(_promptId);
+    emit PaymentFinalized(_escrowId);
     payable(treasury).transfer(escrow.amount);
   }
 
   /**
    * @notice Refunds any pending escrows that have passed the timeout period.
-   * @dev Called by a keeper service.
-   * @param _promptId The prompt ID to check for a potential refund.
+   * @dev Called by a keeper service to prevent funds from being stuck.
+   * @param _answerMessageId The ID of the answer message to refund.
    */
-  function processRefund(uint256 _promptId) external {
-    Escrow storage escrow = escrows[_promptId];
+  function processRefund(uint256 _answerMessageId) external {
+    uint256 escrowId = _answerMessageId;
+    Escrow storage escrow = escrows[escrowId];
+
     if (escrow.user == address(0)) {
-      return;
+      return; // Silently ignore if no escrow exists
     }
     if (escrow.status != EscrowStatus.PENDING) {
       revert EscrowNotPending();
@@ -332,9 +492,58 @@ contract SapphireAIAgentEscrow is Ownable {
     if (block.timestamp < escrow.createdAt + REFUND_TIMEOUT) {
       revert PromptNotRefundableYet();
     }
+
     pendingEscrowCount[escrow.user]--;
     escrow.status = EscrowStatus.REFUNDED;
+    // Refund the escrowed amount back to the user's internal deposit balance.
     deposits[escrow.user] += escrow.amount;
-    emit PaymentRefunded(_promptId);
+
+    emit PaymentRefunded(escrowId);
+  }
+
+  // --- Internal Helper Functions ---
+
+  /**
+   * @dev Internal function to handle the subscription checks and state changes for an escrowed payment.
+   * @param _user The user address initiating the action.
+   * @param _fee The fee for the action.
+   */
+  function _processEscrowPayment(address _user, uint256 _fee) private {
+    Subscription storage sub = subscriptions[_user];
+
+    if (sub.expiresAt == 0) {
+      revert NoActiveSubscription();
+    }
+    if (block.timestamp >= sub.expiresAt) {
+      revert SubscriptionExpired();
+    }
+    if (deposits[_user] < _fee) {
+      revert InsufficientDeposit();
+    }
+
+    deposits[_user] -= _fee;
+    pendingEscrowCount[_user]++;
+  }
+
+  /**
+   * @dev Internal function to handle the subscription checks and state changes for a direct-to-treasury payment.
+   * @param _user The user address initiating the action.
+   * @param _fee The fee for the action.
+   */
+  function _processDirectPayment(address _user, uint256 _fee) private {
+    Subscription storage sub = subscriptions[_user];
+
+    if (sub.expiresAt == 0) {
+      revert NoActiveSubscription();
+    }
+    if (block.timestamp >= sub.expiresAt) {
+      revert SubscriptionExpired();
+    }
+    if (deposits[_user] < _fee) {
+      revert InsufficientDeposit();
+    }
+
+    deposits[_user] -= _fee;
+    payable(treasury).transfer(_fee);
   }
 }
