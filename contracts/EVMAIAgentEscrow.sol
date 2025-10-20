@@ -100,30 +100,39 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   // --- Errors ---
 
-  /// @notice Reverts if an escrow record is not found for a given ID.
-  error EscrowNotFound();
-  /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
-  error EscrowNotPending();
+  // Admin and Setup Errors
+  /// @notice Reverts if an address parameter is the zero address.
+  error ZeroAddress();
+
+  // Access Control Errors
+  /// @notice Reverts if a function is called by an address other than the linked AI Agent contract.
+  error NotEVMAIAgent();
+  /// @notice Reverts if a function is called by an address that is not the authorized oracle.
+  error NotOracle();
+  /// @notice Reverts if a user tries to cancel a prompt they do not own.
+  error NotPromptOwner();
+
+  // Subscription Errors
   /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
   error NoActiveSubscription();
   /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
   error SubscriptionExpired();
   /// @notice Reverts if a user's remaining allowance is insufficient to cover a fee.
   error InsufficientSubscriptionAllowance();
-  /// @notice Reverts if a function is called by an address other than the linked AI Agent contract.
-  error NotEVMAIAgent();
-  /// @notice Reverts if a function is called by an address that is not the authorized oracle.
-  error NotOracle();
-  /// @notice Reverts if an address parameter is the zero address.
-  error ZeroAddress();
+
+  // State Machine Errors
+  /// @notice Reverts if an escrow record is not found for a given ID.
+  error EscrowNotFound();
+  /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
+  error EscrowNotPending();
   /// @notice Reverts if a user tries to manage a subscription while having pending prompts.
   error HasPendingPrompts();
+
+  // Timeout Errors
   /// @notice Reverts if a user tries to cancel a prompt before the cancellation timeout has passed.
   error PromptNotCancellableYet();
   /// @notice Reverts if a keeper tries to refund a prompt before the refund timeout has passed.
   error PromptNotRefundableYet();
-  /// @notice Reverts if a user tries to cancel a prompt they do not own.
-  error NotPromptOwner();
 
   // --- Initialization ---
 

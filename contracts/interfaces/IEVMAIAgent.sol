@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
+import { Structs } from "../libraries/Structs.sol";
+
 interface IEVMAIAgent {
   /**
    * @notice Atomically reserves a new message ID.
@@ -64,6 +66,18 @@ interface IEVMAIAgent {
     address _user,
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
+  ) external;
+
+  /**
+   * @notice Submits the final answer and all related Arweave CIDs for a prompt.
+   * @param _promptMessageId The ID of the user's prompt being answered.
+   * @param _answerMessageId The pre-reserved ID that must be used for this answer message.
+   * @param _cids A struct containing all the Arweave CIDs for the relevant files.
+   */
+  function submitAnswer(
+    uint256 _promptMessageId,
+    uint256 _answerMessageId,
+    Structs.CidBundle calldata _cids
   ) external;
 
   /**

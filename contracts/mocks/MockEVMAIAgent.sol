@@ -3,6 +3,7 @@ pragma solidity ^0.8.21;
 
 import { IEVMAIAgentEscrow } from "../../contracts/interfaces/IEVMAIAgentEscrow.sol";
 import { IEVMAIAgent } from "../../contracts/interfaces/IEVMAIAgent.sol";
+import { Structs } from "../libraries/Structs.sol";
 
 contract MockEVMAIAgent is IEVMAIAgent {
   uint256 private _messageIdCounter;
@@ -25,6 +26,7 @@ contract MockEVMAIAgent is IEVMAIAgent {
   event MetadataUpdateSubmitted(uint256 conversationId, address user);
   event BranchRequestSubmitted(uint256 originalConversationId, uint256 branchPointMessageId);
   event CancellationRecorded(uint256 answerMessageId, address user);
+  event AnswerSubmitted(uint256 promptMessageId, uint256 answerMessageId);
 
   function reserveMessageId() external override returns (uint256) {
     uint256 id = _messageIdCounter;
@@ -51,6 +53,16 @@ contract MockEVMAIAgent is IEVMAIAgent {
     lastConversationId = _conversationId;
     lastUser = _user;
     emit PromptSubmitted(_promptMessageId, _answerMessageId, _user);
+  }
+
+  function submitAnswer(
+    uint256 _promptMessageId,
+    uint256 _answerMessageId,
+    Structs.CidBundle calldata /* _cids */
+  ) external override {
+    lastPromptMessageId = _promptMessageId;
+    lastAnswerMessageId = _answerMessageId;
+    emit AnswerSubmitted(_promptMessageId, _answerMessageId);
   }
 
   function submitRegenerationRequest(

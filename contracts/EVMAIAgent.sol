@@ -5,6 +5,16 @@ import { IEVMAIAgentEscrow } from "./interfaces/IEVMAIAgentEscrow.sol";
 import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import { Structs } from "./libraries/Structs.sol";
+
+/// @notice A bundle of off-chain Content IDs (CIDs) related to a message submission.
+struct CidBundle {
+  string conversationCID;
+  string metadataCID;
+  string promptMessageCID;
+  string answerMessageCID;
+  string searchDeltaCID;
+}
 
 /**
  * @title EVM AI Agent Contract
@@ -138,18 +148,27 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
   // --- Errors ---
 
+  // Admin and Setup Errors
   /// @notice Reverts if an address parameter is the zero address.
   error ZeroAddress();
   /// @notice Reverts if an attempt is made to set the escrow address more than once.
   error AgentEscrowAlreadySet();
+
+  // Access Control Errors
   /// @notice Reverts if a function is called by an unauthorized user.
   error Unauthorized();
   /// @notice Reverts if a function is called by an address that is not the authorized oracle.
   error UnauthorizedOracle();
   /// @notice Reverts if a function is called by an address other than the linked escrow contract.
   error NotAIAgentEscrow();
-  /// @notice Reverts if the oracle attempts to answer a prompt for the wrong user.
+
+  // Input Validation Errors
+  /// @notice Reverts if the oracle attempts to answer a prompt that does not exist.
   error InvalidPromptMessageId();
+  /// @notice Reverts if the oracle submits an answer without providing a CID for the answer message.
+  error AnswerCIDRequired();
+
+  // State Machine Errors
   /// @notice Reverts if an answer or cancellation is submitted for an already-answered job.
   error JobAlreadyFinalized();
   /// @notice Reverts if a regeneration is requested for a prompt that already has one pending.
@@ -178,6 +197,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     domain = _domain;
     roflAppID = _roflAppID;
     oracle = _oracle;
+
+    // Initialize counters to start from 1 to avoid Zero ID Problem when creating new entities
+    conversationIdCounter = 1;
+    jobIdCounter = 1;
   }
 
   // --- Modifiers ---
@@ -278,7 +301,6 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    * @param _user The address of the user who initiated the prompt.
    * @param _encryptedPayload The encrypted prompt data for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
-   * @return conversationId The ID of the relevant conversation (either existing or newly created).
    */
   function submitPrompt(
     uint256 _promptMessageId,
@@ -287,9 +309,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     address _user,
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
-  ) external onlyAIAgentEscrow returns (uint256 conversationId) {
-    conversationId = _conversationId;
+  ) external onlyAIAgentEscrow {
+    uint256 conversationId = _conversationId;
 
+    // Zero ID indicates a new conversation should be created
     if (conversationId == 0) {
       conversationId = conversationIdCounter++;
       conversationToOwner[conversationId] = _user;
@@ -353,7 +376,6 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    * @param _user The address of the user for whom the job is being run.
    * @param _encryptedPayload The encrypted job data for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
-   * @return jobId The ID of the relevant job (either existing or newly created).
    */
   function submitAgentJob(
     uint256 _triggerId,
@@ -361,9 +383,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     address _user,
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
-  ) external onlyAIAgentEscrow returns (uint256 jobId) {
-    jobId = _jobId;
+  ) external onlyAIAgentEscrow {
+    uint256 jobId = _jobId;
 
+    // Zero ID indicates a new job should be created
     if (jobId == 0) {
       jobId = jobIdCounter++;
       jobToOwner[jobId] = _user;
@@ -382,23 +405,19 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    * @dev Called by the oracle from within its TEE. The answer ID was pre-reserved.
    * @param _promptMessageId The ID of the user's prompt being answered.
    * @param _answerMessageId The pre-reserved ID that must be used for this answer message.
-   * @param _conversationCID The Arweave CID for the conversation file (only for the first message).
-   * @param _metadataCID The Arweave CID for the conversation metadata file (only for the first message).
-   * @param _promptMessageCID The Arweave CID for the user's prompt message file.
-   * @param _answerMessageCID The Arweave CID for the AI's answer message file.
-   * @param _searchDeltaCID The Arweave CID for the prompt's search index keywords.
+   * @param _cids A struct containing all the Arweave CIDs for the relevant files.
    */
   function submitAnswer(
     uint256 _promptMessageId,
     uint256 _answerMessageId,
-    string calldata _conversationCID,
-    string calldata _metadataCID,
-    string calldata _promptMessageCID,
-    string calldata _answerMessageCID,
-    string calldata _searchDeltaCID
+    Structs.CidBundle calldata _cids
   ) external onlyOracle {
     if (isJobFinalized[_answerMessageId]) {
       revert JobAlreadyFinalized();
+    }
+
+    if (bytes(_cids.answerMessageCID).length == 0) {
+      revert AnswerCIDRequired();
     }
 
     uint256 conversationId = messageToConversation[_promptMessageId];
@@ -410,18 +429,20 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     isJobFinalized[_answerMessageId] = true;
     address user = conversationToOwner[conversationId];
 
-    if (bytes(_conversationCID).length > 0) {
-      emit ConversationAdded(user, conversationId, _conversationCID, _metadataCID);
+    if (bytes(_cids.conversationCID).length > 0) {
+      emit ConversationAdded(user, conversationId, _cids.conversationCID, _cids.metadataCID);
     }
-    if (bytes(_promptMessageCID).length > 0) {
-      emit PromptMessageAdded(conversationId, _promptMessageId, _promptMessageCID);
-      emit SearchIndexDeltaAdded(_promptMessageId, _searchDeltaCID);
+
+    if (bytes(_cids.promptMessageCID).length > 0) {
+      emit PromptMessageAdded(conversationId, _promptMessageId, _cids.promptMessageCID);
+      emit SearchIndexDeltaAdded(_promptMessageId, _cids.searchDeltaCID);
     } else if (isRegenerationPending[_promptMessageId]) {
+      // This is a regeneration response, so unlock the original prompt.
       isRegenerationPending[_promptMessageId] = false;
     }
 
     messageToConversation[_answerMessageId] = conversationId;
-    emit AnswerMessageAdded(conversationId, _answerMessageId, _answerMessageCID);
+    emit AnswerMessageAdded(conversationId, _answerMessageId, _cids.answerMessageCID);
     aiAgentEscrow.finalizePayment(_answerMessageId);
   }
 
