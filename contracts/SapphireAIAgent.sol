@@ -22,7 +22,7 @@ contract SapphireAIAgent is Ownable {
   /// @notice The attested application ID of the ROFL TEE allowed to manage the oracle address.
   bytes21 public roflAppID;
   /// @notice The associated escrow contract that handles all payments.
-  ISapphireAIAgentEscrow public agentEscrow;
+  ISapphireAIAgentEscrow public aiAgentEscrow;
   /// @notice The domain used for off-chain SIWE validation.
   string public domain;
 
@@ -166,15 +166,21 @@ contract SapphireAIAgent is Ownable {
    * @notice Sets up the AI Agent smart contract.
    * @param _domain The domain used for off-chain SIWE validation.
    * @param _roflAppID The attested ROFL app that is allowed to call setOracle().
+   * @param _initialOracle The initial TEE oracle address for accessing prompts.
    * @param _initialOwner The address that will have ownership of this contract.
    */
   constructor(
     string memory _domain,
     bytes21 _roflAppID,
+    address _initialOracle,
     address _initialOwner
   ) Ownable(_initialOwner) {
+    if (_initialOracle == address(0)) {
+      revert ZeroAddress();
+    }
     domain = _domain;
     roflAppID = _roflAppID;
+    oracle = _initialOracle;
 
     // Initialize counters to start from 1 to avoid Zero ID Problem when creating new entities
     conversationIdCounter = 1;
@@ -197,7 +203,7 @@ contract SapphireAIAgent is Ownable {
    * @notice Checks that the caller is the registered SapphireAIAgentEscrow contract.
    */
   modifier onlyAIAgentEscrow() {
-    if (msg.sender != address(agentEscrow)) {
+    if (msg.sender != address(aiAgentEscrow)) {
       revert NotAIAgentEscrow();
     }
     _;
@@ -223,10 +229,10 @@ contract SapphireAIAgent is Ownable {
     if (_newAIAgentEscrow == address(0)) {
       revert ZeroAddress();
     }
-    if (address(agentEscrow) != address(0)) {
+    if (address(aiAgentEscrow) != address(0)) {
       revert AgentEscrowAlreadySet();
     }
-    agentEscrow = ISapphireAIAgentEscrow(_newAIAgentEscrow);
+    aiAgentEscrow = ISapphireAIAgentEscrow(_newAIAgentEscrow);
     emit AgentEscrowUpdated(_newAIAgentEscrow);
   }
 
@@ -405,7 +411,7 @@ contract SapphireAIAgent is Ownable {
 
     messageToConversation[_answerMessageId] = conversationId;
     emit AnswerMessageAdded(conversationId, _answerMessageId, _cids.answerMessageCID);
-    agentEscrow.finalizePayment(_answerMessageId);
+    aiAgentEscrow.finalizePayment(_answerMessageId);
   }
 
   /**

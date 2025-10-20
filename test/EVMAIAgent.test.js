@@ -37,6 +37,8 @@ describe("EVMAIAgent (Upgradable)", function () {
       expect(await aiAgent.domain()).to.equal(domain);
       expect(await aiAgent.aiAgentEscrow()).to.equal(await mockEscrow.getAddress());
       expect(await aiAgent.owner()).to.equal(deployer.address);
+      expect(await aiAgent.conversationIdCounter()).to.equal(1);
+      expect(await aiAgent.jobIdCounter()).to.equal(1);
     });
 
     // Test admin function access control and error handling
