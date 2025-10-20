@@ -29,8 +29,6 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
   /// @notice The TEE-based oracle address authorized to submit answers.
   address public oracle;
-  /// @notice The attested application ID of the ROFL TEE allowed to manage the oracle address.
-  bytes21 public roflAppID;
   /// @notice The associated escrow contract that handles all payments.
   IEVMAIAgentEscrow public aiAgentEscrow;
   /// @notice The domain used for off-chain SIWE validation.
@@ -179,13 +177,11 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   /**
    * @notice Sets up the AI Agent smart contract.
    * @param _domain The domain used for off-chain SIWE validation.
-   * @param _roflAppID The attested ROFL app that is allowed to call setOracle().
    * @param _oracle The initial TEE oracle address for accessing prompts.
    * @param _initialOwner The address that will have ownership of this contract.
    */
   function initialize(
     string memory _domain,
-    bytes21 _roflAppID,
     address _oracle,
     address _initialOwner
   ) public initializer {
@@ -195,7 +191,6 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     __Ownable_init(_initialOwner);
     __UUPSUpgradeable_init();
     domain = _domain;
-    roflAppID = _roflAppID;
     oracle = _oracle;
 
     // Initialize counters to start from 1 to avoid Zero ID Problem when creating new entities
@@ -225,17 +220,6 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     _;
   }
 
-  /**
-   * @notice Checks whether the transaction was signed by the ROFL's app key inside a TEE.
-   * @dev Placeholder: This check requires a Sapphire precompile and cannot be performed on-chain here.
-   * @param _appId The application ID of the ROFL instance.
-   */
-  modifier onlyTEE(bytes21 _appId) {
-    // TODO: A robust mechanism for TEE attestation on a standard EVM chain requires
-    // further research (e.g., via light client or message bridge to Sapphire).
-    _;
-  }
-
   // --- Administrative Functions ---
 
   /**
@@ -256,10 +240,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
   /**
    * @notice Sets the oracle address that will be allowed to read prompts and submit answers.
-   * @dev This setter can only be called from within an authorized ROFL TEE.
+   * @dev This is a critical administrative function for security and can only be called by the contract owner.
    * @param _newOracle The new address for the oracle.
    */
-  function setOracle(address _newOracle) external onlyTEE(roflAppID) {
+  function setOracle(address _newOracle) external onlyOwner {
     if (_newOracle == address(0)) {
       revert ZeroAddress();
     }
@@ -562,5 +546,5 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[34] private __gap;
+  uint256[35] private __gap;
 }

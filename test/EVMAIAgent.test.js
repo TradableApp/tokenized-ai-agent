@@ -5,7 +5,6 @@ const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 describe("EVMAIAgent (Upgradable)", function () {
   // --- Test Suite Setup ---
   const domain = "example.com";
-  const roflAppID = ethers.zeroPadBytes("0x", 21);
   const MOCK_CID = "QmXg9j4f8zYf8t7f8zYf8t7f8zYf8t7f8zYf8t7f8zYf8t7";
 
   // Deploys contracts and sets up the test environment.
@@ -16,7 +15,7 @@ describe("EVMAIAgent (Upgradable)", function () {
 
     const aiAgent = await upgrades.deployProxy(
       EVMAIAgent,
-      [domain, roflAppID, oracle.address, deployer.address],
+      [domain, oracle.address, deployer.address],
       { initializer: "initialize", kind: "uups" },
     );
     await aiAgent.waitForDeployment();
@@ -53,7 +52,6 @@ describe("EVMAIAgent (Upgradable)", function () {
         const { deployer, oracle, EVMAIAgent } = await loadFixture(deployAgentFixture);
         const freshAgent = await upgrades.deployProxy(EVMAIAgent, [
           domain,
-          roflAppID,
           oracle.address,
           deployer.address,
         ]);
@@ -72,21 +70,20 @@ describe("EVMAIAgent (Upgradable)", function () {
       it("should revert if initializing with a zero address for oracle", async function () {
         const { deployer, EVMAIAgent } = await loadFixture(deployAgentFixture);
         await expect(
-          upgrades.deployProxy(EVMAIAgent, [
-            domain,
-            roflAppID,
-            ethers.ZeroAddress,
-            deployer.address,
-          ]),
+          upgrades.deployProxy(EVMAIAgent, [domain, ethers.ZeroAddress, deployer.address]),
         ).to.be.revertedWithCustomError(EVMAIAgent, "ZeroAddress");
       });
 
-      it("should allow the owner to set a new oracle and revert on zero address", async function () {
+      it("should allow the owner to set a new oracle and revert for non-owner or zero address", async function () {
         const { aiAgent, deployer, unauthorizedUser } = await loadFixture(deployAgentFixture);
         await expect(aiAgent.connect(deployer).setOracle(unauthorizedUser.address))
           .to.emit(aiAgent, "OracleUpdated")
           .withArgs(unauthorizedUser.address);
         expect(await aiAgent.oracle()).to.equal(unauthorizedUser.address);
+
+        await expect(
+          aiAgent.connect(unauthorizedUser).setOracle(deployer.address),
+        ).to.be.revertedWithCustomError(aiAgent, "OwnableUnauthorizedAccount");
 
         await expect(
           aiAgent.connect(deployer).setOracle(ethers.ZeroAddress),

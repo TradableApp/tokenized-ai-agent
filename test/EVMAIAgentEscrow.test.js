@@ -17,7 +17,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     const [deployer, user, oracle, treasury, unauthorizedUser] = await ethers.getSigners();
 
     const MockAgentFactory = await ethers.getContractFactory("MockEVMAIAgent");
-    const mockAgent = await MockAgentFactory.deploy();
+    const mockAgent = await MockAgentFactory.deploy(oracle.address);
     await mockAgent.waitForDeployment();
 
     const MockTokenFactory = await ethers.getContractFactory("MockAbleToken");
@@ -33,7 +33,6 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         await mockToken.getAddress(),
         await mockAgent.getAddress(),
         treasury.address,
-        oracle.address,
         deployer.address,
         PROMPT_FEE,
         CANCELLATION_FEE,
@@ -72,7 +71,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
 
     context("Initialization Failure", function () {
       it("should revert if initialized with any zero address", async function () {
-        const { EVMAIAgentEscrow, mockToken, mockAgent, treasury, oracle, deployer } =
+        const { EVMAIAgentEscrow, mockToken, mockAgent, treasury, deployer } =
           await loadFixture(deployEscrowFixture);
 
         await expect(
@@ -80,7 +79,6 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
             ethers.ZeroAddress,
             await mockAgent.getAddress(),
             treasury.address,
-            oracle.address,
             deployer.address,
             0,
             0,
@@ -93,7 +91,6 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
             await mockToken.getAddress(),
             ethers.ZeroAddress,
             treasury.address,
-            oracle.address,
             deployer.address,
             0,
             0,
@@ -105,20 +102,6 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
           upgrades.deployProxy(EVMAIAgentEscrow, [
             await mockToken.getAddress(),
             await mockAgent.getAddress(),
-            ethers.ZeroAddress,
-            oracle.address,
-            deployer.address,
-            0,
-            0,
-            0,
-            0,
-          ]),
-        ).to.be.revertedWithCustomError(EVMAIAgentEscrow, "ZeroAddress");
-        await expect(
-          upgrades.deployProxy(EVMAIAgentEscrow, [
-            await mockToken.getAddress(),
-            await mockAgent.getAddress(),
-            treasury.address,
             ethers.ZeroAddress,
             deployer.address,
             0,
@@ -174,13 +157,10 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
       });
 
-      it("should revert if owner tries to set treasury or oracle to zero address", async function () {
+      it("should revert if owner tries to set treasury to zero address", async function () {
         const { escrow, deployer } = await loadFixture(deployEscrowFixture);
         await expect(
           escrow.connect(deployer).setTreasury(ethers.ZeroAddress),
-        ).to.be.revertedWithCustomError(escrow, "ZeroAddress");
-        await expect(
-          escrow.connect(deployer).setOracle(ethers.ZeroAddress),
         ).to.be.revertedWithCustomError(escrow, "ZeroAddress");
       });
     });

@@ -5,6 +5,12 @@ import { Structs } from "../libraries/Structs.sol";
 
 interface IEVMAIAgent {
   /**
+   * @notice Returns the address of the currently authorized oracle.
+   * @dev This is the single source of truth for the oracle's address in the system.
+   */
+  function oracle() external view returns (address);
+
+  /**
    * @notice Atomically reserves a new message ID.
    * @return The newly reserved message ID.
    */

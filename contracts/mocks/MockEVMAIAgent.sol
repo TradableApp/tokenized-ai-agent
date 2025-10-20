@@ -9,6 +9,9 @@ contract MockEVMAIAgent is IEVMAIAgent {
   uint256 private _messageIdCounter;
   uint256 private _triggerIdCounter;
 
+  // Made public to create an automatic getter, satisfying the IEVMAIAgent interface.
+  address public oracle;
+
   // State variables to record the last call for testing
   uint256 public lastPromptMessageId;
   uint256 public lastAnswerMessageId;
@@ -27,6 +30,10 @@ contract MockEVMAIAgent is IEVMAIAgent {
   event BranchRequestSubmitted(uint256 originalConversationId, uint256 branchPointMessageId);
   event CancellationRecorded(uint256 answerMessageId, address user);
   event AnswerSubmitted(uint256 promptMessageId, uint256 answerMessageId);
+
+  constructor(address _initialOracle) {
+    oracle = _initialOracle;
+  }
 
   function reserveMessageId() external override returns (uint256) {
     uint256 id = _messageIdCounter;

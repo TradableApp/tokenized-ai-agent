@@ -29,8 +29,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   /// @notice The address where collected fees are sent.
   address public treasury;
-  /// @notice The address of the authorized off-chain oracle.
-  address public oracle;
 
   /// @notice The fee in the token's smallest unit required for one AI prompt.
   uint256 public promptFee;
@@ -75,8 +73,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   /// @notice Emitted when the treasury address is updated.
   event TreasuryUpdated(address newTreasury);
-  /// @notice Emitted when the oracle address is updated.
-  event OracleUpdated(address newOracle);
   /// @notice Emitted when the prompt fee is updated.
   event PromptFeeUpdated(uint256 newFee);
   /// @notice Emitted when the cancellation fee is updated.
@@ -141,7 +137,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param _tokenAddress The address of the ERC20 token contract.
    * @param _agentAddress The address of the EVMAIAgent contract to interact with.
    * @param _treasuryAddress The initial address where collected fees will be sent.
-   * @param _oracleAddress The initial address of the authorized oracle.
    * @param _initialOwner The address that will have ownership of this contract's proxy.
    * @param _initialPromptFee The initial fee for a single AI prompt.
    * @param _initialCancellationFee The initial fee for cancelling a prompt.
@@ -152,7 +147,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     address _tokenAddress,
     address _agentAddress,
     address _treasuryAddress,
-    address _oracleAddress,
     address _initialOwner,
     uint256 _initialPromptFee,
     uint256 _initialCancellationFee,
@@ -162,17 +156,13 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     __Ownable_init(_initialOwner);
     __UUPSUpgradeable_init();
     if (
-      _tokenAddress == address(0) ||
-      _agentAddress == address(0) ||
-      _treasuryAddress == address(0) ||
-      _oracleAddress == address(0)
+      _tokenAddress == address(0) || _agentAddress == address(0) || _treasuryAddress == address(0)
     ) {
       revert ZeroAddress();
     }
     ableToken = IERC20(_tokenAddress);
     evmAIAgent = IEVMAIAgent(_agentAddress);
     treasury = _treasuryAddress;
-    oracle = _oracleAddress;
     promptFee = _initialPromptFee;
     cancellationFee = _initialCancellationFee;
     metadataUpdateFee = _initialMetadataUpdateFee;
@@ -195,7 +185,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @notice Checks that the caller is the authorized oracle.
    */
   modifier onlyOracle() {
-    if (msg.sender != oracle) {
+    if (msg.sender != evmAIAgent.oracle()) {
       revert NotOracle();
     }
     _;
@@ -214,19 +204,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
     treasury = _newTreasury;
     emit TreasuryUpdated(_newTreasury);
-  }
-
-  /**
-   * @notice Updates the oracle address.
-   * @dev Only the contract owner can call this function.
-   * @param _newOracle The new oracle address.
-   */
-  function setOracle(address _newOracle) external onlyOwner {
-    if (_newOracle == address(0)) {
-      revert ZeroAddress();
-    }
-    oracle = _newOracle;
-    emit OracleUpdated(_newOracle);
   }
 
   /**
@@ -596,5 +573,5 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[37] private __gap;
+  uint256[38] private __gap;
 }
