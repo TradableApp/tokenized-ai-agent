@@ -2,11 +2,16 @@ const dotenv = require("dotenv");
 const ethCrypto = require("eth-crypto");
 const { ethers } = require("ethers");
 const path = require("path");
-const { SiweMessage } = require("siwe");
+const fs = require("fs/promises");
 const { v5: uuidv5 } = require("uuid");
 
 const { initializeOracle } = require("./contractUtility");
+const { initializeIrys } = require("./arweaveUtility");
+const formatters = require("./formatters");
 const { submitTx } = require("./roflUtility");
+const { sendAlert } = require("./alerting");
+
+// --- Configuration & Initialization ---
 
 // Load the specific environment file first for precedence.
 if (process.env.ENV_FILE) {
@@ -15,12 +20,15 @@ if (process.env.ENV_FILE) {
 // Load the base .env.oracle file to fill in any missing non-secret variables.
 dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
-// --- Configuration & Initialization ---
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const NETWORK_NAME = process.env.NETWORK_NAME;
 const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
-const AI_AGENT_PUBLIC_KEY = process.env.PUBLIC_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
+const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
+const FAILED_JOBS_FILE_PATH = path.resolve(__dirname, "../failed-jobs.json");
+const RETRY_INTERVAL_MS = 60 * 1000; // Check for failed jobs every 60 seconds
+const MAX_RETRIES = 10;
+const BASE_RETRY_DELAY_MS = 30 * 1000; // Start with a 30-second delay
 
 // This single function from our utility handles all environment-specific setup.
 const { provider, signer, contract, isSapphire } = initializeOracle(
@@ -29,159 +37,14 @@ const { provider, signer, contract, isSapphire } = initializeOracle(
   AI_AGENT_CONTRACT_ADDRESS,
 );
 
-// This global session is only used by the Sapphire workflow.
-let sapphireSession;
-
-console.log(`--- AI AGENT STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
+console.log(`--- AI AGENT ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
 console.log(`Oracle signer address: ${signer.address}`);
 console.log(`Contract address: ${contract.target}`);
 console.log(
   `Operating in ${isSapphire ? "Sapphire (confidential)" : "Public EVM (encrypted)"} mode.`,
 );
 
-/**
- * Ensures the oracle's address is correctly registered in the smart contract.
- * For Sapphire, it sends a TEE-signed transaction. For EVM, it sends a standard transaction.
- */
-async function setOracleAddress() {
-  const onChainOracle = await contract.oracle();
-  if (onChainOracle.toLowerCase() === signer.address.toLowerCase()) {
-    console.log(`Oracle address already correct: ${signer.address}`);
-    return;
-  }
-  console.log(`Updating on-chain oracle address from ${onChainOracle} to ${signer.address}`);
-
-  try {
-    if (isSapphire) {
-      const isLocalnet = NETWORK_NAME === "sapphire-localnet";
-
-      if (isLocalnet) {
-        const tx = await contract.setOracle(signer.address, { gasLimit: 1000000 });
-        await tx.wait();
-      } else {
-        // Use the ROFL utility for testnet/mainnet
-        console.log("Populating setOracle transaction...");
-        const txUnsigned = await contract.setOracle.populateTransaction(signer.address);
-
-        const txParams = {
-          to: AI_AGENT_CONTRACT_ADDRESS.replace(/^0x/, ""),
-          gas: 2000000, // setOracle is a simple transaction, a fixed high limit is safe
-          value: 0,
-          data: txUnsigned.data.replace(/^0x/, ""),
-        };
-
-        const txHash = await submitTx(txParams);
-        console.log(`setOracle transaction submitted: ${txHash}`);
-      }
-    } else {
-      // On a standard EVM, the oracle sends a regular transaction from its own wallet.
-      // Note: This requires the `setOracle` function on the EVMAIAgent contract to be
-      // either unprotected or callable by the current oracle address.
-      const tx = await contract.setOracle(signer.address);
-      await tx.wait();
-    }
-
-    console.log(`Updated oracle address to ${signer.address}`);
-  } catch (err) {
-    console.error("Failed to update oracle address:", err);
-    throw err; // Throw to prevent the oracle from running in a bad state.
-  }
-}
-
-/**
- * Performs a SIWE login against the Sapphire contract to receive an encrypted authentication token.
- * This token is used to authenticate view calls, as `msg.sender` is not reliable for those on Sapphire.
- * @returns {Promise<{token: string, expiresAt: number}>} An object containing the session token and its expiration timestamp.
- */
-async function loginToContract() {
-  if (!isSapphire) return; // This function is a no-op on non-Sapphire chains.
-
-  console.log("Performing SIWE login to get a new session token...");
-  const { chainId } = await provider.getNetwork();
-  const domain = await contract.domain();
-
-  // Define the token's validity period. 24 hours is a sensible default for a production service.
-  const expirationTime = new Date();
-  expirationTime.setHours(expirationTime.getHours() + 24);
-
-  const siweMessage = new SiweMessage({
-    domain,
-    address: signer.address,
-    statement: "Oracle authentication for AIAgent",
-    uri: `http://${domain}`,
-    version: "1",
-    chainId: Number(chainId),
-    nonce: ethers.hexlify(ethers.randomBytes(32)), // A unique nonce prevents replay attacks.
-    expirationTime: expirationTime.toISOString(), // Set the token expiration time.
-  });
-
-  const messageToSign = siweMessage.prepareMessage();
-  const signature = await signer.signMessage(messageToSign);
-
-  const { r, s, v } = ethers.Signature.from(signature);
-
-  // This is a view call; it costs no gas. The contract verifies the signature
-  // and returns an encrypted token that only it can decrypt.
-  const encryptedAuthToken = await contract.login(messageToSign, { r, s, v });
-
-  console.log(
-    `Successfully received new auth token, valid until ${expirationTime.toLocaleString()}`,
-  );
-
-  // Return the token and its expiration time (in seconds) for proactive session management.
-  return {
-    token: encryptedAuthToken,
-    expiresAt: Math.floor(expirationTime.getTime() / 1000),
-  };
-}
-
-/**
- * Retrieve prompts from the contract for the given address.
- * Handles both Sapphire (with authToken) and public EVM (without authToken) workflows.
- * @param {string} address - The address to retrieve prompts for.
- * @returns {Promise<Array>} An array of prompts (either Prompt[] or EncryptedPrompt[]).
- */
-async function retrievePrompts(address) {
-  try {
-    if (isSapphire) {
-      // For Sapphire `view` calls (`eth_call`), `msg.sender` is always `address(0x0)`.
-      // Therefore, we must use an `authToken` for authentication.
-      // The `{ from: ... }`parameter is ignored and has been omitted.
-      const authToken = sapphireSession.token;
-
-      return await contract.getPrompts(authToken, address);
-    } else {
-      return await contract.getPrompts(address);
-    }
-  } catch (err) {
-    console.error(`Error retrieving prompts for ${address}:`, err);
-    return []; // Return empty array on failure to prevent crash.
-  }
-}
-
-/**
- * Retrieve answers from the contract for the given address.
- * Handles both Sapphire (with authToken) and public EVM (without authToken) workflows.
- * @param {string} address - The address to retrieve answers for.
- * @returns {Promise<Array>} An array of answers (either Answer[] or EncryptedAnswer[]).
- */
-async function retrieveAnswers(address) {
-  try {
-    if (isSapphire) {
-      // For Sapphire `view` calls (`eth_call`), `msg.sender` is always `address(0x0)`.
-      // Therefore, we must use an `authToken` for authentication.
-      // The `{ from: ... }`parameter is ignored and has been omitted.
-      const authToken = sapphireSession.token;
-
-      return await contract.getAnswers(authToken, address);
-    } else {
-      return await contract.getAnswers(address);
-    }
-  } catch (err) {
-    console.error(`Error retrieving answers for ${address}:`, err);
-    return []; // Return empty array on failure to prevent crash.
-  }
-}
+// --- AI Model Query Functions ---
 
 /**
  * Query the DeepSeek model via a local Ollama server.
@@ -194,8 +57,8 @@ async function queryDeepSeek(conversationHistory) {
   }
 
   const messages = conversationHistory.map((turn) => ({
-    role: turn.type === "prompt" ? "user" : "assistant",
-    content: turn.text,
+    role: turn.role, // Assuming history objects have a 'role' property
+    content: turn.content,
   }));
 
   const res = await fetch(`${process.env.OLLAMA_URL}/api/chat`, {
@@ -217,28 +80,23 @@ async function queryDeepSeek(conversationHistory) {
 /**
  * Query the ChainGPT API for a response.
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
+ * @param {string} conversationId - The unique on-chain ID for this conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryChainGPT(conversationHistory, userAddress) {
+async function queryChainGPT(conversationHistory, conversationId) {
   if (!process.env.CHAIN_GPT_API_KEY) {
     throw new Error("CHAIN_GPT_API_KEY is not set in the environment file.");
   }
 
-  const userPrompts = conversationHistory.filter((item) => item.type === "prompt");
+  const userPrompts = conversationHistory.filter((item) => item.role === "user");
   if (userPrompts.length === 0) {
     throw new Error("Cannot query with an empty prompt list.");
   }
 
-  // The user's current question is the last prompt.
-  const question = userPrompts[userPrompts.length - 1].text;
+  const question = userPrompts[userPrompts.length - 1].content;
 
-  // The first prompt defines the unique ID for this entire conversation history.
-  const firstPrompt = userPrompts[0].text;
-
-  // Generate a deterministic UUID for this conversation.
-  // The same user + same first prompt will ALWAYS result in the same UUID.
-  const uniqueConversationIdentifier = `${userAddress}:${firstPrompt}`;
-  const conversationUUID = uuidv5(uniqueConversationIdentifier, NAMESPACE_UUID);
+  // Use the on-chain conversationId to generate a deterministic UUID.
+  const conversationUUID = uuidv5(conversationId.toString(), NAMESPACE_UUID);
 
   const res = await fetch("https://api.chaingpt.org/chat/stream", {
     method: "POST",
@@ -265,17 +123,17 @@ async function queryChainGPT(conversationHistory, userAddress) {
 /**
  * A dispatcher for querying the AI model specified by the AI_PROVIDER env variable.
  * @param {Array<object>} conversationHistory - The full conversation history with roles.
- * @param {string} userAddress - The address of the user submitting the prompt.
+ * @param {string} conversationId - The on-chain ID for the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryAIModel(conversationHistory, userAddress) {
+async function queryAIModel(conversationHistory, conversationId) {
   const aiProvider = process.env.AI_PROVIDER || "DeepSeek";
   console.log(`Querying AI model via: ${aiProvider}`);
 
   try {
     switch (aiProvider.toLowerCase()) {
       case "chaingpt":
-        return await queryChainGPT(conversationHistory, userAddress);
+        return await queryChainGPT(conversationHistory, conversationId);
       case "deepseek":
         return await queryDeepSeek(conversationHistory);
       default:
@@ -288,30 +146,7 @@ async function queryAIModel(conversationHistory, userAddress) {
   }
 }
 
-/**
- * [EVM ONLY] A helper to remove the '0x04' or '04' prefix from a public key string,
- * preparing it for use with the eth-crypto library.
- * @param {string} publicKey - The public key string.
- * @returns {string} The cleaned, raw public key.
- */
-function cleanPublicKey(publicKey) {
-  if (publicKey.startsWith("0x04")) {
-    return publicKey.slice(4);
-  }
-  if (publicKey.startsWith("04")) {
-    return publicKey.slice(2);
-  }
-  return publicKey;
-}
-
-/**
- * [EVM ONLY] Ensures a hex string has a '0x' prefix, which is required by ethers.js for `bytes` types.
- * @param {string} hexString - The hex string.
- * @returns {string} The hex string with a '0x' prefix.
- */
-function ensure0xPrefix(hexString) {
-  return hexString.startsWith("0x") ? hexString : `0x${hexString}`;
-}
+// --- TEE & Cryptography Utilities ---
 
 /**
  * [EVM ONLY] Removes the '0x' prefix from a hex string, which is required by eth-crypto.
@@ -323,274 +158,345 @@ function strip0xPrefix(hexString) {
 }
 
 /**
- * [EVM ONLY] Decrypts an EncryptedMessage struct using the oracle's private key.
- * @param {object} encryptedMessage - The struct fetched from the contract.
- * @returns {Promise<string>} The decrypted plaintext.
+ * Decrypts an encrypted payload from the contract.
+ * For Sapphire, it simply parses the plaintext string payload.
+ * For EVM, it performs the full cryptographic decryption.
+ * @param {string} payload - The payload from the event (`string` for Sapphire, `bytes` for EVM).
+ * @param {string} roflEncryptedKey - The encrypted session key (EVM only).
+ * @returns {Promise<{payload: object | string, sessionKey: string | null}>} The decrypted object/string, and the sessionKey if one was used.
  */
-async function decryptMessage(encryptedMessage) {
-  // By convention, if the key fields are empty, the content is treated as plaintext.
-  // This handles messages like "Prompt cancelled by user."
-  if (!encryptedMessage.roflEncryptedKey || encryptedMessage.roflEncryptedKey === "0x") {
-    return ethers.toUtf8String(encryptedMessage.encryptedContent);
+async function decryptPayload(payload, roflEncryptedKey) {
+  if (isSapphire) {
+    // On Sapphire, the payload is already plaintext JSON.
+    return { payload: JSON.parse(payload), sessionKey: null };
   }
 
-  // Use the helper to safely remove the "0x" prefix before parsing.
-  const parsedRoflKey = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.roflEncryptedKey));
-  const parsedContent = ethCrypto.cipher.parse(strip0xPrefix(encryptedMessage.encryptedContent));
+  // On EVM, perform decryption.
+  // By convention, if the key fields are empty, the content is treated as plaintext.
+  if (!roflEncryptedKey || roflEncryptedKey === "0x") {
+    return {
+      payload: ethers.toUtf8String(payload),
+      sessionKey: null,
+    };
+  }
 
+  const parsedRoflKey = ethCrypto.cipher.parse(strip0xPrefix(roflEncryptedKey));
   const sessionKey = await ethCrypto.decryptWithPrivateKey(AI_AGENT_PRIVATE_KEY, parsedRoflKey);
-  return await ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent);
+
+  const parsedContent = ethCrypto.cipher.parse(strip0xPrefix(payload));
+  const decrypted = await ethCrypto.decryptWithPrivateKey(sessionKey, parsedContent);
+
+  return {
+    payload: JSON.parse(decrypted),
+    sessionKey,
+  };
 }
 
+// --- Event Handlers (Stubs for Phase 4) ---
+
+async function handlePrompt(
+  user,
+  promptMessageId,
+  answerMessageId,
+  conversationId,
+  payload, // This is `bytes` on EVM, `string` on Sapphire
+  roflEncryptedKey,
+  event,
+) {
+  console.log(
+    `[EVENT] Processing PromptSubmitted for convId: ${conversationId} in block ${event.blockNumber}`,
+  );
+  // TODO: Implement Phase 4 logic.
+  // 1. Decrypt payload to get prompt, session key, and isNewConversation flag.
+  // 2. Retrieve conversation history from Arweave.
+  // 3. Query AI model.
+  // 4. Format, encrypt, and upload files to Arweave.
+  // 5. Construct CidBundle.
+  // 6. Call contract.submitAnswer().
+}
+
+async function handleRegeneration(
+  user,
+  promptMessageId,
+  originalAnswerMessageId,
+  answerMessageId,
+  payload,
+  roflEncryptedKey,
+  event,
+) {
+  console.log(
+    `[EVENT] Processing RegenerationRequested for promptId: ${promptMessageId} in block ${event.blockNumber}`,
+  );
+  // TODO: Implement Phase 4 logic.
+  // 1. Decrypt payload to get instructions and session key.
+  // 2. Retrieve history up to the original prompt from Arweave.
+  // 3. Query AI.
+  // 4. Format, encrypt, and upload the new AnswerMessageFile.
+  // 5. Call contract.submitAnswer() with only the answerMessageCID.
+}
+
+async function handleBranch(user, originalConversationId, branchPointMessageId, event) {
+  console.log(
+    `[EVENT] Processing BranchRequested for convId: ${originalConversationId} in block ${event.blockNumber}`,
+  );
+  // TODO: Implement Phase 4 logic.
+  // 1. Format new ConversationFile and ConversationMetadataFile.
+  // 2. Encrypt and upload both to Arweave.
+  // 3. Call contract.submitBranch() with the new CIDs.
+}
+
+async function handleMetadataUpdate(user, conversationId, payload, roflEncryptedKey, event) {
+  console.log(
+    `[EVENT] Processing MetadataUpdateRequested for convId: ${conversationId} in block ${event.blockNumber}`,
+  );
+  // TODO: Implement Phase 4 logic.
+  // 1. Decrypt payload to get new title/status and session key.
+  // 2. Format new ConversationMetadataFile.
+  // 3. Encrypt and upload to Arweave.
+  // 4. Call contract.submitConversationMetadata() with the new CID.
+}
+
+// --- Main Service Logic ---
+
 /**
- * Submit the AI answer to the Oracle contract on-chain.
- * Handles both plaintext (Sapphire) and encrypted (EVM) answer submission.
- * @param {string} answerText - The plaintext AI response.
- * @param {number} promptId - The ID of the prompt being answered.
- * @param {string} userAddress - The user’s address associated with the prompt.
- * @param {string} [userPublicKey] - (EVM only) The user's public key, recovered from their transaction signature.
+ * Ensures the oracle's address is correctly registered in the smart contract.
+ * For Sapphire, this can be a TEE-signed transaction to securely update the key.
+ * For EVM, this is a critical health check, as the function is owner-only.
  */
-async function submitAnswer(answerText, promptId, userAddress, userPublicKey) {
-  console.log(`Submitting answer for prompt #${promptId} to ${userAddress}...`);
+async function setOracleAddress() {
+  const onChainOracle = await contract.oracle();
+  if (onChainOracle.toLowerCase() === signer.address.toLowerCase()) {
+    console.log(`Oracle address is correctly set: ${signer.address}`);
+    return;
+  }
+  console.log(`Updating on-chain oracle address from ${onChainOracle} to ${signer.address}`);
 
   try {
     if (isSapphire) {
-      // Set a dynamic gas limit to prevent 'out of gas' errors for long answers.
-      // Use a high base minimum plus a buffer per character of the answer.
-      const gasLimit = Math.max(3000000, 1500 * answerText.length);
+      const isLocalnet = NETWORK_NAME === "sapphire-localnet";
 
-      const tx = await contract.submitAnswer(answerText, promptId, userAddress, { gasLimit });
-      const receipt = await tx.wait();
-      console.log(`Tx confirmed: ${receipt.hash}`);
-    } else {
-      // For public EVM, we use the provided public key to encrypt the answer.
-      if (!userPublicKey) {
-        throw new Error(
-          `User public key was not provided for user ${userAddress}. Cannot submit answer.`,
-        );
+      if (isLocalnet) {
+        // On localnet, we can send a direct transaction as we control the TEE simulation.
+        const tx = await contract.setOracle(signer.address, { gasLimit: 1000000 });
+        await tx.wait();
+      } else {
+        // On testnet/mainnet, the transaction must be signed by the ROFL TEE.
+        console.log("Populating setOracle transaction...");
+        const txUnsigned = await contract.setOracle.populateTransaction(signer.address);
+
+        const txParams = {
+          to: AI_AGENT_CONTRACT_ADDRESS,
+          gas: 2000000, // setOracle is a simple transaction, a fixed high limit is safe
+          value: 0,
+          data: txUnsigned.data,
+        };
+
+        const txHash = await submitTx(txParams);
+        console.log(`setOracle transaction submitted: ${txHash}`);
       }
-      console.log(`Encrypting response for user ${userAddress}...`);
 
-      const sessionKey = ethCrypto.createIdentity().privateKey;
-
-      // The public key is derived from the session's private key.
-      const sessionPublicKey = ethCrypto.publicKeyByPrivateKey(sessionKey);
-
-      // Use the helper functions to safely clean the keys.
-      const userPublicKeyClean = cleanPublicKey(userPublicKey);
-      const oraclePublicKeyClean = cleanPublicKey(AI_AGENT_PUBLIC_KEY);
-      const sessionPublicKeyClean = cleanPublicKey(sessionPublicKey);
-
-      const encryptedContent = await ethCrypto.encryptWithPublicKey(
-        sessionPublicKeyClean,
-        answerText,
-      );
-      const userEncryptedKey = await ethCrypto.encryptWithPublicKey(userPublicKeyClean, sessionKey);
-      const roflEncryptedKey = await ethCrypto.encryptWithPublicKey(
-        oraclePublicKeyClean,
-        sessionKey,
-      );
-
-      const tx = await contract.submitAnswer(
-        ensure0xPrefix(ethCrypto.cipher.stringify(encryptedContent)),
-        ensure0xPrefix(ethCrypto.cipher.stringify(userEncryptedKey)),
-        ensure0xPrefix(ethCrypto.cipher.stringify(roflEncryptedKey)),
-        promptId,
-        userAddress,
-      );
-      const receipt = await tx.wait();
-      console.log(`Tx confirmed: ${receipt.hash}`);
+      console.log(`Successfully updated oracle address to ${signer.address}`);
+    } else {
+      // For EVM, this is a health check. The contract's owner must set the address.
+      // This oracle process does not have the permissions.
+      const errorMessage = `FATAL: Oracle address mismatch on EVM chain. On-chain oracle is ${onChainOracle}, but this oracle's key is for ${signer.address}. The contract owner must call setOracle().`;
+      await sendAlert("CRITICAL: Oracle Address Mismatch", errorMessage);
+      throw new Error(errorMessage);
     }
-
-    console.log(`Answer for prompt #${promptId} submitted successfully.`);
   } catch (err) {
-    console.error(`Failed to submit answer for prompt #${promptId}:`, err);
+    const errorMessage = `FATAL: Failed to update oracle address. The on-chain oracle is ${onChainOracle}, but this oracle's address is ${signer.address}. Error: ${err.message}`;
+
+    await sendAlert("Oracle Address Mismatch", errorMessage);
+
+    throw new Error(errorMessage); // Halt the oracle if it can't verify its identity.
   }
 }
 
 /**
- * The main polling loop that listens for new prompts and orchestrates the response flow.
+ * Periodically checks for and retries failed jobs from a persistent queue file.
+ * Uses exponential backoff to space out retries.
  */
-async function pollPrompts() {
-  console.log("Listening for prompts...");
-
-  if (isSapphire) {
-    // Initialize the session if on Sapphire to be used for the authToken.
-    sapphireSession = await loginToContract();
+async function retryFailedJobs() {
+  let failedJobs;
+  try {
+    failedJobs = JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8"));
+  } catch (e) {
+    return; // No failed jobs file, nothing to do.
   }
 
-  let lastProcessedBlock = await provider.getBlockNumber();
-  console.log(`Starting to process events from block ${lastProcessedBlock}`);
+  if (failedJobs.length === 0) return;
 
-  while (true) {
-    try {
-      if (isSapphire) {
-        const nowInSeconds = Math.floor(Date.now() / 1000);
-        if (nowInSeconds >= sapphireSession.expiresAt - 300) {
-          console.log("Auth token is nearing expiration. Refreshing proactively...");
-          sapphireSession = await loginToContract();
+  console.log(`[Retry] Checking ${failedJobs.length} failed job(s)...`);
+  const remainingJobs = [];
+  let processed = false;
+
+  for (const job of failedJobs) {
+    if (Date.now() >= job.nextAttemptAt) {
+      console.log(
+        `[Retry] Retrying job for event: ${job.eventName} from block ${job.event.blockNumber}`,
+      );
+      try {
+        // Re-run the original handler with the stored event data
+        switch (job.eventName) {
+          case "PromptSubmitted":
+            await handlePrompt(...job.event.args, job.event);
+            break;
+          // ... add cases for other events
         }
-      }
-
-      const latestBlock = await provider.getBlockNumber();
-
-      if (latestBlock > lastProcessedBlock) {
-        // Query all blocks since the last check
-        const logs = await contract.queryFilter(
-          contract.filters.PromptSubmitted(),
-          lastProcessedBlock + 1,
-          latestBlock,
+        console.log(`[Retry] Successfully processed job for event: ${job.eventName}`);
+        processed = true;
+      } catch (error) {
+        console.error(
+          `[Retry] Attempt #${job.retryCount + 1} failed for event ${job.eventName}. Error: ${error.message}`,
         );
-
-        if (isSapphire) {
-          // Group events by user to efficiently fetch history once.
-          const promptsByUser = new Map();
-          for (const log of logs) {
-            const user = log.args.user;
-
-            if (!promptsByUser.has(user)) {
-              promptsByUser.set(user, []);
-            }
-
-            promptsByUser.get(user).push(log);
-          }
-
-          for (const [user, userLogs] of promptsByUser.entries()) {
-            try {
-              console.log(`Processing ${userLogs.length} new prompt(s) from ${user}...`);
-
-              const [prompts, answers] = await Promise.all([
-                retrievePrompts(user),
-                retrieveAnswers(user),
-              ]);
-
-              if (!prompts || prompts.length === 0) continue;
-
-              const answeredPromptIds = new Set(answers.map((a) => Number(a.promptId)));
-
-              // Find ALL unanswered prompts for this user and process them.
-              const unansweredPrompts = prompts.filter(
-                (p) => !answeredPromptIds.has(Number(p.promptId)),
-              );
-
-              if (unansweredPrompts.length === 0) {
-                console.log(`All prompts for ${user} appear to be answered. Skipping.`);
-                continue;
-              }
-
-              // Build a complete, sorted history of all past interactions.
-              const fullHistory = [];
-              prompts.forEach((p) =>
-                fullHistory.push({ type: "prompt", text: p.prompt, id: Number(p.promptId) }),
-              );
-              answers.forEach((a) =>
-                fullHistory.push({ type: "answer", text: a.answer, id: Number(a.promptId) }),
-              );
-              fullHistory.sort((a, b) => a.id - b.id);
-
-              // Process each unanswered prompt chronologically.
-              for (const promptToAnswer of unansweredPrompts) {
-                const currentPromptId = Number(promptToAnswer.promptId);
-
-                // Build the specific context FOR THIS prompt. It includes all history that occurred before this prompt, plus the current prompt itself.
-                const historyForThisQuery = fullHistory.filter(
-                  (turn) => turn.id <= currentPromptId,
-                );
-
-                console.log(`Found unanswered prompt #${currentPromptId}. Querying AI model...`);
-                const answerText = await queryAIModel(historyForThisQuery, user);
-                await submitAnswer(answerText, currentPromptId, user);
-
-                // Add the new answer to the full history so it becomes context for the next prompt in this batch.
-                fullHistory.push({ type: "answer", text: answerText, id: currentPromptId });
-                fullHistory.sort((a, b) => a.id - b.id);
-              }
-            } catch (err) {
-              console.error(`Error processing prompts for user ${user}:`, err);
-            }
-          }
+        job.retryCount += 1;
+        if (job.retryCount >= MAX_RETRIES) {
+          await sendAlert(
+            "CRITICAL: Job Failed Permanently",
+            `A job for event ${job.eventName} from block ${job.event.blockNumber} has failed all ${MAX_RETRIES} retries and has been dropped. Manual intervention required. Final error: ${error.message}`,
+          );
+          processed = true; // Remove it from the queue
         } else {
-          // On public EVM, each event corresponds to a single new prompt.
-          for (const event of logs) {
-            const user = event.args.user;
-            const promptId = Number(event.args.promptId);
-            console.log(`[EVENT] Detected new prompt #${promptId} from: ${user}`);
-
-            try {
-              // Fetch the full transaction details to access its signature.
-              const txResponse = await provider.getTransaction(event.transactionHash);
-              if (!txResponse) {
-                throw new Error(`Transaction not found: ${event.transactionHash}`);
-              }
-
-              // Create a static Transaction object to access cryptographic properties.
-              const tx = ethers.Transaction.from(txResponse);
-
-              // Recover the user's public key from the transaction's signature and unsigned hash.
-              // This is necessary to encrypt the AI's response for the user.
-              const userPublicKey = ethers.SigningKey.recoverPublicKey(
-                tx.unsignedHash,
-                tx.signature,
-              );
-              if (!userPublicKey) {
-                throw new Error("Could not recover public key from signature.");
-              }
-
-              const [encryptedPrompts, encryptedAnswers] = await Promise.all([
-                retrievePrompts(user),
-                retrieveAnswers(user),
-              ]);
-
-              if (!encryptedPrompts || encryptedPrompts.length === 0) continue;
-
-              const answeredPromptIds = new Set(encryptedAnswers.map((a) => Number(a.promptId)));
-
-              if (answeredPromptIds.has(promptId)) {
-                console.log(`Prompt #${promptId} for ${user} has already been answered. Skipping.`);
-                continue;
-              }
-              console.log(`Found unanswered prompt #${promptId}. Querying AI...`);
-
-              // Decrypt and build the full conversation history for EVM.
-              const fullHistory = [];
-              const decryptedPrompts = await Promise.all(
-                encryptedPrompts.map(async (p) => ({
-                  type: "prompt",
-                  text: await decryptMessage(p.message),
-                  id: Number(p.promptId),
-                })),
-              );
-              const decryptedAnswers = await Promise.all(
-                encryptedAnswers.map(async (a) => ({
-                  type: "answer",
-                  text: await decryptMessage(a.message),
-                  id: Number(a.promptId),
-                })),
-              );
-              fullHistory.push(...decryptedPrompts, ...decryptedAnswers);
-              fullHistory.sort((a, b) => a.id - b.id);
-
-              const historyForThisQuery = fullHistory.filter((turn) => turn.id <= promptId);
-
-              const answerText = await queryAIModel(historyForThisQuery, user);
-              await submitAnswer(answerText, promptId, user, userPublicKey);
-            } catch (err) {
-              console.error(
-                `Error processing prompt from ${user} from tx ${event.transactionHash}:`,
-                err,
-              );
-            }
-          }
+          const delay = BASE_RETRY_DELAY_MS * Math.pow(2, job.retryCount);
+          job.nextAttemptAt = Date.now() + delay;
+          remainingJobs.push(job);
         }
-
-        lastProcessedBlock = latestBlock;
       }
-    } catch (err) {
-      console.error("An unexpected error occurred in the polling loop:", err);
+    } else {
+      remainingJobs.push(job); // Not time to retry yet, keep it in the queue
+    }
+  }
+
+  // If we processed any jobs (successfully or by dropping them), update the file.
+  if (processed) {
+    await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(remainingJobs, null, 2));
+  }
+}
+
+/**
+ * A wrapper for event handlers that distinguishes between retryable and fatal errors.
+ * Retryable errors are saved to a queue for later processing.
+ * @param {string} eventName - The name of the event being processed.
+ * @param {Function} handler - The async event handler function to execute.
+ * @param  {...any} args - The arguments passed by the ethers.js event listener.
+ */
+async function handleAndRecord(eventName, handler, ...args) {
+  const event = args[args.length - 1];
+  try {
+    const eventTimestamp = (await event.getBlock()).timestamp;
+    const nowTimestamp = Math.floor(Date.now() / 1000);
+    const lagInSeconds = nowTimestamp - eventTimestamp;
+    const lagThreshold = 300; // 5 minutes
+
+    if (lagInSeconds > lagThreshold) {
+      await sendAlert(
+        "High Oracle Processing Lag Detected",
+        `The oracle is currently processing events that are over ${Math.floor(lagInSeconds / 60)} minutes old. The system is under heavy load and may not be keeping up. Consider deploying additional oracle instances to handle the demand.`,
+      );
     }
 
-    // Run polling on a 5s loop
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await handler(...args);
+    await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: event.blockNumber }));
+  } catch (error) {
+    // ERROR CLASSIFICATION
+    // For now, we'll treat most I/O errors (like from Irys) as retryable.
+    // We can add more specific checks here later (e.g., based on error codes).
+    const isRetryable = error.message.includes("Irys") || error.message.includes("fetch");
+
+    if (isRetryable) {
+      console.warn(`Encountered a retryable error for ${eventName}. Adding to retry queue.`);
+      let failedJobs = [];
+      try {
+        failedJobs = JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8"));
+      } catch (e) {
+        /* File doesn't exist, will be created */
+      }
+
+      failedJobs.push({
+        eventName,
+        event: { args: event.args, blockNumber: event.blockNumber }, // Store minimal event data
+        retryCount: 0,
+        nextAttemptAt: Date.now() + BASE_RETRY_DELAY_MS,
+      });
+      await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(failedJobs, null, 2));
+
+      // Still save the block progress, because we have successfully QUEUED the failed job.
+      // This prevents it from being picked up again by the catch-up scanner.
+      await fs.writeFile(
+        STATE_FILE_PATH,
+        JSON.stringify({ lastProcessedBlock: event.blockNumber }),
+      );
+    } else {
+      const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
+      console.error(alertMessage, error);
+      await sendAlert("CRITICAL: Oracle Fatal Error", alertMessage);
+    }
+  }
+}
+
+/**
+ * Scans for and processes any events that were missed while the oracle was offline.
+ * This function is critical for ensuring no user requests are ever lost.
+ * @param {number} fromBlock - The block number to start scanning from.
+ * @param {number} toBlock - The latest block number to scan up to.
+ */
+async function processPastEvents(fromBlock, toBlock) {
+  if (fromBlock > toBlock) return;
+  console.log(`Catching up on missed events from block ${fromBlock} to ${toBlock}...`);
+
+  try {
+    const eventPromises = [
+      contract.queryFilter(contract.filters.PromptSubmitted(), fromBlock, toBlock),
+      contract.queryFilter(contract.filters.RegenerationRequested(), fromBlock, toBlock),
+      contract.queryFilter(contract.filters.BranchRequested(), fromBlock, toBlock),
+      contract.queryFilter(contract.filters.MetadataUpdateRequested(), fromBlock, toBlock),
+    ];
+
+    const allEventsNested = await Promise.all(eventPromises);
+    const allEvents = allEventsNested.flat();
+
+    // Sort events strictly by their on-chain order to ensure correct processing.
+    allEvents.sort((a, b) => {
+      if (a.blockNumber !== b.blockNumber) {
+        return a.blockNumber - b.blockNumber;
+      }
+      return a.transactionIndex - b.transactionIndex;
+    });
+
+    if (allEvents.length > 0) {
+      console.log(`Found ${allEvents.length} missed events to process.`);
+      for (const event of allEvents) {
+        // Use a switch on the event name to call the correct handler
+        switch (event.eventName) {
+          case "PromptSubmitted":
+            await handlePrompt(...event.args, event);
+            break;
+          case "RegenerationRequested":
+            await handleRegeneration(...event.args, event);
+            break;
+          case "BranchRequested":
+            await handleBranch(...event.args, event);
+            break;
+          case "MetadataUpdateRequested":
+            await handleMetadataUpdate(...event.args, event);
+            break;
+          default:
+            console.warn(`Unknown event encountered during catch-up: ${event.eventName}`);
+        }
+        // After each historical event is processed, save the state.
+        await fs.writeFile(
+          STATE_FILE_PATH,
+          JSON.stringify({ lastProcessedBlock: event.blockNumber }),
+        );
+      }
+    } else {
+      console.log("No missed events found.");
+    }
+  } catch (error) {
+    const alertMessage = `Failed during historical event catch-up process between blocks ${fromBlock}-${toBlock}. The oracle may need intervention. Error: ${error.message}`;
+    console.error(alertMessage, error);
+    await sendAlert("Oracle Catch-up Failed", alertMessage);
+    throw error; // Throw to stop the oracle from starting in a potentially broken state.
   }
 }
 
@@ -598,10 +504,51 @@ async function pollPrompts() {
  * The entry point for the oracle service.
  */
 async function start() {
-  console.log("--- AI AGENT SCRIPT STARTING ---");
+  console.log("--- INITIALIZING ORACLE SERVICE ---");
 
+  // Step 1: Initialize the connection to the Arweave/Irys storage provider.
+  await initializeIrys();
+
+  // Step 2: Ensure the on-chain oracle address is correctly set to this wallet.
   await setOracleAddress();
-  await pollPrompts();
+
+  // Step 3: Catch up on any events that were missed while the oracle was offline.
+  let state;
+  try {
+    state = JSON.parse(await fs.readFile(STATE_FILE_PATH, "utf-8"));
+  } catch (e) {
+    // If the state file doesn't exist or is invalid, create a default state.
+    state = { lastProcessedBlock: 0 };
+    console.log("No valid state file found. Will start processing from a recent block.");
+  }
+
+  const latestBlock = await provider.getBlockNumber();
+  // On a fresh start, look back ~1 hour (Sapphire ~6000 blocks, Base ~1800 blocks). Otherwise, start from the next block.
+  const fromBlock =
+    state.lastProcessedBlock === 0 ? Math.max(0, latestBlock - 6000) : state.lastProcessedBlock + 1;
+
+  await processPastEvents(fromBlock, latestBlock);
+  await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: latestBlock }));
+
+  // Step 4: Attach persistent listeners for all relevant on-chain events.
+  console.log("Attaching contract event listeners for live events...");
+  contract.on("PromptSubmitted", (...args) =>
+    handleAndRecord("PromptSubmitted", handlePrompt, ...args),
+  );
+  contract.on("RegenerationRequested", (...args) =>
+    handleAndRecord("RegenerationRequested", handleRegeneration, ...args),
+  );
+  contract.on("BranchRequested", (...args) =>
+    handleAndRecord("BranchRequested", handleBranch, ...args),
+  );
+  contract.on("MetadataUpdateRequested", (...args) =>
+    handleAndRecord("MetadataUpdateRequested", handleMetadataUpdate, ...args),
+  );
+
+  // Step 5: Start the background retry mechanism.
+  setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
+
+  console.log(`✅ Oracle is running and listening for new events from block ${latestBlock + 1}.`);
 }
 
 module.exports = {

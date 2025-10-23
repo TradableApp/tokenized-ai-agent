@@ -30,13 +30,17 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@irys/upload": "^0.0.15",
+    "@irys/upload-ethereum": "^0.0.16",
     "@oasisprotocol/sapphire-ethers-v6": "^6.0.1",
+    "@slack/web-api": "^7.11.0",
     "cbor": "^10.0.9",
     "dotenv": "^17.0.1",
     "eth-crypto": "^3.1.0",
     "ethers": "^6.15.0",
     "node-fetch": "^3.3.2",
     "siwe": "^3.0.0",
+    "stopword": "^3.1.5",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
