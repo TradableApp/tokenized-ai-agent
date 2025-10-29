@@ -1,5 +1,5 @@
-const arweave = require("./storage/arweave");
-// const autonomys = require("./storage/autonomys"); // Placeholder for the future
+const arweave = require("./arweave");
+// const autonomys = require("./autonomys"); // Placeholder for the future
 
 /**
  * Determines the storage provider based on the CID format.

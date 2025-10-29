@@ -78,10 +78,14 @@ function encryptSymmetrically(dataObject, key) {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const dataBuffer = Buffer.from(JSON.stringify(dataObject));
-  const encrypted = Buffer.concat([cipher.update(dataBuffer), cipher.final()]);
-  const authTag = cipher.getAuthTag();
 
-  return `${iv.toString("hex")}.${authTag.toString("hex")}.${encrypted.toString("hex")}`;
+  // The auth tag MUST be appended to the encrypted data to match Web Crypto's output.
+  const encryptedContent = Buffer.concat([cipher.update(dataBuffer), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  const combinedBuffer = Buffer.concat([encryptedContent, authTag]);
+
+  // Use BASE64 encoding and the "iv.encrypted" format to match the frontend.
+  return `${iv.toString("base64")}.${combinedBuffer.toString("base64")}`;
 }
 
 /**
@@ -91,17 +95,23 @@ function encryptSymmetrically(dataObject, key) {
  * @returns {object} The decrypted and parsed JSON object.
  */
 function decryptSymmetrically(encryptedString, key) {
+  // Check for the correct two-part format.
   const parts = encryptedString.split(".");
-
-  if (parts.length !== 3) {
-    throw new Error("Invalid encrypted data format.");
+  if (parts.length !== 2) {
+    throw new Error('Invalid encrypted data format. Expected "iv.encryptedData".');
   }
 
-  const [iv, authTag, encrypted] = parts.map((part) => Buffer.from(part, "hex"));
+  const iv = Buffer.from(parts[0], "base64");
+  const combinedBuffer = Buffer.from(parts[1], "base64");
+
+  // The auth tag is the final 16 bytes of the combined buffer.
+  const authTag = combinedBuffer.slice(-16);
+  const encryptedData = combinedBuffer.slice(0, -16);
+
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(authTag);
-  const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
 
+  const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
   return JSON.parse(decrypted.toString("utf-8"));
 }
 
@@ -191,8 +201,8 @@ async function reconstructHistory(startMessageCID, sessionKey) {
 
       history.unshift({ role: messageFile.role, content: messageFile.content });
 
-      // The parentId of a MessageFile is the ID of the parent message, which is also its CID.
-      currentCid = messageFile.parentId;
+      // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID or answerMessageCID).
+      currentCid = messageFile.parentCID;
     } catch (error) {
       console.error(
         `Failed to reconstruct history at CID ${currentCid}. Stopping history build.`,
@@ -324,11 +334,17 @@ async function handlePrompt(
   );
 
   try {
-    const sessionKey = await getSessionKey(payload, roflEncryptedKey);
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
-      : JSON.parse(ethers.toUtf8String(payload));
-    const { promptText, isNewConversation, previousMessageCID } = clientPayload;
+    const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
+
+    let clientPayload;
+    if (isSapphire) {
+      clientPayload = JSON.parse(payload);
+    } else {
+      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      clientPayload = JSON.parse(decryptedPayloadString);
+    }
+
+    const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
 
     const history = await reconstructHistory(previousMessageCID, sessionKey);
     history.push({ role: "user", content: promptText });
@@ -346,83 +362,32 @@ async function handlePrompt(
       const keyToStore = isSapphire ? clientPayload.roflEncryptedKey : roflEncryptedKey;
       await uploadData(Buffer.from(keyToStore), keyFileTags);
 
-      const [conversationCID, metadataCID, promptMessageCID, answerMessageCID, searchDeltaCID] =
-        await Promise.all([
-          encryptAndUpload(
-            createConversationFile({
-              id: conversationId.toString(),
-              ownerAddress: user,
-              createdAt: now,
-            }),
-            sessionKey,
-          ),
-          encryptAndUpload(
-            createConversationMetadataFile({
-              title: promptText.substring(0, 40),
-              isDeleted: false,
-              lastUpdatedAt: now,
-            }),
-            sessionKey,
-          ),
-          encryptAndUpload(
-            createMessageFile({
-              id: promptMessageId.toString(),
-              conversationId: conversationId.toString(),
-              parentId: previousMessageCID || null,
-              createdAt: now,
-              role: "user",
-              content: promptText,
-            }),
-            sessionKey,
-          ),
-          encryptAndUpload(
-            createMessageFile({
-              id: answerMessageId.toString(),
-              conversationId: conversationId.toString(),
-              parentId: promptMessageId.toString(),
-              createdAt: now + 1,
-              role: "assistant",
-              content: answerText,
-            }),
-            sessionKey,
-          ),
-          encryptAndUpload(
-            createSearchIndexDeltaFile({
-              conversationId: conversationId.toString(),
-              messageId: promptMessageId.toString(),
-              userMessageContent: promptText,
-            }),
-            sessionKey,
-          ),
-        ]);
-      cidBundle = {
-        conversationCID,
-        metadataCID,
-        promptMessageCID,
-        answerMessageCID,
-        searchDeltaCID,
-      };
-    } else {
-      const [promptMessageCID, answerMessageCID, searchDeltaCID] = await Promise.all([
+      const [conversationCID, metadataCID, promptMessageCID, searchDeltaCID] = await Promise.all([
         encryptAndUpload(
-          createMessageFile({
-            id: promptMessageId.toString(),
-            conversationId: conversationId.toString(),
-            parentId: previousMessageCID,
+          createConversationFile({
+            id: conversationId.toString(),
+            ownerAddress: user,
             createdAt: now,
-            role: "user",
-            content: promptText,
+          }),
+          sessionKey,
+        ),
+        encryptAndUpload(
+          createConversationMetadataFile({
+            title: promptText.substring(0, 40),
+            isDeleted: false,
+            lastUpdatedAt: now,
           }),
           sessionKey,
         ),
         encryptAndUpload(
           createMessageFile({
-            id: answerMessageId.toString(),
+            id: promptMessageId.toString(),
             conversationId: conversationId.toString(),
-            parentId: promptMessageId.toString(),
-            createdAt: now + 1,
-            role: "assistant",
-            content: answerText,
+            parentId: previousMessageId || null,
+            parentCID: previousMessageCID || null,
+            createdAt: now,
+            role: "user",
+            content: promptText,
           }),
           sessionKey,
         ),
@@ -435,6 +400,60 @@ async function handlePrompt(
           sessionKey,
         ),
       ]);
+      const answerMessageCID = await encryptAndUpload(
+        createMessageFile({
+          id: answerMessageId.toString(),
+          conversationId: conversationId.toString(),
+          parentId: promptMessageId.toString(),
+          parentCID: promptMessageCID,
+          createdAt: now + 1,
+          role: "assistant",
+          content: answerText,
+        }),
+        sessionKey,
+      );
+      cidBundle = {
+        conversationCID,
+        metadataCID,
+        promptMessageCID,
+        answerMessageCID,
+        searchDeltaCID,
+      };
+    } else {
+      const [promptMessageCID, searchDeltaCID] = await Promise.all([
+        encryptAndUpload(
+          createMessageFile({
+            id: promptMessageId.toString(),
+            conversationId: conversationId.toString(),
+            parentId: previousMessageId || null,
+            parentCID: previousMessageCID || null,
+            createdAt: now,
+            role: "user",
+            content: promptText,
+          }),
+          sessionKey,
+        ),
+        encryptAndUpload(
+          createSearchIndexDeltaFile({
+            conversationId: conversationId.toString(),
+            messageId: promptMessageId.toString(),
+            userMessageContent: promptText,
+          }),
+          sessionKey,
+        ),
+      ]);
+      const answerMessageCID = await encryptAndUpload(
+        createMessageFile({
+          id: answerMessageId.toString(),
+          conversationId: conversationId.toString(),
+          parentId: promptMessageId.toString(),
+          parentCID: promptMessageCID,
+          createdAt: now + 1,
+          role: "assistant",
+          content: answerText,
+        }),
+        sessionKey,
+      );
       cidBundle = {
         conversationCID: "",
         metadataCID: "",
@@ -472,12 +491,18 @@ async function handleRegeneration(
 
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
-      : JSON.parse(ethers.toUtf8String(payload));
-    const { instructions, originalPromptCID } = clientPayload;
 
-    const history = await reconstructHistory(originalPromptCID, sessionKey);
+    let clientPayload;
+    if (isSapphire) {
+      clientPayload = JSON.parse(payload);
+    } else {
+      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      clientPayload = JSON.parse(decryptedPayloadString);
+    }
+
+    const { instructions, promptMessageCID, originalAnswerMessageCID } = clientPayload;
+
+    const history = await reconstructHistory(originalAnswerMessageCID, sessionKey);
     if (instructions) {
       history.push({ role: "user", content: `(Regeneration instruction: ${instructions})` });
     }
@@ -490,6 +515,7 @@ async function handleRegeneration(
         id: answerMessageId.toString(),
         conversationId: conversationId.toString(),
         parentId: promptMessageId.toString(),
+        parentCID: promptMessageCID.toString(),
         createdAt: now,
         role: "assistant",
         content: answerText,
@@ -535,9 +561,15 @@ async function handleBranch(
       roflEncryptedKey,
       originalConversationId.toString(),
     );
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
-      : JSON.parse(ethers.toUtf8String(payload));
+
+    let clientPayload;
+    if (isSapphire) {
+      clientPayload = JSON.parse(payload);
+    } else {
+      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      clientPayload = JSON.parse(decryptedPayloadString);
+    }
+
     const { originalTitle } = clientPayload;
     const now = Date.now();
 
@@ -592,9 +624,15 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
   );
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
-      : JSON.parse(ethers.toUtf8String(payload));
+
+    let clientPayload;
+    if (isSapphire) {
+      clientPayload = JSON.parse(payload);
+    } else {
+      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      clientPayload = JSON.parse(decryptedPayloadString);
+    }
+
     const now = Date.now();
 
     const metadataCID = await encryptAndUpload(
