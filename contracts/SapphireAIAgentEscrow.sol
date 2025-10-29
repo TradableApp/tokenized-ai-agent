@@ -304,14 +304,19 @@ contract SapphireAIAgentEscrow is Ownable {
    * @notice Initiates a new prompt request from a user.
    * @dev This is the main entry point for all user prompts. It handles payment escrow
    *      and triggers the AI Agent contract to log the prompt.
+   * @dev If _conversationId is 0, it reserves a new conversation ID.
    * @param _conversationId The ID of the conversation. Pass 0 to start a new conversation.
    * @param _payload The plaintext user prompt intended for the TEE.
    */
   function initiatePrompt(uint256 _conversationId, string calldata _payload) external {
     _processEscrowPayment(msg.sender, promptFee);
 
+    uint256 conversationId = _conversationId;
+    if (conversationId == 0) {
+      conversationId = sapphireAIAgent.reserveConversationId();
+    }
+
     uint256 promptMessageId = sapphireAIAgent.reserveMessageId();
-    // The answer message ID will also serve as the escrow ID.
     uint256 answerMessageId = sapphireAIAgent.reserveMessageId();
     uint256 escrowId = answerMessageId;
     escrows[escrowId] = Escrow({
@@ -323,30 +328,30 @@ contract SapphireAIAgentEscrow is Ownable {
 
     emit PaymentEscrowed(escrowId, msg.sender, promptFee);
     sapphireAIAgent.submitPrompt(
+      msg.sender,
+      conversationId,
       promptMessageId,
       answerMessageId,
-      _conversationId,
-      msg.sender,
       _payload
     );
   }
 
   /**
    * @notice Initiates a new regeneration request for a previous answer.
-   * @dev This function escrows the standard prompt fee and triggers the AI Agent contract
-   *      to log the regeneration request for the TEE.
+   * @dev This function escrows the standard prompt fee and triggers the AI Agent contract.
+   * @param _conversationId The ID of the conversation this regeneration belongs to.
    * @param _promptMessageId The ID of the user's prompt that is being regenerated.
    * @param _previousAnswerMessageId The ID of the specific AI answer the user wants to regenerate from.
    * @param _payload The plaintext instructions for the TEE (e.g., "make it more concise").
    */
   function initiateRegeneration(
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _previousAnswerMessageId,
     string calldata _payload
   ) external {
     _processEscrowPayment(msg.sender, promptFee);
 
-    // The answer message ID will also serve as the escrow ID.
     uint256 answerMessageId = sapphireAIAgent.reserveMessageId();
     uint256 escrowId = answerMessageId;
     escrows[escrowId] = Escrow({
@@ -359,6 +364,7 @@ contract SapphireAIAgentEscrow is Ownable {
     emit PaymentEscrowed(escrowId, msg.sender, promptFee);
     sapphireAIAgent.submitRegenerationRequest(
       msg.sender,
+      _conversationId,
       _promptMessageId,
       _previousAnswerMessageId,
       answerMessageId,
@@ -368,7 +374,7 @@ contract SapphireAIAgentEscrow is Ownable {
 
   /**
    * @notice Initiates a new autonomous agent job on behalf of a user.
-   * @dev Called by the oracle for event- or schedule-triggered jobs.
+   * @dev Called by the oracle. If _jobId is 0, it reserves a new job ID.
    * @param _user The address of the user for whom the job is being run.
    * @param _jobId The ID of the parent job. Pass 0 to start a new job.
    * @param _payload The plaintext prompt data for the TEE.
@@ -380,7 +386,11 @@ contract SapphireAIAgentEscrow is Ownable {
   ) external onlyOracle {
     _processEscrowPayment(_user, promptFee);
 
-    // The trigger ID will also serve as the escrow ID.
+    uint256 jobId = _jobId;
+    if (jobId == 0) {
+      jobId = sapphireAIAgent.reserveJobId();
+    }
+
     uint256 triggerId = sapphireAIAgent.reserveTriggerId();
     uint256 escrowId = triggerId;
     escrows[escrowId] = Escrow({
@@ -391,19 +401,32 @@ contract SapphireAIAgentEscrow is Ownable {
     });
 
     emit PaymentEscrowed(escrowId, _user, promptFee);
-    sapphireAIAgent.submitAgentJob(triggerId, _jobId, _user, _payload);
+    sapphireAIAgent.submitAgentJob(_user, jobId, triggerId, _payload);
   }
 
   /**
    * @notice Allows a user to initiate the process of branching a conversation.
-   * @dev Charges a fixed `branchFee` and emits an event for the TEE to process the request.
+   * @dev Charges a fixed `branchFee`, reserves a new conversation ID, and emits an event for the TEE.
    * @param _originalConversationId The ID of the conversation being branched from.
    * @param _branchPointMessageId The ID of the message where the branch occurs.
+   * @param _payload The plaintext context (e.g., original title) for the TEE.
    */
-  function initiateBranch(uint256 _originalConversationId, uint256 _branchPointMessageId) external {
+  function initiateBranch(
+    uint256 _originalConversationId,
+    uint256 _branchPointMessageId,
+    string calldata _payload
+  ) external {
     _processDirectPayment(msg.sender, branchFee);
 
-    sapphireAIAgent.submitBranchRequest(msg.sender, _originalConversationId, _branchPointMessageId);
+    uint256 newConversationId = sapphireAIAgent.reserveConversationId();
+
+    sapphireAIAgent.submitBranchRequest(
+      msg.sender,
+      _originalConversationId,
+      _branchPointMessageId,
+      newConversationId,
+      _payload
+    );
   }
 
   /**
@@ -434,7 +457,7 @@ contract SapphireAIAgentEscrow is Ownable {
     deposits[msg.sender] = deposits[msg.sender] + escrow.amount - cancellationFee;
 
     payable(treasury).transfer(cancellationFee);
-    sapphireAIAgent.recordCancellation(_answerMessageId, msg.sender);
+    sapphireAIAgent.recordCancellation(msg.sender, _answerMessageId);
 
     emit PromptCancelled(_answerMessageId, msg.sender);
   }
@@ -448,7 +471,7 @@ contract SapphireAIAgentEscrow is Ownable {
   function initiateMetadataUpdate(uint256 _conversationId, string calldata _payload) external {
     _processDirectPayment(msg.sender, metadataUpdateFee);
 
-    sapphireAIAgent.submitMetadataUpdate(_conversationId, msg.sender, _payload);
+    sapphireAIAgent.submitMetadataUpdate(msg.sender, _conversationId, _payload);
   }
 
   // --- Core System Functions ---

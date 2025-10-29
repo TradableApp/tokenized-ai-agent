@@ -19,6 +19,14 @@ contract MockSapphireAIAgentEscrow {
 
   // --- Helper functions to simulate calls from the Escrow to the Agent ---
 
+  function callReserveConversationId() external returns (uint256) {
+    return SAPPHIRE_AI_AGENT.reserveConversationId();
+  }
+
+  function callReserveJobId() external returns (uint256) {
+    return SAPPHIRE_AI_AGENT.reserveJobId();
+  }
+
   function callReserveMessageId() external returns (uint256) {
     return SAPPHIRE_AI_AGENT.reserveMessageId();
   }
@@ -28,23 +36,24 @@ contract MockSapphireAIAgentEscrow {
   }
 
   function callSubmitPrompt(
+    address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _answerMessageId,
-    uint256 _conversationId,
-    address _user,
     string calldata _payload
   ) external {
     SAPPHIRE_AI_AGENT.submitPrompt(
+      _user,
+      _conversationId,
       _promptMessageId,
       _answerMessageId,
-      _conversationId,
-      _user,
       _payload
     );
   }
 
   function callSubmitRegenerationRequest(
     address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _originalAnswerMessageId,
     uint256 _answerMessageId,
@@ -52,6 +61,7 @@ contract MockSapphireAIAgentEscrow {
   ) external {
     SAPPHIRE_AI_AGENT.submitRegenerationRequest(
       _user,
+      _conversationId,
       _promptMessageId,
       _originalAnswerMessageId,
       _answerMessageId,
@@ -60,32 +70,40 @@ contract MockSapphireAIAgentEscrow {
   }
 
   function callSubmitAgentJob(
-    uint256 _triggerId,
-    uint256 _jobId,
     address _user,
+    uint256 _jobId,
+    uint256 _triggerId,
     string calldata _payload
   ) external {
-    SAPPHIRE_AI_AGENT.submitAgentJob(_triggerId, _jobId, _user, _payload);
+    SAPPHIRE_AI_AGENT.submitAgentJob(_user, _jobId, _triggerId, _payload);
   }
 
   function callSubmitMetadataUpdate(
-    uint256 _conversationId,
     address _user,
+    uint256 _conversationId,
     string calldata _payload
   ) external {
-    SAPPHIRE_AI_AGENT.submitMetadataUpdate(_conversationId, _user, _payload);
+    SAPPHIRE_AI_AGENT.submitMetadataUpdate(_user, _conversationId, _payload);
   }
 
   function callSubmitBranchRequest(
     address _user,
     uint256 _originalConversationId,
-    uint256 _branchPointMessageId
+    uint256 _branchPointMessageId,
+    uint256 _newConversationId,
+    string calldata _payload
   ) external {
-    SAPPHIRE_AI_AGENT.submitBranchRequest(_user, _originalConversationId, _branchPointMessageId);
+    SAPPHIRE_AI_AGENT.submitBranchRequest(
+      _user,
+      _originalConversationId,
+      _branchPointMessageId,
+      _newConversationId,
+      _payload
+    );
   }
 
-  function callRecordCancellation(uint256 _answerMessageId, address _user) external {
-    SAPPHIRE_AI_AGENT.recordCancellation(_answerMessageId, _user);
+  function callRecordCancellation(address _user, uint256 _answerMessageId) external {
+    SAPPHIRE_AI_AGENT.recordCancellation(_user, _answerMessageId);
   }
 
   // --- Implementation of the callback from the Agent ---

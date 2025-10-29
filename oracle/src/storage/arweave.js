@@ -1,8 +1,10 @@
 const { Uploader } = require("@irys/upload");
 const { BaseEth } = require("@irys/upload-ethereum");
-const { sendAlert } = require("./alerting");
+const { sendAlert } = require("../alerting");
+const fetch = require("node-fetch");
 
 let irysUploader;
+const graphqlEndpoint = "https://uploader.irys.xyz/graphql"; // Use the main query endpoint
 
 /**
  * Initializes the Irys uploader instance and performs a proactive balance check/top-up.
@@ -103,14 +105,13 @@ async function ensureBalanceIsSufficient(dataSizeBytes) {
  * @param {Buffer} dataBuffer The data to upload.
  * @returns {Promise<string>} The Arweave transaction ID (CID).
  */
-async function uploadData(dataBuffer) {
+async function uploadData(dataBuffer, tags = []) {
   if (!irysUploader) throw new Error("Irys not initialized.");
 
   try {
     // Proactive check to ensure balance is sufficient before attempting upload.
     await ensureBalanceIsSufficient(dataBuffer.length);
 
-    const tags = [{ name: "Content-Type", value: "application/octet-stream" }];
     const receipt = await irysUploader.upload(dataBuffer, { tags });
     console.log(`Data uploaded ==> https://gateway.irys.xyz/${receipt.id}`);
 
@@ -130,7 +131,62 @@ async function uploadData(dataBuffer) {
   }
 }
 
+/**
+ * Fetches data from Arweave.
+ * @param {string} cid The Arweave transaction ID (CID) of the data to fetch.
+ * @returns {Promise<string>} The raw data as a string.
+ */
+async function fetchData(cid) {
+  const response = await fetch(`https://gateway.irys.xyz/${cid}`);
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch CID ${cid} from gateway. Status: ${response.status}`);
+  }
+
+  return response.text();
+}
+async function queryTransactionByTags(tags) {
+  const query = `
+        query {
+            transactions(
+                tags: [
+                    ${tags.map((tag) => `{ name: "${tag.name}", values: ["${tag.value}"] }`).join(",\n")}
+                ],
+                first: 1,
+                order: DESC
+            ) {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+    `;
+  try {
+    const response = await fetch(graphqlEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    if (!response.ok) {
+      throw new Error(`GraphQL query failed with status: ${response.status}`);
+    }
+    const json = await response.json();
+    const edges = json?.data?.transactions?.edges;
+    if (edges && edges.length > 0) {
+      return edges[0].node.id;
+    }
+    return null;
+  } catch (error) {
+    console.error("Error querying Irys GQL for tags:", error);
+    throw error;
+  }
+}
+
 module.exports = {
   initializeIrys,
   uploadData,
+  fetchData,
+  queryTransactionByTags,
 };

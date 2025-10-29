@@ -286,6 +286,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @notice Initiates a new prompt request from a user.
    * @dev This is the main entry point for all user prompts. It handles payment escrow
    *      and triggers the AI Agent contract to log the prompt.
+   * @dev If _conversationId is 0, it reserves a new conversation ID.
    * @param _conversationId The ID of the conversation. Pass 0 to start a new conversation.
    * @param _encryptedPayload The encrypted user prompt intended for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
@@ -297,8 +298,12 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   ) external {
     _processEscrowPayment(msg.sender, promptFee);
 
+    uint256 conversationId = _conversationId;
+    if (conversationId == 0) {
+      conversationId = evmAIAgent.reserveConversationId();
+    }
+
     uint256 promptMessageId = evmAIAgent.reserveMessageId();
-    // The answer message ID will also serve as the escrow ID.
     uint256 answerMessageId = evmAIAgent.reserveMessageId();
     uint256 escrowId = answerMessageId;
     escrows[escrowId] = Escrow({
@@ -310,10 +315,10 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
     emit PaymentEscrowed(escrowId, msg.sender, promptFee);
     evmAIAgent.submitPrompt(
+      msg.sender,
+      conversationId,
       promptMessageId,
       answerMessageId,
-      _conversationId,
-      msg.sender,
       _encryptedPayload,
       _roflEncryptedKey
     );
@@ -321,14 +326,15 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   /**
    * @notice Initiates a new regeneration request for a previous answer.
-   * @dev This function escrows the standard prompt fee and triggers the AI Agent contract
-   *      to log the regeneration request for the TEE.
+   * @dev This function escrows the standard prompt fee and triggers the AI Agent contract.
+   * @param _conversationId The ID of the conversation this regeneration belongs to.
    * @param _promptMessageId The ID of the user's prompt that is being regenerated.
    * @param _previousAnswerMessageId The ID of the specific AI answer the user wants to regenerate from.
    * @param _encryptedPayload The encrypted instructions for the TEE (e.g., "make it more concise").
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
    */
   function initiateRegeneration(
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _previousAnswerMessageId,
     bytes calldata _encryptedPayload,
@@ -336,7 +342,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   ) external {
     _processEscrowPayment(msg.sender, promptFee);
 
-    // The answer message ID will also serve as the escrow ID.
     uint256 answerMessageId = evmAIAgent.reserveMessageId();
     uint256 escrowId = answerMessageId;
     escrows[escrowId] = Escrow({
@@ -349,6 +354,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     emit PaymentEscrowed(escrowId, msg.sender, promptFee);
     evmAIAgent.submitRegenerationRequest(
       msg.sender,
+      _conversationId,
       _promptMessageId,
       _previousAnswerMessageId,
       answerMessageId,
@@ -359,7 +365,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   /**
    * @notice Initiates a new autonomous agent job on behalf of a user.
-   * @dev Called by the oracle for event- or schedule-triggered jobs.
+   * @dev Called by the oracle. If _jobId is 0, it reserves a new job ID.
    * @param _user The address of the user for whom the job is being run.
    * @param _jobId The ID of the parent job. Pass 0 to start a new job.
    * @param _encryptedPayload The encrypted prompt data for the TEE.
@@ -373,7 +379,11 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   ) external onlyOracle {
     _processEscrowPayment(_user, promptFee);
 
-    // The trigger ID will also serve as the escrow ID.
+    uint256 jobId = _jobId;
+    if (jobId == 0) {
+      jobId = evmAIAgent.reserveJobId();
+    }
+
     uint256 triggerId = evmAIAgent.reserveTriggerId();
     uint256 escrowId = triggerId;
     escrows[escrowId] = Escrow({
@@ -384,19 +394,35 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     });
 
     emit PaymentEscrowed(escrowId, _user, promptFee);
-    evmAIAgent.submitAgentJob(triggerId, _jobId, _user, _encryptedPayload, _roflEncryptedKey);
+    evmAIAgent.submitAgentJob(_user, jobId, triggerId, _encryptedPayload, _roflEncryptedKey);
   }
 
   /**
    * @notice Allows a user to initiate the process of branching a conversation.
-   * @dev Charges a fixed `branchFee` and emits an event for the TEE to process the request.
+   * @dev Charges a fixed `branchFee`, reserves a new conversation ID, and emits an event for the TEE.
    * @param _originalConversationId The ID of the conversation being branched from.
    * @param _branchPointMessageId The ID of the message where the branch occurs.
+   * @param _encryptedPayload The encrypted context (e.g., original title) for the TEE.
+   * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
    */
-  function initiateBranch(uint256 _originalConversationId, uint256 _branchPointMessageId) external {
+  function initiateBranch(
+    uint256 _originalConversationId,
+    uint256 _branchPointMessageId,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external {
     _processDirectPayment(msg.sender, branchFee);
 
-    evmAIAgent.submitBranchRequest(msg.sender, _originalConversationId, _branchPointMessageId);
+    uint256 newConversationId = evmAIAgent.reserveConversationId();
+
+    evmAIAgent.submitBranchRequest(
+      msg.sender,
+      _originalConversationId,
+      _branchPointMessageId,
+      newConversationId,
+      _encryptedPayload,
+      _roflEncryptedKey
+    );
   }
 
   /**
@@ -433,7 +459,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     pendingEscrowCount[msg.sender]--;
     escrow.status = EscrowStatus.REFUNDED;
 
-    evmAIAgent.recordCancellation(_answerMessageId, msg.sender);
+    evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
     ableToken.transfer(escrow.user, escrow.amount);
     emit PromptCancelled(_answerMessageId, msg.sender);
   }
@@ -453,8 +479,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     _processDirectPayment(msg.sender, metadataUpdateFee);
 
     evmAIAgent.submitMetadataUpdate(
-      _conversationId,
       msg.sender,
+      _conversationId,
       _encryptedPayload,
       _roflEncryptedKey
     );
@@ -573,5 +599,5 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[38] private __gap;
+  uint256[37] private __gap;
 }

@@ -54,21 +54,22 @@ contract SapphireAIAgent is Ownable {
   /// @notice Emitted when a new user prompt is submitted. This is the primary trigger for the TEE.
   event PromptSubmitted(
     address indexed user,
+    uint256 indexed conversationId,
     uint256 indexed promptMessageId,
     uint256 answerMessageId,
-    uint256 conversationId,
     string payload
   );
   /// @notice Emitted when a new agent job is submitted. This is a trigger for the TEE.
   event AgentJobSubmitted(
     address indexed user,
+    uint256 indexed jobId,
     uint256 indexed triggerId,
-    uint256 jobId,
     string payload
   );
   /// @notice Emitted when a user requests the TEE to regenerate an answer.
   event RegenerationRequested(
     address indexed user,
+    uint256 indexed conversationId,
     uint256 indexed promptMessageId,
     uint256 originalAnswerMessageId,
     uint256 answerMessageId,
@@ -78,7 +79,9 @@ contract SapphireAIAgent is Ownable {
   event BranchRequested(
     address indexed user,
     uint256 indexed originalConversationId,
-    uint256 branchPointMessageId
+    uint256 branchPointMessageId,
+    uint256 newConversationId,
+    string payload
   );
   /// @notice Emitted when a user successfully cancels a pending prompt. This instructs the TEE to halt processing.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
@@ -100,7 +103,7 @@ contract SapphireAIAgent is Ownable {
   /// @notice Emitted when a new conversation is forked from an existing one.
   event ConversationBranched(
     address indexed user,
-    uint256 indexed conversationId,
+    uint256 indexed newConversationId,
     uint256 originalConversationId,
     uint256 branchPointMessageId,
     string conversationCID,
@@ -252,10 +255,32 @@ contract SapphireAIAgent is Ownable {
   // --- Core Functions ---
 
   /**
+   * @notice Atomically reserves a new conversation ID for an upcoming action.
+   * @dev This can only be called by the trusted escrow contract.
+   * @return newConversationId The newly reserved conversation ID.
+   */
+  function reserveConversationId() external onlyAIAgentEscrow returns (uint256) {
+    uint256 newConversationId = conversationIdCounter;
+    conversationIdCounter++;
+    return newConversationId;
+  }
+
+  /**
+   * @notice Atomically reserves a new job ID for an upcoming action.
+   * @dev This can only be called by the trusted escrow contract.
+   * @return newJobId The newly reserved job ID.
+   */
+  function reserveJobId() external onlyAIAgentEscrow returns (uint256) {
+    uint256 newJobId = jobIdCounter;
+    jobIdCounter++;
+    return newJobId;
+  }
+
+  /**
    * @notice Atomically reserves a new message ID for an upcoming action.
    * @dev This can only be called by the trusted escrow contract to prevent ID griefing.
    *      It ensures that every ID retrieved is unique and the counter is immediately updated.
-   * @return The newly reserved message ID.
+   * @return newMessageId The newly reserved message ID.
    */
   function reserveMessageId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newMessageId = messageIdCounter;
@@ -266,7 +291,7 @@ contract SapphireAIAgent is Ownable {
   /**
    * @notice Atomically reserves a new trigger ID for an upcoming agent job.
    * @dev This can only be called by the trusted escrow contract.
-   * @return The newly reserved trigger ID.
+   * @return newTriggerId The newly reserved trigger ID.
    */
   function reserveTriggerId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newTriggerId = triggerIdCounter;
@@ -277,33 +302,27 @@ contract SapphireAIAgent is Ownable {
   /**
    * @notice Records a new user prompt after IDs have been reserved and payment secured.
    * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract.
+   * @param _user The address of the user who initiated the prompt.
+   * @param _conversationId The ID of the conversation. If this was a newly reserved ID, ownership is assigned.
    * @param _promptMessageId The unique, pre-reserved ID for this prompt message.
    * @param _answerMessageId The unique, pre-reserved ID for the future answer.
-   * @param _conversationId The ID of the conversation. If 0, a new conversation will be created.
-   * @param _user The address of the user who initiated the prompt.
    * @param _payload The plaintext prompt data for the TEE, handled confidentially by Sapphire.
    */
   function submitPrompt(
+    address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _answerMessageId,
-    uint256 _conversationId,
-    address _user,
     string calldata _payload
   ) external onlyAIAgentEscrow {
-    uint256 conversationId = _conversationId;
-
-    // Zero ID indicates a new conversation should be created
-    if (conversationId == 0) {
-      conversationId = conversationIdCounter++;
-      conversationToOwner[conversationId] = _user;
-    } else {
-      if (conversationToOwner[conversationId] != _user) {
-        revert Unauthorized();
-      }
+    if (conversationToOwner[_conversationId] == address(0)) {
+      conversationToOwner[_conversationId] = _user;
+    } else if (conversationToOwner[_conversationId] != _user) {
+      revert Unauthorized();
     }
 
-    messageToConversation[_promptMessageId] = conversationId;
-    emit PromptSubmitted(_user, _promptMessageId, _answerMessageId, conversationId, _payload);
+    messageToConversation[_promptMessageId] = _conversationId;
+    emit PromptSubmitted(_user, _conversationId, _promptMessageId, _answerMessageId, _payload);
   }
 
   /**
@@ -311,6 +330,7 @@ contract SapphireAIAgent is Ownable {
    * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract. It places a
    *      lock on the original prompt to prevent multiple simultaneous regenerations.
    * @param _user The address of the user requesting the regeneration.
+   * @param _conversationId The ID of the conversation this regeneration belongs to.
    * @param _promptMessageId The ID of the user's prompt being regenerated.
    * @param _originalAnswerMessageId The ID of the AI answer to regenerate from.
    * @param _answerMessageId The unique, pre-reserved ID for the future answer.
@@ -318,6 +338,7 @@ contract SapphireAIAgent is Ownable {
    */
   function submitRegenerationRequest(
     address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _originalAnswerMessageId,
     uint256 _answerMessageId,
@@ -326,11 +347,15 @@ contract SapphireAIAgent is Ownable {
     if (isRegenerationPending[_promptMessageId]) {
       revert RegenerationAlreadyPending();
     }
+    if (conversationToOwner[_conversationId] != _user) {
+      revert Unauthorized();
+    }
 
     isRegenerationPending[_promptMessageId] = true;
 
     emit RegenerationRequested(
       _user,
+      _conversationId,
       _promptMessageId,
       _originalAnswerMessageId,
       _answerMessageId,
@@ -341,31 +366,25 @@ contract SapphireAIAgent is Ownable {
   /**
    * @notice Records a new autonomous agent job after payment has been secured by the escrow contract.
    * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract.
-   * @param _triggerId The unique identifier for this specific job trigger.
-   * @param _jobId The ID of the parent job. If 0, a new job will be created.
    * @param _user The address of the user for whom the job is being run.
+   * @param _jobId The ID of the parent job. If this was a newly reserved ID, ownership is assigned.
+   * @param _triggerId The unique identifier for this specific job trigger.
    * @param _payload The plaintext job data for the TEE, handled confidentially by Sapphire.
    */
   function submitAgentJob(
-    uint256 _triggerId,
-    uint256 _jobId,
     address _user,
+    uint256 _jobId,
+    uint256 _triggerId,
     string calldata _payload
   ) external onlyAIAgentEscrow {
-    uint256 jobId = _jobId;
-
-    // Zero ID indicates a new job should be created
-    if (jobId == 0) {
-      jobId = jobIdCounter++;
-      jobToOwner[jobId] = _user;
-    } else {
-      if (jobToOwner[jobId] != _user) {
-        revert Unauthorized();
-      }
+    if (jobToOwner[_jobId] == address(0)) {
+      jobToOwner[_jobId] = _user;
+    } else if (jobToOwner[_jobId] != _user) {
+      revert Unauthorized();
     }
 
-    triggerToJob[_triggerId] = jobId;
-    emit AgentJobSubmitted(_user, _triggerId, jobId, _payload);
+    triggerToJob[_triggerId] = _jobId;
+    emit AgentJobSubmitted(_user, _jobId, _triggerId, _payload);
   }
 
   /**
@@ -417,13 +436,13 @@ contract SapphireAIAgent is Ownable {
   /**
    * @notice Records a user's request to update a conversation's metadata.
    * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract after charging a fee.
-   * @param _conversationId The ID of the conversation to update.
    * @param _user The address of the user requesting the update.
+   * @param _conversationId The ID of the conversation to update.
    * @param _payload The plaintext ABI-encoded update instructions (e.g., new title).
    */
   function submitMetadataUpdate(
-    uint256 _conversationId,
     address _user,
+    uint256 _conversationId,
     string calldata _payload
   ) external onlyAIAgentEscrow {
     if (conversationToOwner[_conversationId] != _user) {
@@ -452,47 +471,55 @@ contract SapphireAIAgent is Ownable {
    * @param _user The address of the user who is branching the conversation.
    * @param _originalConversationId The ID of the conversation being branched from.
    * @param _branchPointMessageId The ID of the message where the branch occurs.
+   * @param _newConversationId The pre-reserved ID for the new branched conversation.
+   * @param _payload The plaintext context from the client.
    */
   function submitBranchRequest(
     address _user,
     uint256 _originalConversationId,
-    uint256 _branchPointMessageId
+    uint256 _branchPointMessageId,
+    uint256 _newConversationId,
+    string calldata _payload
   ) external onlyAIAgentEscrow {
     if (conversationToOwner[_originalConversationId] != _user) {
       revert Unauthorized();
     }
+    conversationToOwner[_newConversationId] = _user;
 
-    emit BranchRequested(_user, _originalConversationId, _branchPointMessageId);
+    emit BranchRequested(
+      _user,
+      _originalConversationId,
+      _branchPointMessageId,
+      _newConversationId,
+      _payload
+    );
   }
 
   /**
    * @notice Submits the final CIDs for a newly branched conversation.
-   * @dev Called by the oracle after processing a `BranchRequested` event and uploading files to Arweave.
-   *      This function emits the `ConversationBranched` event that The Graph ingests.
+   * @dev Called by the oracle. Uses the pre-reserved newConversationId.
    * @param _user The address of the user who initiated the branch.
    * @param _originalConversationId The ID of the conversation that was branched from.
-   * @param _branchPointMessageId The ID of the message where the branch occurred.
+   * @param _branchPointMessageId The ID of the message where the branch occurs.
+   * @param _newConversationId The pre-reserved ID for the new conversation.
    * @param _conversationCID The Arweave CID for the new branched conversation's data.
    * @param _metadataCID The Arweave CID for the new branched conversation's metadata.
-   * @return conversationId The ID of the newly created conversation.
    */
   function submitBranch(
     address _user,
     uint256 _originalConversationId,
     uint256 _branchPointMessageId,
+    uint256 _newConversationId,
     string calldata _conversationCID,
     string calldata _metadataCID
-  ) external onlyOracle returns (uint256 conversationId) {
-    if (conversationToOwner[_originalConversationId] != _user) {
+  ) external onlyOracle {
+    if (conversationToOwner[_newConversationId] != _user) {
       revert Unauthorized();
     }
 
-    conversationId = conversationIdCounter++;
-    conversationToOwner[conversationId] = _user;
-
     emit ConversationBranched(
       _user,
-      conversationId,
+      _newConversationId,
       _originalConversationId,
       _branchPointMessageId,
       _conversationCID,
@@ -504,10 +531,10 @@ contract SapphireAIAgent is Ownable {
    * @notice Records that a prompt was cancelled by the user.
    * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract.
    *      It sets the answered flag to prevent the oracle from submitting a late answer.
-   * @param _answerMessageId The ID of the answer that was cancelled.
    * @param _user The address of the user who cancelled.
+   * @param _answerMessageId The ID of the answer that was cancelled.
    */
-  function recordCancellation(uint256 _answerMessageId, address _user) external onlyAIAgentEscrow {
+  function recordCancellation(address _user, uint256 _answerMessageId) external onlyAIAgentEscrow {
     if (isJobFinalized[_answerMessageId]) {
       revert JobAlreadyFinalized();
     }

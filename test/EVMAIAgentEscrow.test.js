@@ -213,23 +213,30 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
     });
 
-    it("should handle a new prompt in a new conversation", async function () {
+    it("should handle a new prompt, reserving a new conversation ID", async function () {
+      const newConversationId = 1; // From mock agent's counter
       const expectedAnswerId = 1;
       await expect(escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY))
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedAnswerId, user.address, PROMPT_FEE);
+      expect(await mockAgent.lastConversationId()).to.equal(newConversationId);
     });
 
-    it("should handle a regeneration request", async function () {
-      const expectedNewAnswerId = 0;
+    it("should handle a regeneration request with correct conversationId", async function () {
+      const conversationId = 5;
+      const expectedNewAnswerId = 0; // First reserved message ID
       await expect(
-        escrow.connect(user).initiateRegeneration(0, 99, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiateRegeneration(conversationId, 98, 99, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
       )
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedNewAnswerId, user.address, PROMPT_FEE);
+      expect(await mockAgent.lastConversationId()).to.equal(conversationId);
     });
 
-    it("should handle an agent job initiated by the oracle", async function () {
+    it("should handle an agent job initiated by the oracle, reserving a new job ID", async function () {
+      const newJobId = 1; // From mock agent's counter
       const expectedTriggerId = 0;
       await expect(
         escrow
@@ -238,6 +245,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       )
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedTriggerId, user.address, PROMPT_FEE);
+      expect(await mockAgent.lastJobId()).to.equal(newJobId);
     });
   });
 
@@ -251,20 +259,22 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
 
     it("should handle a metadata update request", async function () {
       const initialTreasuryBalance = await mockToken.balanceOf(treasury.address);
-      await escrow.connect(user).initiateMetadataUpdate(1, "0x", "0x");
+      await escrow.connect(user).initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
       expect(await mockToken.balanceOf(treasury.address)).to.equal(
         initialTreasuryBalance + METADATA_FEE,
       );
       expect(await mockAgent.lastConversationId()).to.equal(1);
     });
 
-    it("should handle a branch request", async function () {
+    it("should handle a branch request, reserving a new conversation ID", async function () {
       const initialTreasuryBalance = await mockToken.balanceOf(treasury.address);
-      await escrow.connect(user).initiateBranch(1, 2);
+      const newConversationId = 1; // From mock agent's counter
+      await escrow.connect(user).initiateBranch(123, 456, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
       expect(await mockToken.balanceOf(treasury.address)).to.equal(
         initialTreasuryBalance + BRANCH_FEE,
       );
-      expect(await mockAgent.lastOriginalConversationId()).to.equal(1);
+      expect(await mockAgent.lastOriginalConversationId()).to.equal(123);
+      expect(await mockAgent.lastNewConversationId()).to.equal(newConversationId);
     });
   });
 
@@ -299,7 +309,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
 
   describe("Cancellation and Refund Flows", function () {
     let escrow, mockAgent, mockToken, user, unauthorizedUser;
-    const answerMessageId = 1;
+    const answerMessageId = 1; // Reserved for the new prompt
 
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
@@ -346,9 +356,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       ).to.be.revertedWithCustomError(escrow, "PromptNotRefundableYet");
     });
 
-    // Test for insufficient funds for cancellation fee
     it("should revert cancelPrompt if user cannot afford the cancellation fee", async function () {
-      // Set up a user with just enough allowance for the prompt, but not the cancellation fee
       const { escrow, user, mockToken } = await loadFixture(deployEscrowFixture);
       await mockToken.connect(user).approve(await escrow.getAddress(), PROMPT_FEE);
       await escrow.connect(user).setSubscription(PROMPT_FEE, (await time.latest()) + 7200);
@@ -375,10 +383,8 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
           "0x1000000000000000000",
         ]);
 
-        // Finalize the escrow that was created in the beforeEach hook.
         await escrow.connect(agentSigner).finalizePayment(answerMessageId);
 
-        // Now, fast-forward time and try to refund the COMPLETED escrow.
         await time.increase(3601);
         await expect(escrow.processRefund(answerMessageId)).to.be.revertedWithCustomError(
           escrow,
@@ -441,7 +447,6 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
           agentSigner.address,
           "0x1000000000000000000",
         ]);
-        // Finalize the escrow to test non-pending states
         await escrow.connect(agentSigner).finalizePayment(escrowId);
       });
 
@@ -475,7 +480,6 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     });
   });
 
-  // Add full test block for upgradeability
   describe("Upgrades", function () {
     it("should allow the owner to upgrade the contract", async function () {
       const { escrow, deployer } = await loadFixture(deployEscrowFixture);

@@ -60,6 +60,7 @@ describe("SapphireAIAgentEscrow", function () {
       it("should revert if initialized with any zero address", async function () {
         const { SapphireAIAgentEscrow, mockAgent, treasury, deployer } =
           await loadFixture(deployEscrowFixture);
+
         await expect(
           SapphireAIAgentEscrow.deploy(
             ethers.ZeroAddress,
@@ -90,22 +91,25 @@ describe("SapphireAIAgentEscrow", function () {
         const { escrow, deployer } = await loadFixture(deployEscrowFixture);
         const newFee = ethers.parseEther("5");
 
-        await expect(escrow.connect(deployer).setPromptFee(newFee)).to.emit(
-          escrow,
-          "PromptFeeUpdated",
-        );
-        await expect(escrow.connect(deployer).setCancellationFee(newFee)).to.emit(
-          escrow,
-          "CancellationFeeUpdated",
-        );
-        await expect(escrow.connect(deployer).setMetadataUpdateFee(newFee)).to.emit(
-          escrow,
-          "MetadataUpdateFeeUpdated",
-        );
-        await expect(escrow.connect(deployer).setBranchFee(newFee)).to.emit(
-          escrow,
-          "BranchFeeUpdated",
-        );
+        await expect(escrow.connect(deployer).setPromptFee(newFee))
+          .to.emit(escrow, "PromptFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.promptFee()).to.equal(newFee);
+
+        await expect(escrow.connect(deployer).setCancellationFee(newFee))
+          .to.emit(escrow, "CancellationFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.cancellationFee()).to.equal(newFee);
+
+        await expect(escrow.connect(deployer).setMetadataUpdateFee(newFee))
+          .to.emit(escrow, "MetadataUpdateFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.metadataUpdateFee()).to.equal(newFee);
+
+        await expect(escrow.connect(deployer).setBranchFee(newFee))
+          .to.emit(escrow, "BranchFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.branchFee()).to.equal(newFee);
       });
 
       it("should prevent a non-owner from updating any fee", async function () {
@@ -114,6 +118,15 @@ describe("SapphireAIAgentEscrow", function () {
 
         await expect(
           escrow.connect(unauthorizedUser).setPromptFee(newFee),
+        ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
+        await expect(
+          escrow.connect(unauthorizedUser).setCancellationFee(newFee),
+        ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
+        await expect(
+          escrow.connect(unauthorizedUser).setMetadataUpdateFee(newFee),
+        ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
+        await expect(
+          escrow.connect(unauthorizedUser).setBranchFee(newFee),
         ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
       });
 
@@ -130,22 +143,26 @@ describe("SapphireAIAgentEscrow", function () {
     it("should allow a user to deposit, withdraw, and manage a subscription", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       const expiresAt = (await time.latest()) + 3600;
+
       expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT);
-      await expect(escrow.connect(user).setSubscription(expiresAt)).to.emit(
-        escrow,
-        "SubscriptionSet",
-      );
+
+      await expect(escrow.connect(user).setSubscription(expiresAt))
+        .to.emit(escrow, "SubscriptionSet")
+        .withArgs(user.address, expiresAt);
+
       const withdrawAmount = ethers.parseEther("10");
       await escrow.connect(user).withdraw(withdrawAmount);
       expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT - withdrawAmount);
+
       const userBalanceBefore = await ethers.provider.getBalance(user.address);
       const tx = await escrow.connect(user).cancelSubscription();
       const receipt = await tx.wait();
       const gasUsed = receipt.gasUsed * tx.gasPrice;
       const userBalanceAfter = await ethers.provider.getBalance(user.address);
+
       expect(await escrow.deposits(user.address)).to.equal(0);
       expect(userBalanceAfter).to.equal(
-        userBalanceBefore + INITIAL_DEPOSIT - withdrawAmount - gasUsed,
+        userBalanceBefore + (INITIAL_DEPOSIT - withdrawAmount) - gasUsed,
       );
     });
 
@@ -184,66 +201,112 @@ describe("SapphireAIAgentEscrow", function () {
   });
 
   describe("User Actions: Escrow-Based", function () {
-    let escrow, user, oracle;
+    let escrow, mockAgent, user, oracle;
+
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
-      ({ escrow, user, oracle } = fixtures);
+      ({ escrow, mockAgent, user, oracle } = fixtures);
       await escrow.connect(user).setSubscription((await time.latest()) + 3600);
     });
 
-    it("should handle a new prompt, deducting from deposit", async function () {
+    it("should handle a new prompt, reserving a new conversation ID", async function () {
+      const newConversationId = 1;
+      const expectedAnswerId = 1;
       const initialDeposit = await escrow.deposits(user.address);
-      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
+
+      await expect(escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD))
+        .to.emit(escrow, "PaymentEscrowed")
+        .withArgs(expectedAnswerId, user.address, PROMPT_FEE);
+
       expect(await escrow.deposits(user.address)).to.equal(initialDeposit - PROMPT_FEE);
+      expect(await mockAgent.lastConversationId()).to.equal(newConversationId);
     });
 
-    it("should handle a regeneration, deducting from deposit", async function () {
+    it("should handle a regeneration request with correct conversationId", async function () {
+      const conversationId = 5;
+      const promptMessageId = 98;
+      const previousAnswerMessageId = 99;
+      const expectedNewAnswerId = 0; // First reserved message ID
       const initialDeposit = await escrow.deposits(user.address);
-      await escrow.connect(user).initiateRegeneration(0, 99, MOCK_PAYLOAD);
+
+      await expect(
+        escrow
+          .connect(user)
+          .initiateRegeneration(
+            conversationId,
+            promptMessageId,
+            previousAnswerMessageId,
+            MOCK_PAYLOAD,
+          ),
+      )
+        .to.emit(escrow, "PaymentEscrowed")
+        .withArgs(expectedNewAnswerId, user.address, PROMPT_FEE);
+
       expect(await escrow.deposits(user.address)).to.equal(initialDeposit - PROMPT_FEE);
+      expect(await mockAgent.lastConversationId()).to.equal(conversationId);
     });
 
-    it("should handle an agent job, deducting from deposit", async function () {
+    it("should handle an agent job initiated by the oracle, reserving a new job ID", async function () {
+      const newJobId = 1;
+      const expectedTriggerId = 0;
       const initialDeposit = await escrow.deposits(user.address);
-      await escrow.connect(oracle).initiateAgentJob(user.address, 0, MOCK_PAYLOAD);
+
+      await expect(escrow.connect(oracle).initiateAgentJob(user.address, 0, MOCK_PAYLOAD))
+        .to.emit(escrow, "PaymentEscrowed")
+        .withArgs(expectedTriggerId, user.address, PROMPT_FEE);
+
       expect(await escrow.deposits(user.address)).to.equal(initialDeposit - PROMPT_FEE);
+      expect(await mockAgent.lastJobId()).to.equal(newJobId);
     });
   });
 
   describe("User Actions: Direct Payment", function () {
-    let escrow, user, treasury;
+    let escrow, mockAgent, user, treasury;
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
-      ({ escrow, user, treasury } = fixtures);
+      ({ escrow, mockAgent, user, treasury } = fixtures);
       await escrow.connect(user).setSubscription((await time.latest()) + 3600);
     });
 
-    it("should handle a metadata update, paying treasury from deposit", async function () {
+    it("should handle a metadata update request", async function () {
+      const conversationId = 123;
       const initialDeposit = await escrow.deposits(user.address);
       const initialTreasuryBalance = await ethers.provider.getBalance(treasury.address);
-      await escrow.connect(user).initiateMetadataUpdate(1, MOCK_PAYLOAD);
+
+      await escrow.connect(user).initiateMetadataUpdate(conversationId, MOCK_PAYLOAD);
+
       expect(await escrow.deposits(user.address)).to.equal(initialDeposit - METADATA_FEE);
       expect(await ethers.provider.getBalance(treasury.address)).to.equal(
         initialTreasuryBalance + METADATA_FEE,
       );
+      expect(await mockAgent.lastConversationId()).to.equal(conversationId);
     });
 
-    it("should handle a branch request, paying treasury from deposit", async function () {
+    it("should handle a branch request, reserving a new conversation ID", async function () {
+      const originalConversationId = 456;
+      const branchPointMessageId = 789;
+      const expectedNewConversationId = 1;
       const initialDeposit = await escrow.deposits(user.address);
       const initialTreasuryBalance = await ethers.provider.getBalance(treasury.address);
-      await escrow.connect(user).initiateBranch(1, 2);
+
+      await escrow
+        .connect(user)
+        .initiateBranch(originalConversationId, branchPointMessageId, MOCK_PAYLOAD);
+
       expect(await escrow.deposits(user.address)).to.equal(initialDeposit - BRANCH_FEE);
       expect(await ethers.provider.getBalance(treasury.address)).to.equal(
         initialTreasuryBalance + BRANCH_FEE,
       );
+      expect(await mockAgent.lastOriginalConversationId()).to.equal(originalConversationId);
+      expect(await mockAgent.lastNewConversationId()).to.equal(expectedNewConversationId);
     });
   });
 
   describe("Initiation Failure Scenarios", function () {
     it("should revert if user has no active subscription", async function () {
-      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture); // Use a fresh user
       await expect(
-        escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD),
+        escrow.connect(unauthorizedUser).initiatePrompt(0, MOCK_PAYLOAD),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSubscription");
     });
 
@@ -322,7 +385,7 @@ describe("SapphireAIAgentEscrow", function () {
       await escrow.connect(user).withdraw(INITIAL_DEPOSIT); // Withdraw all funds
       await escrow.connect(user).deposit({ value: PROMPT_FEE }); // Deposit just enough for the prompt
       await escrow.connect(user).setSubscription((await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD); // User deposit is now 0
+      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
       await time.increase(5);
       await expect(escrow.connect(user).cancelPrompt(1)).to.be.revertedWithCustomError(
         escrow,
@@ -340,7 +403,7 @@ describe("SapphireAIAgentEscrow", function () {
         const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
         await ethers.provider.send("hardhat_setBalance", [
           agentSigner.address,
-          "0x1" + "0".repeat(18),
+          "0x" + (10n ** 18n).toString(16),
         ]);
         await escrow.connect(agentSigner).finalizePayment(answerMessageId);
         await time.increase(3601);
@@ -362,7 +425,7 @@ describe("SapphireAIAgentEscrow", function () {
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
       await ethers.provider.send("hardhat_setBalance", [
         agentSigner.address,
-        "0x1" + "0".repeat(18),
+        "0x" + (10n ** 18n).toString(16),
       ]);
       await expect(escrow.connect(agentSigner).finalizePayment(answerMessageId)).to.emit(
         escrow,
@@ -402,7 +465,7 @@ describe("SapphireAIAgentEscrow", function () {
         agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
         await ethers.provider.send("hardhat_setBalance", [
           agentSigner.address,
-          "0x1" + "0".repeat(18),
+          "0x" + (10n ** 18n).toString(16),
         ]);
         await escrow.connect(agentSigner).finalizePayment(escrowId);
       });

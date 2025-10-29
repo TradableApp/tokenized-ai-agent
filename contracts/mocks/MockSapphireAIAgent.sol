@@ -7,6 +7,8 @@ import { Structs } from "../libraries/Structs.sol";
 
 // A mock contract to simulate the SapphireAIAgent for testing the escrow.
 contract MockSapphireAIAgent is ISapphireAIAgent {
+  uint256 private _conversationIdCounter;
+  uint256 private _jobIdCounter;
   uint256 private _messageIdCounter;
   uint256 private _triggerIdCounter;
 
@@ -17,6 +19,7 @@ contract MockSapphireAIAgent is ISapphireAIAgent {
   uint256 public lastPromptMessageId;
   uint256 public lastAnswerMessageId;
   uint256 public lastConversationId;
+  uint256 public lastNewConversationId;
   address public lastUser;
   uint256 public lastOriginalAnswerMessageId;
   uint256 public lastTriggerId;
@@ -24,16 +27,36 @@ contract MockSapphireAIAgent is ISapphireAIAgent {
   uint256 public lastOriginalConversationId;
   uint256 public lastBranchPointMessageId;
 
-  event PromptSubmitted(uint256 promptMessageId, uint256 answerMessageId, address user);
-  event RegenerationSubmitted(uint256 promptMessageId, uint256 answerMessageId, address user);
-  event AgentJobSubmitted(uint256 triggerId, uint256 jobId, address user);
-  event MetadataUpdateSubmitted(uint256 conversationId, address user);
-  event BranchRequestSubmitted(uint256 originalConversationId, uint256 branchPointMessageId);
-  event CancellationRecorded(uint256 answerMessageId, address user);
+  event PromptSubmitted(address user, uint256 conversationId, uint256 promptMessageId);
+  event RegenerationSubmitted(address user, uint256 conversationId, uint256 promptMessageId);
+  event AgentJobSubmitted(address user, uint256 jobId, uint256 triggerId);
+  event MetadataUpdateSubmitted(address user, uint256 conversationId);
+  event BranchRequestSubmitted(
+    address user,
+    uint256 originalConversationId,
+    uint256 newConversationId
+  );
+  event CancellationRecorded(address user, uint256 answerMessageId);
   event AnswerSubmitted(uint256 promptMessageId, uint256 answerMessageId);
+  event BranchSubmitted(uint256 newConversationId, uint256 originalConversationId);
+  event MetadataSubmitted(uint256 conversationId);
 
   constructor(address _initialOracle) {
     oracle = _initialOracle;
+    _conversationIdCounter = 1;
+    _jobIdCounter = 1;
+  }
+
+  function reserveConversationId() external override returns (uint256) {
+    uint256 id = _conversationIdCounter;
+    _conversationIdCounter++;
+    return id;
+  }
+
+  function reserveJobId() external override returns (uint256) {
+    uint256 id = _jobIdCounter;
+    _jobIdCounter++;
+    return id;
   }
 
   function reserveMessageId() external override returns (uint256) {
@@ -49,23 +72,23 @@ contract MockSapphireAIAgent is ISapphireAIAgent {
   }
 
   function submitPrompt(
+    address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _answerMessageId,
-    uint256 _conversationId,
-    address _user,
     string calldata // _payload
   ) external override {
+    lastUser = _user;
+    lastConversationId = _conversationId;
     lastPromptMessageId = _promptMessageId;
     lastAnswerMessageId = _answerMessageId;
-    lastConversationId = _conversationId;
-    lastUser = _user;
-    emit PromptSubmitted(_promptMessageId, _answerMessageId, _user);
+    emit PromptSubmitted(_user, _conversationId, _promptMessageId);
   }
 
   function submitAnswer(
     uint256 _promptMessageId,
     uint256 _answerMessageId,
-    Structs.CidBundle calldata /* _cids */
+    Structs.CidBundle calldata // _cids
   ) external override {
     lastPromptMessageId = _promptMessageId;
     lastAnswerMessageId = _answerMessageId;
@@ -74,55 +97,83 @@ contract MockSapphireAIAgent is ISapphireAIAgent {
 
   function submitRegenerationRequest(
     address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _originalAnswerMessageId,
     uint256 _answerMessageId,
     string calldata // _payload
   ) external override {
     lastUser = _user;
+    lastConversationId = _conversationId;
     lastPromptMessageId = _promptMessageId;
     lastOriginalAnswerMessageId = _originalAnswerMessageId;
     lastAnswerMessageId = _answerMessageId;
-    emit RegenerationSubmitted(_promptMessageId, _answerMessageId, _user);
+    emit RegenerationSubmitted(_user, _conversationId, _promptMessageId);
   }
 
   function submitAgentJob(
-    uint256 _triggerId,
-    uint256 _jobId,
     address _user,
+    uint256 _jobId,
+    uint256 _triggerId,
     string calldata // _payload
   ) external override {
-    lastTriggerId = _triggerId;
-    lastJobId = _jobId;
     lastUser = _user;
-    emit AgentJobSubmitted(_triggerId, _jobId, _user);
+    lastJobId = _jobId;
+    lastTriggerId = _triggerId;
+    emit AgentJobSubmitted(_user, _jobId, _triggerId);
   }
 
   function submitMetadataUpdate(
-    uint256 _conversationId,
     address _user,
+    uint256 _conversationId,
     string calldata // _payload
   ) external override {
-    lastConversationId = _conversationId;
     lastUser = _user;
-    emit MetadataUpdateSubmitted(_conversationId, _user);
+    lastConversationId = _conversationId;
+    emit MetadataUpdateSubmitted(_user, _conversationId);
   }
 
   function submitBranchRequest(
     address _user,
     uint256 _originalConversationId,
-    uint256 _branchPointMessageId
+    uint256 _branchPointMessageId,
+    uint256 _newConversationId,
+    string calldata // _payload
   ) external override {
     lastUser = _user;
     lastOriginalConversationId = _originalConversationId;
     lastBranchPointMessageId = _branchPointMessageId;
-    emit BranchRequestSubmitted(_originalConversationId, _branchPointMessageId);
+    lastNewConversationId = _newConversationId;
+    emit BranchRequestSubmitted(_user, _originalConversationId, _newConversationId);
   }
 
-  function recordCancellation(uint256 _answerMessageId, address _user) external override {
-    lastAnswerMessageId = _answerMessageId;
+  function recordCancellation(address _user, uint256 _answerMessageId) external override {
     lastUser = _user;
-    emit CancellationRecorded(_answerMessageId, _user);
+    lastAnswerMessageId = _answerMessageId;
+    emit CancellationRecorded(_user, _answerMessageId);
+  }
+
+  function submitConversationMetadata(
+    uint256 _conversationId,
+    string calldata // _newConversationMetadataCID
+  ) external override {
+    lastConversationId = _conversationId;
+    emit MetadataSubmitted(_conversationId);
+  }
+
+  function submitBranch(
+    address _user,
+    uint256 _originalConversationId,
+    uint256 _branchPointMessageId,
+    uint256 _newConversationId,
+    string calldata, // _conversationCID
+    string calldata // _metadataCID
+  ) external override {
+    lastUser = _user;
+    lastOriginalConversationId = _originalConversationId;
+    lastBranchPointMessageId = _branchPointMessageId;
+    lastNewConversationId = _newConversationId;
+    emit BranchSubmitted(_newConversationId, _originalConversationId);
   }
 
   // A helper for the test suite to simulate the agent calling back to finalize payment.

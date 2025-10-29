@@ -6,6 +6,8 @@ describe("EVMAIAgent (Upgradable)", function () {
   // --- Test Suite Setup ---
   const domain = "example.com";
   const MOCK_CID = "QmXg9j4f8zYf8t7f8zYf8t7f8zYf8t7f8zYf8t7f8zYf8t7";
+  const MOCK_ENCRYPTED_PAYLOAD = "0x1234";
+  const MOCK_ROFL_KEY = "0x5678";
 
   // Deploys contracts and sets up the test environment.
   async function deployAgentFixture() {
@@ -41,7 +43,6 @@ describe("EVMAIAgent (Upgradable)", function () {
       expect(await aiAgent.jobIdCounter()).to.equal(1);
     });
 
-    // Test admin function access control and error handling
     context("Administrative Functions", function () {
       it("should prevent a non-owner from setting the escrow address", async function () {
         const { aiAgent, unauthorizedUser, mockEscrow } = await loadFixture(deployAgentFixture);
@@ -95,16 +96,20 @@ describe("EVMAIAgent (Upgradable)", function () {
   });
 
   describe("ID Reservation", function () {
-    it("should allow the escrow contract to reserve message and trigger IDs", async function () {
+    it("should allow the escrow contract to reserve all ID types", async function () {
       const { mockEscrow } = await loadFixture(deployAgentFixture);
-      // Use staticCall to get return values from non-view functions without sending a transaction
+      expect(await mockEscrow.callReserveConversationId.staticCall()).to.equal(1);
+      await mockEscrow.callReserveConversationId();
+      expect(await mockEscrow.callReserveConversationId.staticCall()).to.equal(2);
+
+      expect(await mockEscrow.callReserveJobId.staticCall()).to.equal(1);
+      await mockEscrow.callReserveJobId();
+      expect(await mockEscrow.callReserveJobId.staticCall()).to.equal(2);
+
       expect(await mockEscrow.callReserveMessageId.staticCall()).to.equal(0);
-      // Send the actual transaction to update the state
       await mockEscrow.callReserveMessageId();
-      // Verify the next call would return the incremented ID
       expect(await mockEscrow.callReserveMessageId.staticCall()).to.equal(1);
 
-      // Repeat for trigger IDs
       expect(await mockEscrow.callReserveTriggerId.staticCall()).to.equal(0);
       await mockEscrow.callReserveTriggerId();
       expect(await mockEscrow.callReserveTriggerId.staticCall()).to.equal(1);
@@ -112,6 +117,14 @@ describe("EVMAIAgent (Upgradable)", function () {
 
     it("should revert if a non-escrow address tries to reserve an ID", async function () {
       const { aiAgent, user } = await loadFixture(deployAgentFixture);
+      await expect(aiAgent.connect(user).reserveConversationId()).to.be.revertedWithCustomError(
+        aiAgent,
+        "NotAIAgentEscrow",
+      );
+      await expect(aiAgent.connect(user).reserveJobId()).to.be.revertedWithCustomError(
+        aiAgent,
+        "NotAIAgentEscrow",
+      );
       await expect(aiAgent.connect(user).reserveMessageId()).to.be.revertedWithCustomError(
         aiAgent,
         "NotAIAgentEscrow",
@@ -124,18 +137,26 @@ describe("EVMAIAgent (Upgradable)", function () {
   });
 
   describe("Prompt Submission and Ownership", function () {
-    it("should create a new conversation when conversationId is 0", async function () {
+    it("should assign ownership for a newly reserved conversationId", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
+      const conversationId = 1;
       const promptMessageId = 0;
       const answerMessageId = 1;
-      const conversationId = 1; // First conversation should have ID 1
+
       await expect(
         mockEscrow
           .connect(user)
-          .callSubmitPrompt(promptMessageId, answerMessageId, 0, user.address, "0x", "0x"),
+          .callSubmitPrompt(
+            user.address,
+            conversationId,
+            promptMessageId,
+            answerMessageId,
+            "0x",
+            "0x",
+          ),
       )
         .to.emit(aiAgent, "PromptSubmitted")
-        .withArgs(user.address, promptMessageId, answerMessageId, conversationId, "0x", "0x");
+        .withArgs(user.address, conversationId, promptMessageId, answerMessageId, "0x", "0x");
 
       expect(await aiAgent.conversationToOwner(conversationId)).to.equal(user.address);
       expect(await aiAgent.messageToConversation(promptMessageId)).to.equal(conversationId);
@@ -143,25 +164,45 @@ describe("EVMAIAgent (Upgradable)", function () {
 
     it("should revert if an unauthorized user tries to use an existing conversation", async function () {
       const { aiAgent, mockEscrow, user, unauthorizedUser } = await loadFixture(deployAgentFixture);
-      await mockEscrow.connect(user).callSubmitPrompt(0, 1, 0, user.address, "0x", "0x");
-      const conversationId = 1; // First conversation should have ID 1
+      const conversationId = 1;
+      const promptMessageId1 = 0;
+      const answerMessageId1 = 1;
+      await mockEscrow
+        .connect(user)
+        .callSubmitPrompt(
+          user.address,
+          conversationId,
+          promptMessageId1,
+          answerMessageId1,
+          "0x",
+          "0x",
+        );
+
+      const promptMessageId2 = 2;
+      const answerMessageId2 = 3;
       await expect(
         mockEscrow
           .connect(unauthorizedUser)
-          .callSubmitPrompt(2, 3, conversationId, unauthorizedUser.address, "0x", "0x"),
+          .callSubmitPrompt(
+            unauthorizedUser.address,
+            conversationId,
+            promptMessageId2,
+            answerMessageId2,
+            "0x",
+            "0x",
+          ),
       ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
     });
 
-    // Test ownership for agent jobs
-    it("should create a new job when jobId is 0", async function () {
+    it("should assign ownership for a newly reserved jobId", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
+      const jobId = 1;
       const triggerId = 0;
-      const jobId = 1; // First job should have ID 1
       await expect(
-        mockEscrow.connect(user).callSubmitAgentJob(triggerId, 0, user.address, "0x", "0x"),
+        mockEscrow.connect(user).callSubmitAgentJob(user.address, jobId, triggerId, "0x", "0x"),
       )
         .to.emit(aiAgent, "AgentJobSubmitted")
-        .withArgs(user.address, triggerId, jobId, "0x", "0x");
+        .withArgs(user.address, jobId, triggerId, "0x", "0x");
 
       expect(await aiAgent.jobToOwner(jobId)).to.equal(user.address);
       expect(await aiAgent.triggerToJob(triggerId)).to.equal(jobId);
@@ -169,12 +210,17 @@ describe("EVMAIAgent (Upgradable)", function () {
 
     it("should revert if an unauthorized user tries to use an existing agent job", async function () {
       const { aiAgent, mockEscrow, user, unauthorizedUser } = await loadFixture(deployAgentFixture);
-      await mockEscrow.connect(user).callSubmitAgentJob(0, 0, user.address, "0x", "0x");
-      const jobId = 1; // First job should have ID 1
+      const jobId = 1;
+      const triggerId1 = 0;
+      await mockEscrow
+        .connect(user)
+        .callSubmitAgentJob(user.address, jobId, triggerId1, "0x", "0x");
+
+      const triggerId2 = 1;
       await expect(
         mockEscrow
           .connect(unauthorizedUser)
-          .callSubmitAgentJob(1, jobId, unauthorizedUser.address, "0x", "0x"),
+          .callSubmitAgentJob(unauthorizedUser.address, jobId, triggerId2, "0x", "0x"),
       ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
     });
   });
@@ -183,17 +229,17 @@ describe("EVMAIAgent (Upgradable)", function () {
     context("Happy Paths", function () {
       it("should submit a full answer for a new prompt in a new conversation", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
         const promptMessageId = 0;
         const answerMessageId = 1;
         await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
           promptMessageId,
           answerMessageId,
-          0, // New conversation
-          user.address,
           "0x",
           "0x",
         );
-        const conversationId = 1; // First conversation should have ID 1
 
         const cidBundle = {
           conversationCID: MOCK_CID,
@@ -221,17 +267,18 @@ describe("EVMAIAgent (Upgradable)", function () {
 
       it("should submit an answer for a prompt in an existing conversation", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
 
-        // Create and finalize the first prompt to establish the conversation
+        const promptMessageId1 = 0;
+        const answerMessageId1 = 1;
         await mockEscrow.callSubmitPrompt(
-          0,
-          1,
-          0, // New conversation
           user.address,
+          conversationId,
+          promptMessageId1,
+          answerMessageId1,
           "0x",
           "0x",
         );
-        const conversationId = 1; // First conversation should have ID 1
         const firstCidBundle = {
           conversationCID: MOCK_CID,
           metadataCID: MOCK_CID,
@@ -239,21 +286,21 @@ describe("EVMAIAgent (Upgradable)", function () {
           answerMessageCID: MOCK_CID,
           searchDeltaCID: MOCK_CID,
         };
-        await aiAgent.connect(oracle).submitAnswer(0, 1, firstCidBundle);
+        await aiAgent
+          .connect(oracle)
+          .submitAnswer(promptMessageId1, answerMessageId1, firstCidBundle);
 
-        // User submits a second prompt in the same conversation
-        const promptMessageId = 2;
-        const answerMessageId = 3;
+        const promptMessageId2 = 2;
+        const answerMessageId2 = 3;
         await mockEscrow.callSubmitPrompt(
-          promptMessageId,
-          answerMessageId,
-          conversationId,
           user.address,
+          conversationId,
+          promptMessageId2,
+          answerMessageId2,
           "0x",
           "0x",
         );
 
-        // Oracle submits the answer for the second prompt
         const subsequentCidBundle = {
           conversationCID: "",
           metadataCID: "",
@@ -264,33 +311,32 @@ describe("EVMAIAgent (Upgradable)", function () {
 
         const tx = aiAgent
           .connect(oracle)
-          .submitAnswer(promptMessageId, answerMessageId, subsequentCidBundle);
+          .submitAnswer(promptMessageId2, answerMessageId2, subsequentCidBundle);
 
         await expect(tx)
           .to.emit(aiAgent, "PromptMessageAdded")
-          .withArgs(conversationId, promptMessageId, MOCK_CID)
+          .withArgs(conversationId, promptMessageId2, MOCK_CID)
           .and.to.emit(aiAgent, "SearchIndexDeltaAdded")
-          .withArgs(promptMessageId, MOCK_CID)
+          .withArgs(promptMessageId2, MOCK_CID)
           .and.to.emit(aiAgent, "AnswerMessageAdded")
-          .withArgs(conversationId, answerMessageId, MOCK_CID)
+          .withArgs(conversationId, answerMessageId2, MOCK_CID)
           .and.to.not.emit(aiAgent, "ConversationAdded");
       });
 
       it("should submit an answer for a regeneration", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
         const promptMessageId = 0;
         const originalAnswerMessageId = 1;
 
-        // Create and finalize the original prompt and answer
         await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
           promptMessageId,
           originalAnswerMessageId,
-          0, // New conversation
-          user.address,
           "0x",
           "0x",
         );
-        const conversationId = 1; // First conversation should have ID 1
         const firstCidBundle = {
           conversationCID: MOCK_CID,
           metadataCID: MOCK_CID,
@@ -302,10 +348,10 @@ describe("EVMAIAgent (Upgradable)", function () {
           .connect(oracle)
           .submitAnswer(promptMessageId, originalAnswerMessageId, firstCidBundle);
 
-        // User requests regeneration
         const newAnswerMessageId = 2;
         await mockEscrow.callSubmitRegenerationRequest(
           user.address,
+          conversationId,
           promptMessageId,
           originalAnswerMessageId,
           newAnswerMessageId,
@@ -314,7 +360,6 @@ describe("EVMAIAgent (Upgradable)", function () {
         );
         expect(await aiAgent.isRegenerationPending(promptMessageId)).to.be.true;
 
-        // Oracle submits the regenerated answer
         const regenerationCidBundle = {
           conversationCID: "",
           metadataCID: "",
@@ -341,8 +386,6 @@ describe("EVMAIAgent (Upgradable)", function () {
     context("Failure Paths and State Guards", function () {
       it("should revert if a non-oracle calls submitAnswer", async function () {
         const { aiAgent, unauthorizedUser } = await loadFixture(deployAgentFixture);
-        const conversationId = 1;
-        const answerMessageId = 1;
         const dummyCidBundle = {
           conversationCID: "",
           metadataCID: "",
@@ -350,26 +393,28 @@ describe("EVMAIAgent (Upgradable)", function () {
           answerMessageCID: MOCK_CID,
           searchDeltaCID: "",
         };
+        const promptMessageId = 0;
+        const answerMessageId = 1;
         await expect(
           aiAgent
             .connect(unauthorizedUser)
-            .submitAnswer(conversationId, answerMessageId, dummyCidBundle),
+            .submitAnswer(promptMessageId, answerMessageId, dummyCidBundle),
         ).to.be.revertedWithCustomError(aiAgent, "UnauthorizedOracle");
       });
 
       it("should revert if submitAnswer is called with an empty answer CID", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
         const promptMessageId = 0;
         const answerMessageId = 1;
         await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
           promptMessageId,
           answerMessageId,
-          0,
-          user.address,
           "0x",
           "0x",
         );
-        const conversationId = 1; // First conversation should have ID 1
 
         const cidBundle = {
           conversationCID: MOCK_CID,
@@ -386,6 +431,7 @@ describe("EVMAIAgent (Upgradable)", function () {
 
       it("should revert if submitAnswer is for an invalid promptMessageId", async function () {
         const { aiAgent, oracle } = await loadFixture(deployAgentFixture);
+        const invalidPromptId = 999;
         const answerMessageId = 1;
         const dummyCidBundle = {
           conversationCID: "",
@@ -395,19 +441,20 @@ describe("EVMAIAgent (Upgradable)", function () {
           searchDeltaCID: "",
         };
         await expect(
-          aiAgent.connect(oracle).submitAnswer(999, answerMessageId, dummyCidBundle),
+          aiAgent.connect(oracle).submitAnswer(invalidPromptId, answerMessageId, dummyCidBundle),
         ).to.be.revertedWithCustomError(aiAgent, "InvalidPromptMessageId");
       });
 
       it("should revert if submitAnswer is called for a finalized job", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
         const promptMessageId = 0;
         const answerMessageId = 1;
         await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
           promptMessageId,
           answerMessageId,
-          0,
-          user.address,
           "0x",
           "0x",
         );
@@ -418,7 +465,6 @@ describe("EVMAIAgent (Upgradable)", function () {
           answerMessageCID: MOCK_CID,
           searchDeltaCID: MOCK_CID,
         };
-        const conversationId = 1; // First conversation should have ID 1
         await aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
         await expect(
@@ -427,24 +473,53 @@ describe("EVMAIAgent (Upgradable)", function () {
       });
 
       it("should revert if a regeneration is requested for a pending prompt", async function () {
-        const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
+        const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
         const promptMessageId = 0;
         const originalAnswerMessageId = 1;
-        await mockEscrow.callSubmitRegenerationRequest(
+
+        // SETUP: Create and finalize a conversation so we have something to regenerate.
+        await mockEscrow.callSubmitPrompt(
           user.address,
+          conversationId,
           promptMessageId,
           originalAnswerMessageId,
-          2,
+          "0x",
+          "0x",
+        );
+        const cidBundle = {
+          conversationCID: MOCK_CID,
+          metadataCID: MOCK_CID,
+          promptMessageCID: MOCK_CID,
+          answerMessageCID: MOCK_CID,
+          searchDeltaCID: MOCK_CID,
+        };
+        await aiAgent
+          .connect(oracle)
+          .submitAnswer(promptMessageId, originalAnswerMessageId, cidBundle);
+
+        // ACTION 1: The user successfully requests a regeneration.
+        const newAnswerMessageId1 = 2;
+        await mockEscrow.callSubmitRegenerationRequest(
+          user.address,
+          conversationId,
+          promptMessageId,
+          originalAnswerMessageId,
+          newAnswerMessageId1,
           "0x",
           "0x",
         );
 
+        // ASSERTION: The test's main purpose. Attempting a second regeneration for the
+        // same prompt while the first one is still pending should revert.
+        const newAnswerMessageId2 = 3;
         await expect(
           mockEscrow.callSubmitRegenerationRequest(
             user.address,
+            conversationId,
             promptMessageId,
             originalAnswerMessageId,
-            3,
+            newAnswerMessageId2,
             "0x",
             "0x",
           ),
@@ -454,24 +529,40 @@ describe("EVMAIAgent (Upgradable)", function () {
   });
 
   describe("Branching and Metadata Workflow", function () {
-    // Add unauthorizedUser to the fixture destructuring
     let aiAgent, mockEscrow, user, oracle, unauthorizedUser;
+    const conversationId = 1;
 
     beforeEach(async function () {
       const fixtures = await loadFixture(deployAgentFixture);
       ({ aiAgent, mockEscrow, user, oracle, unauthorizedUser } = fixtures);
-      // Setup a conversation owned by `user`
-      await mockEscrow.callSubmitPrompt(0, 1, 0, user.address, "0x", "0x");
+      const promptMessageId = 0;
+      const answerMessageId = 1;
+      await mockEscrow.callSubmitPrompt(
+        user.address,
+        conversationId,
+        promptMessageId,
+        answerMessageId,
+        "0x",
+        "0x",
+      );
     });
 
     it("should handle a branch request and submission by the owner", async function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
-      await mockEscrow.callSubmitBranchRequest(
-        user.address,
-        originalConversationId,
-        branchPointMessageId,
-      );
+      const newConversationId = 2; // Next available conversation ID
+
+      await expect(
+        mockEscrow.callSubmitBranchRequest(
+          user.address,
+          originalConversationId,
+          branchPointMessageId,
+          newConversationId,
+          MOCK_ENCRYPTED_PAYLOAD,
+          MOCK_ROFL_KEY,
+        ),
+      ).to.emit(aiAgent, "BranchRequested");
+
       await expect(
         aiAgent
           .connect(oracle)
@@ -479,36 +570,50 @@ describe("EVMAIAgent (Upgradable)", function () {
             user.address,
             originalConversationId,
             branchPointMessageId,
+            newConversationId,
             MOCK_CID,
             MOCK_CID,
           ),
       ).to.emit(aiAgent, "ConversationBranched");
+
+      expect(await aiAgent.conversationToOwner(newConversationId)).to.equal(user.address);
     });
 
     it("should handle a metadata update request and submission by the owner", async function () {
-      const conversationId = 1;
-      await mockEscrow.callSubmitMetadataUpdate(conversationId, user.address, "0x", "0x");
+      await expect(
+        mockEscrow.callSubmitMetadataUpdate(
+          user.address,
+          conversationId,
+          MOCK_ENCRYPTED_PAYLOAD,
+          MOCK_ROFL_KEY,
+        ),
+      ).to.emit(aiAgent, "MetadataUpdateRequested");
+
       await expect(
         aiAgent.connect(oracle).submitConversationMetadata(conversationId, MOCK_CID),
       ).to.emit(aiAgent, "ConversationMetadataUpdated");
     });
 
-    // Test that a non-owner cannot initiate these actions
     it("should revert if a non-owner tries to branch or update metadata", async function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
+      const newConversationId = 2;
 
       await expect(
         mockEscrow.callSubmitBranchRequest(
           unauthorizedUser.address,
           originalConversationId,
           branchPointMessageId,
+          newConversationId,
+          "0x",
+          "0x",
         ),
       ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+
       await expect(
         mockEscrow.callSubmitMetadataUpdate(
-          originalConversationId,
           unauthorizedUser.address,
+          originalConversationId,
           "0x",
           "0x",
         ),
@@ -518,7 +623,15 @@ describe("EVMAIAgent (Upgradable)", function () {
     it("should revert if oracle calls submitBranch with a mismatched user", async function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
-
+      const newConversationId = 2;
+      await mockEscrow.callSubmitBranchRequest(
+        user.address,
+        originalConversationId,
+        branchPointMessageId,
+        newConversationId,
+        "0x",
+        "0x",
+      );
       await expect(
         aiAgent
           .connect(oracle)
@@ -526,6 +639,7 @@ describe("EVMAIAgent (Upgradable)", function () {
             unauthorizedUser.address,
             originalConversationId,
             branchPointMessageId,
+            newConversationId,
             MOCK_CID,
             MOCK_CID,
           ),
@@ -536,22 +650,23 @@ describe("EVMAIAgent (Upgradable)", function () {
   describe("Cancellation", function () {
     it("should allow the escrow contract to record a cancellation", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
-      await expect(mockEscrow.callRecordCancellation(1, user.address))
+      const answerMessageId = 1;
+      await expect(mockEscrow.callRecordCancellation(user.address, answerMessageId))
         .to.emit(aiAgent, "PromptCancelled")
-        .withArgs(user.address, 1);
-      expect(await aiAgent.isJobFinalized(1)).to.be.true;
+        .withArgs(user.address, answerMessageId);
+      expect(await aiAgent.isJobFinalized(answerMessageId)).to.be.true;
     });
 
     it("should revert if recording a cancellation for a finalized job", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
-      await mockEscrow.callRecordCancellation(1, user.address);
+      const answerMessageId = 1;
+      await mockEscrow.callRecordCancellation(user.address, answerMessageId);
       await expect(
-        mockEscrow.callRecordCancellation(1, user.address),
+        mockEscrow.callRecordCancellation(user.address, answerMessageId),
       ).to.be.revertedWithCustomError(aiAgent, "JobAlreadyFinalized");
     });
   });
 
-  // Add full test block for upgradeability
   describe("Upgrades", function () {
     it("should allow the owner to upgrade the contract", async function () {
       const { aiAgent, deployer } = await loadFixture(deployAgentFixture);

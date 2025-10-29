@@ -31,6 +31,8 @@ describe("SapphireAIAgent", function () {
     return { aiAgent, mockEscrow, deployer, user, oracle, unauthorizedUser, SapphireAIAgent };
   }
 
+  // --- Test Cases ---
+
   describe("Initialization and Admin", function () {
     it("should set the correct initial state on deployment", async function () {
       const { aiAgent, mockEscrow, oracle, deployer } = await loadFixture(deployAgentFixture);
@@ -80,6 +82,8 @@ describe("SapphireAIAgent", function () {
 
       it("should revert when a non-TEE address tries to call setOracle", async function () {
         const { aiAgent, unauthorizedUser } = await loadFixture(deployAgentFixture);
+        // This reverts because the `onlyTEE` modifier fails. The exact error message is specific
+        // to the Sapphire runtime and may not be a custom error.
         await expect(aiAgent.connect(unauthorizedUser).setOracle(unauthorizedUser.address)).to.be
           .reverted;
       });
@@ -87,8 +91,16 @@ describe("SapphireAIAgent", function () {
   });
 
   describe("ID Reservation", function () {
-    it("should allow the escrow contract to reserve message and trigger IDs", async function () {
+    it("should allow the escrow contract to reserve all ID types", async function () {
       const { mockEscrow } = await loadFixture(deployAgentFixture);
+      expect(await mockEscrow.callReserveConversationId.staticCall()).to.equal(1);
+      await mockEscrow.callReserveConversationId();
+      expect(await mockEscrow.callReserveConversationId.staticCall()).to.equal(2);
+
+      expect(await mockEscrow.callReserveJobId.staticCall()).to.equal(1);
+      await mockEscrow.callReserveJobId();
+      expect(await mockEscrow.callReserveJobId.staticCall()).to.equal(2);
+
       expect(await mockEscrow.callReserveMessageId.staticCall()).to.equal(0);
       await mockEscrow.callReserveMessageId();
       expect(await mockEscrow.callReserveMessageId.staticCall()).to.equal(1);
@@ -100,6 +112,14 @@ describe("SapphireAIAgent", function () {
 
     it("should revert if a non-escrow address tries to reserve an ID", async function () {
       const { aiAgent, user } = await loadFixture(deployAgentFixture);
+      await expect(aiAgent.connect(user).reserveConversationId()).to.be.revertedWithCustomError(
+        aiAgent,
+        "NotAIAgentEscrow",
+      );
+      await expect(aiAgent.connect(user).reserveJobId()).to.be.revertedWithCustomError(
+        aiAgent,
+        "NotAIAgentEscrow",
+      );
       await expect(aiAgent.connect(user).reserveMessageId()).to.be.revertedWithCustomError(
         aiAgent,
         "NotAIAgentEscrow",
@@ -112,18 +132,25 @@ describe("SapphireAIAgent", function () {
   });
 
   describe("Prompt Submission and Ownership", function () {
-    it("should create a new conversation when conversationId is 0", async function () {
+    it("should assign ownership for a newly reserved conversationId", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
+      const conversationId = 1;
       const promptMessageId = 0;
       const answerMessageId = 1;
-      const conversationId = 1;
+
       await expect(
         mockEscrow
           .connect(user)
-          .callSubmitPrompt(promptMessageId, answerMessageId, 0, user.address, MOCK_PAYLOAD),
+          .callSubmitPrompt(
+            user.address,
+            conversationId,
+            promptMessageId,
+            answerMessageId,
+            MOCK_PAYLOAD,
+          ),
       )
         .to.emit(aiAgent, "PromptSubmitted")
-        .withArgs(user.address, promptMessageId, answerMessageId, conversationId, MOCK_PAYLOAD);
+        .withArgs(user.address, conversationId, promptMessageId, answerMessageId, MOCK_PAYLOAD);
 
       expect(await aiAgent.conversationToOwner(conversationId)).to.equal(user.address);
       expect(await aiAgent.messageToConversation(promptMessageId)).to.equal(conversationId);
@@ -131,24 +158,43 @@ describe("SapphireAIAgent", function () {
 
     it("should revert if an unauthorized user tries to use an existing conversation", async function () {
       const { aiAgent, mockEscrow, user, unauthorizedUser } = await loadFixture(deployAgentFixture);
-      await mockEscrow.callSubmitPrompt(0, 1, 0, user.address, MOCK_PAYLOAD);
       const conversationId = 1;
+      const promptMessageId1 = 0;
+      const answerMessageId1 = 1;
+      await mockEscrow
+        .connect(user)
+        .callSubmitPrompt(
+          user.address,
+          conversationId,
+          promptMessageId1,
+          answerMessageId1,
+          MOCK_PAYLOAD,
+        );
+
+      const promptMessageId2 = 2;
+      const answerMessageId2 = 3;
       await expect(
         mockEscrow
           .connect(unauthorizedUser)
-          .callSubmitPrompt(2, 3, conversationId, unauthorizedUser.address, MOCK_PAYLOAD),
+          .callSubmitPrompt(
+            unauthorizedUser.address,
+            conversationId,
+            promptMessageId2,
+            answerMessageId2,
+            MOCK_PAYLOAD,
+          ),
       ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
     });
 
-    it("should create a new job when jobId is 0", async function () {
+    it("should assign ownership for a newly reserved jobId", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
-      const triggerId = 0;
       const jobId = 1;
+      const triggerId = 0;
       await expect(
-        mockEscrow.connect(user).callSubmitAgentJob(triggerId, 0, user.address, MOCK_PAYLOAD),
+        mockEscrow.connect(user).callSubmitAgentJob(user.address, jobId, triggerId, MOCK_PAYLOAD),
       )
         .to.emit(aiAgent, "AgentJobSubmitted")
-        .withArgs(user.address, triggerId, jobId, MOCK_PAYLOAD);
+        .withArgs(user.address, jobId, triggerId, MOCK_PAYLOAD);
 
       expect(await aiAgent.jobToOwner(jobId)).to.equal(user.address);
       expect(await aiAgent.triggerToJob(triggerId)).to.equal(jobId);
@@ -156,12 +202,17 @@ describe("SapphireAIAgent", function () {
 
     it("should revert if an unauthorized user tries to use an existing agent job", async function () {
       const { aiAgent, mockEscrow, user, unauthorizedUser } = await loadFixture(deployAgentFixture);
-      await mockEscrow.connect(user).callSubmitAgentJob(0, 0, user.address, MOCK_PAYLOAD);
       const jobId = 1;
+      const triggerId1 = 0;
+      await mockEscrow
+        .connect(user)
+        .callSubmitAgentJob(user.address, jobId, triggerId1, MOCK_PAYLOAD);
+
+      const triggerId2 = 1;
       await expect(
         mockEscrow
           .connect(unauthorizedUser)
-          .callSubmitAgentJob(1, jobId, unauthorizedUser.address, MOCK_PAYLOAD),
+          .callSubmitAgentJob(unauthorizedUser.address, jobId, triggerId2, MOCK_PAYLOAD),
       ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
     });
   });
@@ -170,16 +221,16 @@ describe("SapphireAIAgent", function () {
     context("Happy Paths", function () {
       it("should submit a full answer for a new prompt in a new conversation", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
         const promptMessageId = 0;
         const answerMessageId = 1;
         await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
           promptMessageId,
           answerMessageId,
-          0,
-          user.address,
           MOCK_PAYLOAD,
         );
-        const conversationId = 1;
 
         const cidBundle = {
           conversationCID: MOCK_CID,
@@ -193,8 +244,13 @@ describe("SapphireAIAgent", function () {
           aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, cidBundle),
         )
           .to.emit(aiAgent, "ConversationAdded")
+          .withArgs(user.address, conversationId, MOCK_CID, MOCK_CID)
           .and.to.emit(aiAgent, "PromptMessageAdded")
-          .and.to.emit(aiAgent, "AnswerMessageAdded");
+          .withArgs(conversationId, promptMessageId, MOCK_CID)
+          .and.to.emit(aiAgent, "SearchIndexDeltaAdded")
+          .withArgs(promptMessageId, MOCK_CID)
+          .and.to.emit(aiAgent, "AnswerMessageAdded")
+          .withArgs(conversationId, answerMessageId, MOCK_CID);
 
         expect(await aiAgent.isJobFinalized(answerMessageId)).to.be.true;
         expect(await mockEscrow.lastFinalizedEscrowId()).to.equal(answerMessageId);
@@ -202,8 +258,17 @@ describe("SapphireAIAgent", function () {
 
       it("should submit an answer for a prompt in an existing conversation", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
-        await mockEscrow.callSubmitPrompt(0, 1, 0, user.address, MOCK_PAYLOAD);
         const conversationId = 1;
+
+        const promptMessageId1 = 0;
+        const answerMessageId1 = 1;
+        await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
+          promptMessageId1,
+          answerMessageId1,
+          MOCK_PAYLOAD,
+        );
         const firstCidBundle = {
           conversationCID: MOCK_CID,
           metadataCID: MOCK_CID,
@@ -211,17 +276,20 @@ describe("SapphireAIAgent", function () {
           answerMessageCID: MOCK_CID,
           searchDeltaCID: MOCK_CID,
         };
-        await aiAgent.connect(oracle).submitAnswer(0, 1, firstCidBundle);
+        await aiAgent
+          .connect(oracle)
+          .submitAnswer(promptMessageId1, answerMessageId1, firstCidBundle);
 
-        const promptMessageId = 2;
-        const answerMessageId = 3;
+        const promptMessageId2 = 2;
+        const answerMessageId2 = 3;
         await mockEscrow.callSubmitPrompt(
-          promptMessageId,
-          answerMessageId,
-          conversationId,
           user.address,
+          conversationId,
+          promptMessageId2,
+          answerMessageId2,
           MOCK_PAYLOAD,
         );
+
         const subsequentCidBundle = {
           conversationCID: "",
           metadataCID: "",
@@ -232,21 +300,29 @@ describe("SapphireAIAgent", function () {
 
         const tx = aiAgent
           .connect(oracle)
-          .submitAnswer(promptMessageId, answerMessageId, subsequentCidBundle);
+          .submitAnswer(promptMessageId2, answerMessageId2, subsequentCidBundle);
+
         await expect(tx)
           .to.emit(aiAgent, "PromptMessageAdded")
+          .withArgs(conversationId, promptMessageId2, MOCK_CID)
+          .and.to.emit(aiAgent, "SearchIndexDeltaAdded")
+          .withArgs(promptMessageId2, MOCK_CID)
+          .and.to.emit(aiAgent, "AnswerMessageAdded")
+          .withArgs(conversationId, answerMessageId2, MOCK_CID)
           .and.to.not.emit(aiAgent, "ConversationAdded");
       });
 
       it("should submit an answer for a regeneration", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
         const promptMessageId = 0;
         const originalAnswerMessageId = 1;
+
         await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
           promptMessageId,
           originalAnswerMessageId,
-          0,
-          user.address,
           MOCK_PAYLOAD,
         );
         const firstCidBundle = {
@@ -263,6 +339,7 @@ describe("SapphireAIAgent", function () {
         const newAnswerMessageId = 2;
         await mockEscrow.callSubmitRegenerationRequest(
           user.address,
+          conversationId,
           promptMessageId,
           originalAnswerMessageId,
           newAnswerMessageId,
@@ -277,13 +354,18 @@ describe("SapphireAIAgent", function () {
           answerMessageCID: MOCK_CID,
           searchDeltaCID: "",
         };
+
         const tx = aiAgent
           .connect(oracle)
           .submitAnswer(promptMessageId, newAnswerMessageId, regenerationCidBundle);
 
         await expect(tx)
           .to.emit(aiAgent, "AnswerMessageAdded")
-          .and.to.not.emit(aiAgent, "PromptMessageAdded");
+          .withArgs(conversationId, newAnswerMessageId, MOCK_CID)
+          .and.to.not.emit(aiAgent, "ConversationAdded")
+          .and.to.not.emit(aiAgent, "PromptMessageAdded")
+          .and.to.not.emit(aiAgent, "SearchIndexDeltaAdded");
+
         expect(await aiAgent.isRegenerationPending(promptMessageId)).to.be.false;
       });
     });
@@ -298,28 +380,45 @@ describe("SapphireAIAgent", function () {
           answerMessageCID: MOCK_CID,
           searchDeltaCID: "",
         };
+        const promptMessageId = 0;
+        const answerMessageId = 1;
         await expect(
-          aiAgent.connect(unauthorizedUser).submitAnswer(0, 1, dummyCidBundle),
+          aiAgent
+            .connect(unauthorizedUser)
+            .submitAnswer(promptMessageId, answerMessageId, dummyCidBundle),
         ).to.be.revertedWithCustomError(aiAgent, "UnauthorizedOracle");
       });
 
       it("should revert if submitAnswer is called with an empty answer CID", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
-        await mockEscrow.callSubmitPrompt(0, 1, 0, user.address, MOCK_PAYLOAD);
+        const conversationId = 1;
+        const promptMessageId = 0;
+        const answerMessageId = 1;
+        await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
+          promptMessageId,
+          answerMessageId,
+          MOCK_PAYLOAD,
+        );
+
         const cidBundle = {
           conversationCID: MOCK_CID,
           metadataCID: MOCK_CID,
           promptMessageCID: MOCK_CID,
-          answerMessageCID: "",
+          answerMessageCID: "", // Intentionally empty
           searchDeltaCID: MOCK_CID,
         };
+
         await expect(
-          aiAgent.connect(oracle).submitAnswer(0, 1, cidBundle),
+          aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, cidBundle),
         ).to.be.revertedWithCustomError(aiAgent, "AnswerCIDRequired");
       });
 
       it("should revert if submitAnswer is for an invalid promptMessageId", async function () {
         const { aiAgent, oracle } = await loadFixture(deployAgentFixture);
+        const invalidPromptId = 999;
+        const answerMessageId = 1;
         const dummyCidBundle = {
           conversationCID: "",
           metadataCID: "",
@@ -328,13 +427,22 @@ describe("SapphireAIAgent", function () {
           searchDeltaCID: "",
         };
         await expect(
-          aiAgent.connect(oracle).submitAnswer(999, 1, dummyCidBundle),
+          aiAgent.connect(oracle).submitAnswer(invalidPromptId, answerMessageId, dummyCidBundle),
         ).to.be.revertedWithCustomError(aiAgent, "InvalidPromptMessageId");
       });
 
-      it("should revert if submitAnswer is for a finalized job", async function () {
+      it("should revert if submitAnswer is called for a finalized job", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
-        await mockEscrow.callSubmitPrompt(0, 1, 0, user.address, MOCK_PAYLOAD);
+        const conversationId = 1;
+        const promptMessageId = 0;
+        const answerMessageId = 1;
+        await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
+          promptMessageId,
+          answerMessageId,
+          MOCK_PAYLOAD,
+        );
         const cidBundle = {
           conversationCID: MOCK_CID,
           metadataCID: MOCK_CID,
@@ -342,18 +450,57 @@ describe("SapphireAIAgent", function () {
           answerMessageCID: MOCK_CID,
           searchDeltaCID: MOCK_CID,
         };
-        await aiAgent.connect(oracle).submitAnswer(0, 1, cidBundle);
+        await aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
         await expect(
-          aiAgent.connect(oracle).submitAnswer(0, 1, cidBundle),
+          aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, cidBundle),
         ).to.be.revertedWithCustomError(aiAgent, "JobAlreadyFinalized");
       });
 
       it("should revert if a regeneration is requested for a pending prompt", async function () {
-        const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
-        await mockEscrow.callSubmitRegenerationRequest(user.address, 0, 1, 2, MOCK_PAYLOAD);
+        const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
+        const conversationId = 1;
+        const promptMessageId = 0;
+        const originalAnswerMessageId = 1;
+
+        await mockEscrow.callSubmitPrompt(
+          user.address,
+          conversationId,
+          promptMessageId,
+          originalAnswerMessageId,
+          MOCK_PAYLOAD,
+        );
+        const cidBundle = {
+          conversationCID: MOCK_CID,
+          metadataCID: MOCK_CID,
+          promptMessageCID: MOCK_CID,
+          answerMessageCID: MOCK_CID,
+          searchDeltaCID: MOCK_CID,
+        };
+        await aiAgent
+          .connect(oracle)
+          .submitAnswer(promptMessageId, originalAnswerMessageId, cidBundle);
+
+        const newAnswerMessageId1 = 2;
+        await mockEscrow.callSubmitRegenerationRequest(
+          user.address,
+          conversationId,
+          promptMessageId,
+          originalAnswerMessageId,
+          newAnswerMessageId1,
+          MOCK_PAYLOAD,
+        );
+
+        const newAnswerMessageId2 = 3;
         await expect(
-          mockEscrow.callSubmitRegenerationRequest(user.address, 0, 1, 3, MOCK_PAYLOAD),
+          mockEscrow.callSubmitRegenerationRequest(
+            user.address,
+            conversationId,
+            promptMessageId,
+            originalAnswerMessageId,
+            newAnswerMessageId2,
+            MOCK_PAYLOAD,
+          ),
         ).to.be.revertedWithCustomError(aiAgent, "RegenerationAlreadyPending");
       });
     });
@@ -361,21 +508,37 @@ describe("SapphireAIAgent", function () {
 
   describe("Branching and Metadata Workflow", function () {
     let aiAgent, mockEscrow, user, oracle, unauthorizedUser;
+    const conversationId = 1;
 
     beforeEach(async function () {
       const fixtures = await loadFixture(deployAgentFixture);
       ({ aiAgent, mockEscrow, user, oracle, unauthorizedUser } = fixtures);
-      await mockEscrow.callSubmitPrompt(0, 1, 0, user.address, MOCK_PAYLOAD);
+      const promptMessageId = 0;
+      const answerMessageId = 1;
+      await mockEscrow.callSubmitPrompt(
+        user.address,
+        conversationId,
+        promptMessageId,
+        answerMessageId,
+        MOCK_PAYLOAD,
+      );
     });
 
     it("should handle a branch request and submission by the owner", async function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
-      await mockEscrow.callSubmitBranchRequest(
-        user.address,
-        originalConversationId,
-        branchPointMessageId,
-      );
+      const newConversationId = 2;
+
+      await expect(
+        mockEscrow.callSubmitBranchRequest(
+          user.address,
+          originalConversationId,
+          branchPointMessageId,
+          newConversationId,
+          MOCK_PAYLOAD,
+        ),
+      ).to.emit(aiAgent, "BranchRequested");
+
       await expect(
         aiAgent
           .connect(oracle)
@@ -383,33 +546,60 @@ describe("SapphireAIAgent", function () {
             user.address,
             originalConversationId,
             branchPointMessageId,
+            newConversationId,
             MOCK_CID,
             MOCK_CID,
           ),
       ).to.emit(aiAgent, "ConversationBranched");
+
+      expect(await aiAgent.conversationToOwner(newConversationId)).to.equal(user.address);
     });
 
     it("should handle a metadata update request and submission by the owner", async function () {
-      const conversationId = 1;
-      await mockEscrow.callSubmitMetadataUpdate(conversationId, user.address, MOCK_PAYLOAD);
+      await expect(
+        mockEscrow.callSubmitMetadataUpdate(user.address, conversationId, MOCK_PAYLOAD),
+      ).to.emit(aiAgent, "MetadataUpdateRequested");
+
       await expect(
         aiAgent.connect(oracle).submitConversationMetadata(conversationId, MOCK_CID),
       ).to.emit(aiAgent, "ConversationMetadataUpdated");
     });
 
     it("should revert if a non-owner tries to branch or update metadata", async function () {
-      const conversationId = 1;
+      const originalConversationId = 1;
+      const branchPointMessageId = 1;
+      const newConversationId = 2;
+
       await expect(
-        mockEscrow.callSubmitBranchRequest(unauthorizedUser.address, conversationId, 1),
+        mockEscrow.callSubmitBranchRequest(
+          unauthorizedUser.address,
+          originalConversationId,
+          branchPointMessageId,
+          newConversationId,
+          MOCK_PAYLOAD,
+        ),
       ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+
       await expect(
-        mockEscrow.callSubmitMetadataUpdate(conversationId, unauthorizedUser.address, MOCK_PAYLOAD),
+        mockEscrow.callSubmitMetadataUpdate(
+          unauthorizedUser.address,
+          originalConversationId,
+          MOCK_PAYLOAD,
+        ),
       ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
     });
 
     it("should revert if oracle calls submitBranch with a mismatched user", async function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
+      const newConversationId = 2;
+      await mockEscrow.callSubmitBranchRequest(
+        user.address,
+        originalConversationId,
+        branchPointMessageId,
+        newConversationId,
+        MOCK_PAYLOAD,
+      );
       await expect(
         aiAgent
           .connect(oracle)
@@ -417,6 +607,7 @@ describe("SapphireAIAgent", function () {
             unauthorizedUser.address,
             originalConversationId,
             branchPointMessageId,
+            newConversationId,
             MOCK_CID,
             MOCK_CID,
           ),
@@ -428,7 +619,7 @@ describe("SapphireAIAgent", function () {
     it("should allow the escrow contract to record a cancellation", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
       const answerMessageId = 1;
-      await expect(mockEscrow.callRecordCancellation(answerMessageId, user.address))
+      await expect(mockEscrow.callRecordCancellation(user.address, answerMessageId))
         .to.emit(aiAgent, "PromptCancelled")
         .withArgs(user.address, answerMessageId);
       expect(await aiAgent.isJobFinalized(answerMessageId)).to.be.true;
@@ -436,9 +627,10 @@ describe("SapphireAIAgent", function () {
 
     it("should revert if recording a cancellation for a finalized job", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
-      await mockEscrow.callRecordCancellation(1, user.address);
+      const answerMessageId = 1;
+      await mockEscrow.callRecordCancellation(user.address, answerMessageId);
       await expect(
-        mockEscrow.callRecordCancellation(1, user.address),
+        mockEscrow.callRecordCancellation(user.address, answerMessageId),
       ).to.be.revertedWithCustomError(aiAgent, "JobAlreadyFinalized");
     });
   });

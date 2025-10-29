@@ -19,6 +19,14 @@ contract MockEVMAIAgentEscrow {
 
   // --- Helper functions to simulate calls from the Escrow to the Agent ---
 
+  function callReserveConversationId() external returns (uint256) {
+    return EVM_AI_AGENT.reserveConversationId();
+  }
+
+  function callReserveJobId() external returns (uint256) {
+    return EVM_AI_AGENT.reserveJobId();
+  }
+
   function callReserveMessageId() external returns (uint256) {
     return EVM_AI_AGENT.reserveMessageId();
   }
@@ -28,18 +36,18 @@ contract MockEVMAIAgentEscrow {
   }
 
   function callSubmitPrompt(
+    address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _answerMessageId,
-    uint256 _conversationId,
-    address _user,
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
     EVM_AI_AGENT.submitPrompt(
+      _user,
+      _conversationId,
       _promptMessageId,
       _answerMessageId,
-      _conversationId,
-      _user,
       _encryptedPayload,
       _roflEncryptedKey
     );
@@ -47,6 +55,7 @@ contract MockEVMAIAgentEscrow {
 
   function callSubmitRegenerationRequest(
     address _user,
+    uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _originalAnswerMessageId,
     uint256 _answerMessageId,
@@ -55,6 +64,7 @@ contract MockEVMAIAgentEscrow {
   ) external {
     EVM_AI_AGENT.submitRegenerationRequest(
       _user,
+      _conversationId,
       _promptMessageId,
       _originalAnswerMessageId,
       _answerMessageId,
@@ -64,34 +74,44 @@ contract MockEVMAIAgentEscrow {
   }
 
   function callSubmitAgentJob(
-    uint256 _triggerId,
-    uint256 _jobId,
     address _user,
+    uint256 _jobId,
+    uint256 _triggerId,
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
-    EVM_AI_AGENT.submitAgentJob(_triggerId, _jobId, _user, _encryptedPayload, _roflEncryptedKey);
+    EVM_AI_AGENT.submitAgentJob(_user, _jobId, _triggerId, _encryptedPayload, _roflEncryptedKey);
   }
 
   function callSubmitMetadataUpdate(
-    uint256 _conversationId,
     address _user,
+    uint256 _conversationId,
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
-    EVM_AI_AGENT.submitMetadataUpdate(_conversationId, _user, _encryptedPayload, _roflEncryptedKey);
+    EVM_AI_AGENT.submitMetadataUpdate(_user, _conversationId, _encryptedPayload, _roflEncryptedKey);
   }
 
   function callSubmitBranchRequest(
     address _user,
     uint256 _originalConversationId,
-    uint256 _branchPointMessageId
+    uint256 _branchPointMessageId,
+    uint256 _newConversationId,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
   ) external {
-    EVM_AI_AGENT.submitBranchRequest(_user, _originalConversationId, _branchPointMessageId);
+    EVM_AI_AGENT.submitBranchRequest(
+      _user,
+      _originalConversationId,
+      _branchPointMessageId,
+      _newConversationId,
+      _encryptedPayload,
+      _roflEncryptedKey
+    );
   }
 
-  function callRecordCancellation(uint256 _answerMessageId, address _user) external {
-    EVM_AI_AGENT.recordCancellation(_answerMessageId, _user);
+  function callRecordCancellation(address _user, uint256 _answerMessageId) external {
+    EVM_AI_AGENT.recordCancellation(_user, _answerMessageId);
   }
 
   // --- Implementation of the callback from the Agent ---
