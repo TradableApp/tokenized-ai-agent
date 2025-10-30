@@ -44,11 +44,18 @@ const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // This single function from our utility handles all environment-specific setup.
-const { provider, signer, contract, isSapphire } = initializeOracle(
+let { provider, signer, contract, isSapphire } = initializeOracle(
   NETWORK_NAME,
   AI_AGENT_PRIVATE_KEY,
   AI_AGENT_CONTRACT_ADDRESS,
 );
+
+function initForTest(testComponents) {
+  provider = testComponents.provider;
+  signer = testComponents.signer;
+  contract = testComponents.contract;
+  isSapphire = testComponents.isSapphire;
+}
 
 console.log(`--- AI AGENT ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
 console.log(`Oracle signer address: ${signer.address}`);
@@ -177,7 +184,7 @@ async function fetchAndDecrypt(cid, sessionKey) {
 }
 
 /**
- * Walks backwards up the message chain on Arweave to reconstruct conversation history.
+ * Walks backwards up the message chain on decentralised storage to reconstruct conversation history.
  * @param {string} startMessageCID The CID of the latest message in the thread.
  * @param {string | null} sessionKey The key for decryption (EVM only).
  * @returns {Promise<Array<object>>} An array of message objects for the AI context.
@@ -326,7 +333,7 @@ async function handlePrompt(
   promptMessageId,
   answerMessageId,
   payload, // This is `bytes` on EVM, `string` on Sapphire
-  roflEncryptedKey,
+  roflEncryptedKey, // This is the top-level argument for EVM
   event,
 ) {
   console.log(
@@ -336,13 +343,9 @@ async function handlePrompt(
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    let clientPayload;
-    if (isSapphire) {
-      clientPayload = JSON.parse(payload);
-    } else {
-      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
-      clientPayload = JSON.parse(decryptedPayloadString);
-    }
+    const clientPayload = isSapphire
+      ? JSON.parse(payload)
+      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
 
     const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
 
@@ -492,13 +495,9 @@ async function handleRegeneration(
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    let clientPayload;
-    if (isSapphire) {
-      clientPayload = JSON.parse(payload);
-    } else {
-      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
-      clientPayload = JSON.parse(decryptedPayloadString);
-    }
+    const clientPayload = isSapphire
+      ? JSON.parse(payload)
+      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
 
     const { instructions, promptMessageCID, originalAnswerMessageCID } = clientPayload;
 
@@ -562,13 +561,9 @@ async function handleBranch(
       originalConversationId.toString(),
     );
 
-    let clientPayload;
-    if (isSapphire) {
-      clientPayload = JSON.parse(payload);
-    } else {
-      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
-      clientPayload = JSON.parse(decryptedPayloadString);
-    }
+    const clientPayload = isSapphire
+      ? JSON.parse(payload)
+      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
 
     const { originalTitle } = clientPayload;
     const now = Date.now();
@@ -625,13 +620,9 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    let clientPayload;
-    if (isSapphire) {
-      clientPayload = JSON.parse(payload);
-    } else {
-      const decryptedPayloadString = decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
-      clientPayload = JSON.parse(decryptedPayloadString);
-    }
+    const clientPayload = isSapphire
+      ? JSON.parse(payload)
+      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
 
     const now = Date.now();
 
@@ -1030,4 +1021,15 @@ async function start() {
 
 module.exports = {
   start,
+  initForTest,
+  // Expose internal functions for testing purposes
+  handlePrompt,
+  handleRegeneration,
+  handleBranch,
+  handleMetadataUpdate,
+  reconstructHistory,
+  getSessionKey,
+  encryptSymmetrically,
+  decryptSymmetrically,
+  handleAndRecord,
 };

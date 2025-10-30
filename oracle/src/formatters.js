@@ -113,10 +113,11 @@ function generateKeywords(content = "") {
   const tokens = content
     .toLowerCase()
     .replace(/\n/g, " ")
-    .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, "")
+    .replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, " ")
     .replace(/\s{2,}/g, " ")
     .split(" ");
-  return removeStopwords(tokens, eng).join(" ");
+  // Trim the final result to remove leading/trailing spaces
+  return removeStopwords(tokens, eng).join(" ").trim();
 }
 
 /**

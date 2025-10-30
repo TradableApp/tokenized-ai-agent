@@ -13,7 +13,8 @@
     "clean": "rm -rf node_modules",
     "run-localnet": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
     "run-localnet-debug": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 -e OASIS_NODE_LOG_LEVEL=debug -e LOG__LEVEL=debug ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
-    "test": "mocha 'test/**/*.test.js'"
+    "test": "DOTENV_CONFIG_PATH=./.env.oracle.example mocha -r dotenv/config 'test/**/*.test.js'",
+    "coverage": "nyc npm test"
   },
   "keywords": [
     "oracle",
@@ -49,6 +50,8 @@
     "eslint": "^8.57.0",
     "mocha": "^11.7.1",
     "nodemon": "^3.0.2",
+    "nyc": "^17.1.0",
+    "proxyquire": "^2.1.3",
     "sinon": "^21.0.0"
   }
 }

@@ -88,7 +88,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   );
   /// @notice Emitted when a user successfully cancels a pending prompt. This instructs the TEE to halt processing.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
-  /// @notice Emitted when a user requests a metadata update. This instructs the TEE to update Arweave.
+  /// @notice Emitted when a user requests a metadata update. This instructs the TEE to update decentralised storage.
   event MetadataUpdateRequested(
     address indexed user,
     uint256 indexed conversationId,
@@ -396,11 +396,11 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   }
 
   /**
-   * @notice Submits the final answer and all related Arweave CIDs for a prompt.
+   * @notice Submits the final answer and all related decentralised storage CIDs for a prompt.
    * @dev Called by the oracle from within its TEE. The answer ID was pre-reserved.
    * @param _promptMessageId The ID of the user's prompt being answered.
    * @param _answerMessageId The pre-reserved ID that must be used for this answer message.
-   * @param _cids A struct containing all the Arweave CIDs for the relevant files.
+   * @param _cids A struct containing all the decentralised storage CIDs for the relevant files.
    */
   function submitAnswer(
     uint256 _promptMessageId,
@@ -463,10 +463,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   }
 
   /**
-   * @notice Reveals the new metadata CID after the TEE has updated Arweave.
+   * @notice Reveals the new metadata CID after the TEE has updated decentralised storage.
    * @dev This function can only be called by the authorized oracle.
    * @param _conversationId The ID of the conversation that was updated.
-   * @param _newConversationMetadataCID The Arweave CID of the new metadata file.
+   * @param _newConversationMetadataCID The decentralised storage CID of the new metadata file.
    */
   function submitConversationMetadata(
     uint256 _conversationId,
@@ -515,8 +515,8 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    * @param _originalConversationId The ID of the conversation that was branched from.
    * @param _branchPointMessageId The ID of the message where the branch occurs.
    * @param _newConversationId The pre-reserved ID for the new conversation.
-   * @param _conversationCID The Arweave CID for the new branched conversation's data.
-   * @param _metadataCID The Arweave CID for the new branched conversation's metadata.
+   * @param _conversationCID The decentralised storage CID for the new branched conversation's data.
+   * @param _metadataCID The decentralised storage CID for the new branched conversation's metadata.
    */
   function submitBranch(
     address _user,
