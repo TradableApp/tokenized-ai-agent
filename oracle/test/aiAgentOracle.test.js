@@ -10,7 +10,7 @@ describe("aiAgentOracle", function () {
   let stubs;
   const FAKE_SESSION_KEY = crypto.randomBytes(32);
 
-  // Helper function to create the encrypted string format our app uses
+  // Helper function to create the encrypted string format our app uses.
   const createEncryptedString = (dataObject, key) => {
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
@@ -22,10 +22,12 @@ describe("aiAgentOracle", function () {
   };
 
   beforeEach(() => {
-    // Define your mocked oracle components once. This makes them easy to reference.
+    // Define mocked oracle components once for easy reference across tests.
     const mockedOracleComponents = {
       provider: {
         getNetwork: sinon.stub().resolves({ chainId: 1 }),
+        getTransactionReceipt: sinon.stub(),
+        getBlock: sinon.stub(),
       },
       signer: { address: "0xOracleAddress" },
       contract: {
@@ -35,11 +37,25 @@ describe("aiAgentOracle", function () {
         submitConversationMetadata: sinon
           .stub()
           .resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),
+        oracle: sinon.stub(),
+        setOracle: sinon.stub().resolves({ wait: () => Promise.resolve() }),
+        queryFilter: sinon.stub(),
+        // Mocked filters are needed for processPastEvents to query specific event types.
+        filters: {
+          PromptSubmitted: sinon.stub(),
+          RegenerationRequested: sinon.stub(),
+          BranchRequested: sinon.stub(),
+          MetadataUpdateRequested: sinon.stub(),
+        },
+        // The interface is needed for retryFailedJobs to parse logs from receipts.
+        interface: {
+          parseLog: sinon.stub(),
+        },
       },
       isSapphire: false,
     };
 
-    // Mock all external dependencies
+    // Mock all external dependencies using a stubs object.
     stubs = {
       "./storage/storage": {
         initializeStorage: sinon.stub().resolves(),
@@ -75,7 +91,7 @@ describe("aiAgentOracle", function () {
       },
     };
 
-    // Use proxyquire to load the module with our mocks
+    // Use proxyquire to load the module with our mocks.
     aiAgentOracle = proxyquire("../src/aiAgentOracle", stubs);
 
     // Initialize the module's internal state with our mocks before running any tests.
@@ -86,13 +102,125 @@ describe("aiAgentOracle", function () {
     sinon.restore();
   });
 
+  describe("Oracle Reliability and Startup", () => {
+    it("setOracleAddress should do nothing if addresses match", async () => {
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      mockedContract.oracle.resolves("0xOracleAddress"); // Matches signer
+
+      await aiAgentOracle.setOracleAddress();
+
+      expect(mockedContract.setOracle.called).to.be.false;
+    });
+
+    it("setOracleAddress should send alert and throw on EVM if addresses mismatch", async () => {
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      mockedContract.oracle.resolves("0xDifferentAddress");
+
+      try {
+        await aiAgentOracle.setOracleAddress();
+        expect.fail("Should have thrown an error");
+      } catch (error) {
+        expect(error.message).to.include("Oracle address mismatch on EVM chain");
+        // Use sinon.assert to ensure this specific alert was sent, avoiding ambiguity.
+        sinon.assert.calledWithMatch(
+          stubs["./alerting"].sendAlert,
+          "CRITICAL: Oracle Address Mismatch",
+        );
+      }
+    });
+
+    it("processPastEvents should process logs it finds", async () => {
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      const fakePayload = {
+        promptText: "hello from past event",
+        isNewConversation: true,
+      };
+      const fakePayloadBytes = ethers.toUtf8Bytes(
+        createEncryptedString(fakePayload, FAKE_SESSION_KEY),
+      );
+      const fakePromptEvent = {
+        eventName: "PromptSubmitted",
+        args: ["0xUser", 1, 2, 3, fakePayloadBytes, "key"],
+        blockNumber: 101,
+        transactionIndex: 1,
+        getBlock: () => Promise.resolve({ timestamp: Date.now() / 1000 }),
+      };
+
+      // This setup robustly mocks the contract's event filtering. Each filter type
+      // returns a unique string, and `queryFilter` is faked to respond with specific
+      // events only when it receives the corresponding unique string. This isolates
+      // the test to only the 'PromptSubmitted' event.
+      mockedContract.filters.PromptSubmitted.returns("FILTER_FOR_PROMPT_SUBMITTED");
+      mockedContract.filters.RegenerationRequested.returns("FILTER_FOR_REGENERATION");
+      mockedContract.filters.BranchRequested.returns("FILTER_FOR_BRANCH");
+      mockedContract.filters.MetadataUpdateRequested.returns("FILTER_FOR_METADATA");
+
+      mockedContract.queryFilter.callsFake(async (filterString) => {
+        if (filterString === "FILTER_FOR_PROMPT_SUBMITTED") {
+          return [fakePromptEvent]; // Return the event only for the correct filter.
+        }
+        return []; // Return an empty array for all other filters.
+      });
+
+      await aiAgentOracle.processPastEvents(100, 200);
+
+      expect(mockedContract.submitAnswer.calledOnce).to.be.true;
+
+      const stateFileCall = stubs["fs/promises"].writeFile
+        .getCalls()
+        .find((call) => call.args[0].includes("oracle-state.json"));
+      expect(stateFileCall).to.not.be.undefined;
+      expect(JSON.parse(stateFileCall.args[1])).to.deep.equal({ lastProcessedBlock: 101 });
+    });
+
+    it("retryFailedJobs should re-run a job from the queue", async () => {
+      const fakePayload = { promptText: "hello from retry" };
+      const fakePayloadBytes = ethers.toUtf8Bytes(
+        createEncryptedString(fakePayload, FAKE_SESSION_KEY),
+      );
+      const fakeJob = {
+        eventName: "PromptSubmitted",
+        event: {
+          args: ["0xUser", 1, 2, 3, fakePayloadBytes, "key"],
+          blockNumber: 101,
+          transactionHash: "0xhash123",
+        },
+        retryCount: 0,
+        nextAttemptAt: Date.now() - 1000,
+      };
+      stubs["fs/promises"].readFile
+        .withArgs(sinon.match(/failed-jobs\.json$/))
+        .resolves(JSON.stringify([fakeJob]));
+      const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
+      mockedProvider.getTransactionReceipt.resolves({
+        logs: [{ address: "0xMockedContractAddress" }],
+        blockNumber: 101,
+        transactionHash: "0xhash123",
+      });
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      mockedContract.interface.parseLog.returns({
+        name: "PromptSubmitted",
+        transactionHash: "0xhash123",
+        args: fakeJob.event.args,
+      });
+      mockedProvider.getBlock.resolves({ timestamp: Date.now() });
+
+      // Invoke the retry logic and assert that the intended side-effect occurs.
+      await aiAgentOracle.retryFailedJobs();
+
+      // Assert that the ultimate side-effect (submitting an answer) happened.
+      expect(mockedContract.submitAnswer.calledOnce).to.be.true;
+
+      const writeFileCall = stubs["fs/promises"].writeFile.firstCall.args;
+      expect(writeFileCall[0]).to.include("failed-jobs.json");
+      expect(JSON.parse(writeFileCall[1])).to.deep.equal([]);
+    });
+  });
+
   describe("getSessionKey", () => {
     it("should retrieve key from payload for EVM", async () => {
-      // Arrange
       const roflEncryptedKey = "0xencryptedKey";
-      // Act
       const key = await aiAgentOracle.getSessionKey(null, roflEncryptedKey, null);
-      // Assert
       expect(
         stubs["eth-crypto"].decryptWithPrivateKey.calledOnceWith(sinon.match.any, "encryptedKey"),
       ).to.be.true;
@@ -100,7 +228,7 @@ describe("aiAgentOracle", function () {
     });
 
     it("should retrieve key from payload for Sapphire", async () => {
-      // For Sapphire, we need to re-stub the utility to say we are on Sapphire
+      // For Sapphire, we re-initialize with a Sapphire-configured mock.
       aiAgentOracle.initForTest({ isSapphire: true });
 
       const payload = JSON.stringify({ sessionKey: "0x" + FAKE_SESSION_KEY.toString("hex") });
@@ -115,7 +243,7 @@ describe("aiAgentOracle", function () {
 
       const key = await aiAgentOracle.getSessionKey(null, null, convId);
 
-      // Assert that the fallback was used
+      // Assert that the fallback to storage was used.
       expect(stubs["./storage/storage"].queryTransactionByTags.calledOnce).to.be.true;
       const queryArgs = stubs["./storage/storage"].queryTransactionByTags.firstCall.args[0];
       expect(queryArgs).to.deep.include({
@@ -144,7 +272,7 @@ describe("aiAgentOracle", function () {
         previousMessageCID: null,
       };
 
-      // Encrypt the payload as the frontend would
+      // Encrypt the payload as the frontend client would.
       const encryptedPayloadString = createEncryptedString(clientPayload, FAKE_SESSION_KEY);
       const payloadBytes = ethers.toUtf8Bytes(encryptedPayloadString);
 
@@ -153,7 +281,6 @@ describe("aiAgentOracle", function () {
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
       };
 
-      // Call the handler
       await aiAgentOracle.handlePrompt(
         user,
         conversationId,
@@ -164,11 +291,10 @@ describe("aiAgentOracle", function () {
         fakeEvent,
       );
 
-      // --- Assertions ---
-      // 1. Should upload 6 files for a new conversation (Key, Conv, Meta, Prompt, Search, Answer)
+      // A new conversation should upload 6 files: Key, Conversation, Metadata, Prompt, Search, and Answer.
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(6);
 
-      // 2. The key file should be uploaded with correct tags
+      // The key file should be uploaded with specific identifying tags.
       const keyUploadArgs = stubs["./storage/storage"].uploadData.getCall(0).args;
       expect(keyUploadArgs[1]).to.deep.include({
         name: "Content-Type",
@@ -222,10 +348,10 @@ describe("aiAgentOracle", function () {
         fakeEvent,
       );
 
-      // 1. Should upload 3 files for an existing conversation (prompt, answer, searchDelta)
+      // An existing conversation should only upload 3 files: Prompt, Answer, and SearchDelta.
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(3);
 
-      // 2. Should submit the final answer to the contract
+      // The final answer should be submitted to the contract.
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
       expect(mockedContract.submitAnswer.calledOnce).to.be.true;
 
@@ -281,7 +407,7 @@ describe("aiAgentOracle", function () {
         promptMessageId,
         answerMessageId,
         payloadString,
-        null, // roflEncryptedKey is null for Sapphire, it's in the payload
+        null, // roflEncryptedKey is null for Sapphire; it's inside the payload.
         fakeEvent,
       );
 
@@ -290,10 +416,9 @@ describe("aiAgentOracle", function () {
       const keyUploadArgs = stubs["./storage/storage"].uploadData.getCall(0).args;
       expect(keyUploadArgs[0].toString()).to.equal(clientPayload.roflEncryptedKey);
 
-      // We can access the specific contract stub from our components object
       expect(sapphireComponents.contract.submitAnswer.calledOnce).to.be.true;
 
-      // PARITY: Detailed check of the CID bundle
+      // PARITY: Check that the CID bundle matches the EVM new conversation structure.
       const cidBundle = sapphireComponents.contract.submitAnswer.firstCall.args[2];
       expect(cidBundle.conversationCID).to.include("fake_cid_");
       expect(cidBundle.metadataCID).to.include("fake_cid_");
@@ -333,7 +458,7 @@ describe("aiAgentOracle", function () {
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(3);
       expect(sapphireComponents.contract.submitAnswer.calledOnce).to.be.true;
 
-      // PARITY: Detailed check of the sparse CID bundle
+      // PARITY: Check that the sparse CID bundle matches the EVM existing conversation structure.
       const cidBundle = sapphireComponents.contract.submitAnswer.firstCall.args[2];
       expect(cidBundle.conversationCID).to.equal("");
       expect(cidBundle.metadataCID).to.equal("");
@@ -381,7 +506,7 @@ describe("aiAgentOracle", function () {
 
       const submitAnswerStub = stubs["./contractUtility"].initializeOracle().contract.submitAnswer;
       expect(submitAnswerStub.calledOnce).to.be.true;
-      // UPGRADE: Deconstruct args for specific checks.
+      // Deconstruct the arguments for more specific and readable assertions.
       const [submittedPromptId, submittedAnswerId, cidBundle] = submitAnswerStub.firstCall.args;
       expect(submittedPromptId).to.equal(promptMessageId);
       expect(submittedAnswerId).to.equal(newAnswerMessageId);
@@ -429,7 +554,6 @@ describe("aiAgentOracle", function () {
 
   describe("Error Handling", () => {
     it("should add a job to the retry queue if a retryable error occurs", async () => {
-      // Arrange
       stubs["./storage/storage"].uploadData.rejects(new Error("Irys is down"));
       const writeFileStub = stubs["fs/promises"].writeFile;
       const clientPayload = { promptText: "This will fail", isNewConversation: true };
@@ -443,7 +567,6 @@ describe("aiAgentOracle", function () {
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
       };
 
-      // Act
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted",
         aiAgentOracle.handlePrompt,
@@ -451,10 +574,9 @@ describe("aiAgentOracle", function () {
         fakeEvent,
       );
 
-      // Assert
       expect(stubs["./contractUtility"].initializeOracle().contract.submitAnswer.called).to.be
         .false;
-      // UPGRADE: A retryable error should NOT trigger a critical alert.
+      // A retryable error should queue a job but not trigger a critical alert.
       expect(stubs["./alerting"].sendAlert.called).to.be.false;
 
       const failedJobsCall = writeFileStub
@@ -474,7 +596,7 @@ describe("aiAgentOracle", function () {
 
   describe("reconstructHistory", () => {
     it("should walk the parentCID chain correctly", async () => {
-      // --- Setup the mock chain of messages ---
+      // Set up the mock chain of messages.
       const msg3 = {
         id: "msg_3",
         role: "assistant",
@@ -497,12 +619,12 @@ describe("aiAgentOracle", function () {
         parentCID: null,
       };
 
-      // Fake the encrypted versions
+      // Create the encrypted versions of the messages.
       const encryptedMsg3 = createEncryptedString(msg3, FAKE_SESSION_KEY);
       const encryptedMsg2 = createEncryptedString(msg2, FAKE_SESSION_KEY);
       const encryptedMsg1 = createEncryptedString(msg1, FAKE_SESSION_KEY);
 
-      // Configure the fetchData stub to return the correct message for each CID
+      // Configure the fetchData stub to return the correct message for each CID.
       stubs["./storage/storage"].fetchData
         .withArgs("cid_3")
         .resolves(encryptedMsg3)
@@ -513,11 +635,10 @@ describe("aiAgentOracle", function () {
 
       const history = await aiAgentOracle.reconstructHistory("cid_3", FAKE_SESSION_KEY);
 
-      // --- Assertions ---
-      // 1. History should have 3 items
+      // The reconstructed history should contain all 3 messages.
       expect(history).to.have.lengthOf(3);
 
-      // 2. History should be in the correct chronological order
+      // The history should be in the correct chronological order (oldest first).
       expect(history[0]).to.deep.equal({ role: msg1.role, content: msg1.content });
       expect(history[1]).to.deep.equal({ role: msg2.role, content: msg2.content });
       expect(history[2]).to.deep.equal({ role: msg3.role, content: msg3.content });

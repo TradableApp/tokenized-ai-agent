@@ -403,6 +403,7 @@ async function handlePrompt(
           sessionKey,
         ),
       ]);
+
       const answerMessageCID = await encryptAndUpload(
         createMessageFile({
           id: answerMessageId.toString(),
@@ -1032,4 +1033,7 @@ module.exports = {
   encryptSymmetrically,
   decryptSymmetrically,
   handleAndRecord,
+  setOracleAddress,
+  processPastEvents,
+  retryFailedJobs,
 };
