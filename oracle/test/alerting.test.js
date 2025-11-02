@@ -105,7 +105,7 @@ describe("alerting", function () {
     ).to.be.true;
   });
 
-  it("should log errors if an API call fails but not throw", async () => {
+  it("should log an error if the Slack API call fails but not throw", async () => {
     process.env.SLACK_ACCESS_TOKEN = "fake-slack-token";
     process.env.SLACK_ALERT_CHANNEL = "#fake-channel";
 
@@ -116,6 +116,22 @@ describe("alerting", function () {
 
     // The console.error inside the alerting module should be called
     expect(consoleErrorStub.calledWith("Failed to send Slack alert:", "Slack API is down")).to.be
+      .true;
+  });
+
+  it("should log an error if the email API call fails but not throw", async () => {
+    process.env.SEND_GRID_API_KEY = "fake-sendgrid-key";
+    process.env.SEND_GRID_ALERT_TEMPLATE_ID = "d-123";
+    process.env.ALERT_FROM_EMAIL = "from@test.com";
+    process.env.ALERT_TO_EMAIL = "to@test.com";
+
+    // Make the SendGrid API call fail
+    fetchStub.rejects(new Error("SendGrid API is down"));
+
+    await sendAlert("Failure Test", "This should still run");
+
+    // The console.error inside the alerting module should be called
+    expect(consoleErrorStub.calledWith("Failed to send email alert:", "SendGrid API is down")).to.be
       .true;
   });
 });

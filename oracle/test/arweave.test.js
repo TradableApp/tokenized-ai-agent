@@ -154,6 +154,16 @@ describe("arweave storage utility", function () {
       expect(stubs["node-fetch"].calledOnceWith(`https://gateway.irys.xyz/${cid}`)).to.be.true;
     });
 
+    it("fetchData should throw an error on a non-200 response", async () => {
+      stubs["node-fetch"].resolves({ ok: false, status: 502 });
+      try {
+        await arweaveModule.fetchData("some_cid");
+        expect.fail("Should have thrown an error for a failed fetch");
+      } catch (error) {
+        expect(error.message).to.include("Status: 502");
+      }
+    });
+
     it("queryTransactionByTags should send a correctly formatted GQL query", async () => {
       const tags = [{ name: "Content-Type", value: "application/json" }];
       await arweaveModule.queryTransactionByTags(tags);
@@ -163,6 +173,16 @@ describe("arweave storage utility", function () {
       expect(fetchCall[0]).to.equal("https://uploader.irys.xyz/graphql");
       expect(body.query).to.include(`name: "${tags[0].name}"`);
       expect(body.query).to.include(`values: ["${tags[0].value}"]`);
+    });
+
+    it("queryTransactionByTags should return null if no transactions are found", async () => {
+      // Simulate a GQL response with no matching transactions
+      stubs["node-fetch"].resolves({
+        ok: true,
+        json: () => Promise.resolve({ data: { transactions: { edges: [] } } }),
+      });
+      const result = await arweaveModule.queryTransactionByTags([{ name: "Test", value: "123" }]);
+      expect(result).to.be.null;
     });
   });
 });

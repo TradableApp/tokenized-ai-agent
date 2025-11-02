@@ -50,6 +50,7 @@ let { provider, signer, contract, isSapphire } = initializeOracle(
   AI_AGENT_CONTRACT_ADDRESS,
 );
 
+// This function allows tests to inject mocked components.
 function initForTest(testComponents) {
   provider = testComponents.provider;
   signer = testComponents.signer;
@@ -798,6 +799,9 @@ async function retryFailedJobs() {
 
   for (const job of failedJobs) {
     if (Date.now() >= job.nextAttemptAt) {
+      // An attempt is being made, so we know the file will need to be updated
+      processed = true;
+
       console.log(
         `[Retry] Retrying job for event: ${job.eventName} from block ${job.event.blockNumber}`,
       );
@@ -813,7 +817,11 @@ async function retryFailedJobs() {
           .map((log) => {
             try {
               if (log.address.toLowerCase() === contract.target.toLowerCase()) {
-                return contract.interface.parseLog(log);
+                // Return a combined object that includes the transactionHash for the find filter
+                const parsed = contract.interface.parseLog(log);
+                if (parsed) {
+                  return { ...parsed, transactionHash: log.transactionHash };
+                }
               }
               return null;
             } catch (e) {
@@ -833,7 +841,6 @@ async function retryFailedJobs() {
         const eventWithBlock = {
           ...fullEvent,
           blockNumber: receipt.blockNumber,
-          transactionHash: receipt.transactionHash,
           getBlock: () => provider.getBlock(receipt.blockNumber),
         };
 
@@ -856,7 +863,7 @@ async function retryFailedJobs() {
             break;
         }
         console.log(`[Retry] Successfully processed job for event: ${job.eventName}`);
-        processed = true;
+        // On success, we DON'T add it to remainingJobs, so it's removed from the queue.
       } catch (error) {
         console.error(
           `[Retry] Attempt #${job.retryCount + 1} failed for event ${job.eventName}. Error: ${error.message}`,
@@ -868,13 +875,11 @@ async function retryFailedJobs() {
             "CRITICAL: Job Failed Permanently",
             `A job for event ${job.eventName} from block ${job.event.blockNumber} has failed all ${MAX_RETRIES} retries and has been dropped. Manual intervention required. Final error: ${error.message}`,
           );
-
-          processed = true; // Remove it from the queue
+          // On permanent failure, we also DON'T add it to remainingJobs.
         } else {
           const delay = BASE_RETRY_DELAY_MS * Math.pow(2, job.retryCount);
           job.nextAttemptAt = Date.now() + delay;
-
-          remainingJobs.push(job);
+          remainingJobs.push(job); // Add it back to the queue for the next attempt
         }
       }
     } else {
@@ -882,7 +887,8 @@ async function retryFailedJobs() {
     }
   }
 
-  // If we processed any jobs (successfully or by dropping them), update the file.
+  // If we processed any jobs, this means the queue has changed (either by removing a job
+  // or by updating its retry count), so we must write the new state back to the file.
   if (processed) {
     await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(remainingJobs, null, 2));
   }
