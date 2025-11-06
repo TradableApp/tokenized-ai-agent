@@ -35,6 +35,11 @@ describe("aiAgentOracle", function () {
   };
 
   beforeEach(() => {
+    // Create a real, valid wallet for testing
+    const randomWallet = ethers.Wallet.createRandom();
+    // Override the placeholder environment variable with a valid key.
+    process.env.PRIVATE_KEY = randomWallet.privateKey;
+
     // Define mocked oracle components once for easy reference across tests.
     const mockedOracleComponents = {
       provider: {
@@ -120,7 +125,9 @@ describe("aiAgentOracle", function () {
 
   afterEach(() => {
     sinon.restore();
+    // Clean up the environment variable to ensure test isolation
     delete process.env.AI_PROVIDER;
+    delete process.env.PRIVATE_KEY;
   });
 
   describe("start", () => {
@@ -795,13 +802,14 @@ describe("aiAgentOracle", function () {
       const conversationId = 123;
       const promptMessageId = 456;
       const answerMessageId = 457;
+
+      // CORRECTED PAYLOAD: The client now only sends the raw sessionKey for Sapphire.
       const clientPayload = {
         promptText: "Hello Sapphire",
         isNewConversation: true,
         previousMessageId: null,
         previousMessageCID: null,
         sessionKey: "0x" + FAKE_SESSION_KEY.toString("hex"),
-        roflEncryptedKey: "0xEncryptedKeyForStorageOnSapphire",
       };
       const payloadString = JSON.stringify(clientPayload);
       const fakeEvent = {
@@ -821,12 +829,21 @@ describe("aiAgentOracle", function () {
 
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(6);
 
+      // CORRECTED ASSERTION: Verify the key was encrypted correctly by decrypting it.
       const keyUploadArgs = stubs["./storage/storage"].uploadData.getCall(0).args;
-      expect(keyUploadArgs[0].toString()).to.equal(clientPayload.roflEncryptedKey);
+      const encryptedKeyObject = JSON.parse(keyUploadArgs[0].toString());
+
+      // Decrypt the data that was uploaded to storage using the test's private key.
+      const decryptedSessionKeyHex = await stubs["eth-crypto"].decryptWithPrivateKey(
+        process.env.PRIVATE_KEY,
+        encryptedKeyObject,
+      );
+
+      // Assert that the decrypted key matches the original session key sent in the payload.
+      expect("0x" + decryptedSessionKeyHex).to.equal(clientPayload.sessionKey);
 
       expect(sapphireComponents.contract.submitAnswer.calledOnce).to.be.true;
 
-      // PARITY: Check that the CID bundle matches the EVM new conversation structure.
       const cidBundle = sapphireComponents.contract.submitAnswer.firstCall.args[2];
       expect(cidBundle.conversationCID).to.include("fake_cid_");
       expect(cidBundle.metadataCID).to.include("fake_cid_");

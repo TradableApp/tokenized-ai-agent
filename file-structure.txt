@@ -96,7 +96,7 @@
 │   │               ├── ContextUpgradeable.dbg.json
 │   │               └── ContextUpgradeable.json
 │   ├── build-info
-│   │   └── 87510cbb03ffb2da2925ba4a551f79b5.json
+│   │   └── 5d6ccc451dae5a93cbc22f8bfe500207.json
 │   └── contracts
 │       ├── EVMAIAgent.sol
 │       │   ├── EVMAIAgent.dbg.json
@@ -259,6 +259,13 @@
 │   ├── .env.oracle.base-mainnet
 │   ├── .env.oracle.base-testnet
 │   ├── .env.oracle.example
+│   ├── .nyc_output
+│   │   ├── 0d503944-0645-4192-ab71-130c74accd97.json
+│   │   ├── d5b99bdd-36c1-4412-a5d7-d1afa63c844b.json
+│   │   └── processinfo
+│   │       ├── 0d503944-0645-4192-ab71-130c74accd97.json
+│   │       ├── d5b99bdd-36c1-4412-a5d7-d1afa63c844b.json
+│   │       └── index.json
 │   ├── failed-jobs.json
 │   ├── oracle-state.json
 │   ├── package-lock.json
@@ -275,8 +282,13 @@
 │   │       ├── arweave.js
 │   │       └── storage.js
 │   └── test
+│       ├── aiAgentOracle.test.js
+│       ├── alerting.test.js
+│       ├── arweave.test.js
 │       ├── contractUtility.test.js
-│       └── roflUtility.test.js
+│       ├── formatters.test.js
+│       ├── roflUtility.test.js
+│       └── storage.test.js
 ├── package-lock.json
 ├── package.json
 ├── README.md
@@ -297,4 +309,4 @@
 ├── tokenized-ai-agent.default.orc
 └── tokenized-ai-agent.testnet.orc
 
-87 directories, 211 files
+89 directories, 221 files

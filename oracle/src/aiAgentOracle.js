@@ -363,7 +363,22 @@ async function handlePrompt(
         { name: "Content-Type", value: "application/rofl-key" },
         { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },
       ];
-      const keyToStore = isSapphire ? clientPayload.roflEncryptedKey : roflEncryptedKey;
+      // For Sapphire, the sessionKey is received raw in the payload.
+      // We must now encrypt it for persistent storage.
+      let keyToStore;
+      if (isSapphire) {
+        const AI_AGENT_PUBLIC_KEY = ethCrypto.publicKeyByPrivateKey(AI_AGENT_PRIVATE_KEY);
+
+        const encryptedKeyObject = await ethCrypto.encryptWithPublicKey(
+          AI_AGENT_PUBLIC_KEY,
+          sessionKey, // Encrypt the raw session key
+        );
+        keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
+      } else {
+        keyToStore = roflEncryptedKey; // For EVM, we already have it.
+      }
+
+      // Stringify the eth-crypto object before saving
       await uploadData(Buffer.from(keyToStore), keyFileTags);
 
       const [conversationCID, metadataCID, promptMessageCID, searchDeltaCID] = await Promise.all([
@@ -577,7 +592,22 @@ async function handleBranch(
       { name: "Content-Type", value: "application/rofl-key" },
       { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${newConversationId}` },
     ];
-    const keyToStore = isSapphire ? clientPayload.roflEncryptedKey : roflEncryptedKey;
+    // For Sapphire, the sessionKey is received raw in the payload.
+    // We must now encrypt it for persistent storage.
+    let keyToStore;
+    if (isSapphire) {
+      const AI_AGENT_PUBLIC_KEY = ethCrypto.publicKeyByPrivateKey(AI_AGENT_PRIVATE_KEY);
+
+      const encryptedKeyObject = await ethCrypto.encryptWithPublicKey(
+        AI_AGENT_PUBLIC_KEY,
+        sessionKey, // Encrypt the raw session key
+      );
+      keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
+    } else {
+      keyToStore = roflEncryptedKey; // For EVM, we already have it.
+    }
+
+    // Stringify the eth-crypto object before saving
     await uploadData(Buffer.from(keyToStore), newKeyFileTags);
 
     const [conversationCID, metadataCID] = await Promise.all([
