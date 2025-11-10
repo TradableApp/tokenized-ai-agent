@@ -9,11 +9,11 @@ import { Structs } from "./libraries/Structs.sol";
 
 /**
  * @title EVM AI Agent Contract
- * @dev This contract acts as an on-chain registry for a decentralized AI agent system.
- *      It manages ownership of conversations and messages, emitting events that allow
- *      off-chain indexers (like The Graph) to build a queryable history of interactions.
- *      Content is stored off-chain (e.g., on Arweave) and referenced by Content IDs (CIDs).
- *      It is upgradeable using the UUPS proxy pattern.
+ * @author Tradable
+ * @notice This contract is an on-chain registry for a decentralized AI agent, managing conversation
+ *         and message ownership. It emits events for off-chain indexers to track interaction history.
+ *         Content is stored off-chain and referenced by Content IDs (CIDs).
+ * @dev It is upgradeable using the UUPS proxy pattern.
  */
 contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   // --- State Variables ---
@@ -50,7 +50,15 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   // --- Events ---
 
   // TEE Trigger Events
-  /// @notice Emitted when a new user prompt is submitted. This is the primary trigger for the TEE.
+  /**
+   * @notice Emitted when a new user prompt is submitted. This is the primary trigger for the TEE.
+   * @param user The address of the user initiating the prompt.
+   * @param conversationId The ID of the conversation this prompt belongs to.
+   * @param promptMessageId The unique ID for the user's prompt message.
+   * @param answerMessageId The pre-reserved unique ID for the AI's future answer.
+   * @param encryptedPayload The encrypted data for the TEE.
+   * @param roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
   event PromptSubmitted(
     address indexed user,
     uint256 indexed conversationId,
@@ -59,7 +67,15 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     bytes encryptedPayload,
     bytes roflEncryptedKey
   );
-  /// @notice Emitted when a new agent job is submitted. This is a trigger for the TEE.
+
+  /**
+   * @notice Emitted when a new agent job is submitted. This is a trigger for the TEE.
+   * @param user The address of the user for whom the job is running.
+   * @param jobId The ID of the parent job.
+   * @param triggerId The unique ID for this specific job trigger.
+   * @param encryptedPayload The encrypted job data for the TEE.
+   * @param roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
   event AgentJobSubmitted(
     address indexed user,
     uint256 indexed jobId,
@@ -67,7 +83,17 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     bytes encryptedPayload,
     bytes roflEncryptedKey
   );
-  /// @notice Emitted when a user requests the TEE to regenerate an answer.
+
+  /**
+   * @notice Emitted when a user requests the TEE to regenerate an answer.
+   * @param user The address of the user requesting the regeneration.
+   * @param conversationId The ID of the conversation.
+   * @param promptMessageId The ID of the user's original prompt.
+   * @param originalAnswerMessageId The ID of the AI answer to regenerate.
+   * @param answerMessageId The pre-reserved ID for the new answer.
+   * @param encryptedPayload The encrypted instructions for the TEE.
+   * @param roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
   event RegenerationRequested(
     address indexed user,
     uint256 indexed conversationId,
@@ -77,7 +103,16 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     bytes encryptedPayload,
     bytes roflEncryptedKey
   );
-  /// @notice Emitted when a user requests the TEE to branch a conversation.
+
+  /**
+   * @notice Emitted when a user requests the TEE to branch a conversation.
+   * @param user The address of the user initiating the branch.
+   * @param originalConversationId The ID of the conversation being branched from.
+   * @param branchPointMessageId The ID of the message where the branch occurs.
+   * @param newConversationId The pre-reserved ID for the new branched conversation.
+   * @param encryptedPayload The encrypted context for the TEE.
+   * @param roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
   event BranchRequested(
     address indexed user,
     uint256 indexed originalConversationId,
@@ -86,9 +121,21 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     bytes encryptedPayload,
     bytes roflEncryptedKey
   );
-  /// @notice Emitted when a user successfully cancels a pending prompt. This instructs the TEE to halt processing.
+
+  /**
+   * @notice Emitted when a user successfully cancels a pending prompt. This instructs the TEE to halt processing.
+   * @param user The address of the user who cancelled.
+   * @param answerMessageId The ID of the answer that was cancelled.
+   */
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
-  /// @notice Emitted when a user requests a metadata update. This instructs the TEE to update decentralised storage.
+
+  /**
+   * @notice Emitted when a user requests a metadata update. This instructs the TEE to update decentralised storage.
+   * @param user The address of the user requesting the update.
+   * @param conversationId The ID of the conversation being updated.
+   * @param encryptedPayload The encrypted update instructions.
+   * @param roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
   event MetadataUpdateRequested(
     address indexed user,
     uint256 indexed conversationId,
@@ -97,14 +144,28 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   );
 
   // Graph Historical Record Events
-  /// @notice Emitted when a new conversation is started.
+  /**
+   * @notice Emitted when a new conversation is started.
+   * @param user The address of the user who started the conversation.
+   * @param conversationId The ID of the new conversation.
+   * @param conversationCID The CID of the immutable conversation data file.
+   * @param metadataCID The CID of the mutable metadata file.
+   */
   event ConversationAdded(
     address indexed user,
     uint256 indexed conversationId,
     string conversationCID,
     string metadataCID
   );
-  /// @notice Emitted when a new conversation is forked from an existing one.
+  /**
+   * @notice Emitted when a new conversation is forked from an existing one.
+   * @param user The address of the user who created the branch.
+   * @param newConversationId The ID of the newly created conversation.
+   * @param originalConversationId The ID of the conversation it was branched from.
+   * @param branchPointMessageId The ID of the message where the branch occurred.
+   * @param conversationCID The CID of the new immutable conversation data file.
+   * @param metadataCID The CID of the new mutable metadata file.
+   */
   event ConversationBranched(
     address indexed user,
     uint256 indexed newConversationId,
@@ -113,30 +174,59 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     string conversationCID,
     string metadataCID
   );
-  /// @notice Emitted when a user adds a new prompt to a conversation.
+
+  /**
+   * @notice Emitted when a user adds a new prompt to a conversation.
+   * @param conversationId The ID of the parent conversation.
+   * @param messageId The ID of the new prompt message.
+   * @param messageCID The CID of the message file.
+   */
   event PromptMessageAdded(
     uint256 indexed conversationId,
     uint256 indexed messageId,
     string messageCID
   );
-  /// @notice Emitted when the oracle submits an answer to a prompt.
+
+  /**
+   * @notice Emitted when the oracle submits an answer to a prompt.
+   * @param conversationId The ID of the parent conversation.
+   * @param messageId The ID of the new answer message.
+   * @param messageCID The CID of the message file.
+   */
   event AnswerMessageAdded(
     uint256 indexed conversationId,
     uint256 indexed messageId,
     string messageCID
   );
-  /// @notice Emitted with a prompt to provide keywords for off-chain search indexing.
+
+  /**
+   * @notice Emitted with a prompt to provide keywords for off-chain search indexing.
+   * @param messageId The ID of the message to be indexed.
+   * @param searchDeltaCID The CID of the search index delta file.
+   */
   event SearchIndexDeltaAdded(uint256 indexed messageId, string searchDeltaCID);
-  /// @notice Emitted when a conversation's metadata CID is updated by the TEE.
+
+  /**
+   * @notice Emitted when a conversation's metadata CID is updated by the TEE.
+   * @param conversationId The ID of the conversation that was updated.
+   * @param newConversationMetadataCID The CID of the new metadata file.
+   */
   event ConversationMetadataUpdated(
     uint256 indexed conversationId,
     string newConversationMetadataCID
   );
 
   // Admin Events
-  /// @notice Emitted when the linked escrow contract address is updated.
+  /**
+   * @notice Emitted when the linked escrow contract address is updated.
+   * @param newAIAgentEscrow The address of the new escrow contract.
+   */
   event AgentEscrowUpdated(address indexed newAIAgentEscrow);
-  /// @notice Emitted when the oracle address is updated by a TEE.
+
+  /**
+   * @notice Emitted when the oracle address is updated by a TEE.
+   * @param newOracle The address of the new oracle.
+   */
   event OracleUpdated(address indexed newOracle);
 
   // --- Errors ---
@@ -255,7 +345,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    */
   function reserveConversationId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newConversationId = conversationIdCounter;
-    conversationIdCounter++;
+    ++conversationIdCounter;
     return newConversationId;
   }
 
@@ -266,7 +356,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    */
   function reserveJobId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newJobId = jobIdCounter;
-    jobIdCounter++;
+    ++jobIdCounter;
     return newJobId;
   }
 
@@ -278,7 +368,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    */
   function reserveMessageId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newMessageId = messageIdCounter;
-    messageIdCounter++;
+    ++messageIdCounter;
     return newMessageId;
   }
 
@@ -289,7 +379,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    */
   function reserveTriggerId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newTriggerId = triggerIdCounter;
-    triggerIdCounter++;
+    ++triggerIdCounter;
     return newTriggerId;
   }
 
@@ -559,11 +649,11 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   // --- Upgradability ---
 
   /**
+   * @notice This internal function is part of the UUPS upgrade mechanism and is restricted to the owner.
    * @dev Authorizes an upgrade to a new implementation contract.
-   *      This internal function is part of the UUPS upgrade mechanism and is restricted to the owner.
-   * @param _newImplementation The address of the new implementation contract.
+   * @param newImplementation The address of the new implementation contract.
    */
-  function _authorizeUpgrade(address _newImplementation) internal override onlyOwner {
+  function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
     // solhint-disable-previous-line no-empty-blocks
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }

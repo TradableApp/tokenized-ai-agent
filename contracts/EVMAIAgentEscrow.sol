@@ -9,8 +9,9 @@ import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils
 
 /**
  * @title EVM AI Agent Escrow Contract
- * @dev This contract manages ERC20 token payments, fees, and refunds for the EVM AI Agent.
- *      It is upgradeable using the UUPS proxy pattern.
+ * @author Tradable
+ * @notice Manages ERC20 token payments, fees, and refunds for the EVM AI Agent.
+ * @dev It is upgradeable using the UUPS proxy pattern.
  */
 contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   // --- Constants ---
@@ -71,27 +72,65 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   // --- Events ---
 
-  /// @notice Emitted when the treasury address is updated.
-  event TreasuryUpdated(address newTreasury);
-  /// @notice Emitted when the prompt fee is updated.
-  event PromptFeeUpdated(uint256 newFee);
-  /// @notice Emitted when the cancellation fee is updated.
-  event CancellationFeeUpdated(uint256 newFee);
-  /// @notice Emitted when the metadata update fee is updated.
-  event MetadataUpdateFeeUpdated(uint256 newFee);
-  /// @notice Emitted when the conversation branch fee is updated.
-  event BranchFeeUpdated(uint256 newFee);
-  /// @notice Emitted when a user sets or updates their allowance.
-  event SubscriptionSet(address indexed user, uint256 allowance, uint256 expiresAt);
-  /// @notice Emitted when a user cancels their allowance.
+  /**
+   * @notice Emitted when the treasury address is updated.
+   * @param newTreasury The new treasury address.
+   */
+  event TreasuryUpdated(address indexed newTreasury);
+  /**
+   * @notice Emitted when the prompt fee is updated.
+   * @param newFee The new prompt fee.
+   */
+  event PromptFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when the cancellation fee is updated.
+   * @param newFee The new cancellation fee.
+   */
+  event CancellationFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when the metadata update fee is updated.
+   * @param newFee The new metadata update fee.
+   */
+  event MetadataUpdateFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when the conversation branch fee is updated.
+   * @param newFee The new branch fee.
+   */
+  event BranchFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when a user sets or updates their allowance.
+   * @param user The user whose subscription is being set.
+   * @param allowance The total amount of tokens authorized for the period.
+   * @param expiresAt The unix timestamp when the subscription expires.
+   */
+  event SubscriptionSet(address indexed user, uint256 indexed allowance, uint256 indexed expiresAt);
+  /**
+   * @notice Emitted when a user cancels their allowance.
+   * @param user The user whose subscription is being cancelled.
+   */
   event SubscriptionCancelled(address indexed user);
-  /// @notice Emitted when a user's payment is successfully placed in escrow.
-  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 amount);
-  /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
+  /**
+   * @notice Emitted when a user's payment is successfully placed in escrow.
+   * @param escrowId The unique ID for this escrowed payment.
+   * @param user The user who made the payment.
+   * @param amount The amount of tokens placed in escrow.
+   */
+  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 indexed amount);
+  /**
+   * @notice Emitted when an escrowed payment is finalized and sent to the treasury.
+   * @param escrowId The unique ID of the finalized escrow.
+   */
   event PaymentFinalized(uint256 indexed escrowId);
-  /// @notice Emitted when a timed-out escrowed payment is refunded to the user's wallet.
+  /**
+   * @notice Emitted when a timed-out escrowed payment is refunded to the user's wallet.
+   * @param escrowId The unique ID of the refunded escrow.
+   */
   event PaymentRefunded(uint256 indexed escrowId);
-  /// @notice Emitted when a user cancels their own pending prompt.
+  /**
+   * @notice Emitted when a user cancels their own pending prompt.
+   * @param answerMessageId The ID of the answer that was cancelled.
+   * @param user The user who initiated the cancellation.
+   */
   event PromptCancelled(uint256 indexed answerMessageId, address indexed user);
 
   // --- Errors ---
@@ -456,7 +495,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     sub.allowance -= cancellationFee;
     ableToken.transferFrom(msg.sender, treasury, cancellationFee);
 
-    pendingEscrowCount[msg.sender]--;
+    --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
 
     evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
@@ -503,7 +542,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
       revert EscrowNotPending();
     }
 
-    pendingEscrowCount[escrow.user]--;
+    --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.COMPLETE;
     emit PaymentFinalized(_escrowId);
     ableToken.transfer(treasury, escrow.amount);
@@ -528,7 +567,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
       revert PromptNotRefundableYet();
     }
 
-    pendingEscrowCount[escrow.user]--;
+    --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.REFUNDED;
     subscriptions[escrow.user].spentAmount -= escrow.amount;
     subscriptions[escrow.user].allowance -= escrow.amount;
@@ -540,7 +579,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   // --- Internal Helper Functions ---
 
   /**
-   * @dev Internal function to handle the subscription checks and state changes for an escrowed payment.
+   * @notice Internal function to handle the subscription checks and state changes for an escrowed payment.
+   * @dev This is an internal function and cannot be called directly.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
    */
@@ -558,12 +598,13 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
 
     sub.spentAmount += _fee;
-    pendingEscrowCount[_user]++;
+    ++pendingEscrowCount[_user];
     ableToken.transferFrom(_user, address(this), _fee);
   }
 
   /**
-   * @dev Internal function to handle the subscription checks and state changes for a direct-to-treasury payment.
+   * @notice Internal function for direct-to-treasury payments.
+   * @dev This is an internal function and cannot be called directly.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
    */
@@ -590,11 +631,11 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   // --- Upgradability ---
 
   /**
+   * @notice This internal function is part of the UUPS upgrade mechanism and is restricted to the owner.
    * @dev Authorizes an upgrade to a new implementation contract.
-   *      This internal function is part of the UUPS upgrade mechanism and is restricted to the owner.
-   * @param _newImplementation The address of the new implementation contract.
+   * @param newImplementation The address of the new implementation contract.
    */
-  function _authorizeUpgrade(address _newImplementation) internal override onlyOwner {
+  function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
     // solhint-disable-previous-line no-empty-blocks
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }

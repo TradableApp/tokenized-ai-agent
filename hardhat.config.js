@@ -20,7 +20,12 @@ module.exports = {
 
   networks: {
     hardhat: {
-      chainId: 1337,
+      chainId: 31337,
+    },
+    localnet: {
+      url: "http://127.0.0.1:8545", // This points to your running Hardhat node (npx hardhat node)
+      accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
+      chainId: 31337,
     },
     base: {
       url: BASE_MAINNET_RPC || "https://mainnet.base.org",
