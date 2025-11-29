@@ -1,7 +1,6 @@
 const { Uploader } = require("@irys/upload");
 const { BaseEth } = require("@irys/upload-ethereum");
 const { sendAlert } = require("../alerting");
-const fetch = require("node-fetch");
 
 let irysUploader;
 const graphqlEndpoint = "https://uploader.irys.xyz/graphql"; // Use the main query endpoint

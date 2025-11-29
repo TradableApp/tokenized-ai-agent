@@ -82,6 +82,10 @@ function initializeOracle(networkName, privateKey, contractAddress) {
   const { abi } = loadContractArtifact(contractName);
 
   let provider = new ethers.JsonRpcProvider(networkRpc);
+
+  // Force polling instead of filters to avoid "filter not found" errors.
+  provider.pollingInterval = 4000; // Check every 4 seconds (adjust based on chain block time)
+
   let signer = new ethers.Wallet(privateKey, provider);
 
   // Conditionally wrap the signer and provider for Sapphire networks.

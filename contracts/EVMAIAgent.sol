@@ -658,5 +658,5 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[34] private __gap;
+  uint256[37] private __gap;
 }

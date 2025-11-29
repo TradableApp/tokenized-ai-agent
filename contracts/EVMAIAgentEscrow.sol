@@ -41,14 +41,14 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   uint256 public branchFee;
 
   /// @notice Represents a user's usage allowance details.
-  struct Subscription {
+  struct SpendingLimit {
     uint256 allowance; // The total amount the user has authorized via ERC20 approve.
-    uint256 spentAmount; // The amount spent so far within this subscription.
-    uint256 expiresAt; // The unix timestamp when the subscription expires.
+    uint256 spentAmount; // The amount spent so far within this spending limit.
+    uint256 expiresAt; // The unix timestamp when the spending limit expires.
   }
 
   /// @notice Tracks each user's allowance details.
-  mapping(address => Subscription) public subscriptions;
+  mapping(address => SpendingLimit) public spendingLimits;
   /// @notice Tracks the number of pending (unanswered) prompts for each user.
   mapping(address => uint256) public pendingEscrowCount;
 
@@ -99,16 +99,20 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   event BranchFeeUpdated(uint256 indexed newFee);
   /**
    * @notice Emitted when a user sets or updates their allowance.
-   * @param user The user whose subscription is being set.
+   * @param user The user whose spending limit is being set.
    * @param allowance The total amount of tokens authorized for the period.
-   * @param expiresAt The unix timestamp when the subscription expires.
+   * @param expiresAt The unix timestamp when the spending limit expires.
    */
-  event SubscriptionSet(address indexed user, uint256 indexed allowance, uint256 indexed expiresAt);
+  event SpendingLimitSet(
+    address indexed user,
+    uint256 indexed allowance,
+    uint256 indexed expiresAt
+  );
   /**
    * @notice Emitted when a user cancels their allowance.
-   * @param user The user whose subscription is being cancelled.
+   * @param user The user whose spending limit is being cancelled.
    */
-  event SubscriptionCancelled(address indexed user);
+  event SpendingLimitCancelled(address indexed user);
   /**
    * @notice Emitted when a user's payment is successfully placed in escrow.
    * @param escrowId The unique ID for this escrowed payment.
@@ -128,10 +132,10 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   event PaymentRefunded(uint256 indexed escrowId);
   /**
    * @notice Emitted when a user cancels their own pending prompt.
-   * @param answerMessageId The ID of the answer that was cancelled.
    * @param user The user who initiated the cancellation.
+   * @param answerMessageId The ID of the answer that was cancelled.
    */
-  event PromptCancelled(uint256 indexed answerMessageId, address indexed user);
+  event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
 
   // --- Errors ---
 
@@ -147,20 +151,20 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   /// @notice Reverts if a user tries to cancel a prompt they do not own.
   error NotPromptOwner();
 
-  // Subscription Errors
+  // Spending Limit Errors
   /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
-  error NoActiveSubscription();
+  error NoActiveSpendingLimit();
   /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
-  error SubscriptionExpired();
+  error SpendingLimitExpired();
   /// @notice Reverts if a user's remaining allowance is insufficient to cover a fee.
-  error InsufficientSubscriptionAllowance();
+  error InsufficientSpendingLimitAllowance();
 
   // State Machine Errors
   /// @notice Reverts if an escrow record is not found for a given ID.
   error EscrowNotFound();
   /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
   error EscrowNotPending();
-  /// @notice Reverts if a user tries to manage a subscription while having pending prompts.
+  /// @notice Reverts if a user tries to manage a spending limit while having pending prompts.
   error HasPendingPrompts();
 
   // Timeout Errors
@@ -285,7 +289,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     emit BranchFeeUpdated(_newFee);
   }
 
-  // --- Subscription Management ---
+  // --- Spending Limit Management ---
 
   /**
    * @notice Sets or updates a user's usage allowance.
@@ -294,16 +298,16 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param _allowance The total amount of tokens authorized for the allowance period.
    * @param _expiresAt The unix timestamp when this allowance becomes invalid.
    */
-  function setSubscription(uint256 _allowance, uint256 _expiresAt) external {
+  function setSpendingLimit(uint256 _allowance, uint256 _expiresAt) external {
     if (pendingEscrowCount[msg.sender] > 0) {
       revert HasPendingPrompts();
     }
-    subscriptions[msg.sender] = Subscription({
+    spendingLimits[msg.sender] = SpendingLimit({
       allowance: _allowance,
       spentAmount: 0,
       expiresAt: _expiresAt
     });
-    emit SubscriptionSet(msg.sender, _allowance, _expiresAt);
+    emit SpendingLimitSet(msg.sender, _allowance, _expiresAt);
   }
 
   /**
@@ -311,12 +315,12 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @dev This function can only be called if the user has no prompts currently
    *      in the PENDING state to prevent orphaning funds.
    */
-  function cancelSubscription() external {
+  function cancelSpendingLimit() external {
     if (pendingEscrowCount[msg.sender] > 0) {
       revert HasPendingPrompts();
     }
-    delete subscriptions[msg.sender];
-    emit SubscriptionCancelled(msg.sender);
+    delete spendingLimits[msg.sender];
+    emit SpendingLimitCancelled(msg.sender);
   }
 
   // --- Core User and Agent Functions ---
@@ -472,7 +476,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   function cancelPrompt(uint256 _answerMessageId) external {
     uint256 escrowId = _answerMessageId;
     Escrow storage escrow = escrows[escrowId];
-    Subscription storage sub = subscriptions[msg.sender];
+    SpendingLimit storage sub = spendingLimits[msg.sender];
 
     if (escrow.user != msg.sender) {
       revert NotPromptOwner();
@@ -488,7 +492,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     sub.allowance -= escrow.amount;
 
     if (sub.allowance < sub.spentAmount + cancellationFee) {
-      revert InsufficientSubscriptionAllowance();
+      revert InsufficientSpendingLimitAllowance();
     }
 
     sub.spentAmount += cancellationFee;
@@ -500,12 +504,12 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
     evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
     ableToken.transfer(escrow.user, escrow.amount);
-    emit PromptCancelled(_answerMessageId, msg.sender);
+    emit PromptCancelled(msg.sender, _answerMessageId);
   }
 
   /**
    * @notice Allows a user to request an update to a conversation's metadata, such as its title.
-   * @dev Charges a fixed `metadataUpdateFee` from the user's subscription allowance.
+   * @dev Charges a fixed `metadataUpdateFee` from the user's spending limit allowance.
    * @param _conversationId The ID of the conversation to update.
    * @param _encryptedPayload The encrypted ABI-encoded update instructions for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
@@ -569,8 +573,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
     --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.REFUNDED;
-    subscriptions[escrow.user].spentAmount -= escrow.amount;
-    subscriptions[escrow.user].allowance -= escrow.amount;
+    spendingLimits[escrow.user].spentAmount -= escrow.amount;
+    spendingLimits[escrow.user].allowance -= escrow.amount;
 
     emit PaymentRefunded(escrowId);
     ableToken.transfer(escrow.user, escrow.amount);
@@ -579,22 +583,22 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   // --- Internal Helper Functions ---
 
   /**
-   * @notice Internal function to handle the subscription checks and state changes for an escrowed payment.
+   * @notice Internal function to handle the spending limit checks and state changes for an escrowed payment.
    * @dev This is an internal function and cannot be called directly.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
    */
   function _processEscrowPayment(address _user, uint256 _fee) private {
-    Subscription storage sub = subscriptions[_user];
+    SpendingLimit storage sub = spendingLimits[_user];
 
     if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
+      revert NoActiveSpendingLimit();
     }
     if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
+      revert SpendingLimitExpired();
     }
     if (sub.spentAmount + _fee > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
+      revert InsufficientSpendingLimitAllowance();
     }
 
     sub.spentAmount += _fee;
@@ -609,16 +613,16 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param _fee The fee for the action.
    */
   function _processDirectPayment(address _user, uint256 _fee) private {
-    Subscription storage sub = subscriptions[_user];
+    SpendingLimit storage sub = spendingLimits[_user];
 
     if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
+      revert NoActiveSpendingLimit();
     }
     if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
+      revert SpendingLimitExpired();
     }
     if (sub.spentAmount + _fee > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
+      revert InsufficientSpendingLimitAllowance();
     }
 
     sub.spentAmount += _fee;
@@ -640,5 +644,5 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[37] private __gap;
+  uint256[40] private __gap;
 }

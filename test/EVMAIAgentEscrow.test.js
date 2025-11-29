@@ -166,16 +166,16 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     });
   });
 
-  describe("Subscription Management", function () {
-    it("should allow a user to set and cancel a subscription if they have no pending prompts", async function () {
+  describe("Spending Limit Management", function () {
+    it("should allow a user to set and cancel a spending limit if they have no pending prompts", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       const expiresAt = (await time.latest()) + 3600;
-      await expect(escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, expiresAt))
-        .to.emit(escrow, "SubscriptionSet")
+      await expect(escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt))
+        .to.emit(escrow, "SpendingLimitSet")
         .withArgs(user.address, INITIAL_ALLOWANCE, expiresAt);
 
-      await expect(escrow.connect(user).cancelSubscription())
-        .to.emit(escrow, "SubscriptionCancelled")
+      await expect(escrow.connect(user).cancelSpendingLimit())
+        .to.emit(escrow, "SpendingLimitCancelled")
         .withArgs(user.address);
     });
 
@@ -185,18 +185,20 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         const fixtures = await loadFixture(deployEscrowFixture);
         escrow = fixtures.escrow;
         user = fixtures.user;
-        await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+        await escrow
+          .connect(user)
+          .setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
         await escrow.connect(user).initiatePrompt(0, "0x", "0x");
       });
 
-      it("should revert if user tries to set a new subscription", async function () {
+      it("should revert if user tries to set a new spending limit", async function () {
         await expect(
-          escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 7200),
+          escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200),
         ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
       });
 
-      it("should revert if user tries to cancel their subscription", async function () {
-        await expect(escrow.connect(user).cancelSubscription()).to.be.revertedWithCustomError(
+      it("should revert if user tries to cancel their spending limit", async function () {
+        await expect(escrow.connect(user).cancelSpendingLimit()).to.be.revertedWithCustomError(
           escrow,
           "HasPendingPrompts",
         );
@@ -210,7 +212,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, mockToken, user, oracle } = fixtures);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
     });
 
     it("should handle a new prompt, reserving a new conversation ID", async function () {
@@ -254,7 +256,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, user, treasury, mockToken } = fixtures);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
     });
 
     it("should handle a metadata update request", async function () {
@@ -279,31 +281,31 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
   });
 
   describe("Initiation Failure Scenarios", function () {
-    it("should revert if user has no active subscription", async function () {
+    it("should revert if user has no active spending limit", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       await expect(
         escrow.connect(user).initiatePrompt(0, "0x", "0x"),
-      ).to.be.revertedWithCustomError(escrow, "NoActiveSubscription");
+      ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
 
-    it("should revert if subscription is expired", async function () {
+    it("should revert if spending limit is expired", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
       await time.increase(3601);
 
       await expect(
         escrow.connect(user).initiatePrompt(0, "0x", "0x"),
-      ).to.be.revertedWithCustomError(escrow, "SubscriptionExpired");
+      ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
     });
 
-    it("should revert if subscription allowance is insufficient", async function () {
+    it("should revert if spending limit allowance is insufficient", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       const lowAllowance = PROMPT_FEE - 1n;
-      await escrow.connect(user).setSubscription(lowAllowance, (await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit(lowAllowance, (await time.latest()) + 3600);
 
       await expect(
         escrow.connect(user).initiatePrompt(0, "0x", "0x"),
-      ).to.be.revertedWithCustomError(escrow, "InsufficientSubscriptionAllowance");
+      ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
     });
   });
 
@@ -314,7 +316,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, mockToken, user, unauthorizedUser } = fixtures);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
       await escrow.connect(user).initiatePrompt(0, "0x", "0x");
     });
 
@@ -359,13 +361,13 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     it("should revert cancelPrompt if user cannot afford the cancellation fee", async function () {
       const { escrow, user, mockToken } = await loadFixture(deployEscrowFixture);
       await mockToken.connect(user).approve(await escrow.getAddress(), PROMPT_FEE);
-      await escrow.connect(user).setSubscription(PROMPT_FEE, (await time.latest()) + 7200);
+      await escrow.connect(user).setSpendingLimit(PROMPT_FEE, (await time.latest()) + 7200);
       await escrow.connect(user).initiatePrompt(0, "0x", "0x");
 
       await time.increase(5);
       await expect(escrow.connect(user).cancelPrompt(1)).to.be.revertedWithCustomError(
         escrow,
-        "InsufficientSubscriptionAllowance",
+        "InsufficientSpendingLimitAllowance",
       );
     });
 
@@ -398,7 +400,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     it("should allow the agent to finalize payment", async function () {
       const { escrow, mockAgent, mockToken, user, treasury } =
         await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
       await escrow.connect(user).initiatePrompt(0, "0x", "0x");
       const answerMessageId = 1;
 
@@ -439,7 +441,9 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       beforeEach(async function () {
         const fixtures = await loadFixture(deployEscrowFixture);
         ({ escrow, mockAgent, user } = fixtures);
-        await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
+        await escrow
+          .connect(user)
+          .setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
         await escrow.connect(user).initiatePrompt(0, "0x", "0x");
 
         agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());

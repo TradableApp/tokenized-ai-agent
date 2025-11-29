@@ -139,15 +139,15 @@ describe("SapphireAIAgentEscrow", function () {
     });
   });
 
-  describe("Subscription and Deposit Management", function () {
-    it("should allow a user to deposit, withdraw, and manage a subscription", async function () {
+  describe("Spending Limit and Deposit Management", function () {
+    it("should allow a user to deposit, withdraw, and manage a spending limit", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       const expiresAt = (await time.latest()) + 3600;
 
       expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT);
 
-      await expect(escrow.connect(user).setSubscription(expiresAt))
-        .to.emit(escrow, "SubscriptionSet")
+      await expect(escrow.connect(user).setSpendingLimit(expiresAt))
+        .to.emit(escrow, "SpendingLimitSet")
         .withArgs(user.address, expiresAt);
 
       const withdrawAmount = ethers.parseEther("10");
@@ -155,7 +155,7 @@ describe("SapphireAIAgentEscrow", function () {
       expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT - withdrawAmount);
 
       const userBalanceBefore = await ethers.provider.getBalance(user.address);
-      const tx = await escrow.connect(user).cancelSubscription();
+      const tx = await escrow.connect(user).cancelSpendingLimit();
       const receipt = await tx.wait();
       const gasUsed = receipt.gasUsed * tx.gasPrice;
       const userBalanceAfter = await ethers.provider.getBalance(user.address);
@@ -166,10 +166,10 @@ describe("SapphireAIAgentEscrow", function () {
       );
     });
 
-    it("should allow a user with zero deposit to cancel their subscription", async function () {
+    it("should allow a user with zero deposit to cancel their spending limit", async function () {
       const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(unauthorizedUser).setSubscription((await time.latest()) + 3600);
-      await expect(escrow.connect(unauthorizedUser).cancelSubscription()).to.not.emit(
+      await escrow.connect(unauthorizedUser).setSpendingLimit((await time.latest()) + 3600);
+      await expect(escrow.connect(unauthorizedUser).cancelSpendingLimit()).to.not.emit(
         escrow,
         "Withdrawal",
       );
@@ -181,18 +181,18 @@ describe("SapphireAIAgentEscrow", function () {
         const fixtures = await loadFixture(deployEscrowFixture);
         escrow = fixtures.escrow;
         user = fixtures.user;
-        await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+        await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
         await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
       });
 
-      it("should revert if user tries to set a new subscription", async function () {
+      it("should revert if user tries to set a new spending limit", async function () {
         await expect(
-          escrow.connect(user).setSubscription((await time.latest()) + 7200),
+          escrow.connect(user).setSpendingLimit((await time.latest()) + 7200),
         ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
       });
 
-      it("should revert if user tries to cancel their subscription", async function () {
-        await expect(escrow.connect(user).cancelSubscription()).to.be.revertedWithCustomError(
+      it("should revert if user tries to cancel their spending limit", async function () {
+        await expect(escrow.connect(user).cancelSpendingLimit()).to.be.revertedWithCustomError(
           escrow,
           "HasPendingPrompts",
         );
@@ -206,7 +206,7 @@ describe("SapphireAIAgentEscrow", function () {
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, user, oracle } = fixtures);
-      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
     });
 
     it("should handle a new prompt, reserving a new conversation ID", async function () {
@@ -265,7 +265,7 @@ describe("SapphireAIAgentEscrow", function () {
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, user, treasury } = fixtures);
-      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
     });
 
     it("should handle a metadata update request", async function () {
@@ -303,25 +303,25 @@ describe("SapphireAIAgentEscrow", function () {
   });
 
   describe("Initiation Failure Scenarios", function () {
-    it("should revert if user has no active subscription", async function () {
+    it("should revert if user has no active spending limit", async function () {
       const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture); // Use a fresh user
       await expect(
         escrow.connect(unauthorizedUser).initiatePrompt(0, MOCK_PAYLOAD),
-      ).to.be.revertedWithCustomError(escrow, "NoActiveSubscription");
+      ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
 
-    it("should revert if subscription is expired", async function () {
+    it("should revert if spending limit is expired", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
       await time.increase(3601);
       await expect(
         escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD),
-      ).to.be.revertedWithCustomError(escrow, "SubscriptionExpired");
+      ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
     });
 
     it("should revert if user has insufficient deposit", async function () {
       const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(unauthorizedUser).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(unauthorizedUser).setSpendingLimit((await time.latest()) + 3600);
       await expect(
         escrow.connect(unauthorizedUser).initiatePrompt(0, MOCK_PAYLOAD),
       ).to.be.revertedWithCustomError(escrow, "InsufficientDeposit");
@@ -335,7 +335,7 @@ describe("SapphireAIAgentEscrow", function () {
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, user, unauthorizedUser, treasury } = fixtures);
-      await escrow.connect(user).setSubscription((await time.latest()) + 7200);
+      await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
       await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
     });
 
@@ -384,7 +384,7 @@ describe("SapphireAIAgentEscrow", function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       await escrow.connect(user).withdraw(INITIAL_DEPOSIT); // Withdraw all funds
       await escrow.connect(user).deposit({ value: PROMPT_FEE }); // Deposit just enough for the prompt
-      await escrow.connect(user).setSubscription((await time.latest()) + 7200);
+      await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
       await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
       await time.increase(5);
       await expect(escrow.connect(user).cancelPrompt(1)).to.be.revertedWithCustomError(
@@ -418,7 +418,7 @@ describe("SapphireAIAgentEscrow", function () {
   describe("Finalization and State Guards", function () {
     it("should allow the agent to finalize payment", async function () {
       const { escrow, mockAgent, user, treasury } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription((await time.latest()) + 3600);
+      await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
       await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
       const answerMessageId = 1;
       const initialTreasuryBalance = await ethers.provider.getBalance(treasury.address);
@@ -459,7 +459,7 @@ describe("SapphireAIAgentEscrow", function () {
       beforeEach(async function () {
         const fixtures = await loadFixture(deployEscrowFixture);
         ({ escrow, mockAgent, user } = fixtures);
-        await escrow.connect(user).setSubscription((await time.latest()) + 7200);
+        await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
         await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
 
         agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());

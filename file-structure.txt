@@ -1,6 +1,7 @@
 .
 ├── .dockerignore
 ├── .env
+├── .env.base-localnet
 ├── .env.base-mainnet
 ├── .env.base-testnet
 ├── .env.example
@@ -96,7 +97,7 @@
 │   │               ├── ContextUpgradeable.dbg.json
 │   │               └── ContextUpgradeable.json
 │   ├── build-info
-│   │   └── 5d6ccc451dae5a93cbc22f8bfe500207.json
+│   │   └── 66ef264f1956a9b82950e61da7d29b92.json
 │   └── contracts
 │       ├── EVMAIAgent.sol
 │       │   ├── EVMAIAgent.dbg.json
@@ -260,11 +261,11 @@
 │   ├── .env.oracle.base-testnet
 │   ├── .env.oracle.example
 │   ├── .nyc_output
-│   │   ├── 0d503944-0645-4192-ab71-130c74accd97.json
-│   │   ├── d5b99bdd-36c1-4412-a5d7-d1afa63c844b.json
+│   │   ├── 5d4c9289-d036-4307-9e38-3f60c4e3523d.json
+│   │   ├── 6db47593-4371-4e5f-9190-817d2e6a85ae.json
 │   │   └── processinfo
-│   │       ├── 0d503944-0645-4192-ab71-130c74accd97.json
-│   │       ├── d5b99bdd-36c1-4412-a5d7-d1afa63c844b.json
+│   │       ├── 5d4c9289-d036-4307-9e38-3f60c4e3523d.json
+│   │       ├── 6db47593-4371-4e5f-9190-817d2e6a85ae.json
 │   │       └── index.json
 │   ├── failed-jobs.json
 │   ├── oracle-state.json
@@ -295,10 +296,12 @@
 ├── rofl.yaml
 ├── scripts
 │   ├── deploy.js
+│   ├── fund.js
 │   ├── getPublicKey.js
 │   ├── interact.js
 │   ├── release-mainnet.sh
 │   └── rofl-set-secrets.sh
+├── storageLayout
 ├── test
 │   ├── EVMAIAgent.test.js
 │   ├── EVMAIAgentEscrow.test.js
@@ -309,4 +312,4 @@
 ├── tokenized-ai-agent.default.orc
 └── tokenized-ai-agent.testnet.orc
 
-89 directories, 221 files
+90 directories, 223 files

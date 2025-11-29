@@ -5,7 +5,6 @@ const path = require("path");
 const fs = require("fs/promises");
 const { v5: uuidv5 } = require("uuid");
 const crypto = require("crypto");
-const fetch = require("node-fetch");
 
 const { initializeOracle } = require("./contractUtility");
 const {
@@ -139,10 +138,16 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
       return Buffer.from(strip0xPrefix(parsedPayload.sessionKey), "hex");
     }
   } else if (roflEncryptedKey && roflEncryptedKey !== "0x") {
+    // The roflEncryptedKey comes in as a Hex String (0x...).
+    // We must convert it to the original UTF-8 Cipher String (iv...ephemKey...mac)
+    // before passing it to ethCrypto.
+    const cipherString = ethers.toUtf8String(roflEncryptedKey);
+
     const sessionKeyHex = await ethCrypto.decryptWithPrivateKey(
       AI_AGENT_PRIVATE_KEY,
-      ethCrypto.cipher.parse(strip0xPrefix(roflEncryptedKey)),
+      ethCrypto.cipher.parse(cipherString),
     );
+
     return Buffer.from(strip0xPrefix(sessionKeyHex), "hex");
   }
 
@@ -161,7 +166,7 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     const fetchedRoflEncryptedKey = await fetchData(keyFileCID);
     const sessionKeyHex = await ethCrypto.decryptWithPrivateKey(
       AI_AGENT_PRIVATE_KEY,
-      ethCrypto.cipher.parse(strip0xPrefix(fetchedRoflEncryptedKey)),
+      ethCrypto.cipher.parse(fetchedRoflEncryptedKey),
     );
     return Buffer.from(strip0xPrefix(sessionKeyHex), "hex");
   }
@@ -328,6 +333,34 @@ async function queryAIModel(conversationHistory, conversationId) {
 
 // --- Event Handlers ---
 
+// Helper to check for specific contract errors using Ethers v6 Interface
+function isContractError(error, errorName) {
+  try {
+    // 1. Get the specific error fragment from the ABI
+    const errorFragment = contract.interface.getError(errorName);
+    if (!errorFragment) return false;
+
+    // 2. Check if the error data matches the selector
+    const selector = errorFragment.selector;
+
+    // Ethers v6 puts the raw revert data in different places depending on the transport
+    const errorData = error.data || error.info?.error?.data || error.transaction?.data;
+
+    if (errorData && errorData.includes(selector)) {
+      return true;
+    }
+
+    // Fallback: sometimes the message contains the hex string directly
+    if (error.message && error.message.includes(selector)) {
+      return true;
+    }
+
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function handlePrompt(
   user,
   conversationId,
@@ -340,6 +373,24 @@ async function handlePrompt(
   console.log(
     `[EVENT] Processing PromptSubmitted for convId: ${conversationId} in block ${event.blockNumber}`,
   );
+
+  // --- Idempotency Check ---
+  // Check if this specific answer ID has already been finalized on-chain.
+  // This prevents wasting AI/Arweave credits on restarts or re-orgs.
+  try {
+    const isAlreadyDone = await contract.isJobFinalized(answerMessageId);
+    if (isAlreadyDone) {
+      console.log(
+        `  ℹ️ Skipped: Prompt ${promptMessageId} is already answered on-chain or cancelled.`,
+      );
+      return;
+    }
+  } catch (err) {
+    console.warn(
+      `  ⚠️ Could not check isJobFinalized status (RPC error?), proceeding anyway.`,
+      err.message,
+    );
+  }
 
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
@@ -354,6 +405,21 @@ async function handlePrompt(
     history.push({ role: "user", content: promptText });
 
     const answerText = await queryAIModel(history, conversationId.toString());
+
+    // Check again before paying for storage
+    try {
+      const isDoneNow = await contract.isJobFinalized(answerMessageId);
+      if (isDoneNow) {
+        console.log(`  ℹ️ Skipped: Prompt ${promptMessageId} was cancelled during AI processing.`);
+        return;
+      }
+    } catch (err) {
+      console.warn(
+        `  ⚠️ Could not check isJobFinalized status (RPC error?), proceeding anyway.`,
+        err.message,
+      );
+    }
+
     const now = Date.now();
     let cidBundle = {};
 
@@ -375,7 +441,7 @@ async function handlePrompt(
         );
         keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
       } else {
-        keyToStore = roflEncryptedKey; // For EVM, we already have it.
+        keyToStore = ethers.toUtf8String(roflEncryptedKey); // For EVM, we already have it.
       }
 
       // Stringify the eth-crypto object before saving
@@ -489,6 +555,14 @@ async function handlePrompt(
       `Successfully submitted answer for prompt ${promptMessageId}. Tx hash: ${receipt.hash}`,
     );
   } catch (error) {
+    if (isContractError(error, "JobAlreadyFinalized")) {
+      console.log(
+        `  ℹ️ Skipped: Transaction reverted with 'JobAlreadyFinalized'. The user likely cancelled this prompt.`,
+      );
+
+      return; // Exit gracefully
+    }
+
     console.error(`Error in handlePrompt for convId ${conversationId}:`, error);
 
     throw error; // Propagate error to be caught by handleAndRecord
@@ -509,6 +583,19 @@ async function handleRegeneration(
     `[EVENT] Processing RegenerationRequested for promptId: ${promptMessageId} in block ${event.blockNumber}`,
   );
 
+  // --- Idempotency Check ---
+  // Check if this specific answer ID has already been finalized on-chain.
+  // This prevents wasting AI/Arweave credits on restarts or re-orgs.
+  try {
+    const isAlreadyDone = await contract.isJobFinalized(answerMessageId);
+    if (isAlreadyDone) {
+      console.log(`  ℹ️ Skipped: Regeneration ${answerMessageId} is already finalized on-chain.`);
+      return;
+    }
+  } catch (err) {
+    console.warn(`  ⚠️ Could not check isJobFinalized status, proceeding anyway.`);
+  }
+
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
@@ -524,6 +611,21 @@ async function handleRegeneration(
     }
 
     const answerText = await queryAIModel(history, conversationId.toString());
+
+    // Check again before paying for storage
+    try {
+      const isDoneNow = await contract.isJobFinalized(answerMessageId);
+      if (isDoneNow) {
+        console.log(`  ℹ️ Skipped: Prompt ${promptMessageId} was cancelled during AI processing.`);
+        return;
+      }
+    } catch (err) {
+      console.warn(
+        `  ⚠️ Could not check isJobFinalized status (RPC error?), proceeding anyway.`,
+        err.message,
+      );
+    }
+
     const now = Date.now();
 
     const answerMessageCID = await encryptAndUpload(
@@ -553,6 +655,14 @@ async function handleRegeneration(
       `Successfully submitted regenerated answer for prompt ${promptMessageId}. Tx hash: ${receipt.hash}`,
     );
   } catch (error) {
+    if (isContractError(error, "JobAlreadyFinalized")) {
+      console.log(
+        `  ℹ️ Skipped: Transaction reverted with 'JobAlreadyFinalized'. The user likely cancelled this prompt.`,
+      );
+
+      return; // Exit gracefully
+    }
+
     console.error(`Error in handleRegeneration for promptId ${promptMessageId}:`, error);
     throw error;
   }
@@ -604,7 +714,7 @@ async function handleBranch(
       );
       keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
     } else {
-      keyToStore = roflEncryptedKey; // For EVM, we already have it.
+      keyToStore = ethers.toUtf8String(roflEncryptedKey); // For EVM, we already have it.
     }
 
     // Stringify the eth-crypto object before saving
@@ -776,9 +886,15 @@ async function handleAndRecord(eventName, handler, ...args) {
 
       let failedJobs = [];
       try {
-        failedJobs = JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8"));
+        const fileContent = await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8");
+        const parsed = JSON.parse(fileContent);
+
+        // Ensure what we read is actually an array. If it's {}, treat as [].
+        if (Array.isArray(parsed)) {
+          failedJobs = parsed;
+        }
       } catch (e) {
-        /* File doesn't exist, will be created */
+        /* File doesn't exist or is corrupt, start with empty array */
       }
 
       failedJobs.push({
@@ -814,9 +930,19 @@ async function handleAndRecord(eventName, handler, ...args) {
  * Uses exponential backoff to space out retries.
  */
 async function retryFailedJobs() {
-  let failedJobs;
+  let failedJobs = [];
   try {
-    failedJobs = JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8"));
+    const fileContent = await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8");
+    const parsed = JSON.parse(fileContent);
+    // Ensure failedJobs is iterable (Array). If it's an object {}, ignore it.
+    if (Array.isArray(parsed)) {
+      failedJobs = parsed;
+    } else {
+      // If the file contains {}, we treat it as empty.
+      // We don't write back immediately to avoid disk thrashing,
+      // but the next write will correct the file format.
+      failedJobs = [];
+    }
   } catch (e) {
     return; // No failed jobs file, nothing to do.
   }
@@ -826,7 +952,6 @@ async function retryFailedJobs() {
   console.log(`[Retry] Checking ${failedJobs.length} failed job(s)...`);
   const remainingJobs = [];
   let processed = false;
-
   for (const job of failedJobs) {
     if (Date.now() >= job.nextAttemptAt) {
       // An attempt is being made, so we know the file will need to be updated
@@ -926,7 +1051,7 @@ async function retryFailedJobs() {
 
 /**
  * Scans for and processes any events that were missed while the oracle was offline.
- * This function is critical for ensuring no user requests are ever lost.
+ * Uses batching to respect RPC limits on block ranges.
  * @param {number} fromBlock - The block number to start scanning from.
  * @param {number} toBlock - The latest block number to scan up to.
  */
@@ -936,68 +1061,188 @@ async function processPastEvents(fromBlock, toBlock) {
   }
   console.log(`Catching up on missed events from block ${fromBlock} to ${toBlock}...`);
 
-  try {
-    const eventPromises = [
-      contract.queryFilter(contract.filters.PromptSubmitted(), fromBlock, toBlock),
-      contract.queryFilter(contract.filters.RegenerationRequested(), fromBlock, toBlock),
-      contract.queryFilter(contract.filters.BranchRequested(), fromBlock, toBlock),
-      contract.queryFilter(contract.filters.MetadataUpdateRequested(), fromBlock, toBlock),
-    ];
+  // BATCHING CONFIGURATION
+  // Use a very safe, small batch size to respect restrictive RPCs (QuickNode Free is 5 blocks).
+  const BATCH_SIZE = parseInt(process.env.EVENT_BATCH_SIZE) || 2000;
 
-    const allEventsNested = await Promise.all(eventPromises);
+  let currentStart = fromBlock;
 
-    // Sort events strictly by their on-chain order to ensure correct processing.
-    const allEvents = allEventsNested.flat();
-    allEvents.sort((a, b) => {
-      if (a.blockNumber !== b.blockNumber) {
-        return a.blockNumber - b.blockNumber;
-      }
+  while (currentStart <= toBlock) {
+    const currentEnd = Math.min(currentStart + BATCH_SIZE - 1, toBlock);
 
-      return a.transactionIndex - b.transactionIndex;
-    });
+    console.log(`  -> Scanning batch: ${currentStart} to ${currentEnd}`);
 
-    if (allEvents.length > 0) {
-      console.log(`Found ${allEvents.length} missed events to process.`);
+    try {
+      const eventPromises = [
+        contract.queryFilter(contract.filters.PromptSubmitted(), currentStart, currentEnd),
+        contract.queryFilter(contract.filters.RegenerationRequested(), currentStart, currentEnd),
+        contract.queryFilter(contract.filters.BranchRequested(), currentStart, currentEnd),
+        contract.queryFilter(contract.filters.MetadataUpdateRequested(), currentStart, currentEnd),
+      ];
 
-      for (const event of allEvents) {
-        // Use a switch on the event name to call the correct handler
-        switch (event.eventName) {
-          case "PromptSubmitted":
-            await handlePrompt(...event.args, event);
+      const allEventsNested = await Promise.all(eventPromises);
 
-            break;
-          case "RegenerationRequested":
-            await handleRegeneration(...event.args, event);
-
-            break;
-          case "BranchRequested":
-            await handleBranch(...event.args, event);
-
-            break;
-          case "MetadataUpdateRequested":
-            await handleMetadataUpdate(...event.args, event);
-
-            break;
-          default:
-            console.warn(`Unknown event encountered during catch-up: ${event.eventName}`);
+      // Sort events strictly by their on-chain order to ensure correct processing.
+      const allEvents = allEventsNested.flat();
+      allEvents.sort((a, b) => {
+        if (a.blockNumber !== b.blockNumber) {
+          return a.blockNumber - b.blockNumber;
         }
 
-        // After each historical event is processed, save the state.
-        await fs.writeFile(
-          STATE_FILE_PATH,
-          JSON.stringify({ lastProcessedBlock: event.blockNumber }),
-        );
+        return a.transactionIndex - b.transactionIndex;
+      });
+
+      if (allEvents.length > 0) {
+        console.log(`     Found ${allEvents.length} events in batch to process.`);
+
+        for (const event of allEvents) {
+          // Use a switch on the event name to call the correct handler
+          switch (event.eventName) {
+            case "PromptSubmitted":
+              await handlePrompt(...event.args, event);
+
+              break;
+            case "RegenerationRequested":
+              await handleRegeneration(...event.args, event);
+
+              break;
+            case "BranchRequested":
+              await handleBranch(...event.args, event);
+
+              break;
+            case "MetadataUpdateRequested":
+              await handleMetadataUpdate(...event.args, event);
+
+              break;
+            default:
+              console.warn(`Unknown event encountered during catch-up: ${event.eventName}`);
+          }
+        }
       }
-    } else {
-      console.log("No missed events found.");
+
+      // Update checkpoint after every successful batch to avoid re-processing
+      await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentEnd }));
+
+      // Move window forward
+      currentStart = currentEnd + 1;
+
+      // Optional: Small delay to be nice to the RPC
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    } catch (error) {
+      const alertMessage = `Failed during historical event catch-up process between blocks ${currentStart}-${currentEnd}. The oracle may need intervention. Error: ${error.message}`;
+      console.error(alertMessage, error);
+
+      // Critical failure in catch-up stops the oracle startup
+      await sendAlert("Oracle Catch-up Failed", alertMessage);
+
+      throw error; // Throw to stop the oracle from starting in a potentially broken state.
     }
-  } catch (error) {
-    const alertMessage = `Failed during historical event catch-up process between blocks ${fromBlock}-${toBlock}. The oracle may need intervention. Error: ${error.message}`;
-    console.error(alertMessage, error);
+  }
 
-    await sendAlert("Oracle Catch-up Failed", alertMessage);
+  console.log("Catch-up complete.");
+}
 
-    throw error; // Throw to stop the oracle from starting in a potentially broken state.
+/**
+ * Continuously polls the blockchain for new events in specific block ranges.
+ * Updates the state file after every batch to ensure progress is saved even during periods of inactivity.
+ * @param {number} startBlock - The block to start polling from.
+ */
+async function pollEvents(startBlock) {
+  console.log(`✅ Oracle is running and listening for new events from block ${startBlock}.`);
+
+  // Use the same batch size config as catch-up to respect RPC limits
+  const BATCH_SIZE = parseInt(process.env.EVENT_BATCH_SIZE) || 2000;
+
+  const filters = [
+    contract.filters.PromptSubmitted(),
+    contract.filters.RegenerationRequested(),
+    contract.filters.BranchRequested(),
+    contract.filters.MetadataUpdateRequested(),
+  ];
+
+  let currentBlock = startBlock;
+  while (true) {
+    try {
+      const latestBlock = await provider.getBlockNumber();
+
+      // Only proceed if there are new blocks to check
+      if (latestBlock > currentBlock) {
+        // Determine the end of the batch (don't exceed RPC limit or latest block)
+        const toBlock = Math.min(currentBlock + BATCH_SIZE, latestBlock);
+        const fromQueryBlock = currentBlock + 1; // For logging clarity
+
+        // Query all filters in parallel for the specific range
+        const promises = filters.map((filter) =>
+          contract.queryFilter(filter, fromQueryBlock, toBlock),
+        );
+
+        const results = await Promise.all(promises);
+        const allEvents = results.flat();
+
+        // Sort by block and transaction index to process in order
+        allEvents.sort((a, b) => {
+          if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
+          return a.index - b.index;
+        });
+
+        // Process any found events
+        for (const event of allEvents) {
+          switch (event.eventName) {
+            case "PromptSubmitted":
+              await handleAndRecord("PromptSubmitted", handlePrompt, ...event.args, event);
+              break;
+            case "RegenerationRequested":
+              await handleAndRecord(
+                "RegenerationRequested",
+                handleRegeneration,
+                ...event.args,
+                event,
+              );
+              break;
+            case "BranchRequested":
+              await handleAndRecord("BranchRequested", handleBranch, ...event.args, event);
+              break;
+            case "MetadataUpdateRequested":
+              await handleAndRecord(
+                "MetadataUpdateRequested",
+                handleMetadataUpdate,
+                ...event.args,
+                event,
+              );
+              break;
+          }
+        }
+
+        // Update the state file to the block we just finished checking (toBlock).
+        // This happens even if allEvents.length is 0.
+        currentBlock = toBlock;
+        await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentBlock }));
+
+        // This confirms the oracle is moving forward and saving state.
+        if (allEvents.length > 0) {
+          console.log(
+            `  ✓ Polled ${fromQueryBlock} to ${currentBlock} -> Found ${allEvents.length} events.`,
+          );
+        } else {
+          console.log(`  ✓ Polled ${fromQueryBlock} to ${currentBlock}`);
+        }
+
+        // If we are lagging far behind (e.g. more batches needed), don't wait. Loop immediately.
+        if (toBlock < latestBlock) {
+          // Optional: Small delay to be nice to the RPC
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          continue;
+        }
+      }
+    } catch (error) {
+      console.error(`Error in polling loop: ${error.message}`);
+      // Wait a bit longer before retrying if RPC is erroring
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+
+    // Wait before next poll (Base block time is ~2s, so 2s-4s is healthy)
+    await new Promise((resolve) => setTimeout(resolve, 4000));
   }
 }
 
@@ -1027,33 +1272,26 @@ async function start() {
   }
 
   const latestBlock = await provider.getBlockNumber();
-  // On a fresh start, look back ~1 hour (Sapphire ~6000 blocks, Base ~1800 blocks). Otherwise, start from the next block.
+  // On a fresh start, look back ~1 hour (1800 blocks on Base).
+  // Otherwise, start from the next block after the last processed one.
+  const lookback = 1800;
   const fromBlock =
-    state.lastProcessedBlock === 0 ? Math.max(0, latestBlock - 6000) : state.lastProcessedBlock + 1;
+    state.lastProcessedBlock === 0
+      ? Math.max(0, latestBlock - lookback)
+      : state.lastProcessedBlock + 1;
 
+  // 1. Catch Up Phase
+  // Note: processPastEvents will update the state file as it goes.
   await processPastEvents(fromBlock, latestBlock);
+
+  // Ensure state is synced to latest before starting poll (redundant safety save)
   await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: latestBlock }));
 
-  // Start the background retry mechanism.
+  // Start background retry mechanism
   setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
 
-  // Attach persistent listeners for all relevant on-chain events.
-  console.log("Attaching contract event listeners for live events...");
-
-  contract.on("PromptSubmitted", (...args) =>
-    handleAndRecord("PromptSubmitted", handlePrompt, ...args),
-  );
-  contract.on("RegenerationRequested", (...args) =>
-    handleAndRecord("RegenerationRequested", handleRegeneration, ...args),
-  );
-  contract.on("BranchRequested", (...args) =>
-    handleAndRecord("BranchRequested", handleBranch, ...args),
-  );
-  contract.on("MetadataUpdateRequested", (...args) =>
-    handleAndRecord("MetadataUpdateRequested", handleMetadataUpdate, ...args),
-  );
-
-  console.log(`✅ Oracle is running and listening for new events from block ${latestBlock + 1}.`);
+  // 2. Listening Phase
+  await pollEvents(latestBlock);
 }
 
 module.exports = {

@@ -19,6 +19,9 @@ async function main() {
 
   console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
 
+  const rpcUrl = hre.network.config.url;
+  console.log(`[DEBUG] RPC URL detected: ${rpcUrl}`);
+
   // Required env
   const domain = process.env.DOMAIN;
   const privateKey = process.env.PRIVATE_KEY;
@@ -232,7 +235,12 @@ async function main() {
   }
 
   // --- 4. VERIFY CONTRACT (for public EVM chains only) ---
-  if (!isSapphire && networkName !== "hardhat") {
+  if (
+    !isSapphire &&
+    networkName !== "hardhat" &&
+    networkName !== "localnet" &&
+    networkName !== "localhost"
+  ) {
     if (!process.env.ETHERSCAN_API_KEY) {
       console.warn(
         chalk.yellow("\n⚠️  Skipping verification: ETHERSCAN_API_KEY not found in .env file."),
@@ -248,11 +256,23 @@ async function main() {
       try {
         console.log(`Verifying EVMAIAgent proxy on Etherscan...`);
         await hre.run("verify:verify", { address: aiAgentAddress });
-        console.log(chalk.green("✅ EVMAIAgent verified successfully!"));
+        console.log(chalk.green(`✅ EVMAIAgent verified!`));
+        console.log(
+          chalk.cyan(`   Explorer: https://sepolia.basescan.org/address/${aiAgentAddress}#code`),
+        ); // Explicit URL
+      } catch (error) {
+        console.error(chalk.red("Verification failed:", error.message));
+      }
 
+      try {
         console.log(`Verifying EVMAIAgentEscrow proxy on Etherscan...`);
         await hre.run("verify:verify", { address: aiAgentEscrowAddress });
-        console.log(chalk.green("✅ EVMAIAgentEscrow verified successfully!"));
+        console.log(chalk.green(`✅ EVMAIAgentEscrow verified!`));
+        console.log(
+          chalk.cyan(
+            `   Explorer: https://sepolia.basescan.org/address/${aiAgentEscrowAddress}#code`,
+          ),
+        ); // Explicit URL
       } catch (error) {
         console.error(chalk.red("Verification failed:", error.message));
       }

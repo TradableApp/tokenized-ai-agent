@@ -34,14 +34,14 @@ contract SapphireAIAgentEscrow is Ownable {
   uint256 public branchFee;
 
   /// @notice Represents a user's usage allowance term.
-  struct Subscription {
-    uint256 expiresAt; // The unix timestamp when the subscription expires.
+  struct SpendingLimit {
+    uint256 expiresAt; // The unix timestamp when the spending limit expires.
   }
 
   /// @notice Tracks each user's deposited balance for paying prompt fees.
   mapping(address => uint256) public deposits;
   /// @notice Tracks each user's allowance term.
-  mapping(address => Subscription) public subscriptions;
+  mapping(address => SpendingLimit) public spendingLimits;
   /// @notice Tracks the number of pending (unanswered) prompts for each user.
   mapping(address => uint256) public pendingEscrowCount;
 
@@ -76,9 +76,9 @@ contract SapphireAIAgentEscrow is Ownable {
   /// @notice Emitted when the conversation branch fee is updated.
   event BranchFeeUpdated(uint256 newFee);
   /// @notice Emitted when a user sets or updates their allowance term.
-  event SubscriptionSet(address indexed user, uint256 expiresAt);
+  event SpendingLimitSet(address indexed user, uint256 expiresAt);
   /// @notice Emitted when a user cancels their allowance.
-  event SubscriptionCancelled(address indexed user);
+  event SpendingLimitCancelled(address indexed user);
   /// @notice Emitted when a user deposits funds.
   event DepositReceived(address indexed user, uint256 amount);
   /// @notice Emitted when a user withdraws funds or they are refunded on cancellation.
@@ -106,11 +106,11 @@ contract SapphireAIAgentEscrow is Ownable {
   /// @notice Reverts if a user tries to cancel a prompt they do not own.
   error NotPromptOwner();
 
-  // Subscription Errors
+  // Spending Limit Errors
   /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
-  error NoActiveSubscription();
+  error NoActiveSpendingLimit();
   /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
-  error SubscriptionExpired();
+  error SpendingLimitExpired();
   /// @notice Reverts if a user's deposit balance is insufficient to cover a fee.
   error InsufficientDeposit();
 
@@ -119,7 +119,7 @@ contract SapphireAIAgentEscrow is Ownable {
   error EscrowNotFound();
   /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
   error EscrowNotPending();
-  /// @notice Reverts if a user tries to manage a subscription while having pending prompts.
+  /// @notice Reverts if a user tries to manage a spending limit while having pending prompts.
   error HasPendingPrompts();
   /// @notice Reverts if a user attempts to withdraw more funds than they have deposited.
   error InsufficientBalanceForWithdrawal();
@@ -239,7 +239,7 @@ contract SapphireAIAgentEscrow is Ownable {
     emit BranchFeeUpdated(_newFee);
   }
 
-  // --- Subscription and Deposit Management ---
+  // --- Spending Limit and Deposit Management ---
 
   /**
    * @notice Allows a user to deposit native tokens (e.g., ROSE/TEST) to fund their usage.
@@ -271,12 +271,12 @@ contract SapphireAIAgentEscrow is Ownable {
    * @dev Can only be called if there are no pending prompts.
    * @param _expiresAt The unix timestamp when this allowance term becomes invalid.
    */
-  function setSubscription(uint256 _expiresAt) external {
+  function setSpendingLimit(uint256 _expiresAt) external {
     if (pendingEscrowCount[msg.sender] > 0) {
       revert HasPendingPrompts();
     }
-    subscriptions[msg.sender] = Subscription({ expiresAt: _expiresAt });
-    emit SubscriptionSet(msg.sender, _expiresAt);
+    spendingLimits[msg.sender] = SpendingLimit({ expiresAt: _expiresAt });
+    emit SpendingLimitSet(msg.sender, _expiresAt);
   }
 
   /**
@@ -284,14 +284,14 @@ contract SapphireAIAgentEscrow is Ownable {
    * @dev This function can only be called if the user has no prompts currently
    *      in the PENDING state to prevent orphaning funds.
    */
-  function cancelSubscription() external {
+  function cancelSpendingLimit() external {
     if (pendingEscrowCount[msg.sender] > 0) {
       revert HasPendingPrompts();
     }
     uint256 depositAmount = deposits[msg.sender];
-    delete subscriptions[msg.sender];
+    delete spendingLimits[msg.sender];
     delete deposits[msg.sender];
-    emit SubscriptionCancelled(msg.sender);
+    emit SpendingLimitCancelled(msg.sender);
     if (depositAmount > 0) {
       emit Withdrawal(msg.sender, depositAmount);
       payable(msg.sender).transfer(depositAmount);
@@ -527,18 +527,18 @@ contract SapphireAIAgentEscrow is Ownable {
   // --- Internal Helper Functions ---
 
   /**
-   * @dev Internal function to handle the subscription checks and state changes for an escrowed payment.
+   * @dev Internal function to handle the spending limit checks and state changes for an escrowed payment.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
    */
   function _processEscrowPayment(address _user, uint256 _fee) private {
-    Subscription storage sub = subscriptions[_user];
+    SpendingLimit storage sub = spendingLimits[_user];
 
     if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
+      revert NoActiveSpendingLimit();
     }
     if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
+      revert SpendingLimitExpired();
     }
     if (deposits[_user] < _fee) {
       revert InsufficientDeposit();
@@ -549,18 +549,18 @@ contract SapphireAIAgentEscrow is Ownable {
   }
 
   /**
-   * @dev Internal function to handle the subscription checks and state changes for a direct-to-treasury payment.
+   * @dev Internal function to handle the spending limit checks and state changes for a direct-to-treasury payment.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
    */
   function _processDirectPayment(address _user, uint256 _fee) private {
-    Subscription storage sub = subscriptions[_user];
+    SpendingLimit storage sub = spendingLimits[_user];
 
     if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
+      revert NoActiveSpendingLimit();
     }
     if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
+      revert SpendingLimitExpired();
     }
     if (deposits[_user] < _fee) {
       revert InsufficientDeposit();
