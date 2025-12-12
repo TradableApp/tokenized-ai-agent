@@ -90,7 +90,7 @@ contract SapphireAIAgentEscrow is Ownable {
   /// @notice Emitted when a timed-out escrowed payment is refunded to the user's deposit.
   event PaymentRefunded(uint256 indexed escrowId);
   /// @notice Emitted when a user cancels their own pending prompt.
-  event PromptCancelled(uint256 indexed answerMessageId, address indexed user);
+  event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
 
   // --- Errors ---
 
@@ -459,7 +459,7 @@ contract SapphireAIAgentEscrow is Ownable {
     payable(treasury).transfer(cancellationFee);
     sapphireAIAgent.recordCancellation(msg.sender, _answerMessageId);
 
-    emit PromptCancelled(_answerMessageId, msg.sender);
+    emit PromptCancelled(msg.sender, _answerMessageId);
   }
 
   /**

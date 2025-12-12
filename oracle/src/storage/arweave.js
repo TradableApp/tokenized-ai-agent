@@ -144,6 +144,12 @@ async function fetchData(cid) {
 
   return response.text();
 }
+
+/**
+ * Queries for a transaction ID by its tags using Irys GraphQL endpoint.
+ * @param {Array<{name: string, value: string}>} tags The tags to search for.
+ * @returns {Promise<string|null>} The first matching transaction ID, or null.
+ */
 async function queryTransactionByTags(tags) {
   const query = `
         query {

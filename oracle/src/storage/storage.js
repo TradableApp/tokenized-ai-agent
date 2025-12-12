@@ -8,13 +8,15 @@ const arweave = require("./arweave");
  * @returns {object} The appropriate storage utility module.
  */
 function getProviderFromCID(cid) {
-  // Heuristic for Arweave: Base64URL, 43 characters long.
-  if (cid && cid.length === 43 && /^[a-zA-Z0-9_-]+$/.test(cid)) {
+  // Heuristic for Arweave/Irys: Base64URL.
+  // Standard Arweave is 43 chars, but Irys can sometimes return 44 chars.
+  // We check for a valid range and character set.
+  if (cid && cid.length >= 43 && cid.length <= 50 && /^[a-zA-Z0-9_-]+$/.test(cid)) {
     return arweave;
   }
 
-  // Example for a future Autonomys provider
-  // if (cid && cid.startsWith("auto:")) {
+  // Determine Autonomys provider by CID prefix (example placeholder).
+  // if (cid && cid.startsWith("...")) {
   //   return autonomys;
   // }
 
@@ -27,7 +29,7 @@ function getProviderFromCID(cid) {
 async function initializeStorage() {
   await arweave.initializeIrys();
 
-  // await autonomys.initialize(); // Future initialization
+  // await autonomys.initialize(); // Autonomys initialization
 
   console.log("All storage providers initialized.");
 }
@@ -38,10 +40,10 @@ async function initializeStorage() {
  * @returns {Promise<string>} The resulting CID.
  */
 async function uploadData(dataBuffer, tags = []) {
-  // Currently, Arweave is our primary provider for all new uploads.
+  // Currently, Arweave is our provider for all new uploads.
   return arweave.uploadData(dataBuffer, tags);
 
-  // return autonomys.uploadData(dataBuffer, tags); // Future upload
+  // return autonomys.uploadData(dataBuffer, tags); // Autonomys upload
 }
 
 /**

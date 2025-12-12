@@ -325,7 +325,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       const initialUserBalance = await mockToken.balanceOf(user.address);
       await expect(escrow.connect(user).cancelPrompt(answerMessageId))
         .to.emit(escrow, "PromptCancelled")
-        .withArgs(answerMessageId, user.address);
+        .withArgs(user.address, answerMessageId);
       const expectedUserBalance = initialUserBalance + PROMPT_FEE - CANCELLATION_FEE;
       expect(await mockToken.balanceOf(user.address)).to.equal(expectedUserBalance);
     });

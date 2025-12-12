@@ -5,6 +5,8 @@ const path = require("path");
 const fs = require("fs/promises");
 const { v5: uuidv5 } = require("uuid");
 const crypto = require("crypto");
+const { default: PQueue } = require("p-queue");
+const { Mutex } = require("async-mutex");
 
 const { initializeOracle } = require("./contractUtility");
 const {
@@ -56,6 +58,16 @@ function initForTest(testComponents) {
   contract = testComponents.contract;
   isSapphire = testComponents.isSapphire;
 }
+
+// --- CONCURRENCY CONTROL ---
+
+// Transaction Mutex: Ensures we NEVER send 2 transactions simultaneously (prevents Nonce errors)
+// This implements the "Mutual Exclusion" pattern from the async-mutex docs.
+const txMutex = new Mutex();
+
+// Job Queue: Limits concurrency to 5.
+// This implements the "Promise queue with concurrency control" pattern from p-queue docs.
+const queue = new PQueue({ concurrency: 5 });
 
 console.log(`--- AI AGENT ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
 console.log(`Oracle signer address: ${signer.address}`);
@@ -549,11 +561,25 @@ async function handlePrompt(
       };
     }
 
-    const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
-    const receipt = await tx.wait();
-    console.log(
-      `Successfully submitted answer for prompt ${promptMessageId}. Tx hash: ${receipt.hash}`,
-    );
+    // We lock the wallet to ensure Nonces are used sequentially.
+    await txMutex.runExclusive(async () => {
+      // Double-check finalization on-chain right before sending
+      // This catches race conditions where user cancelled while we were uploading
+      const isFinalized = await contract.isJobFinalized(answerMessageId);
+      if (isFinalized) {
+        console.log(
+          `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+        );
+        return;
+      }
+
+      console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+      const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+      const receipt = await tx.wait();
+      console.log(
+        `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
+      );
+    });
   } catch (error) {
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
@@ -561,6 +587,22 @@ async function handlePrompt(
       );
 
       return; // Exit gracefully
+    }
+
+    // --- Fallback State Check ---
+    // If the transaction failed, check if the job is already finalized on-chain.
+    // This handles cases where Ethers v6 or the RPC doesn't return the revert reason clearly.
+    try {
+      const isFinalized = await contract.isJobFinalized(answerMessageId);
+      if (isFinalized) {
+        console.log(
+          `  ℹ️ Transaction failed but job ${answerMessageId} is finalized on-chain. Treating as cancelled/completed.`,
+        );
+
+        return; // Exit gracefully
+      }
+    } catch (checkErr) {
+      console.warn("  ⚠️ Could not verify job finalization status after error.");
     }
 
     console.error(`Error in handlePrompt for convId ${conversationId}:`, error);
@@ -607,7 +649,10 @@ async function handleRegeneration(
 
     const history = await reconstructHistory(originalAnswerMessageCID, sessionKey);
     if (instructions) {
-      history.push({ role: "user", content: `(Regeneration instruction: ${instructions})` });
+      history.push({
+        role: "user",
+        content: `Please regenerate your previous response. Make it ${instructions}.`,
+      });
     }
 
     const answerText = await queryAIModel(history, conversationId.toString());
@@ -633,7 +678,7 @@ async function handleRegeneration(
         id: answerMessageId.toString(),
         conversationId: conversationId.toString(),
         parentId: promptMessageId.toString(),
-        parentCID: promptMessageCID.toString(),
+        parentCID: promptMessageCID ? promptMessageCID.toString() : "",
         createdAt: now,
         role: "assistant",
         content: answerText,
@@ -649,11 +694,25 @@ async function handleRegeneration(
       searchDeltaCID: "",
     };
 
-    const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
-    const receipt = await tx.wait();
-    console.log(
-      `Successfully submitted regenerated answer for prompt ${promptMessageId}. Tx hash: ${receipt.hash}`,
-    );
+    // We lock the wallet to ensure Nonces are used sequentially.
+    await txMutex.runExclusive(async () => {
+      // Double-check finalization on-chain right before sending
+      // This catches race conditions where user cancelled while we were uploading
+      const isFinalized = await contract.isJobFinalized(answerMessageId);
+      if (isFinalized) {
+        console.log(
+          `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+        );
+        return;
+      }
+
+      console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+      const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+      const receipt = await tx.wait();
+      console.log(
+        `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
+      );
+    });
   } catch (error) {
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
@@ -661,6 +720,20 @@ async function handleRegeneration(
       );
 
       return; // Exit gracefully
+    }
+
+    // --- Fallback State Check ---
+    try {
+      const isFinalized = await contract.isJobFinalized(answerMessageId);
+      if (isFinalized) {
+        console.log(
+          `  ℹ️ Transaction failed but job ${answerMessageId} is finalized on-chain. Treating as cancelled/completed.`,
+        );
+
+        return; // Exit gracefully
+      }
+    } catch (checkErr) {
+      console.warn("  ⚠️ Could not verify job finalization status after error.");
     }
 
     console.error(`Error in handleRegeneration for promptId ${promptMessageId}:`, error);
@@ -737,18 +810,21 @@ async function handleBranch(
       ),
     ]);
 
-    const tx = await contract.submitBranch(
-      user,
-      originalConversationId,
-      branchPointMessageId,
-      newConversationId,
-      conversationCID,
-      metadataCID,
-    );
-    const receipt = await tx.wait();
-    console.log(
-      `Successfully submitted branch. New convId: ${newConversationId}. Tx hash: ${receipt.hash}`,
-    );
+    await txMutex.runExclusive(async () => {
+      console.log(`  Submitting branch ${newConversationId}...`);
+      const tx = await contract.submitBranch(
+        user,
+        originalConversationId,
+        branchPointMessageId,
+        newConversationId,
+        conversationCID,
+        metadataCID,
+      );
+      const receipt = await tx.wait();
+      console.log(
+        `  ✅ Success! Branch submitted. New convId: ${newConversationId}. Tx: ${receipt.hash}`,
+      );
+    });
   } catch (error) {
     console.error(`Error in handleBranch for convId ${originalConversationId}:`, error);
     throw error;
@@ -776,11 +852,14 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
       sessionKey,
     );
 
-    const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
-    const receipt = await tx.wait();
-    console.log(
-      `Successfully submitted metadata update for conversation ${conversationId}. Tx hash: ${receipt.hash}`,
-    );
+    await txMutex.runExclusive(async () => {
+      console.log(`  Submitting metadata update for ${conversationId}...`);
+      const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
+      const receipt = await tx.wait();
+      console.log(
+        `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
+      );
+    });
   } catch (error) {
     console.error(`Error in handleMetadataUpdate for convId ${conversationId}:`, error);
 
@@ -963,10 +1042,11 @@ async function retryFailedJobs() {
       try {
         // Re-fetch the full event object to pass to the handler
         const receipt = await provider.getTransactionReceipt(job.event.transactionHash);
-        if (!receipt)
+        if (!receipt) {
           throw new Error(
             `Could not find transaction receipt for hash ${job.event.transactionHash}`,
           );
+        }
 
         const fullEvent = receipt.logs
           .map((log) => {
@@ -990,8 +1070,9 @@ async function retryFailedJobs() {
               parsedLog.transactionHash === job.event.transactionHash,
           );
 
-        if (!fullEvent)
+        if (!fullEvent) {
           throw new Error(`Could not re-parse event '${job.eventName}' from transaction receipt.`);
+        }
 
         const eventWithBlock = {
           ...fullEvent,
@@ -999,24 +1080,27 @@ async function retryFailedJobs() {
           getBlock: () => provider.getBlock(receipt.blockNumber),
         };
 
-        switch (job.eventName) {
-          case "PromptSubmitted":
-            await handlePrompt(...eventWithBlock.args, eventWithBlock);
+        // Add the retry to the concurrency queue as well
+        await queue.add(async () => {
+          switch (job.eventName) {
+            case "PromptSubmitted":
+              await handlePrompt(...eventWithBlock.args, eventWithBlock);
 
-            break;
-          case "RegenerationRequested":
-            await handleRegeneration(...eventWithBlock.args, eventWithBlock);
+              break;
+            case "RegenerationRequested":
+              await handleRegeneration(...eventWithBlock.args, eventWithBlock);
 
-            break;
-          case "BranchRequested":
-            await handleBranch(...eventWithBlock.args, eventWithBlock);
+              break;
+            case "BranchRequested":
+              await handleBranch(...eventWithBlock.args, eventWithBlock);
 
-            break;
-          case "MetadataUpdateRequested":
-            await handleMetadataUpdate(...eventWithBlock.args, eventWithBlock);
+              break;
+            case "MetadataUpdateRequested":
+              await handleMetadataUpdate(...eventWithBlock.args, eventWithBlock);
 
-            break;
-        }
+              break;
+          }
+        });
         console.log(`[Retry] Successfully processed job for event: ${job.eventName}`);
         // On success, we DON'T add it to remainingJobs, so it's removed from the queue.
       } catch (error) {
@@ -1095,29 +1179,36 @@ async function processPastEvents(fromBlock, toBlock) {
       if (allEvents.length > 0) {
         console.log(`     Found ${allEvents.length} events in batch to process.`);
 
-        for (const event of allEvents) {
-          // Use a switch on the event name to call the correct handler
-          switch (event.eventName) {
-            case "PromptSubmitted":
-              await handlePrompt(...event.args, event);
+        // Map all events to queue tasks
+        const tasks = allEvents.map((event) => {
+          return queue.add(async () => {
+            // Use a switch on the event name to call the correct handler
+            switch (event.eventName) {
+              case "PromptSubmitted":
+                await handlePrompt(...event.args, event);
 
-              break;
-            case "RegenerationRequested":
-              await handleRegeneration(...event.args, event);
+                break;
+              case "RegenerationRequested":
+                await handleRegeneration(...event.args, event);
 
-              break;
-            case "BranchRequested":
-              await handleBranch(...event.args, event);
+                break;
+              case "BranchRequested":
+                await handleBranch(...event.args, event);
 
-              break;
-            case "MetadataUpdateRequested":
-              await handleMetadataUpdate(...event.args, event);
+                break;
+              case "MetadataUpdateRequested":
+                await handleMetadataUpdate(...event.args, event);
 
-              break;
-            default:
-              console.warn(`Unknown event encountered during catch-up: ${event.eventName}`);
-          }
-        }
+                break;
+              default:
+                console.warn(`Unknown event encountered during catch-up: ${event.eventName}`);
+            }
+          });
+        });
+
+        // Wait for ALL tasks in this batch to complete before updating state.
+        // This ensures if the process crashes, we re-process this batch rather than skipping it.
+        await Promise.all(tasks);
       }
 
       // Update checkpoint after every successful batch to avoid re-processing
@@ -1186,32 +1277,37 @@ async function pollEvents(startBlock) {
         });
 
         // Process any found events
-        for (const event of allEvents) {
-          switch (event.eventName) {
-            case "PromptSubmitted":
-              await handleAndRecord("PromptSubmitted", handlePrompt, ...event.args, event);
-              break;
-            case "RegenerationRequested":
-              await handleAndRecord(
-                "RegenerationRequested",
-                handleRegeneration,
-                ...event.args,
-                event,
-              );
-              break;
-            case "BranchRequested":
-              await handleAndRecord("BranchRequested", handleBranch, ...event.args, event);
-              break;
-            case "MetadataUpdateRequested":
-              await handleAndRecord(
-                "MetadataUpdateRequested",
-                handleMetadataUpdate,
-                ...event.args,
-                event,
-              );
-              break;
-          }
-        }
+        const tasks = allEvents.map((event) => {
+          return queue.add(async () => {
+            switch (event.eventName) {
+              case "PromptSubmitted":
+                await handleAndRecord("PromptSubmitted", handlePrompt, ...event.args, event);
+                break;
+              case "RegenerationRequested":
+                await handleAndRecord(
+                  "RegenerationRequested",
+                  handleRegeneration,
+                  ...event.args,
+                  event,
+                );
+                break;
+              case "BranchRequested":
+                await handleAndRecord("BranchRequested", handleBranch, ...event.args, event);
+                break;
+              case "MetadataUpdateRequested":
+                await handleAndRecord(
+                  "MetadataUpdateRequested",
+                  handleMetadataUpdate,
+                  ...event.args,
+                  event,
+                );
+                break;
+            }
+          });
+        });
+
+        // Wait for the queue to accept and process the batch
+        await Promise.all(tasks);
 
         // Update the state file to the block we just finished checking (toBlock).
         // This happens even if allEvents.length is 0.
@@ -1221,7 +1317,7 @@ async function pollEvents(startBlock) {
         // This confirms the oracle is moving forward and saving state.
         if (allEvents.length > 0) {
           console.log(
-            `  ✓ Polled ${fromQueryBlock} to ${currentBlock} -> Found ${allEvents.length} events.`,
+            `  ✓ Polled ${fromQueryBlock} to ${currentBlock} -> Processed ${allEvents.length} events.`,
           );
         } else {
           console.log(`  ✓ Polled ${fromQueryBlock} to ${currentBlock}`);
