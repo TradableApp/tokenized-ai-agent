@@ -958,7 +958,12 @@ async function handleAndRecord(eventName, handler, ...args) {
     const isRetryable =
       error.message.includes("Irys") ||
       error.message.includes("fetch") ||
-      error.message.includes("insufficient funds");
+      error.message.includes("insufficient funds") ||
+      error.message.includes("Autonomys") ||
+      error.message.includes("Bad Gateway") ||
+      error.message.includes("502") ||
+      error.message.includes("503") ||
+      error.message.includes("ETIMEDOUT");
 
     if (isRetryable) {
       console.warn(`Encountered a retryable error for ${eventName}. Adding to retry queue.`);

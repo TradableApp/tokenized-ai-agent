@@ -36,6 +36,8 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@autonomys/auto-drive": "^1.6.4",
+    "@autonomys/auto-utils": "^1.6.4",
     "@irys/upload": "^0.0.15",
     "@irys/upload-ethereum": "^0.0.16",
     "@oasisprotocol/sapphire-ethers-v6": "^6.0.1",
