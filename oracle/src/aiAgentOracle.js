@@ -23,6 +23,7 @@ const {
 } = require("./formatters");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
+const { validatePayload } = require("./payloadValidator");
 
 // --- Configuration & Initialization ---
 
@@ -407,9 +408,11 @@ async function handlePrompt(
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
+    const decryptedData = isSapphire
+      ? payload
       : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+
+    const clientPayload = validatePayload(decryptedData, "PromptSubmitted");
 
     const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
 
@@ -641,9 +644,11 @@ async function handleRegeneration(
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
+    const decryptedData = isSapphire
+      ? payload
       : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+
+    const clientPayload = validatePayload(decryptedData, "RegenerationRequested");
 
     const { instructions, promptMessageCID, originalAnswerMessageCID } = clientPayload;
 
@@ -761,9 +766,11 @@ async function handleBranch(
       originalConversationId.toString(),
     );
 
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
+    const decryptedData = isSapphire
+      ? payload
       : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+
+    const clientPayload = validatePayload(decryptedData, "BranchRequested");
 
     const { originalTitle } = clientPayload;
     const now = Date.now();
@@ -838,15 +845,20 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    const clientPayload = isSapphire
-      ? JSON.parse(payload)
+    const decryptedData = isSapphire
+      ? payload
       : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+
+    const clientPayload = validatePayload(decryptedData, "MetadataUpdateRequested");
+
+    const { title, isDeleted } = clientPayload; // Explicitly destructured for clarity
 
     const now = Date.now();
 
     const metadataCID = await encryptAndUpload(
       createConversationMetadataFile({
-        ...clientPayload,
+        title,
+        isDeleted,
         lastUpdatedAt: now,
       }),
       sessionKey,
@@ -952,7 +964,27 @@ async function handleAndRecord(eventName, handler, ...args) {
     await handler(...args);
     await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: event.blockNumber }));
   } catch (error) {
-    // ERROR CLASSIFICATION
+    // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
+    // "Validation Failed" covers all schema mismatches from payloadValidator.js
+    if (
+      error.message.includes("Validation Failed") ||
+      error.message.includes("Invalid encrypted data format") ||
+      error.message.includes("Unexpected token") // JSON parse error
+    ) {
+      console.warn(
+        `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${error.message}`,
+      );
+      // We do NOT throw, we do NOT alert, we do NOT queue for retry.
+      // We update state and move on.
+      await fs.writeFile(
+        STATE_FILE_PATH,
+        JSON.stringify({ lastProcessedBlock: event.blockNumber }),
+      );
+
+      return;
+    }
+
+    // 2. RETRYABLE ERRORS (Network, API limits)
     // For now, we'll treat most I/O errors (like from Irys) as retryable.
     // We can add more specific checks here later (e.g., based on error codes).
     const isRetryable =
@@ -966,7 +998,9 @@ async function handleAndRecord(eventName, handler, ...args) {
       error.message.includes("ETIMEDOUT");
 
     if (isRetryable) {
-      console.warn(`Encountered a retryable error for ${eventName}. Adding to retry queue.`);
+      console.warn(
+        `Encountered a retryable error for ${eventName}. Adding to retry queue. Error: ${error.message}`,
+      );
 
       let failedJobs = [];
       try {
@@ -1106,7 +1140,7 @@ async function retryFailedJobs() {
               break;
           }
         });
-        console.log(`[Retry] Successfully processed job for event: ${job.eventName}`);
+        console.log(`[Retry] Successfully re-queued job.`);
         // On success, we DON'T add it to remainingJobs, so it's removed from the queue.
       } catch (error) {
         console.error(
@@ -1182,7 +1216,7 @@ async function processPastEvents(fromBlock, toBlock) {
       });
 
       if (allEvents.length > 0) {
-        console.log(`     Found ${allEvents.length} events in batch to process.`);
+        console.log(`     Found ${allEvents.length} events in batch. Queueing...`);
 
         // Map all events to queue tasks
         const tasks = allEvents.map((event) => {
@@ -1190,19 +1224,29 @@ async function processPastEvents(fromBlock, toBlock) {
             // Use a switch on the event name to call the correct handler
             switch (event.eventName) {
               case "PromptSubmitted":
-                await handlePrompt(...event.args, event);
+                await handleAndRecord("PromptSubmitted", handlePrompt, ...event.args, event);
 
                 break;
               case "RegenerationRequested":
-                await handleRegeneration(...event.args, event);
+                await handleAndRecord(
+                  "RegenerationRequested",
+                  handleRegeneration,
+                  ...event.args,
+                  event,
+                );
 
                 break;
               case "BranchRequested":
-                await handleBranch(...event.args, event);
+                await handleAndRecord("BranchRequested", handleBranch, ...event.args, event);
 
                 break;
               case "MetadataUpdateRequested":
-                await handleMetadataUpdate(...event.args, event);
+                await handleAndRecord(
+                  "MetadataUpdateRequested",
+                  handleMetadataUpdate,
+                  ...event.args,
+                  event,
+                );
 
                 break;
               default:
@@ -1277,7 +1321,10 @@ async function pollEvents(startBlock) {
 
         // Sort by block and transaction index to process in order
         allEvents.sort((a, b) => {
-          if (a.blockNumber !== b.blockNumber) return a.blockNumber - b.blockNumber;
+          if (a.blockNumber !== b.blockNumber) {
+            return a.blockNumber - b.blockNumber;
+          }
+
           return a.index - b.index;
         });
 
@@ -1287,6 +1334,7 @@ async function pollEvents(startBlock) {
             switch (event.eventName) {
               case "PromptSubmitted":
                 await handleAndRecord("PromptSubmitted", handlePrompt, ...event.args, event);
+
                 break;
               case "RegenerationRequested":
                 await handleAndRecord(
@@ -1295,9 +1343,11 @@ async function pollEvents(startBlock) {
                   ...event.args,
                   event,
                 );
+
                 break;
               case "BranchRequested":
                 await handleAndRecord("BranchRequested", handleBranch, ...event.args, event);
+
                 break;
               case "MetadataUpdateRequested":
                 await handleAndRecord(
@@ -1306,6 +1356,7 @@ async function pollEvents(startBlock) {
                   ...event.args,
                   event,
                 );
+
                 break;
             }
           });
