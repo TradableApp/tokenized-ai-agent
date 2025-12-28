@@ -4,28 +4,28 @@ const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers"
 
 describe("EVMAIAgentEscrow (Upgradable)", function () {
   // --- Test Suite Setup ---
-  const PROMPT_FEE = ethers.parseEther("1");
   const INITIAL_ALLOWANCE = ethers.parseEther("100");
-  const MOCK_ENCRYPTED_DATA = "0x123456"; // Consistent mock data
+  const PROMPT_FEE = ethers.parseEther("10");
+  const CANCELLATION_FEE = ethers.parseEther("1");
+  const METADATA_FEE = ethers.parseEther("0.5");
+  const BRANCH_FEE = ethers.parseEther("2");
+  const MOCK_ENCRYPTED_PAYLOAD = "0x1234";
+  const MOCK_ROFL_KEY = "0x5678";
 
   // Deploys contracts and sets up the test environment.
-  // This fixture is used by `loadFixture` to speed up tests.
   async function deployEscrowFixture() {
     const [deployer, user, oracle, treasury, unauthorizedUser] = await ethers.getSigners();
 
-    // 1. Deploy all mock dependencies.
     const MockAgentFactory = await ethers.getContractFactory("MockEVMAIAgent");
-    const mockAgent = await MockAgentFactory.deploy();
+    const mockAgent = await MockAgentFactory.deploy(oracle.address);
     await mockAgent.waitForDeployment();
 
     const MockTokenFactory = await ethers.getContractFactory("MockAbleToken");
     const mockToken = await MockTokenFactory.deploy();
     await mockToken.waitForDeployment();
 
-    // 2. Mint tokens for the user for testing.
     await mockToken.mint(user.address, INITIAL_ALLOWANCE);
 
-    // 3. Deploy the main Escrow contract as a proxy, linking it to the mocks.
     const EVMAIAgentEscrow = await ethers.getContractFactory("EVMAIAgentEscrow");
     const escrow = await upgrades.deployProxy(
       EVMAIAgentEscrow,
@@ -33,14 +33,16 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         await mockToken.getAddress(),
         await mockAgent.getAddress(),
         treasury.address,
-        oracle.address,
-        deployer.address, // owner
+        deployer.address,
+        PROMPT_FEE,
+        CANCELLATION_FEE,
+        METADATA_FEE,
+        BRANCH_FEE,
       ],
       { initializer: "initialize", kind: "uups" },
     );
     await escrow.waitForDeployment();
 
-    // 4. Have the user approve the escrow contract to spend their tokens.
     await mockToken.connect(user).approve(await escrow.getAddress(), INITIAL_ALLOWANCE);
 
     return {
@@ -52,397 +54,449 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       oracle,
       treasury,
       unauthorizedUser,
-      EVMAIAgentEscrow, // Return factory for revert tests
+      EVMAIAgentEscrow,
     };
   }
 
   // --- Test Cases ---
 
-  describe("Initialization", function () {
-    it("should set the correct initial state and owner", async function () {
-      const { escrow, mockAgent, mockToken, deployer, treasury, oracle } =
-        await loadFixture(deployEscrowFixture);
-      expect(await escrow.owner()).to.equal(deployer.address);
-      expect(await escrow.treasury()).to.equal(treasury.address);
-      expect(await escrow.oracle()).to.equal(oracle.address);
-      expect(await escrow.evmAIAgent()).to.equal(await mockAgent.getAddress());
-      expect(await escrow.ableToken()).to.equal(await mockToken.getAddress());
+  describe("Initialization and Fee Management", function () {
+    it("should set all initial fees correctly", async function () {
+      const { escrow } = await loadFixture(deployEscrowFixture);
+      expect(await escrow.promptFee()).to.equal(PROMPT_FEE);
+      expect(await escrow.cancellationFee()).to.equal(CANCELLATION_FEE);
+      expect(await escrow.metadataUpdateFee()).to.equal(METADATA_FEE);
+      expect(await escrow.branchFee()).to.equal(BRANCH_FEE);
     });
 
-    it("should revert if initialized with a zero address for the agent", async function () {
-      const { EVMAIAgentEscrow, mockToken, treasury, oracle, deployer } =
-        await loadFixture(deployEscrowFixture);
-      await expect(
-        upgrades.deployProxy(EVMAIAgentEscrow, [
-          await mockToken.getAddress(),
-          ethers.ZeroAddress, // Invalid agent
-          treasury.address,
-          oracle.address,
-          deployer.address,
-        ]),
-      ).to.be.revertedWithCustomError(EVMAIAgentEscrow, "ZeroAddress");
+    context("Initialization Failure", function () {
+      it("should revert if initialized with any zero address", async function () {
+        const { EVMAIAgentEscrow, mockToken, mockAgent, treasury, deployer } =
+          await loadFixture(deployEscrowFixture);
+
+        await expect(
+          upgrades.deployProxy(EVMAIAgentEscrow, [
+            ethers.ZeroAddress,
+            await mockAgent.getAddress(),
+            treasury.address,
+            deployer.address,
+            0,
+            0,
+            0,
+            0,
+          ]),
+        ).to.be.revertedWithCustomError(EVMAIAgentEscrow, "ZeroAddress");
+        await expect(
+          upgrades.deployProxy(EVMAIAgentEscrow, [
+            await mockToken.getAddress(),
+            ethers.ZeroAddress,
+            treasury.address,
+            deployer.address,
+            0,
+            0,
+            0,
+            0,
+          ]),
+        ).to.be.revertedWithCustomError(EVMAIAgentEscrow, "ZeroAddress");
+        await expect(
+          upgrades.deployProxy(EVMAIAgentEscrow, [
+            await mockToken.getAddress(),
+            await mockAgent.getAddress(),
+            ethers.ZeroAddress,
+            deployer.address,
+            0,
+            0,
+            0,
+            0,
+          ]),
+        ).to.be.revertedWithCustomError(EVMAIAgentEscrow, "ZeroAddress");
+      });
     });
 
-    it("should revert if initialized with a zero address for the token", async function () {
-      const { EVMAIAgentEscrow, mockAgent, treasury, oracle, deployer } =
-        await loadFixture(deployEscrowFixture);
-      await expect(
-        upgrades.deployProxy(EVMAIAgentEscrow, [
-          ethers.ZeroAddress, // Invalid token
-          await mockAgent.getAddress(),
-          treasury.address,
-          oracle.address,
-          deployer.address,
-        ]),
-      ).to.be.revertedWithCustomError(EVMAIAgentEscrow, "ZeroAddress");
-    });
+    context("All Fee Setters", function () {
+      it("should allow the owner to update all fees", async function () {
+        const { escrow, deployer } = await loadFixture(deployEscrowFixture);
+        const newFee = ethers.parseEther("5");
 
-    it("should revert if initialized with a zero address for the owner", async function () {
-      const { EVMAIAgentEscrow, mockToken, mockAgent, treasury, oracle } =
-        await loadFixture(deployEscrowFixture);
-      // Because __Ownable_init runs first, we expect its specific error.
-      await expect(
-        upgrades.deployProxy(EVMAIAgentEscrow, [
-          await mockToken.getAddress(),
-          await mockAgent.getAddress(),
-          treasury.address,
-          oracle.address,
-          ethers.ZeroAddress, // Invalid owner
-        ]),
-      ).to.be.revertedWithCustomError(EVMAIAgentEscrow, "OwnableInvalidOwner");
+        await expect(escrow.connect(deployer).setPromptFee(newFee))
+          .to.emit(escrow, "PromptFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.promptFee()).to.equal(newFee);
+
+        await expect(escrow.connect(deployer).setCancellationFee(newFee))
+          .to.emit(escrow, "CancellationFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.cancellationFee()).to.equal(newFee);
+
+        await expect(escrow.connect(deployer).setMetadataUpdateFee(newFee))
+          .to.emit(escrow, "MetadataUpdateFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.metadataUpdateFee()).to.equal(newFee);
+
+        await expect(escrow.connect(deployer).setBranchFee(newFee))
+          .to.emit(escrow, "BranchFeeUpdated")
+          .withArgs(newFee);
+        expect(await escrow.branchFee()).to.equal(newFee);
+      });
+
+      it("should prevent a non-owner from updating any fee", async function () {
+        const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture);
+        const newFee = ethers.parseEther("5");
+
+        await expect(
+          escrow.connect(unauthorizedUser).setPromptFee(newFee),
+        ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
+        await expect(
+          escrow.connect(unauthorizedUser).setCancellationFee(newFee),
+        ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
+        await expect(
+          escrow.connect(unauthorizedUser).setMetadataUpdateFee(newFee),
+        ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
+        await expect(
+          escrow.connect(unauthorizedUser).setBranchFee(newFee),
+        ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
+      });
+
+      it("should revert if owner tries to set treasury to zero address", async function () {
+        const { escrow, deployer } = await loadFixture(deployEscrowFixture);
+        await expect(
+          escrow.connect(deployer).setTreasury(ethers.ZeroAddress),
+        ).to.be.revertedWithCustomError(escrow, "ZeroAddress");
+      });
     });
   });
 
-  describe("Administrative Functions", function () {
-    it("should allow the owner to set a new treasury", async function () {
-      const { escrow, deployer, unauthorizedUser } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(deployer).setTreasury(unauthorizedUser.address);
-      expect(await escrow.treasury()).to.equal(unauthorizedUser.address);
-    });
-
-    it("should prevent a non-owner from setting a new treasury", async function () {
-      const { escrow, user, unauthorizedUser } = await loadFixture(deployEscrowFixture);
-      await expect(
-        escrow.connect(user).setTreasury(unauthorizedUser.address),
-      ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
-    });
-
-    it("should revert if owner tries to set treasury to the zero address", async function () {
-      const { escrow, deployer } = await loadFixture(deployEscrowFixture);
-      await expect(
-        escrow.connect(deployer).setTreasury(ethers.ZeroAddress),
-      ).to.be.revertedWithCustomError(escrow, "ZeroAddress");
-    });
-
-    it("should allow the owner to set a new oracle", async function () {
-      const { escrow, deployer, unauthorizedUser } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(deployer).setOracle(unauthorizedUser.address);
-      expect(await escrow.oracle()).to.equal(unauthorizedUser.address);
-    });
-
-    it("should prevent a non-owner from setting a new oracle", async function () {
-      const { escrow, user, unauthorizedUser } = await loadFixture(deployEscrowFixture);
-      await expect(
-        escrow.connect(user).setOracle(unauthorizedUser.address),
-      ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");
-    });
-
-    it("should revert if owner tries to set oracle to the zero address", async function () {
-      const { escrow, deployer } = await loadFixture(deployEscrowFixture);
-      await expect(
-        escrow.connect(deployer).setOracle(ethers.ZeroAddress),
-      ).to.be.revertedWithCustomError(escrow, "ZeroAddress");
-    });
-  });
-
-  describe("Subscription Management", function () {
-    it("should allow a user to set and cancel a subscription", async function () {
+  describe("Spending Limit Management", function () {
+    it("should allow a user to set and cancel a spending limit if they have no pending prompts", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       const expiresAt = (await time.latest()) + 3600;
-      await expect(escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, expiresAt))
-        .to.emit(escrow, "SubscriptionSet")
+      await expect(escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt))
+        .to.emit(escrow, "SpendingLimitSet")
         .withArgs(user.address, INITIAL_ALLOWANCE, expiresAt);
 
-      let sub = await escrow.subscriptions(user.address);
-      expect(sub.allowance).to.equal(INITIAL_ALLOWANCE);
-
-      await expect(escrow.connect(user).cancelSubscription())
-        .to.emit(escrow, "SubscriptionCancelled")
+      await expect(escrow.connect(user).cancelSpendingLimit())
+        .to.emit(escrow, "SpendingLimitCancelled")
         .withArgs(user.address);
-
-      sub = await escrow.subscriptions(user.address);
-      expect(sub.allowance).to.equal(0);
     });
 
-    it("should revert when setting a new subscription while a prompt is pending", async function () {
-      const { escrow, user } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-      await escrow
-        .connect(user)
-        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
+    context("With Pending Prompts", function () {
+      let escrow, user;
+      beforeEach(async function () {
+        const fixtures = await loadFixture(deployEscrowFixture);
+        escrow = fixtures.escrow;
+        user = fixtures.user;
+        await escrow
+          .connect(user)
+          .setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      });
 
-      // Attempting to set a new subscription while one is pending must fail.
-      await expect(
-        escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 7200),
-      ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
-    });
+      it("should revert if user tries to set a new spending limit", async function () {
+        await expect(
+          escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200),
+        ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
+      });
 
-    it("should revert when cancelling a subscription while having pending prompts", async function () {
-      const { escrow, user } = await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-      await escrow
-        .connect(user)
-        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
-
-      // Attempting to cancel the subscription should now fail.
-      await expect(escrow.connect(user).cancelSubscription()).to.be.revertedWithCustomError(
-        escrow,
-        "HasPendingPrompts",
-      );
+      it("should revert if user tries to cancel their spending limit", async function () {
+        await expect(escrow.connect(user).cancelSpendingLimit()).to.be.revertedWithCustomError(
+          escrow,
+          "HasPendingPrompts",
+        );
+      });
     });
   });
 
-  describe("Prompt Cancellation", function () {
-    let escrow, user, unauthorizedUser, mockAgent, mockToken;
-    const promptId = 0;
+  describe("User Actions: Escrow-Based", function () {
+    let escrow, mockAgent, mockToken, user, oracle;
 
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
-      escrow = fixtures.escrow;
-      user = fixtures.user;
-      unauthorizedUser = fixtures.unauthorizedUser;
-      mockAgent = fixtures.mockAgent;
-      mockToken = fixtures.mockToken;
-
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-      await escrow
-        .connect(user)
-        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
+      ({ escrow, mockAgent, mockToken, user, oracle } = fixtures);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
     });
 
-    it("should allow the prompt owner to cancel, refunding tokens and reducing the total allowance", async function () {
-      const CANCELLATION_TIMEOUT = 5 * 60; // 5 minutes in seconds
-      await time.increase(CANCELLATION_TIMEOUT + 1);
-
-      const initialSub = await escrow.subscriptions(user.address);
-      const initialUserTokenBalance = await mockToken.balanceOf(user.address);
-
-      // Perform the cancellation
-      const tx = escrow.connect(user).cancelAndRefundPrompt(promptId);
-
-      // Check for both cancellation and refund events
-      await expect(tx).to.emit(escrow, "PromptCancelled").withArgs(promptId, user.address);
-
-      // Verify state changes
-      const escrowRecord = await escrow.escrows(promptId);
-      expect(escrowRecord.status).to.equal(2); // REFUNDED
-      expect(await escrow.pendingEscrowCount(user.address)).to.equal(0);
-
-      // Verify allowance credit
-      const finalSub = await escrow.subscriptions(user.address);
-      expect(finalSub.spentAmount).to.equal(initialSub.spentAmount - PROMPT_FEE);
-
-      // Verify the total allowance for the period is correctly reduced
-      expect(finalSub.allowance).to.equal(initialSub.allowance - PROMPT_FEE);
-
-      // Verify token refund
-      const finalUserTokenBalance = await mockToken.balanceOf(user.address);
-      expect(finalUserTokenBalance).to.equal(initialUserTokenBalance + PROMPT_FEE);
-
-      // Verify interaction with the AI Agent contract
-      expect(await mockAgent.cancellationCallCount()).to.equal(1);
-      expect(await mockAgent.lastCancelledPromptId()).to.equal(promptId);
+    it("should handle a new prompt, reserving a new conversation ID", async function () {
+      const newConversationId = 1; // From mock agent's counter
+      const expectedAnswerId = 1;
+      await expect(escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY))
+        .to.emit(escrow, "PaymentEscrowed")
+        .withArgs(expectedAnswerId, user.address, PROMPT_FEE);
+      expect(await mockAgent.lastConversationId()).to.equal(newConversationId);
     });
 
-    it("should revert if a user tries to cancel a prompt they do not own", async function () {
+    it("should handle a regeneration request with correct conversationId", async function () {
+      const conversationId = 5;
+      const expectedNewAnswerId = 0; // First reserved message ID
       await expect(
-        escrow.connect(unauthorizedUser).cancelAndRefundPrompt(promptId),
+        escrow
+          .connect(user)
+          .initiateRegeneration(conversationId, 98, 99, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+      )
+        .to.emit(escrow, "PaymentEscrowed")
+        .withArgs(expectedNewAnswerId, user.address, PROMPT_FEE);
+      expect(await mockAgent.lastConversationId()).to.equal(conversationId);
+    });
+
+    it("should handle an agent job initiated by the oracle, reserving a new job ID", async function () {
+      const newJobId = 1; // From mock agent's counter
+      const expectedTriggerId = 0;
+      await expect(
+        escrow
+          .connect(oracle)
+          .initiateAgentJob(user.address, 0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+      )
+        .to.emit(escrow, "PaymentEscrowed")
+        .withArgs(expectedTriggerId, user.address, PROMPT_FEE);
+      expect(await mockAgent.lastJobId()).to.equal(newJobId);
+    });
+  });
+
+  describe("User Actions: Direct Payment", function () {
+    let escrow, mockAgent, user, treasury, mockToken;
+    beforeEach(async function () {
+      const fixtures = await loadFixture(deployEscrowFixture);
+      ({ escrow, mockAgent, user, treasury, mockToken } = fixtures);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+    });
+
+    it("should handle a metadata update request", async function () {
+      const initialTreasuryBalance = await mockToken.balanceOf(treasury.address);
+      await escrow.connect(user).initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      expect(await mockToken.balanceOf(treasury.address)).to.equal(
+        initialTreasuryBalance + METADATA_FEE,
+      );
+      expect(await mockAgent.lastConversationId()).to.equal(1);
+    });
+
+    it("should handle a branch request, reserving a new conversation ID", async function () {
+      const initialTreasuryBalance = await mockToken.balanceOf(treasury.address);
+      const newConversationId = 1; // From mock agent's counter
+      await escrow.connect(user).initiateBranch(123, 456, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      expect(await mockToken.balanceOf(treasury.address)).to.equal(
+        initialTreasuryBalance + BRANCH_FEE,
+      );
+      expect(await mockAgent.lastOriginalConversationId()).to.equal(123);
+      expect(await mockAgent.lastNewConversationId()).to.equal(newConversationId);
+    });
+  });
+
+  describe("Initiation Failure Scenarios", function () {
+    it("should revert if user has no active spending limit", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      await expect(
+        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+      ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
+    });
+
+    it("should revert if spending limit is expired", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await time.increase(3601);
+
+      await expect(
+        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+      ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
+    });
+
+    it("should revert if spending limit allowance is insufficient", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      const lowAllowance = PROMPT_FEE - 1n;
+      await escrow.connect(user).setSpendingLimit(lowAllowance, (await time.latest()) + 3600);
+
+      await expect(
+        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+      ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
+    });
+  });
+
+  describe("Cancellation and Refund Flows", function () {
+    let escrow, mockAgent, mockToken, user, unauthorizedUser;
+    const answerMessageId = 1; // Reserved for the new prompt
+
+    beforeEach(async function () {
+      const fixtures = await loadFixture(deployEscrowFixture);
+      ({ escrow, mockAgent, mockToken, user, unauthorizedUser } = fixtures);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+    });
+
+    it("should allow a user to cancel a prompt", async function () {
+      await time.increase(5);
+      const initialUserBalance = await mockToken.balanceOf(user.address);
+      await expect(escrow.connect(user).cancelPrompt(answerMessageId))
+        .to.emit(escrow, "PromptCancelled")
+        .withArgs(user.address, answerMessageId);
+      const expectedUserBalance = initialUserBalance + PROMPT_FEE - CANCELLATION_FEE;
+      expect(await mockToken.balanceOf(user.address)).to.equal(expectedUserBalance);
+    });
+
+    it("should allow a keeper to process a refund", async function () {
+      await time.increase(3601);
+      const initialUserBalance = await mockToken.balanceOf(user.address);
+      await expect(escrow.processRefund(answerMessageId))
+        .to.emit(escrow, "PaymentRefunded")
+        .withArgs(answerMessageId);
+      expect(await mockToken.balanceOf(user.address)).to.equal(initialUserBalance + PROMPT_FEE);
+    });
+
+    it("should revert if a non-owner tries to cancel", async function () {
+      await time.increase(5);
+      await expect(
+        escrow.connect(unauthorizedUser).cancelPrompt(answerMessageId),
       ).to.be.revertedWithCustomError(escrow, "NotPromptOwner");
     });
 
-    it("should revert if a user tries to cancel before the timeout has passed", async function () {
+    it("should revert if cancelling before timeout", async function () {
       await expect(
-        escrow.connect(user).cancelAndRefundPrompt(promptId),
+        escrow.connect(user).cancelPrompt(answerMessageId),
       ).to.be.revertedWithCustomError(escrow, "PromptNotCancellableYet");
     });
 
-    it("should revert if a user tries to cancel a prompt that is not pending", async function () {
-      const { escrow, mockAgent, user } = await loadFixture(deployEscrowFixture);
-      const promptId = 0;
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-      await escrow
-        .connect(user)
-        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
+    it("should revert if refunding before timeout", async function () {
+      await expect(
+        escrow.connect(user).processRefund(answerMessageId),
+      ).to.be.revertedWithCustomError(escrow, "PromptNotRefundableYet");
+    });
 
-      // Finalize the prompt so its status is COMPLETE.
+    it("should revert cancelPrompt if user cannot afford the cancellation fee", async function () {
+      const { escrow, user, mockToken } = await loadFixture(deployEscrowFixture);
+      await mockToken.connect(user).approve(await escrow.getAddress(), PROMPT_FEE);
+      await escrow.connect(user).setSpendingLimit(PROMPT_FEE, (await time.latest()) + 7200);
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+
+      await time.increase(5);
+      await expect(escrow.connect(user).cancelPrompt(1)).to.be.revertedWithCustomError(
+        escrow,
+        "InsufficientSpendingLimitAllowance",
+      );
+    });
+
+    context("Refund Failure Paths", function () {
+      it("should silently return if processRefund is called for a non-existent escrow", async function () {
+        const { escrow } = await loadFixture(deployEscrowFixture);
+        const nonExistentId = 999;
+        await expect(escrow.processRefund(nonExistentId)).to.not.be.reverted;
+      });
+
+      it("should revert if processRefund is called on an already completed escrow", async function () {
+        const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
+        await ethers.provider.send("hardhat_setBalance", [
+          agentSigner.address,
+          "0x1000000000000000000",
+        ]);
+
+        await escrow.connect(agentSigner).finalizePayment(answerMessageId);
+
+        await time.increase(3601);
+        await expect(escrow.processRefund(answerMessageId)).to.be.revertedWithCustomError(
+          escrow,
+          "EscrowNotPending",
+        );
+      });
+    });
+  });
+
+  describe("Finalization and State Guards", function () {
+    it("should allow the agent to finalize payment", async function () {
+      const { escrow, mockAgent, mockToken, user, treasury } =
+        await loadFixture(deployEscrowFixture);
+      await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      const answerMessageId = 1;
+
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
       await ethers.provider.send("hardhat_setBalance", [
         agentSigner.address,
         "0x1000000000000000000",
       ]);
-      await escrow.connect(agentSigner).finalizePayment(promptId);
 
-      // Attempting to cancel it now should fail.
-      await expect(
-        escrow.connect(user).cancelAndRefundPrompt(promptId),
-      ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
-    });
-  });
-
-  describe("Prompt Initiation", function () {
-    context("by a User (initiatePrompt)", function () {
-      it("should successfully initiate, escrow funds, and call the agent", async function () {
-        const { escrow, mockAgent, mockToken, user } = await loadFixture(deployEscrowFixture);
-        await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-        const promptId = await mockAgent.promptIdCounter();
-        await expect(
-          escrow
-            .connect(user)
-            .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA),
-        )
-          .to.emit(escrow, "PaymentEscrowed")
-          .withArgs(promptId, user.address, PROMPT_FEE);
-
-        expect(await mockToken.balanceOf(await escrow.getAddress())).to.equal(PROMPT_FEE);
-        const sub = await escrow.subscriptions(user.address);
-        expect(sub.spentAmount).to.equal(PROMPT_FEE);
-      });
+      await expect(escrow.connect(agentSigner).finalizePayment(answerMessageId))
+        .to.emit(escrow, "PaymentFinalized")
+        .withArgs(answerMessageId);
+      expect(await mockToken.balanceOf(treasury.address)).to.equal(PROMPT_FEE);
+      expect(await mockToken.balanceOf(await escrow.getAddress())).to.equal(0);
     });
 
-    context("by the Oracle (initiateAgentJob)", function () {
-      it("should successfully initiate on behalf of a user", async function () {
-        const { escrow, user, oracle } = await loadFixture(deployEscrowFixture);
-        await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-        await escrow
-          .connect(oracle)
-          .initiateAgentJob(
-            user.address,
-            MOCK_ENCRYPTED_DATA,
-            MOCK_ENCRYPTED_DATA,
-            MOCK_ENCRYPTED_DATA,
-          );
-        const sub = await escrow.subscriptions(user.address);
-        expect(sub.spentAmount).to.equal(PROMPT_FEE);
-      });
-
-      it("should revert if called by a non-oracle", async function () {
+    context("Access Control", function () {
+      it("should revert if a non-agent address calls finalizePayment", async function () {
         const { escrow, user } = await loadFixture(deployEscrowFixture);
-        await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
+        await expect(escrow.connect(user).finalizePayment(0)).to.be.revertedWithCustomError(
+          escrow,
+          "NotEVMAIAgent",
+        );
+      });
+
+      it("should revert if a non-oracle calls initiateAgentJob", async function () {
+        const { escrow, user } = await loadFixture(deployEscrowFixture);
         await expect(
-          escrow
-            .connect(user)
-            .initiateAgentJob(
-              user.address,
-              MOCK_ENCRYPTED_DATA,
-              MOCK_ENCRYPTED_DATA,
-              MOCK_ENCRYPTED_DATA,
-            ),
+          escrow.connect(user).initiateAgentJob(user.address, 0, "0x", "0x"),
         ).to.be.revertedWithCustomError(escrow, "NotOracle");
       });
     });
 
-    context("Failure Scenarios", function () {
-      it("should revert if user has no active subscription", async function () {
-        const { escrow, user } = await loadFixture(deployEscrowFixture);
-        // Note: No call to setSubscription for this user
-        await expect(
-          escrow
-            .connect(user)
-            .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA),
-        ).to.be.revertedWithCustomError(escrow, "NoActiveSubscription");
+    context("State Guard Reverts", function () {
+      let escrow, mockAgent, user, agentSigner;
+      const escrowId = 1;
+
+      beforeEach(async function () {
+        const fixtures = await loadFixture(deployEscrowFixture);
+        ({ escrow, mockAgent, user } = fixtures);
+        await escrow
+          .connect(user)
+          .setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+
+        agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
+        await ethers.provider.send("hardhat_setBalance", [
+          agentSigner.address,
+          "0x1000000000000000000",
+        ]);
+        await escrow.connect(agentSigner).finalizePayment(escrowId);
       });
 
-      it("should revert if subscription is expired", async function () {
-        const { escrow, user } = await loadFixture(deployEscrowFixture);
-        await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-        await time.increase(3601); // Expire the subscription
-
+      it("should revert if finalizing a non-existent escrow", async function () {
         await expect(
-          escrow
-            .connect(user)
-            .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA),
-        ).to.be.revertedWithCustomError(escrow, "SubscriptionExpired");
+          escrow.connect(agentSigner).finalizePayment(999),
+        ).to.be.revertedWithCustomError(escrow, "EscrowNotFound");
       });
 
-      it("should revert if subscription allowance is insufficient", async function () {
-        const { escrow, user } = await loadFixture(deployEscrowFixture);
-        const lowAllowance = PROMPT_FEE - 1n; // Set allowance lower than the fee
-        await escrow.connect(user).setSubscription(lowAllowance, (await time.latest()) + 3600);
-
+      it("should revert if finalizing an already finalized escrow", async function () {
         await expect(
-          escrow
-            .connect(user)
-            .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA),
-        ).to.be.revertedWithCustomError(escrow, "InsufficientSubscriptionAllowance");
+          escrow.connect(agentSigner).finalizePayment(escrowId),
+        ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
       });
-    });
-  });
 
-  describe("Payment Finalization and Refunds", function () {
-    it("should allow the agent to finalize payment", async function () {
-      const { escrow, mockAgent, mockToken, deployer, user, treasury } =
-        await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-      const promptId = await mockAgent.promptIdCounter();
-      await escrow
-        .connect(user)
-        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
+      it("should revert if cancelling a completed escrow", async function () {
+        await time.increase(5);
+        await expect(escrow.connect(user).cancelPrompt(escrowId)).to.be.revertedWithCustomError(
+          escrow,
+          "EscrowNotPending",
+        );
+      });
 
-      const initialTreasuryBalance = await mockToken.balanceOf(treasury.address);
-      // Simulate the agent calling back finalizePayment.
-      await mockAgent.connect(deployer).callFinalizePayment(await escrow.getAddress(), promptId);
-      expect(await mockToken.balanceOf(treasury.address)).to.equal(
-        initialTreasuryBalance + PROMPT_FEE,
-      );
-      const escrowRecord = await escrow.escrows(promptId);
-      expect(escrowRecord.status).to.equal(1); // Enum COMPLETE
-    });
-
-    it("should allow a timed-out prompt to be refunded, refunding tokens and reducing total allowance", async function () {
-      const { escrow, mockAgent, mockToken, deployer, user } =
-        await loadFixture(deployEscrowFixture);
-      await escrow.connect(user).setSubscription(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-      const initialSub = await escrow.subscriptions(user.address);
-
-      const promptId = await mockAgent.promptIdCounter();
-      await escrow
-        .connect(user)
-        .initiatePrompt(MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA, MOCK_ENCRYPTED_DATA);
-
-      await time.increase(3601); // Increase time past the REFUND_TIMEOUT
-      const initialUserBalance = await mockToken.balanceOf(user.address);
-      await escrow.connect(deployer).processRefund(promptId);
-      expect(await mockToken.balanceOf(user.address)).to.equal(initialUserBalance + PROMPT_FEE);
-
-      const finalSub = await escrow.subscriptions(user.address);
-
-      // Verify spent amount is now 0 (since it was the only prompt)
-      expect(finalSub.spentAmount).to.equal(0);
-
-      // Verify the total allowance for the period is correctly reduced
-      expect(finalSub.allowance).to.equal(initialSub.allowance - PROMPT_FEE);
-
-      const escrowRecord = await escrow.escrows(promptId);
-      expect(escrowRecord.status).to.equal(2); // Enum REFUNDED
+      it("should revert if refunding a completed escrow", async function () {
+        await time.increase(3601);
+        await expect(escrow.processRefund(escrowId)).to.be.revertedWithCustomError(
+          escrow,
+          "EscrowNotPending",
+        );
+      });
     });
   });
 
   describe("Upgrades", function () {
     it("should allow the owner to upgrade the contract", async function () {
       const { escrow, deployer } = await loadFixture(deployEscrowFixture);
-
       const V2Factory = await ethers.getContractFactory("EVMAIAgentEscrowV2");
       const upgraded = await upgrades.upgradeProxy(await escrow.getAddress(), V2Factory, {
         signer: deployer,
       });
-
       expect(await upgraded.version()).to.equal("2.0");
     });
 
     it("should prevent a non-owner from upgrading the contract", async function () {
       const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture);
       const V2Factory = await ethers.getContractFactory("EVMAIAgentEscrowV2", unauthorizedUser);
-
       await expect(
         upgrades.upgradeProxy(await escrow.getAddress(), V2Factory),
       ).to.be.revertedWithCustomError(escrow, "OwnableUnauthorizedAccount");

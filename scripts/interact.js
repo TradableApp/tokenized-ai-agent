@@ -419,14 +419,14 @@ async function checkAndGuideAllowance() {
   let skipPressEnter = true;
   // This function now loops until the user is ready or cancels.
   while (true) {
-    const sub = await aiAgentEscrowContract.subscriptions(signer.address);
+    const sub = await aiAgentEscrowContract.spendingLimits(signer.address);
 
     const expiresAt = isSapphire ? sub : sub.expiresAt;
     const now = Math.floor(Date.now() / 1000);
 
     const promptFee = await aiAgentEscrowContract.PROMPT_FEE();
 
-    // Check 1: Is the subscription active and not expired?
+    // Check 1: Is the spending limit active and not expired?
     if (expiresAt === 0n || now >= expiresAt) {
       console.log(chalk.yellow("\nYour usage allowance is not active or has expired."));
 
@@ -656,7 +656,7 @@ async function handleManageAllowance(skipPressEnter) {
   const spinner = ora("Checking current allowance status...").start();
 
   // First, determine the current state of the user's allowance.
-  const sub = await aiAgentEscrowContract.subscriptions(signer.address);
+  const sub = await aiAgentEscrowContract.spendingLimits(signer.address);
 
   const expiresAt = isSapphire ? sub : sub.expiresAt;
   const now = Math.floor(Date.now() / 1000);
@@ -711,7 +711,7 @@ async function setupNewAllowance() {
 
     await setExpiryTerm();
   } else {
-    // --- EVM: Approve + Set Subscription ---
+    // --- EVM: Approve + Set Spending Limit ---
     const tokenSymbol = await tokenContract.symbol();
     const { amount } = await inquirer.prompt([
       {
@@ -846,7 +846,7 @@ async function handleWithdraw(amount) {
 }
 
 /**
- * @description A helper function to set or update the expiry term of the allowance/subscription.
+ * @description A helper function to set or update the expiry term of the allowance/spending limit.
  * @param {ethers.BigNumber} [evmAllowance] - (EVM only) The allowance amount to pass to the contract.
  */
 async function setExpiryTerm(evmAllowance) {
@@ -875,8 +875,8 @@ async function setExpiryTerm(evmAllowance) {
 
   try {
     const tx = isSapphire
-      ? await aiAgentEscrowContract.setSubscription(expiresAt)
-      : await aiAgentEscrowContract.setSubscription(evmAllowance, expiresAt);
+      ? await aiAgentEscrowContract.setSpendingLimit(expiresAt)
+      : await aiAgentEscrowContract.setSpendingLimit(evmAllowance, expiresAt);
 
     const receipt = await tx.wait();
 
@@ -893,13 +893,13 @@ async function setExpiryTerm(evmAllowance) {
 }
 
 /**
- * @description A helper function to cancel the user's allowance/subscription.
+ * @description A helper function to cancel the user's allowance/spending limit.
  */
 async function cancelAllowance() {
   const spinner = ora("Cancelling usage allowance...").start();
 
   try {
-    const tx = await aiAgentEscrowContract.cancelSubscription();
+    const tx = await aiAgentEscrowContract.cancelSpendingLimit();
 
     const receipt = await tx.wait();
 
@@ -1081,7 +1081,7 @@ async function handleCheckBalance() {
     let sub;
     if (isSapphire) {
       const depositWei = await aiAgentEscrowContract.deposits(address);
-      sub = await aiAgentEscrowContract.subscriptions(address);
+      sub = await aiAgentEscrowContract.spendingLimits(address);
 
       console.log(
         `   - Deposited for Allowance: ${chalk.bold(ethers.formatEther(depositWei))} ${currency}`,
@@ -1089,7 +1089,7 @@ async function handleCheckBalance() {
     } else {
       const tokenSymbol = await tokenContract.symbol();
       const tokenBalance = await tokenContract.balanceOf(address);
-      sub = await aiAgentEscrowContract.subscriptions(address);
+      sub = await aiAgentEscrowContract.spendingLimits(address);
 
       console.log(
         `   - Your Token Balance: ${chalk.bold(ethers.formatEther(tokenBalance))} ${tokenSymbol}`,

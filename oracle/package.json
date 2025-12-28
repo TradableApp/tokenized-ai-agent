@@ -8,12 +8,18 @@
     "start:localnet": "ENV_FILE=.env.oracle.localnet node src/index.js",
     "start:testnet": "ENV_FILE=.env.oracle.testnet node src/index.js",
     "start:mainnet": "ENV_FILE=.env.oracle.mainnet node src/index.js",
+    "// --- BASE NETWORK SCRIPTS ---": "---",
+    "start:base-localnet": "ENV_FILE=.env.oracle.base-localnet node src/index.js",
+    "start:base-testnet": "ENV_FILE=.env.oracle.base-testnet node src/index.js",
+    "start:base-mainnet": "ENV_FILE=.env.oracle.base-mainnet node src/index.js",
+    "// --- UTILITIES ---": "---",
     "dev": "nodemon src/index.js",
     "lint": "eslint .",
     "clean": "rm -rf node_modules",
     "run-localnet": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
     "run-localnet-debug": "docker run -it --platform linux/amd64 -p8545:8545 -p8546:8546 -e OASIS_NODE_LOG_LEVEL=debug -e LOG__LEVEL=debug ghcr.io/oasisprotocol/sapphire-localnet -test-mnemonic",
-    "test": "mocha 'test/**/*.test.js'"
+    "test": "DOTENV_CONFIG_PATH=./.env.oracle.example mocha -r dotenv/config --timeout 5000 'test/**/*.test.js'",
+    "coverage": "nyc npm test"
   },
   "keywords": [
     "oracle",
@@ -30,20 +36,31 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@autonomys/auto-drive": "^1.6.4",
+    "@autonomys/auto-utils": "^1.6.4",
+    "@irys/upload": "^0.0.15",
+    "@irys/upload-ethereum": "^0.0.16",
     "@oasisprotocol/sapphire-ethers-v6": "^6.0.1",
+    "@slack/web-api": "^7.11.0",
+    "async-mutex": "^0.5.0",
     "cbor": "^10.0.9",
+    "crypto": "^1.0.1",
     "dotenv": "^17.0.1",
     "eth-crypto": "^3.1.0",
     "ethers": "^6.15.0",
-    "node-fetch": "^3.3.2",
+    "p-queue": "^6.6.2",
     "siwe": "^3.0.0",
-    "uuid": "^11.1.0"
+    "stopword": "^3.1.5",
+    "uuid": "^11.1.0",
+    "zod": "^4.2.1"
   },
   "devDependencies": {
     "chai": "^5.2.1",
     "eslint": "^8.57.0",
     "mocha": "^11.7.1",
     "nodemon": "^3.0.2",
+    "nyc": "^17.1.0",
+    "proxyquire": "^2.1.3",
     "sinon": "^21.0.0"
   }
 }

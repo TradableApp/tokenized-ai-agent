@@ -9,36 +9,46 @@ import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils
 
 /**
  * @title EVM AI Agent Escrow Contract
- * @dev This contract manages ERC20 token payments and refunds for the EVM AI Agent.
- *      It is upgradeable using the UUPS proxy pattern.
+ * @author Tradable
+ * @notice Manages ERC20 token payments, fees, and refunds for the EVM AI Agent.
+ * @dev It is upgradeable using the UUPS proxy pattern.
  */
 contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+  // --- Constants ---
+
+  /// @notice The time after which a user can cancel their own pending prompt to prevent mis-clicks.
+  uint256 public constant CANCELLATION_TIMEOUT = 3 seconds;
+  /// @notice The time after which a keeper can refund any timed-out pending prompt.
+  uint256 public constant REFUND_TIMEOUT = 1 hours;
+
+  // --- State Variables ---
+
   /// @notice The ERC20 token used for payments.
   IERC20 public ableToken;
   /// @notice The AI Agent contract this escrow serves.
   IEVMAIAgent public evmAIAgent;
 
-  /// @notice The address where collected fees are sent upon successful prompt completion.
+  /// @notice The address where collected fees are sent.
   address public treasury;
-  /// @notice The address of the authorized off-chain oracle.
-  address public oracle;
 
   /// @notice The fee in the token's smallest unit required for one AI prompt.
-  uint256 public constant PROMPT_FEE = 1 * 1e18;
-  /// @notice The time after which a user can cancel their own pending prompt.
-  uint256 public constant CANCELLATION_TIMEOUT = 5 minutes;
-  /// @notice The time after which a keeper can refund any timed-out pending prompt.
-  uint256 public constant REFUND_TIMEOUT = 1 hours;
+  uint256 public promptFee;
+  /// @notice The fee charged to a user for cancelling a pending prompt.
+  uint256 public cancellationFee;
+  /// @notice The fee charged to a user for updating conversation metadata.
+  uint256 public metadataUpdateFee;
+  /// @notice The fee charged to a user for branching a conversation.
+  uint256 public branchFee;
 
   /// @notice Represents a user's usage allowance details.
-  struct Subscription {
-    uint256 allowance; // The total amount the user has authorized.
-    uint256 spentAmount; // The amount spent so far.
-    uint256 expiresAt; // The unix timestamp when the subscription expires.
+  struct SpendingLimit {
+    uint256 allowance; // The total amount the user has authorized via ERC20 approve.
+    uint256 spentAmount; // The amount spent so far within this spending limit.
+    uint256 expiresAt; // The unix timestamp when the spending limit expires.
   }
 
   /// @notice Tracks each user's allowance details.
-  mapping(address => Subscription) public subscriptions;
+  mapping(address => SpendingLimit) public spendingLimits;
   /// @notice Tracks the number of pending (unanswered) prompts for each user.
   mapping(address => uint256) public pendingEscrowCount;
 
@@ -57,81 +67,152 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     EscrowStatus status;
   }
 
-  /// @notice Maps a prompt ID to its escrow details.
+  /// @notice Maps a unique escrow ID to its escrow details.
   mapping(uint256 => Escrow) public escrows;
 
-  /// @notice Emitted when the treasury address is updated.
-  event TreasuryUpdated(address newTreasury);
-  /// @notice Emitted when the oracle address is updated.
-  event OracleUpdated(address newOracle);
-  /// @notice Emitted when a user sets or updates their allowance.
-  event SubscriptionSet(address indexed user, uint256 allowance, uint256 expiresAt);
-  /// @notice Emitted when a user cancels their allowance.
-  event SubscriptionCancelled(address indexed user);
-  /// @notice Emitted when a user's payment is successfully placed in escrow.
-  event PaymentEscrowed(uint256 indexed promptId, address indexed user, uint256 amount);
-  /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
-  event PaymentFinalized(uint256 indexed promptId);
-  /// @notice Emitted when a timed-out escrowed payment is refunded to the user's wallet.
-  event PaymentRefunded(uint256 indexed promptId);
-  /// @notice Emitted when a user cancels their own pending prompt.
-  event PromptCancelled(uint256 indexed promptId, address indexed user);
+  // --- Events ---
 
-  /// @notice Reverts if an escrow record is not found for a given prompt ID.
-  error EscrowNotFound();
-  /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
-  error EscrowNotPending();
-  /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
-  error NoActiveSubscription();
-  /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
-  error SubscriptionExpired();
-  /// @notice Reverts if a user's remaining allowance is insufficient to cover the prompt fee.
-  error InsufficientSubscriptionAllowance();
+  /**
+   * @notice Emitted when the treasury address is updated.
+   * @param newTreasury The new treasury address.
+   */
+  event TreasuryUpdated(address indexed newTreasury);
+  /**
+   * @notice Emitted when the prompt fee is updated.
+   * @param newFee The new prompt fee.
+   */
+  event PromptFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when the cancellation fee is updated.
+   * @param newFee The new cancellation fee.
+   */
+  event CancellationFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when the metadata update fee is updated.
+   * @param newFee The new metadata update fee.
+   */
+  event MetadataUpdateFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when the conversation branch fee is updated.
+   * @param newFee The new branch fee.
+   */
+  event BranchFeeUpdated(uint256 indexed newFee);
+  /**
+   * @notice Emitted when a user sets or updates their allowance.
+   * @param user The user whose spending limit is being set.
+   * @param allowance The total amount of tokens authorized for the period.
+   * @param expiresAt The unix timestamp when the spending limit expires.
+   */
+  event SpendingLimitSet(
+    address indexed user,
+    uint256 indexed allowance,
+    uint256 indexed expiresAt
+  );
+  /**
+   * @notice Emitted when a user cancels their allowance.
+   * @param user The user whose spending limit is being cancelled.
+   */
+  event SpendingLimitCancelled(address indexed user);
+  /**
+   * @notice Emitted when a user's payment is successfully placed in escrow.
+   * @param escrowId The unique ID for this escrowed payment.
+   * @param user The user who made the payment.
+   * @param amount The amount of tokens placed in escrow.
+   */
+  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 indexed amount);
+  /**
+   * @notice Emitted when an escrowed payment is finalized and sent to the treasury.
+   * @param escrowId The unique ID of the finalized escrow.
+   */
+  event PaymentFinalized(uint256 indexed escrowId);
+  /**
+   * @notice Emitted when a timed-out escrowed payment is refunded to the user's wallet.
+   * @param escrowId The unique ID of the refunded escrow.
+   */
+  event PaymentRefunded(uint256 indexed escrowId);
+  /**
+   * @notice Emitted when a user cancels their own pending prompt.
+   * @param user The user who initiated the cancellation.
+   * @param answerMessageId The ID of the answer that was cancelled.
+   */
+  event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
+
+  // --- Errors ---
+
+  // Admin and Setup Errors
+  /// @notice Reverts if an address parameter is the zero address.
+  error ZeroAddress();
+
+  // Access Control Errors
   /// @notice Reverts if a function is called by an address other than the linked AI Agent contract.
   error NotEVMAIAgent();
   /// @notice Reverts if a function is called by an address that is not the authorized oracle.
   error NotOracle();
-  /// @notice Reverts if an address parameter is the zero address.
-  error ZeroAddress();
-  /// @notice Reverts if a user tries to cancel or set an allowance while having pending prompts.
+  /// @notice Reverts if a user tries to cancel a prompt they do not own.
+  error NotPromptOwner();
+
+  // Spending Limit Errors
+  /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
+  error NoActiveSpendingLimit();
+  /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
+  error SpendingLimitExpired();
+  /// @notice Reverts if a user's remaining allowance is insufficient to cover a fee.
+  error InsufficientSpendingLimitAllowance();
+
+  // State Machine Errors
+  /// @notice Reverts if an escrow record is not found for a given ID.
+  error EscrowNotFound();
+  /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
+  error EscrowNotPending();
+  /// @notice Reverts if a user tries to manage a spending limit while having pending prompts.
   error HasPendingPrompts();
+
+  // Timeout Errors
   /// @notice Reverts if a user tries to cancel a prompt before the cancellation timeout has passed.
   error PromptNotCancellableYet();
   /// @notice Reverts if a keeper tries to refund a prompt before the refund timeout has passed.
   error PromptNotRefundableYet();
-  /// @notice Reverts if a user tries to cancel a prompt they do not own.
-  error NotPromptOwner();
+
+  // --- Initialization ---
 
   /**
    * @notice Sets up the escrow smart contract.
    * @param _tokenAddress The address of the ERC20 token contract.
    * @param _agentAddress The address of the EVMAIAgent contract to interact with.
    * @param _treasuryAddress The initial address where collected fees will be sent.
-   * @param _oracleAddress The initial address of the authorized oracle.
    * @param _initialOwner The address that will have ownership of this contract's proxy.
+   * @param _initialPromptFee The initial fee for a single AI prompt.
+   * @param _initialCancellationFee The initial fee for cancelling a prompt.
+   * @param _initialMetadataUpdateFee The initial fee for updating metadata.
+   * @param _initialBranchFee The initial fee for branching a conversation.
    */
   function initialize(
     address _tokenAddress,
     address _agentAddress,
     address _treasuryAddress,
-    address _oracleAddress,
-    address _initialOwner
+    address _initialOwner,
+    uint256 _initialPromptFee,
+    uint256 _initialCancellationFee,
+    uint256 _initialMetadataUpdateFee,
+    uint256 _initialBranchFee
   ) public initializer {
     __Ownable_init(_initialOwner);
     __UUPSUpgradeable_init();
     if (
-      _tokenAddress == address(0) ||
-      _agentAddress == address(0) ||
-      _treasuryAddress == address(0) ||
-      _oracleAddress == address(0)
+      _tokenAddress == address(0) || _agentAddress == address(0) || _treasuryAddress == address(0)
     ) {
       revert ZeroAddress();
     }
     ableToken = IERC20(_tokenAddress);
     evmAIAgent = IEVMAIAgent(_agentAddress);
     treasury = _treasuryAddress;
-    oracle = _oracleAddress;
+    promptFee = _initialPromptFee;
+    cancellationFee = _initialCancellationFee;
+    metadataUpdateFee = _initialMetadataUpdateFee;
+    branchFee = _initialBranchFee;
   }
+
+  // --- Modifiers ---
 
   /**
    * @notice Checks that the caller is the registered EVMAIAgent contract.
@@ -147,11 +228,13 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @notice Checks that the caller is the authorized oracle.
    */
   modifier onlyOracle() {
-    if (msg.sender != oracle) {
+    if (msg.sender != evmAIAgent.oracle()) {
       revert NotOracle();
     }
     _;
   }
+
+  // --- Administrative Functions ---
 
   /**
    * @notice Updates the treasury address where collected fees will be sent.
@@ -167,17 +250,46 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   }
 
   /**
-   * @notice Updates the oracle address that can initiate agent jobs.
+   * @notice Sets the fee required for one AI prompt.
    * @dev Only the contract owner can call this function.
-   * @param _newOracle The new oracle address.
+   * @param _newFee The new prompt fee.
    */
-  function setOracle(address _newOracle) external onlyOwner {
-    if (_newOracle == address(0)) {
-      revert ZeroAddress();
-    }
-    oracle = _newOracle;
-    emit OracleUpdated(_newOracle);
+  function setPromptFee(uint256 _newFee) external onlyOwner {
+    promptFee = _newFee;
+    emit PromptFeeUpdated(_newFee);
   }
+
+  /**
+   * @notice Sets the fee required for a user to cancel a pending prompt.
+   * @dev Only the contract owner can call this function.
+   * @param _newFee The new cancellation fee.
+   */
+  function setCancellationFee(uint256 _newFee) external onlyOwner {
+    cancellationFee = _newFee;
+    emit CancellationFeeUpdated(_newFee);
+  }
+
+  /**
+   * @notice Sets the fee required for a user to update conversation metadata.
+   * @dev Only the contract owner can call this function.
+   * @param _newFee The new metadata update fee.
+   */
+  function setMetadataUpdateFee(uint256 _newFee) external onlyOwner {
+    metadataUpdateFee = _newFee;
+    emit MetadataUpdateFeeUpdated(_newFee);
+  }
+
+  /**
+   * @notice Sets the fee required for a user to branch a conversation.
+   * @dev Only the contract owner can call this function.
+   * @param _newFee The new branch fee.
+   */
+  function setBranchFee(uint256 _newFee) external onlyOwner {
+    branchFee = _newFee;
+    emit BranchFeeUpdated(_newFee);
+  }
+
+  // --- Spending Limit Management ---
 
   /**
    * @notice Sets or updates a user's usage allowance.
@@ -186,16 +298,16 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param _allowance The total amount of tokens authorized for the allowance period.
    * @param _expiresAt The unix timestamp when this allowance becomes invalid.
    */
-  function setSubscription(uint256 _allowance, uint256 _expiresAt) external {
+  function setSpendingLimit(uint256 _allowance, uint256 _expiresAt) external {
     if (pendingEscrowCount[msg.sender] > 0) {
       revert HasPendingPrompts();
     }
-    subscriptions[msg.sender] = Subscription({
+    spendingLimits[msg.sender] = SpendingLimit({
       allowance: _allowance,
-      spentAmount: 0, // Reset spent amount for the new subscription period.
+      spentAmount: 0,
       expiresAt: _expiresAt
     });
-    emit SubscriptionSet(msg.sender, _allowance, _expiresAt);
+    emit SpendingLimitSet(msg.sender, _allowance, _expiresAt);
   }
 
   /**
@@ -203,22 +315,169 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @dev This function can only be called if the user has no prompts currently
    *      in the PENDING state to prevent orphaning funds.
    */
-  function cancelSubscription() external {
+  function cancelSpendingLimit() external {
     if (pendingEscrowCount[msg.sender] > 0) {
       revert HasPendingPrompts();
     }
-    delete subscriptions[msg.sender];
-    emit SubscriptionCancelled(msg.sender);
+    delete spendingLimits[msg.sender];
+    emit SpendingLimitCancelled(msg.sender);
+  }
+
+  // --- Core User and Agent Functions ---
+
+  /**
+   * @notice Initiates a new prompt request from a user.
+   * @dev This is the main entry point for all user prompts. It handles payment escrow
+   *      and triggers the AI Agent contract to log the prompt.
+   * @dev If _conversationId is 0, it reserves a new conversation ID.
+   * @param _conversationId The ID of the conversation. Pass 0 to start a new conversation.
+   * @param _encryptedPayload The encrypted user prompt intended for the TEE.
+   * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
+  function initiatePrompt(
+    uint256 _conversationId,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external {
+    _processEscrowPayment(msg.sender, promptFee);
+
+    uint256 conversationId = _conversationId;
+    if (conversationId == 0) {
+      conversationId = evmAIAgent.reserveConversationId();
+    }
+
+    uint256 promptMessageId = evmAIAgent.reserveMessageId();
+    uint256 answerMessageId = evmAIAgent.reserveMessageId();
+    uint256 escrowId = answerMessageId;
+    escrows[escrowId] = Escrow({
+      user: msg.sender,
+      amount: promptFee,
+      createdAt: block.timestamp,
+      status: EscrowStatus.PENDING
+    });
+
+    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
+    evmAIAgent.submitPrompt(
+      msg.sender,
+      conversationId,
+      promptMessageId,
+      answerMessageId,
+      _encryptedPayload,
+      _roflEncryptedKey
+    );
   }
 
   /**
-   * @notice Allows a user to cancel their own pending prompt after a timeout.
-   * @dev This credits back the user's spent allowance and records the cancellation on the AIAgent contract.
-   *      The timeout prevents griefing attacks against the oracle.
-   * @param _promptId The ID of the prompt to cancel.
+   * @notice Initiates a new regeneration request for a previous answer.
+   * @dev This function escrows the standard prompt fee and triggers the AI Agent contract.
+   * @param _conversationId The ID of the conversation this regeneration belongs to.
+   * @param _promptMessageId The ID of the user's prompt that is being regenerated.
+   * @param _previousAnswerMessageId The ID of the specific AI answer the user wants to regenerate from.
+   * @param _encryptedPayload The encrypted instructions for the TEE (e.g., "make it more concise").
+   * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
    */
-  function cancelAndRefundPrompt(uint256 _promptId) external {
-    Escrow storage escrow = escrows[_promptId];
+  function initiateRegeneration(
+    uint256 _conversationId,
+    uint256 _promptMessageId,
+    uint256 _previousAnswerMessageId,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external {
+    _processEscrowPayment(msg.sender, promptFee);
+
+    uint256 answerMessageId = evmAIAgent.reserveMessageId();
+    uint256 escrowId = answerMessageId;
+    escrows[escrowId] = Escrow({
+      user: msg.sender,
+      amount: promptFee,
+      createdAt: block.timestamp,
+      status: EscrowStatus.PENDING
+    });
+
+    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
+    evmAIAgent.submitRegenerationRequest(
+      msg.sender,
+      _conversationId,
+      _promptMessageId,
+      _previousAnswerMessageId,
+      answerMessageId,
+      _encryptedPayload,
+      _roflEncryptedKey
+    );
+  }
+
+  /**
+   * @notice Initiates a new autonomous agent job on behalf of a user.
+   * @dev Called by the oracle. If _jobId is 0, it reserves a new job ID.
+   * @param _user The address of the user for whom the job is being run.
+   * @param _jobId The ID of the parent job. Pass 0 to start a new job.
+   * @param _encryptedPayload The encrypted prompt data for the TEE.
+   * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
+  function initiateAgentJob(
+    address _user,
+    uint256 _jobId,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external onlyOracle {
+    _processEscrowPayment(_user, promptFee);
+
+    uint256 jobId = _jobId;
+    if (jobId == 0) {
+      jobId = evmAIAgent.reserveJobId();
+    }
+
+    uint256 triggerId = evmAIAgent.reserveTriggerId();
+    uint256 escrowId = triggerId;
+    escrows[escrowId] = Escrow({
+      user: _user,
+      amount: promptFee,
+      createdAt: block.timestamp,
+      status: EscrowStatus.PENDING
+    });
+
+    emit PaymentEscrowed(escrowId, _user, promptFee);
+    evmAIAgent.submitAgentJob(_user, jobId, triggerId, _encryptedPayload, _roflEncryptedKey);
+  }
+
+  /**
+   * @notice Allows a user to initiate the process of branching a conversation.
+   * @dev Charges a fixed `branchFee`, reserves a new conversation ID, and emits an event for the TEE.
+   * @param _originalConversationId The ID of the conversation being branched from.
+   * @param _branchPointMessageId The ID of the message where the branch occurs.
+   * @param _encryptedPayload The encrypted context (e.g., original title) for the TEE.
+   * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
+   */
+  function initiateBranch(
+    uint256 _originalConversationId,
+    uint256 _branchPointMessageId,
+    bytes calldata _encryptedPayload,
+    bytes calldata _roflEncryptedKey
+  ) external {
+    _processDirectPayment(msg.sender, branchFee);
+
+    uint256 newConversationId = evmAIAgent.reserveConversationId();
+
+    evmAIAgent.submitBranchRequest(
+      msg.sender,
+      _originalConversationId,
+      _branchPointMessageId,
+      newConversationId,
+      _encryptedPayload,
+      _roflEncryptedKey
+    );
+  }
+
+  /**
+   * @notice Allows a user to cancel their own pending prompt.
+   * @dev Charges a fixed `cancellationFee` and refunds the original `promptFee`.
+   * @param _answerMessageId The ID of the answer message to cancel.
+   */
+  function cancelPrompt(uint256 _answerMessageId) external {
+    uint256 escrowId = _answerMessageId;
+    Escrow storage escrow = escrows[escrowId];
+    SpendingLimit storage sub = spendingLimits[msg.sender];
+
     if (escrow.user != msg.sender) {
       revert NotPromptOwner();
     }
@@ -228,116 +487,82 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     if (block.timestamp < escrow.createdAt + CANCELLATION_TIMEOUT) {
       revert PromptNotCancellableYet();
     }
-    pendingEscrowCount[msg.sender]--;
+
+    sub.spentAmount -= escrow.amount;
+    sub.allowance -= escrow.amount;
+
+    if (sub.allowance < sub.spentAmount + cancellationFee) {
+      revert InsufficientSpendingLimitAllowance();
+    }
+
+    sub.spentAmount += cancellationFee;
+    sub.allowance -= cancellationFee;
+    ableToken.transferFrom(msg.sender, treasury, cancellationFee);
+
+    --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
 
-    // Decrease both the spent amount AND the total allowance for this subscription period.
-    // This keeps our internal accounting synchronized with the external ERC20 allowance.
-    subscriptions[msg.sender].spentAmount -= escrow.amount;
-    subscriptions[msg.sender].allowance -= escrow.amount;
-    emit PromptCancelled(_promptId, msg.sender);
-    evmAIAgent.storeCancellation(_promptId, msg.sender);
+    evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
     ableToken.transfer(escrow.user, escrow.amount);
+    emit PromptCancelled(msg.sender, _answerMessageId);
   }
 
   /**
-   * @notice Initiates a new prompt request. Called by the user.
-   * @param _encryptedContent The prompt, encrypted with a session key.
-   * @param _userEncryptedKey The session key, encrypted for the user.
+   * @notice Allows a user to request an update to a conversation's metadata, such as its title.
+   * @dev Charges a fixed `metadataUpdateFee` from the user's spending limit allowance.
+   * @param _conversationId The ID of the conversation to update.
+   * @param _encryptedPayload The encrypted ABI-encoded update instructions for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
    */
-  function initiatePrompt(
-    bytes calldata _encryptedContent,
-    bytes calldata _userEncryptedKey,
+  function initiateMetadataUpdate(
+    uint256 _conversationId,
+    bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external {
-    _initiateJob(msg.sender, _encryptedContent, _userEncryptedKey, _roflEncryptedKey);
-  }
+    _processDirectPayment(msg.sender, metadataUpdateFee);
 
-  /**
-   * @notice Initiates a new prompt request on behalf of a user.
-   * @dev Called by the oracle for autonomous/scheduled jobs.
-   * @param _user The address of the user for whom the job is being initiated.
-   * @param _encryptedContent The prompt, encrypted with a session key.
-   * @param _userEncryptedKey The session key, encrypted for the user.
-   * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
-   */
-  function initiateAgentJob(
-    address _user,
-    bytes calldata _encryptedContent,
-    bytes calldata _userEncryptedKey,
-    bytes calldata _roflEncryptedKey
-  ) external onlyOracle {
-    _initiateJob(_user, _encryptedContent, _userEncryptedKey, _roflEncryptedKey);
-  }
-
-  /**
-   * @dev Internal function to handle the core logic for any new job.
-   */
-  function _initiateJob(
-    address _user,
-    bytes calldata _encryptedContent,
-    bytes calldata _userEncryptedKey,
-    bytes calldata _roflEncryptedKey
-  ) private {
-    Subscription storage sub = subscriptions[_user];
-    if (sub.expiresAt == 0) {
-      revert NoActiveSubscription();
-    }
-    if (block.timestamp >= sub.expiresAt) {
-      revert SubscriptionExpired();
-    }
-    if (sub.spentAmount + PROMPT_FEE > sub.allowance) {
-      revert InsufficientSubscriptionAllowance();
-    }
-    sub.spentAmount += PROMPT_FEE;
-    pendingEscrowCount[_user]++;
-    ableToken.transferFrom(_user, address(this), PROMPT_FEE);
-    uint256 promptId = evmAIAgent.promptIdCounter();
-    escrows[promptId] = Escrow({
-      user: _user,
-      amount: PROMPT_FEE,
-      createdAt: block.timestamp,
-      status: EscrowStatus.PENDING
-    });
-    emit PaymentEscrowed(promptId, _user, PROMPT_FEE);
-    evmAIAgent.submitPrompt(
-      promptId,
-      _user,
-      _encryptedContent,
-      _userEncryptedKey,
+    evmAIAgent.submitMetadataUpdate(
+      msg.sender,
+      _conversationId,
+      _encryptedPayload,
       _roflEncryptedKey
     );
   }
 
+  // --- Core System Functions ---
+
   /**
    * @notice Releases the escrowed payment to the treasury upon successful completion.
    * @dev Called by the EVMAIAgent contract.
-   * @param _promptId The unique identifier of the prompt to finalize.
+   * @param _escrowId The unique identifier of the job to finalize.
    */
-  function finalizePayment(uint256 _promptId) external onlyEVMAIAgent {
-    Escrow storage escrow = escrows[_promptId];
+  function finalizePayment(uint256 _escrowId) external onlyEVMAIAgent {
+    Escrow storage escrow = escrows[_escrowId];
+
     if (escrow.user == address(0)) {
       revert EscrowNotFound();
     }
     if (escrow.status != EscrowStatus.PENDING) {
       revert EscrowNotPending();
     }
-    pendingEscrowCount[escrow.user]--;
+
+    --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.COMPLETE;
-    emit PaymentFinalized(_promptId);
+    emit PaymentFinalized(_escrowId);
     ableToken.transfer(treasury, escrow.amount);
   }
 
   /**
    * @notice Refunds any pending escrows that have passed the timeout period.
-   * @dev Called by a keeper service.
-   * @param _promptId The prompt ID to check for a potential refund.
+   * @dev Called by a keeper service to prevent funds from being stuck.
+   * @param _answerMessageId The ID of the answer message to refund.
    */
-  function processRefund(uint256 _promptId) external {
-    Escrow storage escrow = escrows[_promptId];
+  function processRefund(uint256 _answerMessageId) external {
+    uint256 escrowId = _answerMessageId;
+    Escrow storage escrow = escrows[escrowId];
+
     if (escrow.user == address(0)) {
-      return;
+      return; // Silently ignore if no escrow exists
     }
     if (escrow.status != EscrowStatus.PENDING) {
       revert EscrowNotPending();
@@ -345,27 +570,79 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     if (block.timestamp < escrow.createdAt + REFUND_TIMEOUT) {
       revert PromptNotRefundableYet();
     }
-    pendingEscrowCount[escrow.user]--;
+
+    --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.REFUNDED;
+    spendingLimits[escrow.user].spentAmount -= escrow.amount;
+    spendingLimits[escrow.user].allowance -= escrow.amount;
 
-    // Decrease both the spent amount AND the total allowance for this subscription period.
-    // This keeps our internal accounting synchronized with the external ERC20 allowance.
-    subscriptions[escrow.user].spentAmount -= escrow.amount;
-    subscriptions[escrow.user].allowance -= escrow.amount;
-
-    emit PaymentRefunded(_promptId);
+    emit PaymentRefunded(escrowId);
     ableToken.transfer(escrow.user, escrow.amount);
   }
 
+  // --- Internal Helper Functions ---
+
   /**
-   * @dev Authorizes an upgrade to a new implementation contract.
-   *      This internal function is part of the UUPS upgrade mechanism and is restricted to the owner.
-   * @param _newImplementation The address of the new implementation contract.
+   * @notice Internal function to handle the spending limit checks and state changes for an escrowed payment.
+   * @dev This is an internal function and cannot be called directly.
+   * @param _user The user address initiating the action.
+   * @param _fee The fee for the action.
    */
-  function _authorizeUpgrade(address _newImplementation) internal override onlyOwner {
+  function _processEscrowPayment(address _user, uint256 _fee) private {
+    SpendingLimit storage sub = spendingLimits[_user];
+
+    if (sub.expiresAt == 0) {
+      revert NoActiveSpendingLimit();
+    }
+    if (block.timestamp >= sub.expiresAt) {
+      revert SpendingLimitExpired();
+    }
+    if (sub.spentAmount + _fee > sub.allowance) {
+      revert InsufficientSpendingLimitAllowance();
+    }
+
+    sub.spentAmount += _fee;
+    ++pendingEscrowCount[_user];
+    ableToken.transferFrom(_user, address(this), _fee);
+  }
+
+  /**
+   * @notice Internal function for direct-to-treasury payments.
+   * @dev This is an internal function and cannot be called directly.
+   * @param _user The user address initiating the action.
+   * @param _fee The fee for the action.
+   */
+  function _processDirectPayment(address _user, uint256 _fee) private {
+    SpendingLimit storage sub = spendingLimits[_user];
+
+    if (sub.expiresAt == 0) {
+      revert NoActiveSpendingLimit();
+    }
+    if (block.timestamp >= sub.expiresAt) {
+      revert SpendingLimitExpired();
+    }
+    if (sub.spentAmount + _fee > sub.allowance) {
+      revert InsufficientSpendingLimitAllowance();
+    }
+
+    sub.spentAmount += _fee;
+    // For direct, non-refundable payments, we also decrement the total allowance to keep
+    // our internal accounting synchronized with the external ERC20 allowance.
+    sub.allowance -= _fee;
+    ableToken.transferFrom(_user, treasury, _fee);
+  }
+
+  // --- Upgradability ---
+
+  /**
+   * @notice This internal function is part of the UUPS upgrade mechanism and is restricted to the owner.
+   * @dev Authorizes an upgrade to a new implementation contract.
+   * @param newImplementation The address of the new implementation contract.
+   */
+  function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
     // solhint-disable-previous-line no-empty-blocks
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[49] private __gap;
+  uint256[40] private __gap;
 }

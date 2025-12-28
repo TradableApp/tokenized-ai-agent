@@ -19,6 +19,9 @@ async function main() {
 
   console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
 
+  const rpcUrl = hre.network.config.url;
+  console.log(`[DEBUG] RPC URL detected: ${rpcUrl}`);
+
   // Required env
   const domain = process.env.DOMAIN;
   const privateKey = process.env.PRIVATE_KEY;
@@ -92,8 +95,12 @@ async function main() {
       if (!receipt) await new Promise((r) => setTimeout(r, 1000));
     }
     // (optional) ensure at least 1 confirmation
-    while ((await hre.ethers.provider.getBlockNumber()) < (receipt.blockNumber || 0) + 1) {
-      await new Promise((r) => setTimeout(r, 1000));
+    if (networkName === "localnet" || networkName === "localhost") {
+      console.log("Local network detected, skipping confirmation wait.");
+    } else {
+      while ((await hre.ethers.provider.getBlockNumber()) < (receipt.blockNumber || 0) + 1) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
     }
   }
 
@@ -155,7 +162,7 @@ async function main() {
       console.log("Deploying EVMAIAgent proxy...");
       aiAgent = await hre.upgrades.deployProxy(
         EVMAIAgent,
-        [domain, roflAppID, oracleAddress, deployer.address],
+        [domain, oracleAddress, deployer.address],
         { initializer: "initialize", kind: "uups" },
       );
       await waitDeployed(aiAgent);
@@ -182,9 +189,24 @@ async function main() {
       if (!tokenAddress)
         throw new Error("TOKEN_CONTRACT_ADDRESS is required for a new EVM deployment.");
 
+      // Get initial fee values from .env or use defaults
+      const promptFee = process.env.INITIAL_PROMPT_FEE || hre.ethers.parseEther("1"); // Default: 1 token
+      const cancellationFee = process.env.INITIAL_CANCELLATION_FEE || hre.ethers.parseEther("0.1"); // Default: 0.1 token
+      const metadataUpdateFee = process.env.INITIAL_METADATA_FEE || hre.ethers.parseEther("0.1"); // Default: 0.1 token
+      const branchFee = process.env.INITIAL_BRANCH_FEE || hre.ethers.parseEther("0.5"); // Default: 0.5 token
+
       aiAgentEscrow = await hre.upgrades.deployProxy(
         EVMAIAgentEscrow,
-        [tokenAddress, aiAgentAddress, treasuryAddress, oracleAddress, deployer.address],
+        [
+          tokenAddress,
+          aiAgentAddress,
+          treasuryAddress,
+          deployer.address,
+          promptFee,
+          cancellationFee,
+          metadataUpdateFee,
+          branchFee,
+        ],
         { initializer: "initialize", kind: "uups" },
       );
       await waitDeployed(aiAgentEscrow);
@@ -196,16 +218,29 @@ async function main() {
       const currentEscrow = await aiAgent.aiAgentEscrow();
       if (currentEscrow === hre.ethers.ZeroAddress) {
         console.log("Linking AI Agent to Escrow contract...");
-        const nonce = await hre.ethers.provider.getTransactionCount(deployer.address, "pending");
-        const fees = await getSafeFees(hre.ethers.provider);
-        await sendWithBump(aiAgent.setAgentEscrow, [aiAgentEscrowAddress], { nonce, ...fees });
+        if (networkName === "localnet" || networkName === "localhost") {
+          // For local development, a simple transaction is sufficient and faster.
+          const tx = await aiAgent.setAgentEscrow(aiAgentEscrowAddress);
+          await tx.wait();
+        } else {
+          // For public testnets/mainnet, use the robust fee bumping logic.
+          const nonce = await hre.ethers.provider.getTransactionCount(deployer.address, "pending");
+          const fees = await getSafeFees(hre.ethers.provider);
+          await sendWithBump(aiAgent.setAgentEscrow, [aiAgentEscrowAddress], { nonce, ...fees });
+        }
+
         console.log("✅ Link successful.");
       }
     }
   }
 
   // --- 4. VERIFY CONTRACT (for public EVM chains only) ---
-  if (!isSapphire && networkName !== "hardhat") {
+  if (
+    !isSapphire &&
+    networkName !== "hardhat" &&
+    networkName !== "localnet" &&
+    networkName !== "localhost"
+  ) {
     if (!process.env.ETHERSCAN_API_KEY) {
       console.warn(
         chalk.yellow("\n⚠️  Skipping verification: ETHERSCAN_API_KEY not found in .env file."),
@@ -221,11 +256,23 @@ async function main() {
       try {
         console.log(`Verifying EVMAIAgent proxy on Etherscan...`);
         await hre.run("verify:verify", { address: aiAgentAddress });
-        console.log(chalk.green("✅ EVMAIAgent verified successfully!"));
+        console.log(chalk.green(`✅ EVMAIAgent verified!`));
+        console.log(
+          chalk.cyan(`   Explorer: https://sepolia.basescan.org/address/${aiAgentAddress}#code`),
+        ); // Explicit URL
+      } catch (error) {
+        console.error(chalk.red("Verification failed:", error.message));
+      }
 
+      try {
         console.log(`Verifying EVMAIAgentEscrow proxy on Etherscan...`);
         await hre.run("verify:verify", { address: aiAgentEscrowAddress });
-        console.log(chalk.green("✅ EVMAIAgentEscrow verified successfully!"));
+        console.log(chalk.green(`✅ EVMAIAgentEscrow verified!`));
+        console.log(
+          chalk.cyan(
+            `   Explorer: https://sepolia.basescan.org/address/${aiAgentEscrowAddress}#code`,
+          ),
+        ); // Explicit URL
       } catch (error) {
         console.error(chalk.red("Verification failed:", error.message));
       }

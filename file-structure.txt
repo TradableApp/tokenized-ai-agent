@@ -1,7 +1,7 @@
 .
-├── ._file-structure.txt
 ├── .dockerignore
 ├── .env
+├── .env.base-localnet
 ├── .env.base-mainnet
 ├── .env.base-testnet
 ├── .env.example
@@ -12,9 +12,148 @@
 ├── .gitignore
 ├── .prettierrc
 ├── .solhint.json
-├── Dockerfile.oracle
-├── LICENSE
-├── README.md
+├── artifacts
+│   ├── @oasisprotocol
+│   │   └── sapphire-contracts
+│   │       └── contracts
+│   │           ├── ConsensusUtils.sol
+│   │           │   ├── ConsensusUtils.dbg.json
+│   │           │   └── ConsensusUtils.json
+│   │           ├── Sapphire.sol
+│   │           │   ├── Sapphire.dbg.json
+│   │           │   └── Sapphire.json
+│   │           └── Subcall.sol
+│   │               ├── Subcall.dbg.json
+│   │               └── Subcall.json
+│   ├── @openzeppelin
+│   │   ├── contracts
+│   │   │   ├── access
+│   │   │   │   └── Ownable.sol
+│   │   │   │       ├── Ownable.dbg.json
+│   │   │   │       └── Ownable.json
+│   │   │   ├── interfaces
+│   │   │   │   ├── draft-IERC1822.sol
+│   │   │   │   │   ├── IERC1822Proxiable.dbg.json
+│   │   │   │   │   └── IERC1822Proxiable.json
+│   │   │   │   ├── draft-IERC6093.sol
+│   │   │   │   │   ├── IERC1155Errors.dbg.json
+│   │   │   │   │   ├── IERC1155Errors.json
+│   │   │   │   │   ├── IERC20Errors.dbg.json
+│   │   │   │   │   ├── IERC20Errors.json
+│   │   │   │   │   ├── IERC721Errors.dbg.json
+│   │   │   │   │   └── IERC721Errors.json
+│   │   │   │   └── IERC1967.sol
+│   │   │   │       ├── IERC1967.dbg.json
+│   │   │   │       └── IERC1967.json
+│   │   │   ├── proxy
+│   │   │   │   ├── beacon
+│   │   │   │   │   └── IBeacon.sol
+│   │   │   │   │       ├── IBeacon.dbg.json
+│   │   │   │   │       └── IBeacon.json
+│   │   │   │   └── ERC1967
+│   │   │   │       └── ERC1967Utils.sol
+│   │   │   │           ├── ERC1967Utils.dbg.json
+│   │   │   │           └── ERC1967Utils.json
+│   │   │   ├── token
+│   │   │   │   └── ERC20
+│   │   │   │       ├── ERC20.sol
+│   │   │   │       │   ├── ERC20.dbg.json
+│   │   │   │       │   └── ERC20.json
+│   │   │   │       ├── extensions
+│   │   │   │       │   └── IERC20Metadata.sol
+│   │   │   │       │       ├── IERC20Metadata.dbg.json
+│   │   │   │       │       └── IERC20Metadata.json
+│   │   │   │       └── IERC20.sol
+│   │   │   │           ├── IERC20.dbg.json
+│   │   │   │           └── IERC20.json
+│   │   │   └── utils
+│   │   │       ├── Address.sol
+│   │   │       │   ├── Address.dbg.json
+│   │   │       │   └── Address.json
+│   │   │       ├── Context.sol
+│   │   │       │   ├── Context.dbg.json
+│   │   │       │   └── Context.json
+│   │   │       ├── Errors.sol
+│   │   │       │   ├── Errors.dbg.json
+│   │   │       │   └── Errors.json
+│   │   │       └── StorageSlot.sol
+│   │   │           ├── StorageSlot.dbg.json
+│   │   │           └── StorageSlot.json
+│   │   └── contracts-upgradeable
+│   │       ├── access
+│   │       │   └── OwnableUpgradeable.sol
+│   │       │       ├── OwnableUpgradeable.dbg.json
+│   │       │       └── OwnableUpgradeable.json
+│   │       ├── proxy
+│   │       │   └── utils
+│   │       │       ├── Initializable.sol
+│   │       │       │   ├── Initializable.dbg.json
+│   │       │       │   └── Initializable.json
+│   │       │       └── UUPSUpgradeable.sol
+│   │       │           ├── UUPSUpgradeable.dbg.json
+│   │       │           └── UUPSUpgradeable.json
+│   │       └── utils
+│   │           └── ContextUpgradeable.sol
+│   │               ├── ContextUpgradeable.dbg.json
+│   │               └── ContextUpgradeable.json
+│   ├── build-info
+│   │   └── 66ef264f1956a9b82950e61da7d29b92.json
+│   └── contracts
+│       ├── EVMAIAgent.sol
+│       │   ├── EVMAIAgent.dbg.json
+│       │   └── EVMAIAgent.json
+│       ├── EVMAIAgentEscrow.sol
+│       │   ├── EVMAIAgentEscrow.dbg.json
+│       │   └── EVMAIAgentEscrow.json
+│       ├── interfaces
+│       │   ├── IEVMAIAgent.sol
+│       │   │   ├── IEVMAIAgent.dbg.json
+│       │   │   └── IEVMAIAgent.json
+│       │   ├── IEVMAIAgentEscrow.sol
+│       │   │   ├── IEVMAIAgentEscrow.dbg.json
+│       │   │   └── IEVMAIAgentEscrow.json
+│       │   ├── ISapphireAIAgent.sol
+│       │   │   ├── ISapphireAIAgent.dbg.json
+│       │   │   └── ISapphireAIAgent.json
+│       │   └── ISapphireAIAgentEscrow.sol
+│       │       ├── ISapphireAIAgentEscrow.dbg.json
+│       │       └── ISapphireAIAgentEscrow.json
+│       ├── libraries
+│       │   └── Structs.sol
+│       │       ├── Structs.dbg.json
+│       │       └── Structs.json
+│       ├── mocks
+│       │   ├── MockAbleToken.sol
+│       │   │   ├── MockAbleToken.dbg.json
+│       │   │   └── MockAbleToken.json
+│       │   ├── MockEVMAIAgent.sol
+│       │   │   ├── MockEVMAIAgent.dbg.json
+│       │   │   └── MockEVMAIAgent.json
+│       │   ├── MockEVMAIAgentEscrow.sol
+│       │   │   ├── MockEVMAIAgentEscrow.dbg.json
+│       │   │   └── MockEVMAIAgentEscrow.json
+│       │   ├── MockSapphireAIAgent.sol
+│       │   │   ├── MockSapphireAIAgent.dbg.json
+│       │   │   └── MockSapphireAIAgent.json
+│       │   └── MockSapphireAIAgentEscrow.sol
+│       │       ├── MockSapphireAIAgentEscrow.dbg.json
+│       │       └── MockSapphireAIAgentEscrow.json
+│       ├── SapphireAIAgent.sol
+│       │   ├── SapphireAIAgent.dbg.json
+│       │   └── SapphireAIAgent.json
+│       ├── SapphireAIAgentEscrow.sol
+│       │   ├── SapphireAIAgentEscrow.dbg.json
+│       │   └── SapphireAIAgentEscrow.json
+│       └── test
+│           ├── EVMAIAgentEscrowV2.sol
+│           │   ├── EVMAIAgentEscrowV2.dbg.json
+│           │   └── EVMAIAgentEscrowV2.json
+│           └── EVMAIAgentV2.sol
+│               ├── EVMAIAgentV2.dbg.json
+│               └── EVMAIAgentV2.json
+├── cache
+│   ├── solidity-files-cache.json
+│   └── validations.json
 ├── compose.base-mainnet.yaml
 ├── compose.base-testnet.yaml
 ├── compose.mainnet.yaml
@@ -22,40 +161,155 @@
 ├── compose.yaml
 ├── contracts
 │   ├── EVMAIAgent.sol
+│   ├── EVMAIAgentEscrow.sol
+│   ├── interfaces
+│   │   ├── IEVMAIAgent.sol
+│   │   ├── IEVMAIAgentEscrow.sol
+│   │   ├── ISapphireAIAgent.sol
+│   │   └── ISapphireAIAgentEscrow.sol
+│   ├── libraries
+│   │   └── Structs.sol
+│   ├── mocks
+│   │   ├── MockAbleToken.sol
+│   │   ├── MockEVMAIAgent.sol
+│   │   ├── MockEVMAIAgentEscrow.sol
+│   │   ├── MockSapphireAIAgent.sol
+│   │   └── MockSapphireAIAgentEscrow.sol
 │   ├── README.md
-│   └── SapphireAIAgent.sol
+│   ├── SapphireAIAgent.sol
+│   ├── SapphireAIAgentEscrow.sol
+│   └── test
+│       ├── EVMAIAgentEscrowV2.sol
+│       └── EVMAIAgentV2.sol
+├── coverage
+│   ├── base.css
+│   ├── contracts
+│   │   ├── EVMAIAgent.sol.html
+│   │   ├── EVMAIAgentEscrow.sol.html
+│   │   ├── index.html
+│   │   ├── interfaces
+│   │   │   ├── IEVMAIAgent.sol.html
+│   │   │   ├── IEVMAIAgentEscrow.sol.html
+│   │   │   ├── index.html
+│   │   │   ├── ISapphireAIAgent.sol.html
+│   │   │   └── ISapphireAIAgentEscrow.sol.html
+│   │   ├── libraries
+│   │   │   ├── index.html
+│   │   │   └── Structs.sol.html
+│   │   ├── mocks
+│   │   │   ├── index.html
+│   │   │   ├── MockAbleToken.sol.html
+│   │   │   ├── MockEVMAIAgent.sol.html
+│   │   │   ├── MockEVMAIAgentEscrow.sol.html
+│   │   │   ├── MockSapphireAIAgent.sol.html
+│   │   │   └── MockSapphireAIAgentEscrow.sol.html
+│   │   ├── SapphireAIAgent.sol.html
+│   │   ├── SapphireAIAgentEscrow.sol.html
+│   │   └── test
+│   │       ├── EVMAIAgentEscrowV2.sol.html
+│   │       ├── EVMAIAgentV2.sol.html
+│   │       └── index.html
+│   ├── coverage-final.json
+│   ├── index.html
+│   ├── lcov-report
+│   │   ├── base.css
+│   │   ├── contracts
+│   │   │   ├── EVMAIAgent.sol.html
+│   │   │   ├── EVMAIAgentEscrow.sol.html
+│   │   │   ├── index.html
+│   │   │   ├── interfaces
+│   │   │   │   ├── IEVMAIAgent.sol.html
+│   │   │   │   ├── IEVMAIAgentEscrow.sol.html
+│   │   │   │   ├── index.html
+│   │   │   │   ├── ISapphireAIAgent.sol.html
+│   │   │   │   └── ISapphireAIAgentEscrow.sol.html
+│   │   │   ├── libraries
+│   │   │   │   ├── index.html
+│   │   │   │   └── Structs.sol.html
+│   │   │   ├── mocks
+│   │   │   │   ├── index.html
+│   │   │   │   ├── MockAbleToken.sol.html
+│   │   │   │   ├── MockEVMAIAgent.sol.html
+│   │   │   │   ├── MockEVMAIAgentEscrow.sol.html
+│   │   │   │   ├── MockSapphireAIAgent.sol.html
+│   │   │   │   └── MockSapphireAIAgentEscrow.sol.html
+│   │   │   ├── SapphireAIAgent.sol.html
+│   │   │   ├── SapphireAIAgentEscrow.sol.html
+│   │   │   └── test
+│   │   │       ├── EVMAIAgentEscrowV2.sol.html
+│   │   │       ├── EVMAIAgentV2.sol.html
+│   │   │       └── index.html
+│   │   ├── index.html
+│   │   ├── prettify.css
+│   │   ├── prettify.js
+│   │   ├── sort-arrow-sprite.png
+│   │   └── sorter.js
+│   ├── lcov.info
+│   ├── prettify.css
+│   ├── prettify.js
+│   ├── sort-arrow-sprite.png
+│   └── sorter.js
+├── coverage.json
+├── Dockerfile.oracle
 ├── file-structure.txt
 ├── gas-report.txt
 ├── hardhat.config.js
+├── LICENSE
 ├── oracle
 │   ├── .env.oracle
+│   ├── .env.oracle.base-mainnet
+│   ├── .env.oracle.base-testnet
 │   ├── .env.oracle.example
-│   ├── .env.oracle.localnet
-│   ├── .env.oracle.mainnet
-│   ├── .env.oracle.testnet
-│   ├── README.md
+│   ├── .nyc_output
+│   │   ├── 5d4c9289-d036-4307-9e38-3f60c4e3523d.json
+│   │   ├── 6db47593-4371-4e5f-9190-817d2e6a85ae.json
+│   │   └── processinfo
+│   │       ├── 5d4c9289-d036-4307-9e38-3f60c4e3523d.json
+│   │       ├── 6db47593-4371-4e5f-9190-817d2e6a85ae.json
+│   │       └── index.json
+│   ├── failed-jobs.json
+│   ├── oracle-state.json
 │   ├── package-lock.json
 │   ├── package.json
+│   ├── README.md
 │   ├── src
 │   │   ├── aiAgentOracle.js
+│   │   ├── alerting.js
 │   │   ├── contractUtility.js
+│   │   ├── formatters.js
 │   │   ├── index.js
-│   │   └── roflUtility.js
+│   │   ├── roflUtility.js
+│   │   └── storage
+│   │       ├── arweave.js
+│   │       └── storage.js
 │   └── test
-│       └── roflUtility.test.js
+│       ├── aiAgentOracle.test.js
+│       ├── alerting.test.js
+│       ├── arweave.test.js
+│       ├── contractUtility.test.js
+│       ├── formatters.test.js
+│       ├── roflUtility.test.js
+│       └── storage.test.js
 ├── package-lock.json
 ├── package.json
+├── README.md
 ├── rofl.yaml
 ├── scripts
 │   ├── deploy.js
+│   ├── fund.js
 │   ├── getPublicKey.js
 │   ├── interact.js
 │   ├── release-mainnet.sh
 │   └── rofl-set-secrets.sh
+├── storageLayout
 ├── test
-│   └── SapphireAIAgent.test.js
+│   ├── EVMAIAgent.test.js
+│   ├── EVMAIAgentEscrow.test.js
+│   ├── SapphireAIAgent.test.js
+│   └── SapphireAIAgentEscrow.test.js
+├── tokenized-ai-agent.base-testnet.orc
 ├── tokenized-ai-agent.code-workspace
 ├── tokenized-ai-agent.default.orc
 └── tokenized-ai-agent.testnet.orc
 
-7 directories, 53 files
+90 directories, 223 files
