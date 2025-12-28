@@ -195,7 +195,7 @@ async function uploadData(dataBuffer, tags = []) {
     };
 
     const options = {
-      compression: true,
+      compression: false,
       onProgress: (progress) => {
         // Log every 25% to avoid spamming logs
         if (progress % 25 === 0 && progress > 0) {
