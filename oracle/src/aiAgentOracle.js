@@ -7,6 +7,7 @@ const { v5: uuidv5 } = require("uuid");
 const crypto = require("crypto");
 const { default: PQueue } = require("p-queue");
 const { Mutex } = require("async-mutex");
+const { LRUCache } = require("lru-cache");
 
 const { initializeOracle } = require("./contractUtility");
 const {
@@ -60,7 +61,7 @@ function initForTest(testComponents) {
   isSapphire = testComponents.isSapphire;
 }
 
-// --- CONCURRENCY CONTROL ---
+// --- CONCURRENCY & MEMORY CONTROL ---
 
 // Transaction Mutex: Ensures we NEVER send 2 transactions simultaneously (prevents Nonce errors)
 // This implements the "Mutual Exclusion" pattern from the async-mutex docs.
@@ -69,6 +70,15 @@ const txMutex = new Mutex();
 // Job Queue: Limits concurrency to 5.
 // This implements the "Promise queue with concurrency control" pattern from p-queue docs.
 const queue = new PQueue({ concurrency: 5 });
+
+// We store the raw ENCRYPTED string (IV + Ciphertext).
+// Average size ~1KB - 4KB.
+// 100,000 items * 4KB = ~400MB of RAM.
+// This fits comfortably within the 4GB TEE limit while keeping hot conversations in memory.
+const rawMessageCache = new LRUCache({
+  max: 100000,
+  ttl: 1000 * 60 * 60 * 24, // 24 Hours (Renamed from maxAge)
+});
 
 console.log(`--- AI AGENT ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
 console.log(`Oracle signer address: ${signer.address}`);
@@ -191,14 +201,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
 
 // --- Storage & History Helpers ---
 
-async function encryptAndUpload(dataObject, sessionKey, tags = []) {
-  const encryptedString = encryptSymmetrically(dataObject, sessionKey);
-  const dataBuffer = Buffer.from(encryptedString);
-  return uploadData(dataBuffer, tags);
-}
-
-async function fetchAndDecrypt(cid, sessionKey) {
-  const encryptedString = await fetchData(cid);
+// Takes an encrypted string (from cache or new upload), decrypts it, and returns object
+function decryptMessageFile(encryptedString, sessionKey) {
   return decryptSymmetrically(encryptedString, sessionKey);
 }
 
@@ -216,14 +220,39 @@ async function reconstructHistory(startMessageCID, sessionKey) {
   // Limit history fetching to avoid infinite loops and excessive costs.
   const history = [];
   let currentCid = startMessageCID;
+  let cacheHits = 0;
+  let networkFetches = 0;
+
   // Limit history fetching to avoid infinite loops and excessive costs.
   for (let i = 0; i < AI_CONTEXT_MESSAGES_LIMIT; i += 1) {
     if (!currentCid) {
       break;
     }
 
+    let encryptedString;
+
+    // 1. Check Cache (Hit = 0ms latency)
+    if (rawMessageCache.has(currentCid)) {
+      encryptedString = rawMessageCache.get(currentCid);
+      cacheHits += 1;
+      // console.log(`[Cache] Hit for CID: ${currentCid.slice(0, 8)}...`);
+    } else {
+      // 2. Fetch from Network (Miss = ~500ms+ latency)
+      // console.log(`[Cache] Miss for CID: ${currentCid.slice(0, 8)}...`);
+      try {
+        encryptedString = await fetchData(currentCid);
+        // 3. Populate Cache for next time
+        rawMessageCache.set(currentCid, encryptedString);
+        networkFetches += 1;
+      } catch (error) {
+        console.error(`Failed to fetch CID ${currentCid} from storage.`, error);
+        break;
+      }
+    }
+
+    // 4. Decrypt (Fast CPU op)
     try {
-      const messageFile = await fetchAndDecrypt(currentCid, sessionKey);
+      const messageFile = decryptMessageFile(encryptedString, sessionKey);
 
       history.unshift({ role: messageFile.role, content: messageFile.content });
 
@@ -238,6 +267,10 @@ async function reconstructHistory(startMessageCID, sessionKey) {
       break;
     }
   }
+
+  console.log(
+    `[History] Reconstructed ${history.length} messages. Cache Hits: ${cacheHits}, Network Fetches: ${networkFetches}`,
+  );
 
   return history;
 }
@@ -417,6 +450,7 @@ async function handlePrompt(
     const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
 
     const history = await reconstructHistory(previousMessageCID, sessionKey);
+
     history.push({ role: "user", content: promptText });
 
     const answerText = await queryAIModel(history, conversationId.toString());
@@ -437,6 +471,27 @@ async function handlePrompt(
 
     const now = Date.now();
     let cidBundle = {};
+    let answerMessageCID = "";
+
+    // Prepare files
+    const promptMessageFile = createMessageFile({
+      id: promptMessageId.toString(),
+      conversationId: conversationId.toString(),
+      parentId: previousMessageId || null,
+      parentCID: previousMessageCID || null,
+      createdAt: now,
+      role: "user",
+      content: promptText,
+    });
+    const searchDeltaFile = createSearchIndexDeltaFile({
+      conversationId: conversationId.toString(),
+      messageId: promptMessageId.toString(),
+      userMessageContent: promptText,
+    });
+
+    // Encrypt in memory (we need the strings for cache injection later)
+    const encryptedPrompt = encryptSymmetrically(promptMessageFile, sessionKey);
+    const encryptedDelta = encryptSymmetrically(searchDeltaFile, sessionKey);
 
     if (isNewConversation) {
       const { chainId } = await provider.getNetwork();
@@ -459,60 +514,51 @@ async function handlePrompt(
         keyToStore = ethers.toUtf8String(roflEncryptedKey); // For EVM, we already have it.
       }
 
+      const conversationFile = createConversationFile({
+        id: conversationId.toString(),
+        ownerAddress: user,
+        createdAt: now,
+      });
+      const conversationMetadataFile = createConversationMetadataFile({
+        title: promptText.substring(0, 40),
+        isDeleted: false,
+        lastUpdatedAt: now,
+      });
+
+      const encryptedConv = encryptSymmetrically(conversationFile, sessionKey);
+      const encryptedMeta = encryptSymmetrically(conversationMetadataFile, sessionKey);
+
       // Stringify the eth-crypto object before saving
       await uploadData(Buffer.from(keyToStore), keyFileTags);
 
+      // Parallel Uploads
       const [conversationCID, metadataCID, promptMessageCID, searchDeltaCID] = await Promise.all([
-        encryptAndUpload(
-          createConversationFile({
-            id: conversationId.toString(),
-            ownerAddress: user,
-            createdAt: now,
-          }),
-          sessionKey,
-        ),
-        encryptAndUpload(
-          createConversationMetadataFile({
-            title: promptText.substring(0, 40),
-            isDeleted: false,
-            lastUpdatedAt: now,
-          }),
-          sessionKey,
-        ),
-        encryptAndUpload(
-          createMessageFile({
-            id: promptMessageId.toString(),
-            conversationId: conversationId.toString(),
-            parentId: previousMessageId || null,
-            parentCID: previousMessageCID || null,
-            createdAt: now,
-            role: "user",
-            content: promptText,
-          }),
-          sessionKey,
-        ),
-        encryptAndUpload(
-          createSearchIndexDeltaFile({
-            conversationId: conversationId.toString(),
-            messageId: promptMessageId.toString(),
-            userMessageContent: promptText,
-          }),
-          sessionKey,
-        ),
+        uploadData(Buffer.from(encryptedConv)),
+        uploadData(Buffer.from(encryptedMeta)),
+        uploadData(Buffer.from(encryptedPrompt)),
+        uploadData(Buffer.from(encryptedDelta)),
       ]);
 
-      const answerMessageCID = await encryptAndUpload(
-        createMessageFile({
-          id: answerMessageId.toString(),
-          conversationId: conversationId.toString(),
-          parentId: promptMessageId.toString(),
-          parentCID: promptMessageCID,
-          createdAt: now + 1,
-          role: "assistant",
-          content: answerText,
-        }),
-        sessionKey,
-      );
+      // Cache Injection: We just uploaded the Prompt, so store its encrypted form in cache
+      rawMessageCache.set(promptMessageCID, encryptedPrompt);
+
+      // Create Answer
+      const answerMessageFile = createMessageFile({
+        id: answerMessageId.toString(),
+        conversationId: conversationId.toString(),
+        parentId: promptMessageId.toString(),
+        parentCID: promptMessageCID,
+        createdAt: now + 1,
+        role: "assistant",
+        content: answerText,
+      });
+      const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
+
+      answerMessageCID = await uploadData(Buffer.from(encryptedAnswer));
+
+      // Cache Injection: Store the Answer's encrypted form
+      rawMessageCache.set(answerMessageCID, encryptedAnswer);
+
       cidBundle = {
         conversationCID,
         metadataCID,
@@ -522,39 +568,29 @@ async function handlePrompt(
       };
     } else {
       const [promptMessageCID, searchDeltaCID] = await Promise.all([
-        encryptAndUpload(
-          createMessageFile({
-            id: promptMessageId.toString(),
-            conversationId: conversationId.toString(),
-            parentId: previousMessageId || null,
-            parentCID: previousMessageCID || null,
-            createdAt: now,
-            role: "user",
-            content: promptText,
-          }),
-          sessionKey,
-        ),
-        encryptAndUpload(
-          createSearchIndexDeltaFile({
-            conversationId: conversationId.toString(),
-            messageId: promptMessageId.toString(),
-            userMessageContent: promptText,
-          }),
-          sessionKey,
-        ),
+        uploadData(Buffer.from(encryptedPrompt)),
+        uploadData(Buffer.from(encryptedDelta)),
       ]);
-      const answerMessageCID = await encryptAndUpload(
-        createMessageFile({
-          id: answerMessageId.toString(),
-          conversationId: conversationId.toString(),
-          parentId: promptMessageId.toString(),
-          parentCID: promptMessageCID,
-          createdAt: now + 1,
-          role: "assistant",
-          content: answerText,
-        }),
-        sessionKey,
-      );
+
+      // Cache Injection
+      rawMessageCache.set(promptMessageCID, encryptedPrompt);
+
+      const answerMessageFile = createMessageFile({
+        id: answerMessageId.toString(),
+        conversationId: conversationId.toString(),
+        parentId: promptMessageId.toString(),
+        parentCID: promptMessageCID,
+        createdAt: now + 1,
+        role: "assistant",
+        content: answerText,
+      });
+      const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
+
+      answerMessageCID = await uploadData(Buffer.from(encryptedAnswer));
+
+      // Cache Injection
+      rawMessageCache.set(answerMessageCID, encryptedAnswer);
+
       cidBundle = {
         conversationCID: "",
         metadataCID: "",
@@ -569,15 +605,17 @@ async function handlePrompt(
       // Double-check finalization on-chain right before sending
       // This catches race conditions where user cancelled while we were uploading
       const isFinalized = await contract.isJobFinalized(answerMessageId);
+
       if (isFinalized) {
         console.log(
           `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
         );
         return;
       }
-
       console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+
       const receipt = await tx.wait();
       console.log(
         `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
@@ -597,6 +635,7 @@ async function handlePrompt(
     // This handles cases where Ethers v6 or the RPC doesn't return the revert reason clearly.
     try {
       const isFinalized = await contract.isJobFinalized(answerMessageId);
+
       if (isFinalized) {
         console.log(
           `  ℹ️ Transaction failed but job ${answerMessageId} is finalized on-chain. Treating as cancelled/completed.`,
@@ -678,18 +717,21 @@ async function handleRegeneration(
 
     const now = Date.now();
 
-    const answerMessageCID = await encryptAndUpload(
-      createMessageFile({
-        id: answerMessageId.toString(),
-        conversationId: conversationId.toString(),
-        parentId: promptMessageId.toString(),
-        parentCID: promptMessageCID ? promptMessageCID.toString() : "",
-        createdAt: now,
-        role: "assistant",
-        content: answerText,
-      }),
-      sessionKey,
-    );
+    const answerMessageFile = createMessageFile({
+      id: answerMessageId.toString(),
+      conversationId: conversationId.toString(),
+      parentId: promptMessageId.toString(),
+      parentCID: promptMessageCID ? promptMessageCID.toString() : "",
+      createdAt: now,
+      role: "assistant",
+      content: answerText,
+    });
+    const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
+
+    const answerMessageCID = await uploadData(Buffer.from(encryptedAnswer));
+
+    // Cache Injection
+    rawMessageCache.set(answerMessageCID, encryptedAnswer);
 
     const cidBundle = {
       conversationCID: "",
@@ -704,15 +746,17 @@ async function handleRegeneration(
       // Double-check finalization on-chain right before sending
       // This catches race conditions where user cancelled while we were uploading
       const isFinalized = await contract.isJobFinalized(answerMessageId);
+
       if (isFinalized) {
         console.log(
           `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
         );
         return;
       }
-
       console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+
       const receipt = await tx.wait();
       console.log(
         `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
@@ -730,6 +774,7 @@ async function handleRegeneration(
     // --- Fallback State Check ---
     try {
       const isFinalized = await contract.isJobFinalized(answerMessageId);
+
       if (isFinalized) {
         console.log(
           `  ℹ️ Transaction failed but job ${answerMessageId} is finalized on-chain. Treating as cancelled/completed.`,
@@ -800,25 +845,30 @@ async function handleBranch(
     // Stringify the eth-crypto object before saving
     await uploadData(Buffer.from(keyToStore), newKeyFileTags);
 
+    const conversationFile = createConversationFile({
+      id: newConversationId.toString(),
+      ownerAddress: user,
+      createdAt: now,
+      branchedFromConversationId: originalConversationId.toString(),
+      branchedAtMessageId: branchPointMessageId.toString(),
+    });
+    const conversationMetadataFile = createConversationMetadataFile({
+      title: newTitle,
+      isDeleted: false,
+      lastUpdatedAt: now,
+    });
+
+    const encryptedConv = encryptSymmetrically(conversationFile, sessionKey);
+    const encryptedMeta = encryptSymmetrically(conversationMetadataFile, sessionKey);
+
     const [conversationCID, metadataCID] = await Promise.all([
-      encryptAndUpload(
-        createConversationFile({
-          id: newConversationId.toString(),
-          ownerAddress: user,
-          createdAt: now,
-          branchedFromConversationId: originalConversationId.toString(),
-          branchedAtMessageId: branchPointMessageId.toString(),
-        }),
-        sessionKey,
-      ),
-      encryptAndUpload(
-        createConversationMetadataFile({ title: newTitle, isDeleted: false, lastUpdatedAt: now }),
-        sessionKey,
-      ),
+      uploadData(Buffer.from(encryptedConv)),
+      uploadData(Buffer.from(encryptedMeta)),
     ]);
 
     await txMutex.runExclusive(async () => {
       console.log(`  Submitting branch ${newConversationId}...`);
+
       const tx = await contract.submitBranch(
         user,
         originalConversationId,
@@ -827,6 +877,7 @@ async function handleBranch(
         conversationCID,
         metadataCID,
       );
+
       const receipt = await tx.wait();
       console.log(
         `  ✅ Success! Branch submitted. New convId: ${newConversationId}. Tx: ${receipt.hash}`,
@@ -855,18 +906,20 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
 
     const now = Date.now();
 
-    const metadataCID = await encryptAndUpload(
-      createConversationMetadataFile({
-        title,
-        isDeleted,
-        lastUpdatedAt: now,
-      }),
-      sessionKey,
-    );
+    const conversationMetadataFile = createConversationMetadataFile({
+      title,
+      isDeleted,
+      lastUpdatedAt: now,
+    });
+    const encryptedMeta = encryptSymmetrically(conversationMetadataFile, sessionKey);
+
+    const metadataCID = await uploadData(Buffer.from(encryptedMeta));
 
     await txMutex.runExclusive(async () => {
       console.log(`  Submitting metadata update for ${conversationId}...`);
+
       const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
+
       const receipt = await tx.wait();
       console.log(
         `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
@@ -901,6 +954,7 @@ async function setOracleAddress() {
       if (isLocalnet) {
         // On localnet, we can send a direct transaction as we control the TEE simulation.
         const tx = await contract.setOracle(signer.address, { gasLimit: 1000000 });
+
         await tx.wait();
       } else {
         // On testnet/mainnet, the transaction must be signed by the ROFL TEE.
@@ -962,6 +1016,7 @@ async function handleAndRecord(eventName, handler, ...args) {
     }
 
     await handler(...args);
+
     await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: event.blockNumber }));
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
@@ -1005,6 +1060,7 @@ async function handleAndRecord(eventName, handler, ...args) {
       let failedJobs = [];
       try {
         const fileContent = await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8");
+
         const parsed = JSON.parse(fileContent);
 
         // Ensure what we read is actually an array. If it's {}, treat as [].
@@ -1051,6 +1107,7 @@ async function retryFailedJobs() {
   let failedJobs = [];
   try {
     const fileContent = await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8");
+
     const parsed = JSON.parse(fileContent);
     // Ensure failedJobs is iterable (Array). If it's an object {}, ignore it.
     if (Array.isArray(parsed)) {
@@ -1081,6 +1138,7 @@ async function retryFailedJobs() {
       try {
         // Re-fetch the full event object to pass to the handler
         const receipt = await provider.getTransactionReceipt(job.event.transactionHash);
+
         if (!receipt) {
           throw new Error(
             `Could not find transaction receipt for hash ${job.event.transactionHash}`,

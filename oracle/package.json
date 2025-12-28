@@ -48,6 +48,7 @@
     "dotenv": "^17.0.1",
     "eth-crypto": "^3.1.0",
     "ethers": "^6.15.0",
+    "lru-cache": "^11.2.4",
     "p-queue": "^6.6.2",
     "siwe": "^3.0.0",
     "stopword": "^3.1.5",
