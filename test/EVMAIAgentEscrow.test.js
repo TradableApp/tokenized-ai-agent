@@ -170,13 +170,42 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     it("should allow a user to set and cancel a spending limit if they have no pending prompts", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       const expiresAt = (await time.latest()) + 3600;
+
+      // Test Set
       await expect(escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt))
         .to.emit(escrow, "SpendingLimitSet")
         .withArgs(user.address, INITIAL_ALLOWANCE, expiresAt);
 
+      // Verify Set State
+      let limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(0);
+
+      // Test Cancel
       await expect(escrow.connect(user).cancelSpendingLimit())
         .to.emit(escrow, "SpendingLimitCancelled")
         .withArgs(user.address);
+
+      // Verify Cancel State (struct should be deleted/zeroed)
+      limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(0);
+      expect(limit.spentAmount).to.equal(0);
+    });
+
+    it("should revert if setting spending limit to zero", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      const expiresAt = (await time.latest()) + 3600;
+      await expect(
+        escrow.connect(user).setSpendingLimit(0, expiresAt),
+      ).to.be.revertedWithCustomError(escrow, "ZeroSpendingLimit");
+    });
+
+    it("should revert if setting expiration in the past", async function () {
+      const { escrow, user } = await loadFixture(deployEscrowFixture);
+      const pastTime = (await time.latest()) - 1;
+      await expect(
+        escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, pastTime),
+      ).to.be.revertedWithCustomError(escrow, "ExpirationInThePast");
     });
 
     context("With Pending Prompts", function () {
@@ -222,6 +251,11 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedAnswerId, user.address, PROMPT_FEE);
       expect(await mockAgent.lastConversationId()).to.equal(newConversationId);
+
+      // Verify Spending Limit State: Allowance static, Spent increased
+      const limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(PROMPT_FEE);
     });
 
     it("should handle a regeneration request with correct conversationId", async function () {
@@ -235,6 +269,11 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedNewAnswerId, user.address, PROMPT_FEE);
       expect(await mockAgent.lastConversationId()).to.equal(conversationId);
+
+      // Verify Spending Limit State
+      const limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(PROMPT_FEE);
     });
 
     it("should handle an agent job initiated by the oracle, reserving a new job ID", async function () {
@@ -248,6 +287,11 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedTriggerId, user.address, PROMPT_FEE);
       expect(await mockAgent.lastJobId()).to.equal(newJobId);
+
+      // Verify Spending Limit State
+      const limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(PROMPT_FEE);
     });
   });
 
@@ -266,6 +310,11 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         initialTreasuryBalance + METADATA_FEE,
       );
       expect(await mockAgent.lastConversationId()).to.equal(1);
+
+      // Verify Spending Limit State
+      const limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(METADATA_FEE);
     });
 
     it("should handle a branch request, reserving a new conversation ID", async function () {
@@ -277,6 +326,11 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       );
       expect(await mockAgent.lastOriginalConversationId()).to.equal(123);
       expect(await mockAgent.lastNewConversationId()).to.equal(newConversationId);
+
+      // Verify Spending Limit State
+      const limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(BRANCH_FEE);
     });
   });
 
@@ -310,12 +364,12 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
   });
 
   describe("Cancellation and Refund Flows", function () {
-    let escrow, mockAgent, mockToken, user, unauthorizedUser;
+    let escrow, mockAgent, mockToken, user, unauthorizedUser, deployer;
     const answerMessageId = 1; // Reserved for the new prompt
 
     beforeEach(async function () {
       const fixtures = await loadFixture(deployEscrowFixture);
-      ({ escrow, mockAgent, mockToken, user, unauthorizedUser } = fixtures);
+      ({ escrow, mockAgent, mockToken, user, unauthorizedUser, deployer } = fixtures);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
       await escrow.connect(user).initiatePrompt(0, "0x", "0x");
     });
@@ -328,6 +382,12 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         .withArgs(user.address, answerMessageId);
       const expectedUserBalance = initialUserBalance + PROMPT_FEE - CANCELLATION_FEE;
       expect(await mockToken.balanceOf(user.address)).to.equal(expectedUserBalance);
+
+      // Verify Spending Limit State: Allowance static, Spent = CancellationFee
+      // (PROMPT_FEE was refunded to spent, Cancellation Fee was added)
+      const limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(CANCELLATION_FEE);
     });
 
     it("should allow a keeper to process a refund", async function () {
@@ -337,6 +397,11 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         .to.emit(escrow, "PaymentRefunded")
         .withArgs(answerMessageId);
       expect(await mockToken.balanceOf(user.address)).to.equal(initialUserBalance + PROMPT_FEE);
+
+      // Verify Spending Limit State: Allowance static, Spent = 0 (Fully refunded)
+      const limit = await escrow.spendingLimits(user.address);
+      expect(limit.allowance).to.equal(INITIAL_ALLOWANCE);
+      expect(limit.spentAmount).to.equal(0);
     });
 
     it("should revert if a non-owner tries to cancel", async function () {
@@ -359,12 +424,21 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     });
 
     it("should revert cancelPrompt if user cannot afford the cancellation fee", async function () {
-      const { escrow, user, mockToken } = await loadFixture(deployEscrowFixture);
+      const { escrow, user, mockToken, deployer } = await loadFixture(deployEscrowFixture);
+
+      // Update Cancellation Fee to be greater than Prompt Fee for this specific test logic
+      const HIGH_CANCEL_FEE = ethers.parseEther("11"); // Higher than PROMPT_FEE (10)
+      await escrow.connect(deployer).setCancellationFee(HIGH_CANCEL_FEE);
+
       await mockToken.connect(user).approve(await escrow.getAddress(), PROMPT_FEE);
       await escrow.connect(user).setSpendingLimit(PROMPT_FEE, (await time.latest()) + 7200);
       await escrow.connect(user).initiatePrompt(0, "0x", "0x");
 
       await time.increase(5);
+
+      // Attempt cancel.
+      // 1. Refund Prompt (10). Spent becomes 0.
+      // 2. Check: Allowance (10) < Spent (0) + CancelFee (11). True. Revert.
       await expect(escrow.connect(user).cancelPrompt(1)).to.be.revertedWithCustomError(
         escrow,
         "InsufficientSpendingLimitAllowance",

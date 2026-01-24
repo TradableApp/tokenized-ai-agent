@@ -158,6 +158,10 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   error SpendingLimitExpired();
   /// @notice Reverts if a user's remaining allowance is insufficient to cover a fee.
   error InsufficientSpendingLimitAllowance();
+  /// @notice Reverts if a spending limit is set to zero.
+  error ZeroSpendingLimit();
+  /// @notice Reverts if a spending limit is set with an expiration in the past.
+  error ExpirationInThePast();
 
   // State Machine Errors
   /// @notice Reverts if an escrow record is not found for a given ID.
@@ -302,6 +306,13 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     if (pendingEscrowCount[msg.sender] > 0) {
       revert HasPendingPrompts();
     }
+    if (_allowance == 0) {
+      revert ZeroSpendingLimit();
+    }
+    if (_expiresAt <= block.timestamp) {
+      revert ExpirationInThePast();
+    }
+
     spendingLimits[msg.sender] = SpendingLimit({
       allowance: _allowance,
       spentAmount: 0,
@@ -489,14 +500,12 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
 
     sub.spentAmount -= escrow.amount;
-    sub.allowance -= escrow.amount;
 
     if (sub.allowance < sub.spentAmount + cancellationFee) {
       revert InsufficientSpendingLimitAllowance();
     }
 
     sub.spentAmount += cancellationFee;
-    sub.allowance -= cancellationFee;
     ableToken.transferFrom(msg.sender, treasury, cancellationFee);
 
     --pendingEscrowCount[msg.sender];
@@ -574,7 +583,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.REFUNDED;
     spendingLimits[escrow.user].spentAmount -= escrow.amount;
-    spendingLimits[escrow.user].allowance -= escrow.amount;
 
     emit PaymentRefunded(escrowId);
     ableToken.transfer(escrow.user, escrow.amount);
@@ -626,9 +634,6 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
 
     sub.spentAmount += _fee;
-    // For direct, non-refundable payments, we also decrement the total allowance to keep
-    // our internal accounting synchronized with the external ERC20 allowance.
-    sub.allowance -= _fee;
     ableToken.transferFrom(_user, treasury, _fee);
   }
 
