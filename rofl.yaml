@@ -86,8 +86,6 @@ deployments:
         value: pGJwa1ggB3WuXfrl8C5bW8pbdagQoozQMcoVo5VaXqP70YIolyZkbmFtZVgkqW3CkT6yESjykz7MMmnLW1kgZQ8q/Xyyvo5k8y1ZfKQFa9T1ZW5vbmNlTzdAbaWeW+fpt5Jx3aI3CGV2YWx1ZVgo15hRGPA9vGR1EzXgvcGargN9cmm4DAplQyU/utAQ2bdiTLVEa6HCow==
       - name: DOMAIN
         value: pGJwa1gg+aQ2XLLsQjyb4ZqNj8hcx3jb7UFchImBgxpLMneuHwVkbmFtZVaPZCJoy3oYQQq0RUQZGRNmCpbAajN7ZW5vbmNlT8+qBHkTdzzLbNtsLxr/emV2YWx1ZVgkbl1DteMWGUsXJdyeuUbQs2grIj8Z4RoXZhUoty0TrAxrOfQ4
-      - name: AI_PROVIDER
-        value: pGJwa1ggcjksPfbtS/fQtEs5bYAL+1mNCoZW0dQYxWADFtM3XwdkbmFtZVgb3gW7Hryeq6aj6KuwMndfDNvJ9RfMMsgpb5nnZW5vbmNlT/dNurmTpYjXQ6JeDwMGkmV2YWx1ZVgY2XgzrdTbLIf6SgAS7/LdB2+UieifjNxR
       - name: CHAIN_GPT_API_KEY
         value: pGJwa1gg93N1mK5lWERrWCPUUpp9TBRGPVAA+kYUqXkZV1qOBANkbmFtZVghBejGLqOBa1ePzYeiUia2HCxW9vdGOuieaWGHiHIfjrrDZW5vbmNlT4/eSasi79a01AO7qJncUWV2YWx1ZVg0KNwgwAelOpkdC+CcN5WyKll6nTnNU6bWa28JGBc8MVVfHnFGlXd9z1NePxZhe6vw6pQanQ==
       - name: OLLAMA_URL
@@ -146,8 +144,6 @@ deployments:
         value: pGJwa1ggK40sYaU8JTmevV95sTn2qXbvTWbMtcDhH9IMNPpv93xkbmFtZVgmGoin3nmB16UCNxr5uCUEQD7JvL3Iixknxn2n6jLA5Xkh3TADdJ9lbm9uY2VPSvle2T+/cZqY0UubRuffZXZhbHVlWJHVIFL8MKSmmR6J0wnVBHz0JweXGIPxYf0ijHzkRIRM9kFUUwU7u0OX8hTbvLAD0CYShtffCdQKRd0nQ67+fkJYUr48MA/odOyIHKqhj4vxfocI0rw9O0HgKFEqNc6JiTKuqism5TwTXix5d4VzVfTa5pKGSUXYAtI/YqYMFTxxenzvv+2A8pG6hXre/zReV6h8
       - name: DOMAIN
         value: pGJwa1ggO6R1/Qt2COaD7uwDgzxU5o5Q+6lFBaeXR6bxc6lvCWVkbmFtZVajELemxO6kUJJHBjURY6bBLq5Mv7efZW5vbmNlT3pvCOA5ajJnjPihl7PIFWV2YWx1ZVgkbVatVtGArnWLfPKoZfr0VY5ztvW8HP5QwUNOiAj6T/JS530G
-      - name: AI_PROVIDER
-        value: pGJwa1ggcADMljyaJR5qkRlqFvtSYgaElzu+QyF7F+/q9cK4hBVkbmFtZVgbBHcKg7oNo8uWPpnjAG0PrsAbKPEo91SFtyYHZW5vbmNlT2bhvTtVIBmSa1/MpEkWNWV2YWx1ZVgY5DjUh9hmxyq0HZBUX1IBlwujutSIs8x6
       - name: CHAIN_GPT_API_KEY
         value: pGJwa1ggiGpOZpB3Z/QTzIF5oukrd50zydfXVq8Nu0oQZ1oDvRFkbmFtZVghXyHBlqKv0ekkS71vBp7e5kaTL2EYlCWe+oSKukaknfomZW5vbmNlT2KL/nfM8qLje9RkBjysmWV2YWx1ZVg0jmcu+tJqMfuKrzLrWk+hV2T8lq7SUpVR1NHAcTpjW1WZKf0nBJvZgtTVVDjgroboFS85CA==
       - name: OLLAMA_URL

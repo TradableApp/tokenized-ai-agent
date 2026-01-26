@@ -8,7 +8,16 @@ const crypto = require("crypto");
 const { default: PQueue } = require("p-queue");
 const { Mutex } = require("async-mutex");
 const { LRUCache } = require("lru-cache");
+const {
+  ElizaOS,
+  stringToUuid,
+  createUniqueUuid,
+  elizaLogger,
+  ChannelType,
+} = require("@elizaos/core");
 
+const senseaiPlugin = require("./elizaos/plugins/plugin-senseai/dist/index.js").default;
+const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
 const {
   initializeStorage,
@@ -87,6 +96,93 @@ console.log(
   `Operating in ${isSapphire ? "Sapphire (confidential)" : "Public EVM (encrypted)"} mode.`,
 );
 
+let elizaOS = null;
+let senseAiAgentId = null;
+
+async function initializeEliza() {
+  console.log("[ElizaOS] Initializing Orchestrator...");
+
+  // Create the orchestrator
+  elizaOS = new ElizaOS();
+
+  const originalInfo = elizaLogger.info;
+  const originalLog = elizaLogger.log;
+
+  // List of strings that indicate "Noisy" MCP logs we want to hide
+  const MUTED_LOGS = [
+    "# Response Schema",
+    "$defs:",
+    "When using this tool, always use the",
+    "This endpoint allows you to query",
+    "ref:",
+    "jq_filter",
+    "coingecko_mcp_local",
+  ];
+
+  const shouldMute = (args) => {
+    // Combine all arguments into a string to check content
+    const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+    return MUTED_LOGS.some((term) => msg.includes(term));
+  };
+
+  // Override the logger methods
+  elizaLogger.info = (...args) => {
+    if (!shouldMute(args)) originalInfo.apply(elizaLogger, args);
+  };
+
+  elizaLogger.log = (...args) => {
+    if (!shouldMute(args)) originalLog.apply(elizaLogger, args);
+  };
+
+  // Add the SenseAI Agent
+  try {
+    console.log("[ElizaOS] Adding SenseAI Agent...");
+    const agentIds = await elizaOS.addAgents([
+      {
+        character: senseAiCharacter,
+        plugins: [
+          "@elizaos/plugin-sql", // Connect to multiple MCP servers and use their resources, prompts, and tools.
+          "@elizaos/plugin-mcp",
+
+          // Text-only plugins (no embedding support)
+          ...(process.env.ANTHROPIC_API_KEY?.trim() ? ["@elizaos/plugin-anthropic"] : []),
+          ...(process.env.OPENROUTER_API_KEY?.trim() ? ["@elizaos/plugin-openrouter"] : []),
+
+          // Embedding-capable plugins (optional, based on available credentials)
+          ...(process.env.OPENAI_API_KEY?.trim() ? ["@elizaos/plugin-openai"] : []),
+          ...(process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim()
+            ? ["@elizaos/plugin-google-genai"]
+            : []),
+
+          // Ollama as fallback (only if no main LLM providers are configured)
+          ...(process.env.OLLAMA_API_ENDPOINT?.trim() ? ["@elizaos/plugin-ollama"] : []),
+
+          // We use the @elizaos/plugin-mcp to connect to Coingecko MCP server instead
+          // ...(process.env.COINGECKO_API_KEY?.trim() &&
+          // process.env.COINGECKO_PRO_API_KEY?.trim()
+          //   ? ["@elizaos/plugin-coingecko"]
+          //   : []),
+
+          // Bootstrap plugin
+          ...(!process.env.IGNORE_BOOTSTRAP ? ["@elizaos/plugin-bootstrap"] : []),
+
+          senseaiPlugin,
+        ],
+      },
+    ]);
+
+    senseAiAgentId = agentIds[0];
+    console.log("senseAiAgentId", senseAiAgentId);
+
+    // Start the agent lifecycle
+    await elizaOS.startAgents();
+    console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
+  } catch (error) {
+    console.error("[ElizaOS] FAILED to start SenseAI Agent:", error);
+    throw error;
+  }
+}
+
 // --- Cryptography Helpers ---
 
 /**
@@ -155,6 +251,7 @@ function decryptSymmetrically(encryptedString, key) {
  * @returns {Promise<Buffer>} The 32-byte symmetric session key.
  */
 async function getSessionKey(payload, roflEncryptedKey, conversationId) {
+  console.log(`[Crypto] Resolving session key for conversation: ${conversationId}...`);
   if (isSapphire) {
     const parsedPayload = JSON.parse(payload);
     if (parsedPayload.sessionKey) {
@@ -176,7 +273,7 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
 
   if (conversationId) {
     console.log(
-      `Key not in payload for convId ${conversationId}, querying storage for fallback...`,
+      `[Crypto] Key not in payload for convId ${conversationId}, querying storage for fallback...`,
     );
     const { chainId } = await provider.getNetwork();
     const keyFileCID = await queryTransactionByTags([
@@ -214,6 +311,7 @@ function decryptMessageFile(encryptedString, sessionKey) {
  */
 async function reconstructHistory(startMessageCID, sessionKey) {
   if (!startMessageCID) {
+    console.log("[History] No start message CID provided. History is empty.");
     return [];
   }
 
@@ -222,6 +320,7 @@ async function reconstructHistory(startMessageCID, sessionKey) {
   let currentCid = startMessageCID;
   let cacheHits = 0;
   let networkFetches = 0;
+  console.log(`[History] Starting reconstruction from CID: ${startMessageCID}`);
 
   // Limit history fetching to avoid infinite loops and excessive costs.
   for (let i = 0; i < AI_CONTEXT_MESSAGES_LIMIT; i += 1) {
@@ -245,7 +344,7 @@ async function reconstructHistory(startMessageCID, sessionKey) {
         rawMessageCache.set(currentCid, encryptedString);
         networkFetches += 1;
       } catch (error) {
-        console.error(`Failed to fetch CID ${currentCid} from storage.`, error);
+        console.error(`[History] Failed to fetch CID ${currentCid} from storage.`, error);
         break;
       }
     }
@@ -254,13 +353,18 @@ async function reconstructHistory(startMessageCID, sessionKey) {
     try {
       const messageFile = decryptMessageFile(encryptedString, sessionKey);
 
-      history.unshift({ role: messageFile.role, content: messageFile.content });
+      history.unshift({
+        role: messageFile.role,
+        content: messageFile.content,
+        // We capture timestamp for Eliza hydration
+        createdAt: messageFile.createdAt,
+      });
 
       // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID or answerMessageCID).
       currentCid = messageFile.parentCID;
     } catch (error) {
       console.error(
-        `Failed to reconstruct history at CID ${currentCid}. Stopping history build.`,
+        `[History] Failed to reconstruct history at CID ${currentCid}. Stopping history build.`,
         error,
       );
 
@@ -283,6 +387,7 @@ async function reconstructHistory(startMessageCID, sessionKey) {
  * @returns {Promise<string>} The content of the AI's response.
  */
 async function queryDeepSeek(conversationHistory) {
+  console.log("[DeepSeek] Querying local DeepSeek-R1 via Ollama...");
   if (!process.env.OLLAMA_URL) {
     throw new Error("OLLAMA_URL is not set in the environment file.");
   }
@@ -305,7 +410,9 @@ async function queryDeepSeek(conversationHistory) {
   if (!res.ok) throw new Error(`Ollama server responded with status: ${res.status}`);
   const json = await res.json();
 
-  return json.message?.content || "Error: Malformed response from DeepSeek.";
+  const responseText = json.message?.content || "Error: Malformed response from DeepSeek.";
+  console.log(`[DeepSeek] Response received (${responseText.length} chars)`);
+  return responseText;
 }
 
 /**
@@ -315,6 +422,7 @@ async function queryDeepSeek(conversationHistory) {
  * @returns {Promise<string>} The content of the AI's response.
  */
 async function queryChainGPT(conversationHistory, conversationId) {
+  console.log(`[ChainGPT] Querying ChainGPT for convId: ${conversationId}`);
   if (!process.env.CHAIN_GPT_API_KEY) {
     throw new Error("CHAIN_GPT_API_KEY is not set in the environment file.");
   }
@@ -346,34 +454,334 @@ async function queryChainGPT(conversationHistory, conversationId) {
   });
 
   if (!res.ok) throw new Error(`ChainGPT API responded with status: ${res.status}`);
-  const answerText = await res.text();
+  const answerText = (await res.text()).trim();
+  console.log(`[ChainGPT] Response received (${answerText.length} chars)`);
 
-  return answerText.trim() || "Error: Malformed response from ChainGPT.";
+  return answerText || "Error: Malformed response from ChainGPT.";
 }
 
 /**
- * A dispatcher for querying the AI model specified by the AI_PROVIDER env variable.
- * @param {Array<object>} conversationHistory - The full conversation history with roles.
- * @param {string} conversationId - The on-chain ID for the conversation.
+ * Query the first-party Tradable Assistant backend for a response. * Uses the Genkit onCall protocol with a custom header for service-to-service auth.
+ * @param {Array<object>} conversationHistory - The full, ordered history of the conversation. * @param {string} userWallet - The user's wallet address.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryAIModel(conversationHistory, conversationId) {
-  const aiProvider = process.env.AI_PROVIDER || "DeepSeek";
-  console.log(`Querying AI model via: ${aiProvider}`);
+async function queryTradableAssistant(conversationHistory, userWallet) {
+  const TRADABLE_API_URL = process.env.TRADABLE_ASSISTANT_URL;
+  const TRADABLE_API_ACCESS_TOKEN = process.env.TRADABLE_API_ACCESS_TOKEN;
+
+  if (!TRADABLE_API_URL) {
+    throw new Error("TRADABLE_ASSISTANT_URL not set.");
+  }
+
+  if (!TRADABLE_API_ACCESS_TOKEN) {
+    throw new Error("TRADABLE_API_ACCESS_TOKEN not set for Oracle.");
+  }
+  console.log("[Routing] Path (ii): Querying Tradable 1st Party Backend...");
+
+  // 1. Map History to Genkit Schema
+  // Eliza: { role: 'assistant' } -> Genkit: { role: 'model' }
+  const pastMessages = conversationHistory.slice(0, -1).map((msg) => ({
+    role: msg.role === "assistant" ? "model" : "user",
+    content: { text: msg.content },
+  }));
+
+  const currentPrompt = conversationHistory[conversationHistory.length - 1].content;
+
+  // 2. Construct Payload (Firebase Callable Format)
+  // Callable functions expect a root "data" key.
+  const payload = {
+    data: {
+      text: currentPrompt,
+      clientId: userWallet,
+      messages: pastMessages,
+      // Pass secret in body to satisfy input.apiAccess check
+      apiAccess: TRADABLE_API_ACCESS_TOKEN,
+    },
+  };
 
   try {
-    switch (aiProvider.toLowerCase()) {
-      case "chaingpt":
-        return await queryChainGPT(conversationHistory, conversationId);
-      case "deepseek":
-        return await queryDeepSeek(conversationHistory);
-      default:
-        console.error(`Unknown AI_PROVIDER: "${aiProvider}". Defaulting to DeepSeek.`);
-        return await queryDeepSeek(conversationHistory);
+    const response = await fetch(TRADABLE_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      // Try to read the error message from the body
+      let errorMsg = response.statusText;
+      try {
+        const errBody = await response.json();
+
+        if (errBody?.error?.message) {
+          errorMsg = errBody.error.message;
+        }
+      } catch (e) {} // Ignore json parse errors on error response
+
+      throw new Error(`Tradable Assistant error (${response.status}): ${errorMsg}`);
     }
+
+    const json = await response.json();
+
+    // Firebase Callable returns result in { result: ... }
+    const answer = json.result;
+
+    if (!answer) {
+      throw new Error("Tradable Assistant returned empty response (no 'result' field).");
+    }
+
+    console.log(`[Routing] Tradable Response received (${answer.length} chars)`);
+    return answer;
+  } catch (error) {
+    console.error("[Routing] Error querying Tradable Assistant:", error);
+    throw error; // Propagate error so queryWithFailover can handle fallback
+  }
+}
+
+/**
+ * Query the ElizaOS third-party service with structured I/O.
+ * Uses the internal ElizaOS runtime initialized in the TEE.
+ * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
+ * @param {string} conversationId - The on-chain conversation ID, used as the room ID.
+ * @param {string} userWallet - The user's wallet address for entity/room isolation.
+ * @returns {Promise<string>} The content of the AI's response.
+ */
+async function queryElizaOS(conversationHistory, conversationId, userWallet) {
+  console.log("[Routing] Path (i): Initializing ElizaOS structured I/O loop...");
+
+  if (!elizaOS) await initializeEliza();
+
+  const runtime = elizaOS.getAgent(senseAiAgentId);
+  if (!runtime) throw new Error("Eliza Agent Runtime not found");
+
+  const roomId = stringToUuid(conversationId);
+  const entityId = stringToUuid(userWallet);
+  const agentEntityId = runtime.agentId;
+  const worldId = stringToUuid("onchain-world");
+  console.log(
+    `[ElizaOS] Context isolation: WorldID: ${worldId}, RoomID: ${roomId}, EntityID: ${entityId}`,
+  );
+
+  // We ensure the user and room exist in Eliza's DB (Hydrate basic entities)
+  await runtime.ensureConnection({
+    entityId,
+    roomId,
+    userName: userWallet, // Wallet as username
+    name: "User",
+    source: "onchain",
+    channelId: conversationId,
+    type: ChannelType.DM,
+    worldId,
+  });
+
+  // --- STATE HYDRATION ---
+  // The last item in conversationHistory is the *new* prompt we want to process.
+  // The items before that are context we need to hydrate.
+  const pastContext = conversationHistory.slice(0, -1);
+  const currentMessage = conversationHistory[conversationHistory.length - 1];
+  console.log(`[ElizaOS] Hydrating ${pastContext.length} historical messages into PGLite...`);
+
+  // We loop through the historical context reconstructed from Autonomys and insert it into PGLite.
+  // This gives the stateless/ephemeral TEE the necessary context for RAG/Conversation.
+  for (const msg of pastContext) {
+    // Create a deterministic ID for the historical message based on content + timestamp
+    // to avoid duplicates if this logic runs multiple times in the same session.
+    const msgHash = crypto
+      .createHash("sha256")
+      .update(msg.content + msg.createdAt)
+      .digest("hex");
+    const memoryId = stringToUuid(msgHash);
+
+    // Check if memory exists to avoid overwriting (optional optimization)
+    const existing = await runtime.getMemoryById(memoryId);
+    if (!existing) {
+      await runtime.createMemory(
+        {
+          id: memoryId,
+          entityId: msg.role === "user" ? entityId : runtime.agentId,
+          agentId: runtime.agentId,
+          roomId,
+          worldId,
+          content: {
+            text: msg.content,
+            source: "onchain",
+            channelType: ChannelType.DM,
+          },
+          metadata: {
+            type: "message",
+          },
+          createdAt: msg.createdAt || Date.now(),
+        },
+        "messages",
+      );
+    }
+  }
+
+  // --- PROCESS NEW MESSAGE ---
+  console.log("[ElizaOS] Processing new message via runtime handleMessage logic...");
+
+  // We use handleMessage which runs the full processing pipeline:
+  // Context -> Action Selection -> Evaluation -> Response
+  return new Promise(async (resolve, reject) => {
+    let finalResponseText = "";
+    let reasoningSteps = [];
+
+    try {
+      await elizaOS.handleMessage(
+        senseAiAgentId,
+        {
+          entityId,
+          roomId,
+          content: {
+            text: currentMessage.content,
+            source: "onchain",
+          },
+        },
+        {
+          // This triggers every time the agent generates a message (even intermediate ones)
+          onResponse: async (content) => {
+            console.log(
+              `[ElizaOS] Intermediate response received: "${content.text.substring(0, 30)}..."`,
+            );
+
+            // If the agent provides 'thought' metadata, add it to reasoning
+            if (content.thought) {
+              reasoningSteps.push(content.thought);
+            }
+
+            finalResponseText = content.text;
+          },
+          // Triggered if the internal pipeline crashes
+          onError: async (error) => {
+            console.error("[ElizaOS] Runtime Error during handleMessage:", error);
+            reject(error);
+          },
+          // CRITICAL: This is our signal that the tool-use/thought chain is finished
+          onComplete: async () => {
+            console.log("[ElizaOS] Processing complete signal received.");
+            if (finalResponseText) {
+              // In a production scenario, you would pass reasoningSteps back to handlePrompt
+              // to include in the MessageFile's reasoning array.
+              resolve(finalResponseText.trim());
+            } else {
+              reject(new Error("ElizaOS completed but generated no text."));
+            }
+          },
+        },
+      );
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+/**
+ * Classifies the user's latest query to determine routing.
+ * @param {Array<object>} conversationHistory - The full conversation history with roles.
+ * @returns {Promise<string>} The determined intent category: "TRADABLE" or "ELIZAOS".
+ */
+async function routeQueryIntent(conversationHistory) {
+  const latestMessage = conversationHistory[conversationHistory.length - 1].content;
+  console.log(`[Routing] Classifying intent for message: "${latestMessage.substring(0, 50)}..."`);
+
+  // Explicitly define the schema and provide examples to the 1.5B model.
+  // We use a single key "category" with restricted values for maximum reliability.
+  const classificationPrompt = `
+    Task: Categorize the user query into "TRADABLE" or "ELIZAOS".
+    
+    Categories:
+    - TRADABLE: If the query is specifically about Tradable's app features, founders, pricing, or support.
+    - ELIZAOS: If the query is about anything else.
+
+    Examples:
+    - "Who are the founders of Tradable?" -> {"category": "TRADABLE"}
+    - "What is the price of Bitcoin?" -> {"category": "ELIZAOS"}
+    - "How much are Tradable's fees?" -> {"category": "TRADABLE"}
+    - "Analyze the current SOL sentiment" -> {"category": "ELIZAOS"}
+    - "How do I build a bot on Tradable?" -> {"category": "TRADABLE"}
+
+    Output only valid JSON. 
+    Query: "${latestMessage}"
+  `;
+
+  try {
+    const res = await fetch(`${process.env.OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "deepseek-r1:1.5b",
+        prompt: classificationPrompt,
+        stream: false,
+        format: "json", // Forces Ollama to ensure the output is JSON
+        options: {
+          temperature: 0.1, // Low temperature for higher consistency
+          stop: ["<thought>", "</thought>"], // Attempt to prevent thought overflow
+        },
+      }),
+    });
+
+    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+
+    const json = await res.json();
+    let responseText = json.response;
+
+    // DeepSeek-R1 often includes <thought> blocks even in JSON mode.
+    // We strip everything before and including the closing thought tag.
+    if (responseText.includes("</thought>")) {
+      responseText = responseText.split("</thought>").pop().trim();
+    }
+
+    // Standardize the result
+    const result = JSON.parse(responseText);
+    const category = result.category === "TRADABLE" ? "TRADABLE" : "MARKET";
+
+    console.log(`[Routing] Decision: ${category}`);
+    return category;
   } catch (err) {
-    console.error(`Error querying ${aiProvider}:`, err);
-    return `Error: Could not generate a response from the ${aiProvider} service.`;
+    console.error("[Routing] Classification failed, defaulting to MARKET path.", err);
+    return "MARKET";
+  }
+}
+
+/**
+ * A dispatcher for querying the AI model specified by the routeQueryIntent.
+ * @param {Array<object>} conversationHistory - The full conversation history with roles.
+ * @param {string} conversationId - The on-chain conversation ID.
+ * @param {string} userWallet - The user's wallet address.
+ * @returns {Promise<string>} The content of the AI's response.
+ */
+async function queryAIModel(conversationHistory, conversationId, userWallet) {
+  // 1. Determine Intent
+  const intent = await routeQueryIntent(conversationHistory);
+
+  // 2. Path A: 1st Party Tradable Backend
+  if (intent === "TRADABLE") {
+    try {
+      return await queryTradableAssistant(conversationHistory, userWallet);
+    } catch (err) {
+      console.warn("[Failover] First-party path failed. Falling back to ElizaOS.");
+    }
+  }
+
+  // 3. Path B: 3rd Party ElizaOS (Google Vertex/Gemini via Plugin)
+  try {
+    // We pass conversationId here to ensure proper room isolation in Eliza
+    return await queryElizaOS(conversationHistory, conversationId, userWallet);
+  } catch (err) {
+    console.warn("[Failover] ElizaOS path failed. Falling back to ChainGPT.", err);
+
+    // 4. Failover 1: ChainGPT
+    try {
+      return await queryChainGPT(conversationHistory, conversationId);
+    } catch (err2) {
+      console.error(
+        "[Failover] All external providers failed. Executing final local TEE fallback.",
+      );
+
+      // 5. Failover 2: Local TEE Model (DeepSeek)
+      return await queryDeepSeek(conversationHistory);
+    }
   }
 }
 
@@ -449,11 +857,12 @@ async function handlePrompt(
 
     const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
 
+    console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(previousMessageCID, sessionKey);
 
-    history.push({ role: "user", content: promptText });
+    history.push({ role: "user", content: promptText, createdAt: Date.now() });
 
-    const answerText = await queryAIModel(history, conversationId.toString());
+    const answerText = await queryAIModel(history, conversationId.toString(), user);
 
     // Check again before paying for storage
     try {
@@ -494,6 +903,7 @@ async function handlePrompt(
     const encryptedDelta = encryptSymmetrically(searchDeltaFile, sessionKey);
 
     if (isNewConversation) {
+      console.log(`Initializing new conversation ${conversationId} on storage...`);
       const { chainId } = await provider.getNetwork();
       const keyFileTags = [
         { name: "Content-Type", value: "application/rofl-key" },
@@ -567,6 +977,7 @@ async function handlePrompt(
         searchDeltaCID,
       };
     } else {
+      console.log(`Appending messages to conversation ${conversationId} on storage...`);
       const [promptMessageCID, searchDeltaCID] = await Promise.all([
         uploadData(Buffer.from(encryptedPrompt)),
         uploadData(Buffer.from(encryptedDelta)),
@@ -691,15 +1102,17 @@ async function handleRegeneration(
 
     const { instructions, promptMessageCID, originalAnswerMessageCID } = clientPayload;
 
+    console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(originalAnswerMessageCID, sessionKey);
     if (instructions) {
       history.push({
         role: "user",
         content: `Please regenerate your previous response. Make it ${instructions}.`,
+        createdAt: Date.now(),
       });
     }
 
-    const answerText = await queryAIModel(history, conversationId.toString());
+    const answerText = await queryAIModel(history, conversationId.toString(), user);
 
     // Check again before paying for storage
     try {
@@ -818,8 +1231,8 @@ async function handleBranch(
     const clientPayload = validatePayload(decryptedData, "BranchRequested");
 
     const { originalTitle } = clientPayload;
-    const now = Date.now();
 
+    const now = Date.now();
     const newTitle = `Branch of ${originalTitle}`;
 
     const { chainId } = await provider.getNetwork();
@@ -1464,6 +1877,9 @@ async function start() {
 
   // Initialize the connection to the decentralised storage provider.
   await initializeStorage();
+
+  // Initialize the AI model interface.
+  await initializeEliza();
 
   // Ensure the on-chain oracle address is correctly set to this wallet.
   await setOracleAddress();
