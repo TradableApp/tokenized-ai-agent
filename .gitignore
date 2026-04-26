@@ -180,3 +180,9 @@ ignition/deployments/chain-31337
 
 # ElizaOS: Ignore local storage files
 *.eliza/
+
+# Local tmux/dmux session files
+.tmux-devfleet/
+.dmux/
+.dmux-hooks/
+.dmux-session/
