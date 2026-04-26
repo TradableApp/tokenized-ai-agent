@@ -181,6 +181,11 @@ ignition/deployments/chain-31337
 # ElizaOS: Ignore local storage files
 *.eliza/
 
+# Claude Code — local only
+.claude/settings.local.json
+.claude/memory/
+.mcp.json
+
 # Local tmux/dmux session files
 .tmux-devfleet/
 .dmux/

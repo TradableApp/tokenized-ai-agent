@@ -33,9 +33,6 @@ rm rofl.yaml.bak
 echo "✅ rofl.yaml updated to version: $NEW_VERSION"
 
 # --- 2. PREPARE AND PUSH IMAGE ---
-# Ensure the placeholder in the target compose file is always reverted, even if the script fails.
-trap 'git checkout -- $COMPOSE_FILE' EXIT
-
 # Temporarily replace the image tag in the compose file with the new version tag.
 # This regex finds the base image name and replaces the colon and everything after it.
 # The '|' character is used as a delimiter to avoid issues with slashes '/' in the path.
@@ -50,9 +47,6 @@ docker build --platform linux/amd64 -t "$IMAGE_FULL_NAME" -f Dockerfile.oracle .
 
 echo "Pushing mainnet image..."
 docker push "$IMAGE_FULL_NAME"
-
-# The trap will automatically clean up the compose file now by reverting any changes.
-echo "✅ Compose file reverted to its original state."
 
 # --- 3. PROVIDE NEXT STEPS ---
 echo ""

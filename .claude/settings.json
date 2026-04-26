@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(**/.env*)",
+      "Write(~/.ssh/**)",
+      "Write(~/.aws/**)",
+      "Bash(curl * | bash)",
+      "Bash(scp *)",
+      "Bash(nc *)",
+      "Bash(rm -rf*)",
+      "Bash(git push --force*)",
+      "Bash(chmod 777*)",
+      "Bash(dd if=*)",
+      "Bash(ssh *)",
+      "Bash(> /dev/*)",
+      "Bash(sudo *)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "disabledMcpServers": [
+    "shadcn-ui",
+    "tailwindcss-mcp-server",
+    "magic",
+    "plugin:figma:figma",
+    "plugin:firebase:firebase",
+    "plugin:sentry:sentry",
+    "plugin:ecc:playwright"
+  ]
+}
