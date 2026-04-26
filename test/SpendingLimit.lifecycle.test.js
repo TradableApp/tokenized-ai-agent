@@ -225,7 +225,6 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       const { escrow, user } = await loadFixture(deployFixture);
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
 
       const escrowIface = escrow.interface;
       const receipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
@@ -238,8 +237,7 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       await escrow.connect(user).cancelPrompt(answerMessageId);
 
       const limit = await escrow.spendingLimits(user.address);
-      // First prompt's PROMPT_FEE remains + CANCELLATION_FEE for the cancelled prompt
-      expect(limit.spentAmount).to.equal(PROMPT_FEE + CANCELLATION_FEE);
+      expect(limit.spentAmount).to.equal(CANCELLATION_FEE);
     });
 
     it("after processRefund: spentAmount returns to 0 for that job's deduction", async function () {

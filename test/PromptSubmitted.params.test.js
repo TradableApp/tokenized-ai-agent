@@ -4,6 +4,11 @@ const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const path = require("path");
 const fs = require("fs");
 
+// Golden-file ABI snapshots committed under test/fixtures/.
+// These represent the dApp and subgraph ABIs at the last verified sync point.
+// If the contract ABI changes without updating these files, the tests below fail.
+const FIXTURE_DIR = path.resolve(__dirname, "fixtures");
+
 describe("Suite 1 — PromptSubmitted Event Parameter Order", function () {
   const domain = "example.com";
 
@@ -111,19 +116,9 @@ describe("Suite 1 — PromptSubmitted Event Parameter Order", function () {
     });
   });
 
-  describe("ABI sync: compiled artifact vs dApp ABI vs subgraph ABI", function () {
-    before(function () {
-      const sentinel = path.resolve(
-        __dirname,
-        "../../../../../sense-ai-dapp/src/lib/abi/EVMAIAgent.json",
-      );
-      if (!fs.existsSync(sentinel)) {
-        this.skip(); // sibling repos not checked out (CI single-repo environment)
-      }
-    });
-
-    function loadExternalAbi(relPath) {
-      const abs = path.resolve(__dirname, "../../../../../", relPath);
+  describe("ABI sync: compiled artifact vs golden-file snapshots (dApp, subgraph)", function () {
+    function loadFixtureAbi(filename) {
+      const abs = path.resolve(FIXTURE_DIR, filename);
       const raw = JSON.parse(fs.readFileSync(abs, "utf8"));
       return Array.isArray(raw) ? raw : raw.abi;
     }
@@ -140,58 +135,56 @@ describe("Suite 1 — PromptSubmitted Event Parameter Order", function () {
       }));
     }
 
-    it("dApp ABI PromptSubmitted matches compiled ABI", async function () {
+    it("dApp golden-file PromptSubmitted matches compiled ABI", async function () {
       const { aiAgent } = await loadFixture(deployFixture);
       const compiledFragment = aiAgent.interface.getEvent("PromptSubmitted");
       const compiledInputs = normalisedInputs(compiledFragment);
 
-      const dappAbi = loadExternalAbi("sense-ai-dapp/src/lib/abi/EVMAIAgent.json");
+      const dappAbi = loadFixtureAbi("dapp-EVMAIAgent.json");
       const dappFragment = extractEventFragment(dappAbi, "PromptSubmitted");
-      expect(dappFragment, "dApp ABI missing PromptSubmitted event").to.not.be.undefined;
+      expect(dappFragment, "dApp golden file missing PromptSubmitted event").to.not.be.undefined;
 
-      const dappInputs = normalisedInputs(dappFragment);
-      expect(dappInputs).to.deep.equal(compiledInputs);
+      expect(normalisedInputs(dappFragment)).to.deep.equal(compiledInputs);
     });
 
-    it("subgraph ABI PromptSubmitted matches compiled ABI", async function () {
+    it("subgraph golden-file PromptSubmitted matches compiled ABI", async function () {
       const { aiAgent } = await loadFixture(deployFixture);
       const compiledFragment = aiAgent.interface.getEvent("PromptSubmitted");
       const compiledInputs = normalisedInputs(compiledFragment);
 
-      const subgraphAbi = loadExternalAbi("sense-ai-subgraph/abis/EVMAIAgent.json");
+      const subgraphAbi = loadFixtureAbi("subgraph-EVMAIAgent.json");
       const subgraphFragment = extractEventFragment(subgraphAbi, "PromptSubmitted");
-      expect(subgraphFragment, "Subgraph ABI missing PromptSubmitted event").to.not.be.undefined;
+      expect(subgraphFragment, "Subgraph golden file missing PromptSubmitted event").to.not.be
+        .undefined;
 
-      const subgraphInputs = normalisedInputs(subgraphFragment);
-      expect(subgraphInputs).to.deep.equal(compiledInputs);
+      expect(normalisedInputs(subgraphFragment)).to.deep.equal(compiledInputs);
     });
 
-    it("answerMessageId is param[3] (non-indexed) in all three ABIs", async function () {
+    it("answerMessageId is param[3] (non-indexed) in compiled ABI and both golden files", async function () {
       const { aiAgent } = await loadFixture(deployFixture);
 
-      const dappAbi = loadExternalAbi("sense-ai-dapp/src/lib/abi/EVMAIAgent.json");
-      const subgraphAbi = loadExternalAbi("sense-ai-subgraph/abis/EVMAIAgent.json");
+      const dappAbi = loadFixtureAbi("dapp-EVMAIAgent.json");
+      const subgraphAbi = loadFixtureAbi("subgraph-EVMAIAgent.json");
 
       for (const [label, abi] of [
         ["compiled", aiAgent.interface.fragments],
-        ["dApp", dappAbi],
-        ["subgraph", subgraphAbi],
+        ["dApp golden", dappAbi],
+        ["subgraph golden", subgraphAbi],
       ]) {
-        let fragment;
-        if (Array.isArray(abi)) {
-          // compiled interface fragments
-          fragment = abi.find((f) => f.name === "PromptSubmitted");
-        } else {
-          fragment = extractEventFragment(abi, "PromptSubmitted");
-        }
+        const fragment = Array.isArray(abi)
+          ? abi.find((f) => f.name === "PromptSubmitted")
+          : extractEventFragment(abi, "PromptSubmitted");
+
         expect(fragment, `${label}: PromptSubmitted not found`).to.not.be.undefined;
 
-        const inputs = Array.isArray(abi) ? fragment.inputs : fragment.inputs;
-        expect(inputs[3].name).to.equal(
+        expect(fragment.inputs[3].name).to.equal(
           "answerMessageId",
           `${label}: param[3] must be answerMessageId`,
         );
-        expect(inputs[3].indexed).to.equal(false, `${label}: answerMessageId must be non-indexed`);
+        expect(fragment.inputs[3].indexed).to.equal(
+          false,
+          `${label}: answerMessageId must be non-indexed`,
+        );
       }
     });
   });
