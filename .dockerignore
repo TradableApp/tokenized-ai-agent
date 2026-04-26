@@ -22,6 +22,10 @@ gas-report.txt
 .vscode/
 .idea/
 
+# MacOS metadata files
+.DS_Store
+._*
+
 # Ignore documentation and other non-essential files
 README.md
 LICENSE

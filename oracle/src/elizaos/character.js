@@ -1,6 +1,6 @@
 const dotenv = require("dotenv");
 const path = require("path");
-const { ModelProviderName } = require("@elizaos/core");
+const { ModelProviderName, stringToUuid } = require("@elizaos/core");
 
 // Load the specific environment file first for precedence.
 if (process.env.ENV_FILE) {
@@ -8,6 +8,8 @@ if (process.env.ENV_FILE) {
 }
 // Load the base .env.oracle file to fill in any missing non-secret variables.
 dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
+
+const agentId = stringToUuid("SenseAI");
 
 /**
  * Represents the SenseAI Sovereign Analyst.
@@ -20,6 +22,7 @@ dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
  * - Sovereign Data handling (TEE ready)
  */
 const character = {
+  id: agentId,
   name: "SenseAI",
   username: "sense-ai",
 
@@ -27,7 +30,7 @@ const character = {
 
   settings: {
     // Defines the primary model to use if specific task models aren't found
-    model: "gemini-3-pro-preview",
+    model: "gemini-pro-latest",
 
     // Safety settings for the Google Plugin
     google_safety: {
