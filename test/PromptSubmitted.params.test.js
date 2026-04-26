@@ -112,6 +112,16 @@ describe("Suite 1 — PromptSubmitted Event Parameter Order", function () {
   });
 
   describe("ABI sync: compiled artifact vs dApp ABI vs subgraph ABI", function () {
+    before(function () {
+      const sentinel = path.resolve(
+        __dirname,
+        "../../../../../sense-ai-dapp/src/lib/abi/EVMAIAgent.json",
+      );
+      if (!fs.existsSync(sentinel)) {
+        this.skip(); // sibling repos not checked out (CI single-repo environment)
+      }
+    });
+
     function loadExternalAbi(relPath) {
       const abs = path.resolve(__dirname, "../../../../../", relPath);
       const raw = JSON.parse(fs.readFileSync(abs, "utf8"));
