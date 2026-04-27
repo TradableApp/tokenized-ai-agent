@@ -1,6 +1,6 @@
 const Sentry = require("@sentry/node");
 const dotenv = require("dotenv");
-const ethCrypto = require("eth-crypto");
+const { eciesEncrypt, eciesDecrypt, publicKeyFromPrivateKey } = require("./ecies");
 const { ethers } = require("ethers");
 const path = require("path");
 const fs = require("fs/promises");
@@ -187,7 +187,7 @@ async function initializeEliza() {
 // --- Cryptography Helpers ---
 
 /**
- * [EVM ONLY] Removes the '0x' prefix from a hex string, which is required by eth-crypto.
+ * [EVM ONLY] Removes the '0x' prefix from a hex string.
  * @param {string} hexString - The hex string, which may or may not have a '0x' prefix.
  * @returns {string} The raw hex string without the '0x' prefix.
  */
@@ -259,17 +259,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
       return Buffer.from(strip0xPrefix(parsedPayload.sessionKey), "hex");
     }
   } else if (roflEncryptedKey && roflEncryptedKey !== "0x") {
-    // The roflEncryptedKey comes in as a Hex String (0x...).
-    // We must convert it to the original UTF-8 Cipher String (iv...ephemKey...mac)
-    // before passing it to ethCrypto.
-    const cipherString = ethers.toUtf8String(roflEncryptedKey);
-
-    const sessionKeyHex = await ethCrypto.decryptWithPrivateKey(
-      AI_AGENT_PRIVATE_KEY,
-      ethCrypto.cipher.parse(cipherString),
-    );
-
-    return Buffer.from(strip0xPrefix(sessionKeyHex), "hex");
+    const cipherBlob = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
+    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, cipherBlob);
   }
 
   if (conversationId) {
@@ -284,12 +275,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     if (!keyFileCID) {
       throw new Error(`Could not find Key File for conversation ${conversationId}.`);
     }
-    const fetchedRoflEncryptedKey = await fetchData(keyFileCID);
-    const sessionKeyHex = await ethCrypto.decryptWithPrivateKey(
-      AI_AGENT_PRIVATE_KEY,
-      ethCrypto.cipher.parse(fetchedRoflEncryptedKey),
-    );
-    return Buffer.from(strip0xPrefix(sessionKeyHex), "hex");
+    const fetchedCipherBlob = await fetchData(keyFileCID);
+    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, fetchedCipherBlob);
   }
 
   throw new Error(
@@ -919,15 +906,10 @@ async function handlePrompt(
       // We must now encrypt it for persistent storage.
       let keyToStore;
       if (isSapphire) {
-        const AI_AGENT_PUBLIC_KEY = ethCrypto.publicKeyByPrivateKey(AI_AGENT_PRIVATE_KEY);
-
-        const encryptedKeyObject = await ethCrypto.encryptWithPublicKey(
-          AI_AGENT_PUBLIC_KEY,
-          sessionKey, // Encrypt the raw session key
-        );
-        keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
+        const AI_AGENT_PUBLIC_KEY = publicKeyFromPrivateKey(AI_AGENT_PRIVATE_KEY);
+        keyToStore = await eciesEncrypt(AI_AGENT_PUBLIC_KEY, Buffer.from(sessionKey));
       } else {
-        keyToStore = ethers.toUtf8String(roflEncryptedKey); // For EVM, we already have it.
+        keyToStore = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
       }
 
       const conversationFile = createConversationFile({
@@ -944,8 +926,7 @@ async function handlePrompt(
       const encryptedConv = encryptSymmetrically(conversationFile, sessionKey);
       const encryptedMeta = encryptSymmetrically(conversationMetadataFile, sessionKey);
 
-      // Stringify the eth-crypto object before saving
-      await uploadData(Buffer.from(keyToStore), keyFileTags);
+      await uploadData(keyToStore, keyFileTags);
 
       // Parallel Uploads
       const [conversationCID, metadataCID, promptMessageCID, searchDeltaCID] = await Promise.all([
@@ -1253,19 +1234,13 @@ async function handleBranch(
     // We must now encrypt it for persistent storage.
     let keyToStore;
     if (isSapphire) {
-      const AI_AGENT_PUBLIC_KEY = ethCrypto.publicKeyByPrivateKey(AI_AGENT_PRIVATE_KEY);
-
-      const encryptedKeyObject = await ethCrypto.encryptWithPublicKey(
-        AI_AGENT_PUBLIC_KEY,
-        sessionKey, // Encrypt the raw session key
-      );
-      keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
+      const AI_AGENT_PUBLIC_KEY = publicKeyFromPrivateKey(AI_AGENT_PRIVATE_KEY);
+      keyToStore = await eciesEncrypt(AI_AGENT_PUBLIC_KEY, Buffer.from(sessionKey));
     } else {
-      keyToStore = ethers.toUtf8String(roflEncryptedKey); // For EVM, we already have it.
+      keyToStore = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
     }
 
-    // Stringify the eth-crypto object before saving
-    await uploadData(Buffer.from(keyToStore), newKeyFileTags);
+    await uploadData(keyToStore, newKeyFileTags);
 
     const conversationFile = createConversationFile({
       id: newConversationId.toString(),

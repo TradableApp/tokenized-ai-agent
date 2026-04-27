@@ -9,6 +9,7 @@ describe("aiAgentOracle", function () {
   let aiAgentOracle;
   let stubs;
   const FAKE_SESSION_KEY = crypto.randomBytes(32);
+  const FAKE_ENCRYPTED_KEY = Buffer.from('fake-ecies-cipher-blob');
 
   // Helper function to create the encrypted string format our app uses.
   const createEncryptedString = (dataObject, key) => {
@@ -108,11 +109,10 @@ describe("aiAgentOracle", function () {
         writeFile: sinon.stub().resolves(),
         readFile: sinon.stub().rejects(new Error("File not found")),
       },
-      "eth-crypto": {
-        decryptWithPrivateKey: sinon.stub().resolves(FAKE_SESSION_KEY.toString("hex")),
-        cipher: {
-          parse: (str) => str,
-        },
+      "./ecies": {
+        eciesDecrypt: sinon.stub().resolves(FAKE_SESSION_KEY),
+        eciesEncrypt: sinon.stub().resolves(FAKE_ENCRYPTED_KEY),
+        publicKeyFromPrivateKey: sinon.stub().returns('04' + '0f'.repeat(64)),
       },
     };
 
@@ -571,11 +571,9 @@ describe("aiAgentOracle", function () {
 
   describe("getSessionKey", () => {
     it("should retrieve key from payload for EVM", async () => {
-      const roflEncryptedKey = "0xencryptedKey";
+      const roflEncryptedKey = "0x" + Buffer.from("encryptedKey").toString("hex");
       const key = await aiAgentOracle.getSessionKey(null, roflEncryptedKey, null);
-      expect(
-        stubs["eth-crypto"].decryptWithPrivateKey.calledOnceWith(sinon.match.any, "encryptedKey"),
-      ).to.be.true;
+      expect(stubs["./ecies"].eciesDecrypt.calledOnce).to.be.true;
       expect(key).to.deep.equal(FAKE_SESSION_KEY);
     });
 
@@ -604,7 +602,7 @@ describe("aiAgentOracle", function () {
       });
 
       expect(stubs["./storage/storage"].fetchData.calledOnceWith("fake_key_cid")).to.be.true;
-      expect(stubs["eth-crypto"].decryptWithPrivateKey.calledOnce).to.be.true;
+      expect(stubs["./ecies"].eciesDecrypt.calledOnce).to.be.true;
       expect(key).to.deep.equal(FAKE_SESSION_KEY);
     });
 
@@ -829,18 +827,14 @@ describe("aiAgentOracle", function () {
 
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(6);
 
-      // CORRECTED ASSERTION: Verify the key was encrypted correctly by decrypting it.
+      // Verify the key was encrypted and uploaded via eciesEncrypt.
       const keyUploadArgs = stubs["./storage/storage"].uploadData.getCall(0).args;
-      const encryptedKeyObject = JSON.parse(keyUploadArgs[0].toString());
-
-      // Decrypt the data that was uploaded to storage using the test's private key.
-      const decryptedSessionKeyHex = await stubs["eth-crypto"].decryptWithPrivateKey(
-        process.env.PRIVATE_KEY,
-        encryptedKeyObject,
+      expect(stubs["./ecies"].eciesEncrypt.calledOnce).to.be.true;
+      const sessionKeyArg = stubs["./ecies"].eciesEncrypt.firstCall.args[1];
+      expect(Buffer.from(sessionKeyArg)).to.deep.equal(
+        Buffer.from(clientPayload.sessionKey.slice(2), "hex"),
       );
-
-      // Assert that the decrypted key matches the original session key sent in the payload.
-      expect("0x" + decryptedSessionKeyHex).to.equal(clientPayload.sessionKey);
+      expect(keyUploadArgs[0]).to.deep.equal(FAKE_ENCRYPTED_KEY);
 
       expect(sapphireComponents.contract.submitAnswer.calledOnce).to.be.true;
 
@@ -1077,7 +1071,7 @@ describe("aiAgentOracle", function () {
 
     it("should send a critical alert for a non-retryable error", async () => {
       // Simulate a fatal error like a decryption failure.
-      stubs["eth-crypto"].decryptWithPrivateKey.rejects(new Error("Decryption failed"));
+      stubs["./ecies"].eciesDecrypt.rejects(new Error("Decryption failed"));
       const writeFileStub = stubs["fs/promises"].writeFile;
 
       const user = "0xUser";
