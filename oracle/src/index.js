@@ -12,7 +12,7 @@ process.on("unhandledRejection", (reason) => {
 process.on("uncaughtException", (error) => {
   console.error("[Fatal] Uncaught exception:", error);
   Sentry.captureException(error);
-  process.exit(1);
+  Sentry.flush(2000).finally(() => process.exit(1));
 });
 
 console.log("Starting Node.js ROFL Oracle Service...");

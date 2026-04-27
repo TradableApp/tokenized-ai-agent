@@ -14,7 +14,7 @@ function scrubSensitiveData(obj) {
   if (!obj || typeof obj !== "object") return obj;
   const result = Array.isArray(obj) ? [...obj] : { ...obj };
   for (const key of Object.keys(result)) {
-    if (SENSITIVE_KEYS.some((s) => key.includes(s))) {
+    if (SENSITIVE_KEYS.some((s) => key.toLowerCase().includes(s.toLowerCase()))) {
       result[key] = "[REDACTED]";
     } else if (typeof result[key] === "object") {
       result[key] = scrubSensitiveData(result[key]);
@@ -35,10 +35,7 @@ function initSentry() {
     environment: process.env.SENTRY_ENVIRONMENT || "production",
     tracesSampleRate: 0.1,
     beforeSend(event) {
-      if (event.extra) event.extra = scrubSensitiveData(event.extra);
-      if (event.contexts) event.contexts = scrubSensitiveData(event.contexts);
-      if (event.request?.data) event.request.data = scrubSensitiveData(event.request.data);
-      return event;
+      return scrubSensitiveData(event);
     },
   });
 
@@ -47,4 +44,4 @@ function initSentry() {
   );
 }
 
-module.exports = { initSentry };
+module.exports = { initSentry, scrubSensitiveData };

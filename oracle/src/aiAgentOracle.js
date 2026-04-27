@@ -1046,7 +1046,8 @@ async function handlePrompt(
     }
 
     Sentry.captureException(error, {
-      tags: { site: "handle_prompt", convId: conversationId?.toString() },
+      tags: { site: "handle_prompt" },
+      extra: { convId: conversationId?.toString() },
     });
     console.error(`Error in handlePrompt for convId ${conversationId}:`, error);
 
