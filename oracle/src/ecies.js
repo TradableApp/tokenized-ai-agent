@@ -25,7 +25,7 @@ async function eciesEncrypt(recipientPubKeyHex, plaintext) {
 	const pubKeyBytes = normPubKeyBytes(recipientPubKeyHex);
 	const ephemPrivKey = secp256k1.utils.randomSecretKey();
 	const ephemPubKey = secp256k1.getPublicKey(ephemPrivKey, false);
-	const sharedSecret = secp256k1.getSharedSecret(ephemPrivKey, pubKeyBytes, false);
+	const sharedSecret = secp256k1.getSharedSecret(ephemPrivKey, pubKeyBytes, true);
 	const symmetricKey = sha256(sharedSecret.slice(1, 33));
 	const nonce = crypto.randomBytes(12);
 	const payload = Buffer.isBuffer(plaintext) ? new Uint8Array(plaintext) : plaintext;
@@ -36,11 +36,12 @@ async function eciesEncrypt(recipientPubKeyHex, plaintext) {
 async function eciesDecrypt(privateKeyHex, cipherBlob) {
 	const buf = Buffer.isBuffer(cipherBlob) ? cipherBlob : Buffer.from(cipherBlob);
 	if (buf[0] !== 0x01) throw new Error(`eciesDecrypt: unsupported version byte 0x${buf[0].toString(16)}`);
+	if (buf.length < 94) throw new Error(`eciesDecrypt: ciphertext too short (${buf.length} bytes, minimum 94)`);
 	const ephemPubKey = new Uint8Array(buf.slice(1, 66));
 	const nonce = new Uint8Array(buf.slice(66, 78));
 	const gcmOutput = new Uint8Array(buf.slice(78));
 	const privBytes = new Uint8Array(Buffer.from(stripHexPrefix(privateKeyHex), 'hex'));
-	const sharedSecret = secp256k1.getSharedSecret(privBytes, ephemPubKey, false);
+	const sharedSecret = secp256k1.getSharedSecret(privBytes, ephemPubKey, true);
 	const symmetricKey = sha256(sharedSecret.slice(1, 33));
 	const plaintext = gcm(symmetricKey, nonce).decrypt(gcmOutput);
 	return Buffer.from(plaintext);
