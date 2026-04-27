@@ -1,4 +1,5 @@
 const { WebClient } = require("@slack/web-api");
+const fetch = require("node-fetch");
 
 /**
  * Sends a formatted alert message to a specified Slack channel.

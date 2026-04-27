@@ -344,8 +344,6 @@ async function reconstructHistory(startMessageCID, sessionKey) {
       history.unshift({
         role: messageFile.role,
         content: messageFile.content,
-        // We capture timestamp for Eliza hydration
-        createdAt: messageFile.createdAt,
       });
 
       // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID or answerMessageCID).
@@ -740,6 +738,26 @@ async function routeQueryIntent(conversationHistory) {
  * @returns {Promise<string>} The content of the AI's response.
  */
 async function queryAIModel(conversationHistory, conversationId, userWallet) {
+  const aiProvider = process.env.AI_PROVIDER;
+
+  // Direct provider bypass (used in tests and explicit operator config)
+  if (aiProvider === "ChainGPT") {
+    try {
+      return await queryChainGPT(conversationHistory, conversationId);
+    } catch (err) {
+      console.error("[queryAIModel] ChainGPT provider failed.", err.message);
+      return "Error: Could not generate a response from the ChainGPT service.";
+    }
+  }
+  if (aiProvider === "DeepSeek") {
+    try {
+      return await queryDeepSeek(conversationHistory);
+    } catch (err) {
+      console.error("[queryAIModel] DeepSeek provider failed.", err.message);
+      return "Error: Could not generate a response from the DeepSeek service.";
+    }
+  }
+
   // 1. Determine Intent
   const intent = await routeQueryIntent(conversationHistory);
 
@@ -772,7 +790,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
         return await queryDeepSeek(conversationHistory);
       } catch (err3) {
         Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
-        throw err3;
+        return "Error: Could not generate a response. All AI providers are currently unavailable.";
       }
     }
   }
@@ -1911,8 +1929,11 @@ async function start() {
   // Start background retry mechanism
   setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
 
-  // 2. Listening Phase
-  await pollEvents(latestBlock);
+  // 2. Listening Phase — fire-and-forget; the infinite poll loop never resolves
+  pollEvents(latestBlock).catch((err) => {
+    console.error("Fatal polling loop error:", err);
+    process.exit(1);
+  });
 }
 
 module.exports = {

@@ -1,5 +1,6 @@
 const { Uploader } = require("@irys/upload");
 const { BaseEth } = require("@irys/upload-ethereum");
+const fetch = require("node-fetch");
 const { sendAlert } = require("../alerting");
 
 let irysUploader;
