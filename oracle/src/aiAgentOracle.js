@@ -1,3 +1,4 @@
+const Sentry = require("@sentry/node");
 const dotenv = require("dotenv");
 const ethCrypto = require("eth-crypto");
 const { ethers } = require("ethers");
@@ -780,7 +781,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
       );
 
       // 5. Failover 2: Local TEE Model (DeepSeek)
-      return await queryDeepSeek(conversationHistory);
+      try {
+        return await queryDeepSeek(conversationHistory);
+      } catch (err3) {
+        Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
+        throw err3;
+      }
     }
   }
 }
@@ -1058,6 +1064,9 @@ async function handlePrompt(
       console.warn("  ⚠️ Could not verify job finalization status after error.");
     }
 
+    Sentry.captureException(error, {
+      tags: { site: "handle_prompt", convId: conversationId?.toString() },
+    });
     console.error(`Error in handlePrompt for convId ${conversationId}:`, error);
 
     throw error; // Propagate error to be caught by handleAndRecord
@@ -1507,6 +1516,9 @@ async function handleAndRecord(eventName, handler, ...args) {
       const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
       console.error(alertMessage, error);
 
+      Sentry.captureException(error, {
+        tags: { site: "handle_and_record_fatal", eventName, blockNumber: event.blockNumber },
+      });
       await sendAlert("CRITICAL: Oracle Fatal Error", alertMessage);
     }
   }
@@ -1620,6 +1632,13 @@ async function retryFailedJobs() {
 
         job.retryCount += 1;
         if (job.retryCount >= MAX_RETRIES) {
+          Sentry.captureException(error, {
+            tags: {
+              site: "retry_permanent_failure",
+              eventName: job.eventName,
+              blockNumber: job.event.blockNumber,
+            },
+          });
           await sendAlert(
             "CRITICAL: Job Failed Permanently",
             `A job for event ${job.eventName} from block ${job.event.blockNumber} has failed all ${MAX_RETRIES} retries and has been dropped. Manual intervention required. Final error: ${error.message}`,
