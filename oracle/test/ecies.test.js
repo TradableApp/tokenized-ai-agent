@@ -90,6 +90,15 @@ describe('ecies', () => {
 			);
 		});
 
+		it('throws on ciphertext shorter than minimum 94 bytes', async () => {
+			const shortBlob = Buffer.alloc(93, 0);
+			shortBlob[0] = 0x01;
+
+			await expect(ecies.eciesDecrypt(PRIV_1, shortBlob)).to.be.rejectedWith(
+				'eciesDecrypt: ciphertext too short (93 bytes, minimum 94)',
+			);
+		});
+
 		it('accepts public key with 0x04 prefix', async () => {
 			const pubRaw = ecies.publicKeyFromPrivateKey(PRIV_1);
 			const pubWith0x04 = '0x04' + pubRaw.slice(2);
