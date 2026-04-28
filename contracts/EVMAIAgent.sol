@@ -113,7 +113,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    * @param encryptedPayload The encrypted context for the TEE.
    * @param roflEncryptedKey The session key, encrypted for the ROFL worker.
    */
-  event BranchRequested(
+  event BranchRequested( // solhint-disable-line gas-indexed-events
     address indexed user,
     uint256 indexed originalConversationId,
     uint256 branchPointMessageId,
@@ -166,7 +166,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    * @param conversationCID The CID of the new immutable conversation data file.
    * @param metadataCID The CID of the new mutable metadata file.
    */
-  event ConversationBranched(
+  event ConversationBranched( // solhint-disable-line gas-indexed-events
     address indexed user,
     uint256 indexed newConversationId,
     uint256 originalConversationId,

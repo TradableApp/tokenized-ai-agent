@@ -6,6 +6,8 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
  * @title Sapphire AI Agent Escrow Contract
+ * @author Tradable
+ * @notice Manages native token deposits, payments, and refunds for the Sapphire AI Agent.
  * @dev This contract manages native token (e.g., ROSE) deposits, payments, and refunds for the Sapphire AI Agent.
  *      It holds funds in escrow while a prompt is being processed by the off-chain oracle.
  */
@@ -66,30 +68,53 @@ contract SapphireAIAgentEscrow is Ownable {
   // --- Events ---
 
   /// @notice Emitted when the treasury address is updated.
-  event TreasuryUpdated(address newTreasury);
+  /// @param newTreasury The new treasury address.
+  event TreasuryUpdated(address newTreasury); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when the prompt fee is updated.
-  event PromptFeeUpdated(uint256 newFee);
+  /// @param newFee The new prompt fee amount.
+  event PromptFeeUpdated(uint256 newFee); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when the cancellation fee is updated.
-  event CancellationFeeUpdated(uint256 newFee);
+  /// @param newFee The new cancellation fee amount.
+  event CancellationFeeUpdated(uint256 newFee); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when the metadata update fee is updated.
-  event MetadataUpdateFeeUpdated(uint256 newFee);
+  /// @param newFee The new metadata update fee amount.
+  event MetadataUpdateFeeUpdated(uint256 newFee); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when the conversation branch fee is updated.
-  event BranchFeeUpdated(uint256 newFee);
+  /// @param newFee The new branch fee amount.
+  event BranchFeeUpdated(uint256 newFee); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when a user sets or updates their allowance term.
-  event SpendingLimitSet(address indexed user, uint256 expiresAt);
+  /// @param user The address of the user setting the spending limit.
+  /// @param expiresAt The unix timestamp when the spending limit expires.
+  event SpendingLimitSet(address indexed user, uint256 expiresAt); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when a user cancels their allowance.
+  /// @param user The address of the user cancelling their spending limit.
   event SpendingLimitCancelled(address indexed user);
   /// @notice Emitted when a user deposits funds.
-  event DepositReceived(address indexed user, uint256 amount);
+  /// @param user The address of the depositing user.
+  /// @param amount The amount deposited.
+  event DepositReceived(address indexed user, uint256 amount); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when a user withdraws funds or they are refunded on cancellation.
-  event Withdrawal(address indexed user, uint256 amount);
+  /// @param user The address of the withdrawing user.
+  /// @param amount The amount withdrawn.
+  event Withdrawal(address indexed user, uint256 amount); // solhint-disable-line gas-indexed-events
   /// @notice Emitted when a user's payment is successfully placed in escrow.
-  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 amount);
+  /// @param escrowId The unique identifier for this escrow entry.
+  /// @param user The address of the user whose payment is escrowed.
+  /// @param amount The amount placed in escrow.
+  event PaymentEscrowed( // solhint-disable-line gas-indexed-events
+    uint256 indexed escrowId,
+    address indexed user,
+    uint256 amount
+  );
   /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
+  /// @param escrowId The unique identifier of the finalized escrow entry.
   event PaymentFinalized(uint256 indexed escrowId);
   /// @notice Emitted when a timed-out escrowed payment is refunded to the user's deposit.
+  /// @param escrowId The unique identifier of the refunded escrow entry.
   event PaymentRefunded(uint256 indexed escrowId);
   /// @notice Emitted when a user cancels their own pending prompt.
+  /// @param user The address of the user cancelling the prompt.
+  /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
 
   // --- Errors ---
@@ -451,7 +476,7 @@ contract SapphireAIAgentEscrow is Ownable {
       revert InsufficientDeposit();
     }
 
-    pendingEscrowCount[msg.sender]--;
+    --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
     // Charge cancellation fee and refund original prompt fee in one operation.
     deposits[msg.sender] = deposits[msg.sender] + escrow.amount - cancellationFee;
@@ -491,7 +516,7 @@ contract SapphireAIAgentEscrow is Ownable {
       revert EscrowNotPending();
     }
 
-    pendingEscrowCount[escrow.user]--;
+    --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.COMPLETE;
     emit PaymentFinalized(_escrowId);
     payable(treasury).transfer(escrow.amount);
@@ -516,7 +541,7 @@ contract SapphireAIAgentEscrow is Ownable {
       revert PromptNotRefundableYet();
     }
 
-    pendingEscrowCount[escrow.user]--;
+    --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.REFUNDED;
     // Refund the escrowed amount back to the user's internal deposit balance.
     deposits[escrow.user] += escrow.amount;
@@ -527,6 +552,7 @@ contract SapphireAIAgentEscrow is Ownable {
   // --- Internal Helper Functions ---
 
   /**
+   * @notice Handles spending limit checks and state changes for an escrowed payment.
    * @dev Internal function to handle the spending limit checks and state changes for an escrowed payment.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
@@ -537,6 +563,7 @@ contract SapphireAIAgentEscrow is Ownable {
     if (sub.expiresAt == 0) {
       revert NoActiveSpendingLimit();
     }
+    // solhint-disable-next-line gas-strict-inequalities
     if (block.timestamp >= sub.expiresAt) {
       revert SpendingLimitExpired();
     }
@@ -545,10 +572,11 @@ contract SapphireAIAgentEscrow is Ownable {
     }
 
     deposits[_user] -= _fee;
-    pendingEscrowCount[_user]++;
+    ++pendingEscrowCount[_user];
   }
 
   /**
+   * @notice Handles spending limit checks and state changes for a direct-to-treasury payment.
    * @dev Internal function to handle the spending limit checks and state changes for a direct-to-treasury payment.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
@@ -559,6 +587,7 @@ contract SapphireAIAgentEscrow is Ownable {
     if (sub.expiresAt == 0) {
       revert NoActiveSpendingLimit();
     }
+    // solhint-disable-next-line gas-strict-inequalities
     if (block.timestamp >= sub.expiresAt) {
       revert SpendingLimitExpired();
     }

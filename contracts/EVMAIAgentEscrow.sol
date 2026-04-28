@@ -309,6 +309,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     if (_allowance == 0) {
       revert ZeroSpendingLimit();
     }
+    // solhint-disable-next-line gas-strict-inequalities
     if (_expiresAt <= block.timestamp) {
       revert ExpirationInThePast();
     }
@@ -602,6 +603,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     if (sub.expiresAt == 0) {
       revert NoActiveSpendingLimit();
     }
+    // solhint-disable-next-line gas-strict-inequalities
     if (block.timestamp >= sub.expiresAt) {
       revert SpendingLimitExpired();
     }
@@ -626,6 +628,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     if (sub.expiresAt == 0) {
       revert NoActiveSpendingLimit();
     }
+    // solhint-disable-next-line gas-strict-inequalities
     if (block.timestamp >= sub.expiresAt) {
       revert SpendingLimitExpired();
     }

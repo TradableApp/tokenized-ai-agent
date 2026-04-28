@@ -3,6 +3,8 @@ pragma solidity ^0.8.21;
 
 /**
  * @title IEVMAIAgentEscrow Interface
+ * @author Tradable
+ * @notice Interface for the EVMAIAgentEscrow contract called by the AI Agent upon job completion.
  * @dev Defines the function(s) on the escrow contract that the main AI Agent contract needs to call.
  */
 interface IEVMAIAgentEscrow {
