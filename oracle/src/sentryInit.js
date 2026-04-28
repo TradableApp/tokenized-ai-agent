@@ -1,5 +1,11 @@
 const Sentry = require("@sentry/node");
 
+const TRACE_RATES = {
+  localnet: 1.0,
+  testnet: 0.5,
+  mainnet: 0.05,
+};
+
 const SENSITIVE_KEYS = [
   "AI_AGENT_PRIVATE_KEY",
   "AUTONOMYS_MNEMONIC",
@@ -30,18 +36,19 @@ function initSentry() {
     return;
   }
 
+  const environment = process.env.SENTRY_ENVIRONMENT || "production";
+  const tracesSampleRate = TRACE_RATES[environment] ?? 0.1;
+
   Sentry.init({
     dsn,
-    environment: process.env.SENTRY_ENVIRONMENT || "production",
-    tracesSampleRate: 0.1,
+    environment,
+    tracesSampleRate,
     beforeSend(event) {
       return scrubSensitiveData(event);
     },
   });
 
-  console.log(
-    `[Sentry] Initialized for environment: ${process.env.SENTRY_ENVIRONMENT || "production"}`,
-  );
+  console.log(`[Sentry] Initialized for environment: ${environment}`);
 }
 
 module.exports = { initSentry, scrubSensitiveData };
