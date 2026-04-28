@@ -3,7 +3,9 @@ const Sentry = require("@sentry/node");
 const TRACE_RATES = {
   localnet: 1.0,
   testnet: 0.5,
+  'base-testnet': 0.5,
   mainnet: 0.05,
+  'base-mainnet': 0.05,
 };
 
 const SENSITIVE_KEYS = [
