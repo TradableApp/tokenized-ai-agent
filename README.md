@@ -83,6 +83,9 @@ cp oracle/.env.oracle.example oracle/.env.oracle.base-testnet
 
 ## 🧪 Local Development (Fast Loop)
 
+> **Full step-by-step guide:** [docs/LOCALNET_SETUP.md](docs/LOCALNET_SETUP.md) — covers all four SenseAI repos end-to-end including The Graph, Sentry verification, and browser wallet setup.
+
+
 This workflow allows you to test the Contracts and Oracle on your machine using a local blockchain and the frontend dApp.
 
 ### 1. Start Local Blockchain
