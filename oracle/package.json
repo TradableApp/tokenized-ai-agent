@@ -33,7 +33,7 @@
   "license": "Apache-2.0",
   "type": "commonjs",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "@autonomys/auto-drive": "^1.6.4",

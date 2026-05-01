@@ -275,8 +275,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     if (!keyFileCID) {
       throw new Error(`Could not find Key File for conversation ${conversationId}.`);
     }
-    const fetchedCipherBlob = await fetchData(keyFileCID);
-    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, fetchedCipherBlob);
+    const fetchedHex = await fetchData(keyFileCID);
+    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, Buffer.from(fetchedHex, "hex"));
   }
 
   throw new Error(
@@ -944,7 +944,9 @@ async function handlePrompt(
       const encryptedConv = encryptSymmetrically(conversationFile, sessionKey);
       const encryptedMeta = encryptSymmetrically(conversationMetadataFile, sessionKey);
 
-      await uploadData(keyToStore, keyFileTags);
+      // Store as hex string so fetchData's response.text() round-trip is lossless.
+      // Raw binary Buffers are corrupted by UTF-8 decoding on fetch.
+      await uploadData(Buffer.from(keyToStore.toString("hex")), keyFileTags);
 
       // Parallel Uploads
       const [conversationCID, metadataCID, promptMessageCID, searchDeltaCID] = await Promise.all([

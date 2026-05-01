@@ -53,6 +53,10 @@ describe("arweave storage utility", function () {
     // Load the arweave module with our stubs
     arweaveModule = proxyquire("../src/storage/arweave", stubs);
 
+    // arweave.js uses global fetch (Node 18+), not node-fetch import.
+    // Wire global.fetch to the stub so test assertions still work.
+    sinon.stub(global, "fetch").callsFake((...args) => stubs["node-fetch"](...args));
+
     // Set default env vars needed for initialization
     process.env.IRYS_PAYMENT_PRIVATE_KEY = "mock_key";
     process.env.IRYS_NETWORK = "devnet";

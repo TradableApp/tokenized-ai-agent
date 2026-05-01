@@ -884,7 +884,8 @@ describe("aiAgentOracle", function () {
       expect(Buffer.from(sessionKeyArg)).to.deep.equal(
         Buffer.from(clientPayload.sessionKey.slice(2), "hex"),
       );
-      expect(keyUploadArgs[0]).to.deep.equal(FAKE_ENCRYPTED_KEY);
+      // Key is hex-encoded before upload so fetchData's text() round-trip is lossless.
+      expect(keyUploadArgs[0]).to.deep.equal(Buffer.from(FAKE_ENCRYPTED_KEY.toString("hex")));
 
       expect(sapphireComponents.contract.submitAnswer.calledOnce).to.be.true;
 
