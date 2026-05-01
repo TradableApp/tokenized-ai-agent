@@ -381,6 +381,75 @@ Click any oracle event in Sentry. Expand the **Extra**, **Contexts**, and **Requ
 
 ---
 
+## Phase 8 — Playwright E2E tests
+
+With all services running (Hardhat, oracle, Graph node, dApp), the automated test suite can be run against the live localnet stack.
+
+The full test plan is documented in [E2E_TEST_PLAN.md](./E2E_TEST_PLAN.md). Tests live in `sense-ai-dapp/e2e/`.
+
+### Pre-conditions
+
+All of the following must be running before executing any tests:
+
+- Tab 1: Hardhat node (`npx hardhat node`)
+- Tab 2: Oracle (`npm run start:base-localnet`)
+- Tab 3: Graph node (`docker-compose up`) + subgraph deployed
+- Tab 4: dApp dev server (`bun run dev`)
+
+### Step 23 — Run the smoke suite first
+
+The smoke suite checks infrastructure reachability and basic app load. It must pass before running anything else.
+
+```bash
+cd $WORK_DIR/sense-ai-dapp
+bun run test:e2e:smoke
+```
+
+Expected: **13 tests pass**. If any fail, check the relevant service is running before proceeding.
+
+### Step 24 — Run the auth suite
+
+Tests the full wallet connect → signature → session key flow using the injected mock wallet (no MetaMask required).
+
+```bash
+bun run test:e2e:auth
+```
+
+Expected: **12 tests pass**. This suite must be green before any other suite, since all other fixtures depend on the auth flow.
+
+### Step 25 — Run remaining suites in dependency order
+
+```bash
+bun run test:e2e --project=plan       # Spending limit set/update/cancel
+bun run test:e2e --project=chat       # Prompt submit, oracle response, cancel
+bun run test:e2e --project=security   # ECIES encryption, no plaintext leaks
+bun run test:e2e --project=history    # Conversation list, search, rename, delete
+bun run test:e2e --project=refunds    # Stuck payments, refund eligibility
+bun run test:e2e --project=graph      # The Graph data layer
+bun run test:e2e --project=sentry     # Sentry init and error capture
+```
+
+### Step 26 — Run the full regression suite
+
+Once all individual suites pass, run the full regression to confirm nothing conflicts:
+
+```bash
+bun run test:e2e
+```
+
+### Useful commands
+
+```bash
+bun run test:e2e:ui        # Open Playwright's interactive UI for debugging
+bun run test:e2e:report    # Open the HTML test report from the last run
+```
+
+### Beta readiness gate
+
+All **P0 tests** (40 total) must pass before promoting to testnet. P0 tests are marked in [E2E_TEST_PLAN.md](./E2E_TEST_PLAN.md). Run the full regression and check for any P0 failures before merging the `phase4-sentry` PRs.
+
+---
+
 ## Restarting the stack
 
 When you restart the Hardhat node, all chain state is wiped. Re-run Steps 3–7 to redeploy contracts. Contract addresses remain the same (deterministic) so the env files, subgraph config, and dApp config do not need updating.
