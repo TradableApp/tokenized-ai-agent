@@ -1,7 +1,7 @@
 const chai = require("chai");
 const sinon = require("sinon");
 const { expect } = chai;
-const proxyquire = require("proxyquire");
+const proxyquire = require("proxyquire").noCallThru();
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 
@@ -9,6 +9,7 @@ describe("aiAgentOracle", function () {
   let aiAgentOracle;
   let stubs;
   const FAKE_SESSION_KEY = crypto.randomBytes(32);
+  const FAKE_ENCRYPTED_KEY = Buffer.from('fake-ecies-cipher-blob');
 
   // Helper function to create the encrypted string format our app uses.
   const createEncryptedString = (dataObject, key) => {
@@ -39,6 +40,7 @@ describe("aiAgentOracle", function () {
     const randomWallet = ethers.Wallet.createRandom();
     // Override the placeholder environment variable with a valid key.
     process.env.PRIVATE_KEY = randomWallet.privateKey;
+    process.env.OLLAMA_URL = "http://fake-ollama";
 
     // Define mocked oracle components once for easy reference across tests.
     const mockedOracleComponents = {
@@ -56,6 +58,7 @@ describe("aiAgentOracle", function () {
         submitConversationMetadata: sinon
           .stub()
           .resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),
+        isJobFinalized: sinon.stub().resolves(false),
         oracle: sinon.stub(),
         setOracle: sinon.stub().resolves({ wait: () => Promise.resolve() }),
         queryFilter: sinon.stub(),
@@ -108,11 +111,41 @@ describe("aiAgentOracle", function () {
         writeFile: sinon.stub().resolves(),
         readFile: sinon.stub().rejects(new Error("File not found")),
       },
-      "eth-crypto": {
-        decryptWithPrivateKey: sinon.stub().resolves(FAKE_SESSION_KEY.toString("hex")),
-        cipher: {
-          parse: (str) => str,
+      "./ecies": {
+        eciesDecrypt: sinon.stub().resolves(FAKE_SESSION_KEY),
+        eciesEncrypt: sinon.stub().resolves(FAKE_ENCRYPTED_KEY),
+        publicKeyFromPrivateKey: sinon.stub().returns('04' + '0f'.repeat(64)),
+      },
+      "@elizaos/core": {
+        ElizaOS: class {
+          async addAgents() { return ["fake-agent-id"]; }
+          async startAgents() {}
+          getAgent() { return null; }
         },
+        elizaLogger: { info: () => {}, log: () => {}, error: () => {}, warn: () => {}, debug: () => {} },
+        stringToUuid: (s) => s,
+        createUniqueUuid: (_ns, s) => s,
+        ChannelType: { DM: "DM", WORLD: "WORLD" },
+      },
+      "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+      "./elizaos/character.js": {},
+      "@sentry/node": {
+        init: sinon.stub(),
+        captureException: sinon.stub(),
+        captureMessage: sinon.stub(),
+        withScope: sinon.stub(),
+        configureScope: sinon.stub(),
+        setTag: sinon.stub(),
+        setUser: sinon.stub(),
+        startSpan: sinon.stub().callsFake((_opts, fn) => fn && fn({})),
+        getCurrentScope: sinon.stub().returns({ setTag: sinon.stub(), setUser: sinon.stub() }),
+      },
+      "./formatters": {
+        createConversationFile: sinon.stub().callsFake((data) => data),
+        createConversationMetadataFile: sinon.stub().callsFake((data) => data),
+        createMessageFile: sinon.stub().callsFake((data) => data),
+        createSearchIndexDeltaFile: sinon.stub().callsFake((data) => data),
+        generateKeywords: sinon.stub().returns([]),
       },
     };
 
@@ -121,20 +154,36 @@ describe("aiAgentOracle", function () {
 
     // Initialize the module's internal state with our mocks before running any tests.
     aiAgentOracle.initForTest(mockedOracleComponents);
+
+    // Wire global.fetch (used by oracle) through to the node-fetch stub so test
+    // assertions on stubs["node-fetch"] reflect actual fetch calls made by the oracle.
+    sinon.stub(global, "fetch").callsFake((...args) => stubs["node-fetch"](...args));
+
+    // The example env file sets CHAIN_GPT_API_KEY to a placeholder which causes ChainGPT
+    // to succeed via the stub, bypassing DeepSeek. Clear it so tests that need it
+    // can set their own explicit value.
+    delete process.env.CHAIN_GPT_API_KEY;
   });
 
   afterEach(() => {
     sinon.restore();
-    // Clean up the environment variable to ensure test isolation
+    // Clean up environment variables to ensure test isolation
     delete process.env.AI_PROVIDER;
     delete process.env.PRIVATE_KEY;
+    delete process.env.OLLAMA_URL;
+    delete process.env.CHAIN_GPT_API_KEY;
   });
 
   describe("start", () => {
     beforeEach(() => {
+      process.env.EVENT_BATCH_SIZE = "10000";
       // The start function calls setOracleAddress and processPastEvents, which need these stubs.
       stubs["./contractUtility"].initializeOracle().contract.oracle.resolves("0xOracleAddress");
       stubs["./contractUtility"].initializeOracle().contract.queryFilter.resolves([]);
+    });
+
+    afterEach(() => {
+      delete process.env.EVENT_BATCH_SIZE;
     });
 
     it("should start from a recent block if no state file exists", async () => {
@@ -148,9 +197,9 @@ describe("aiAgentOracle", function () {
 
       await aiAgentOracle.start();
 
-      // Assert: processPastEvents was called with the correct lookback window (4000 to 10000).
+      // Assert: processPastEvents was called with the correct lookback window (8200 to 10000).
       // We verify this by checking the arguments of its dependency, queryFilter.
-      expect(queryFilterStub.firstCall.args[1]).to.equal(4000);
+      expect(queryFilterStub.firstCall.args[1]).to.equal(8200);
       expect(queryFilterStub.firstCall.args[2]).to.equal(10000);
     });
 
@@ -180,7 +229,7 @@ describe("aiAgentOracle", function () {
     const FAKE_ROFL_KEY = "0xkey";
 
     it("should default to DeepSeek if AI_PROVIDER is not set", async () => {
-      const clientPayload = { promptText: "test" };
+      const clientPayload = { promptText: "test", isNewConversation: false };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
       );
@@ -196,9 +245,9 @@ describe("aiAgentOracle", function () {
         fakeEvent,
       );
 
-      const fetchCall = stubs["node-fetch"].firstCall.args;
-      expect(fetchCall[0]).to.include("/api/chat"); // Ollama endpoint
-      const body = JSON.parse(fetchCall[1].body);
+      const fetchCall = stubs["node-fetch"].getCalls().find((c) => c.args[0].includes("/api/chat"));
+      expect(fetchCall).to.exist;
+      const body = JSON.parse(fetchCall.args[1].body);
       expect(body.model).to.equal("deepseek-r1:1.5b");
     });
 
@@ -206,7 +255,7 @@ describe("aiAgentOracle", function () {
       process.env.AI_PROVIDER = "ChainGPT";
       process.env.CHAIN_GPT_API_KEY = "fake-key";
 
-      const clientPayload = { promptText: "test" };
+      const clientPayload = { promptText: "test", isNewConversation: false };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
       );
@@ -233,7 +282,7 @@ describe("aiAgentOracle", function () {
       process.env.CHAIN_GPT_API_KEY = "fake-key";
       stubs["node-fetch"].rejects(new Error("API is down"));
 
-      const clientPayload = { promptText: "test" };
+      const clientPayload = { promptText: "test", isNewConversation: false };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
       );
@@ -571,11 +620,9 @@ describe("aiAgentOracle", function () {
 
   describe("getSessionKey", () => {
     it("should retrieve key from payload for EVM", async () => {
-      const roflEncryptedKey = "0xencryptedKey";
+      const roflEncryptedKey = "0x" + Buffer.from("encryptedKey").toString("hex");
       const key = await aiAgentOracle.getSessionKey(null, roflEncryptedKey, null);
-      expect(
-        stubs["eth-crypto"].decryptWithPrivateKey.calledOnceWith(sinon.match.any, "encryptedKey"),
-      ).to.be.true;
+      expect(stubs["./ecies"].eciesDecrypt.calledOnce).to.be.true;
       expect(key).to.deep.equal(FAKE_SESSION_KEY);
     });
 
@@ -604,7 +651,7 @@ describe("aiAgentOracle", function () {
       });
 
       expect(stubs["./storage/storage"].fetchData.calledOnceWith("fake_key_cid")).to.be.true;
-      expect(stubs["eth-crypto"].decryptWithPrivateKey.calledOnce).to.be.true;
+      expect(stubs["./ecies"].eciesDecrypt.calledOnce).to.be.true;
       expect(key).to.deep.equal(FAKE_SESSION_KEY);
     });
 
@@ -791,6 +838,7 @@ describe("aiAgentOracle", function () {
           submitAnswer: sinon
             .stub()
             .resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),
+          isJobFinalized: sinon.stub().resolves(false),
         },
         isSapphire: true,
       };
@@ -829,18 +877,15 @@ describe("aiAgentOracle", function () {
 
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(6);
 
-      // CORRECTED ASSERTION: Verify the key was encrypted correctly by decrypting it.
+      // Verify the key was encrypted and uploaded via eciesEncrypt.
       const keyUploadArgs = stubs["./storage/storage"].uploadData.getCall(0).args;
-      const encryptedKeyObject = JSON.parse(keyUploadArgs[0].toString());
-
-      // Decrypt the data that was uploaded to storage using the test's private key.
-      const decryptedSessionKeyHex = await stubs["eth-crypto"].decryptWithPrivateKey(
-        process.env.PRIVATE_KEY,
-        encryptedKeyObject,
+      expect(stubs["./ecies"].eciesEncrypt.calledOnce).to.be.true;
+      const sessionKeyArg = stubs["./ecies"].eciesEncrypt.firstCall.args[1];
+      expect(Buffer.from(sessionKeyArg)).to.deep.equal(
+        Buffer.from(clientPayload.sessionKey.slice(2), "hex"),
       );
-
-      // Assert that the decrypted key matches the original session key sent in the payload.
-      expect("0x" + decryptedSessionKeyHex).to.equal(clientPayload.sessionKey);
+      // Key is hex-encoded before upload so fetchData's text() round-trip is lossless.
+      expect(keyUploadArgs[0]).to.deep.equal(Buffer.from(FAKE_ENCRYPTED_KEY.toString("hex")));
 
       expect(sapphireComponents.contract.submitAnswer.calledOnce).to.be.true;
 
@@ -1077,7 +1122,7 @@ describe("aiAgentOracle", function () {
 
     it("should send a critical alert for a non-retryable error", async () => {
       // Simulate a fatal error like a decryption failure.
-      stubs["eth-crypto"].decryptWithPrivateKey.rejects(new Error("Decryption failed"));
+      stubs["./ecies"].eciesDecrypt.rejects(new Error("Decryption failed"));
       const writeFileStub = stubs["fs/promises"].writeFile;
 
       const user = "0xUser";

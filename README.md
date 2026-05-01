@@ -83,6 +83,9 @@ cp oracle/.env.oracle.example oracle/.env.oracle.base-testnet
 
 ## 🧪 Local Development (Fast Loop)
 
+> **Full step-by-step guide:** [docs/LOCALNET_SETUP.md](docs/LOCALNET_SETUP.md) — covers all four SenseAI repos end-to-end including The Graph, Sentry verification, and browser wallet setup.
+
+
 This workflow allows you to test the Contracts and Oracle on your machine using a local blockchain and the frontend dApp.
 
 ### 1. Start Local Blockchain
@@ -91,34 +94,64 @@ This workflow allows you to test the Contracts and Oracle on your machine using 
 npx hardhat node
 ```
 
-### 2. Deploy Contracts
+Hardhat prints 20 funded test accounts. **Copy the private keys for Account #0 (oracle/deployer) and Account #1 (user)** — you will need them in the steps below.
+
+### 2. Configure Environment Keys
+
+Fill in `tokenized-ai-agent/.env.base-localnet` with the Account #0 and Account #1 private keys from the Hardhat output. Then derive the oracle's uncompressed public key:
+
+```bash
+ENV_FILE=.env.base-localnet node scripts/getPublicKey.js
+```
+
+Copy the printed `Uncompressed Public Key` (starts with `0x04`) into:
+- `tokenized-ai-agent/.env.base-localnet` → `PUBLIC_KEY`
+- `sense-ai-dapp/.env.localnet` → `VITE_ORACLE_PUBLIC_KEY`
+
+### 3. Deploy AbleToken
+
+AbleToken (the ERC-20 payment token) lives in the `able-contracts` repo. Deploy it to Hardhat first:
+
+```bash
+cd ../able-contracts
+npx hardhat run scripts/deploy.js --network localhost
+```
+
+Copy the printed token address into `tokenized-ai-agent/.env.base-localnet` → `TOKEN_CONTRACT_ADDRESS`.
+
+### 4. Compile and Deploy Contracts
 
 Open a new terminal:
 
 ```bash
-# Deploys to localhost (Hardhat Network)
+npm run compile
 npm run deploy:base-localnet
 ```
 
-_Note: Copy the deployed contract addresses into your `oracle/.env.oracle.base-localnet` file._
+Copy the printed `EVMAIAgent` and `EVMAIAgentEscrow` proxy addresses into:
+- `tokenized-ai-agent/.env.base-localnet` → `AI_AGENT_CONTRACT_ADDRESS`, `AI_AGENT_ESCROW_CONTRACT_ADDRESS`
+- `oracle/.env.oracle.base-localnet` → same fields, plus the token address and your private key/public key from Step 2
+- `sense-ai-dapp/.env.localnet` → `VITE_AGENT_CONTRACT_ADDRESS`, `VITE_ESCROW_CONTRACT_ADDRESS`, `VITE_TOKEN_CONTRACT_ADDRESS`
 
-### 3. Run Local Oracle
+### 5. Run Local Oracle
 
-Open a third terminal. This runs the Oracle logic directly in Node.js:
+Open a third terminal:
 
 ```bash
-# Runs the oracle script pointing to localnet
-npm run start:base-localnet
+cd oracle && npm run start:base-localnet
 ```
 
-### 4. Test with dApp
+You should see `[Sentry] Initialized for environment: localnet` followed by the oracle starting its event polling loop.
+
+### 6. Test with dApp
 
 The system is now ready. To test the end-to-end flow (encryption, payment, AI response), run the **SenseAI dApp** locally.
 
-1.  Navigate to the `sense-ai-dapp` repository.
-2.  Run `npm run dev:localnet`.
-3.  Connect your wallet (ensure it's imported from Hardhat).
-4.  Send a message. You should see the Oracle terminal processing the event immediately.
+1. Navigate to the `sense-ai-dapp` repository and run `bun run dev`.
+2. Add the Hardhat network to your browser wallet (RPC `http://127.0.0.1:8545`, Chain ID `31337`).
+3. Import Account #1 using its private key from Step 1.
+4. Connect to the dApp and set a spending allowance.
+5. Send a message — the Oracle terminal should process the event immediately.
 
 ---
 
@@ -134,13 +167,16 @@ npm run deploy:base-testnet
 
 _Copy the `EVMAIAgent` and `EVMAIAgentEscrow` addresses into `oracle/.env.oracle.base-testnet`._
 
-### 2. Initialize Oracle Identity
+### 2. Derive the Oracle Public Key
 
-The TEE needs a Public Key derived from its Private Key to enable encryption.
+The oracle uses its public key for ECIES encryption. Derive it from `PRIVATE_KEY`:
 
 ```bash
-ENV_FILE=oracle/.env.oracle.base-testnet node scripts/getPublicKey.js
-# Copy the output PUBLIC_KEY back into your .env file
+ENV_FILE=.env.base-testnet node scripts/getPublicKey.js
+# Copy the printed Uncompressed Public Key (0x04...) into:
+#   .env.base-testnet          → PUBLIC_KEY
+#   oracle/.env.oracle.base-testnet → PUBLIC_KEY
+#   sense-ai-dapp/.env.testnet → VITE_ORACLE_PUBLIC_KEY
 ```
 
 ### 3. Test Oracle Locally
