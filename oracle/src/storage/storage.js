@@ -51,9 +51,10 @@ async function initializeStorage() {
  * @returns {Promise<string>} The resulting CID.
  */
 async function uploadData(dataBuffer, tags = []) {
-  // Use Autonomys as the primary provider for new uploads
+  if (process.env.STORAGE_PROVIDER === "irys") {
+    return arweave.uploadData(dataBuffer, tags);
+  }
   return autonomys.uploadData(dataBuffer, tags);
-  // return arweave.uploadData(dataBuffer, tags);
 }
 
 /**
