@@ -27,9 +27,12 @@ describe("alerting", function () {
       "@slack/web-api": {
         WebClient: sinon.stub().returns(slackStub),
       },
-      "node-fetch": fetchStub,
     });
     sendAlert = alertingModule.sendAlert;
+
+    // alerting.js uses global fetch (Node 18+), not node-fetch import.
+    // Wire global.fetch to fetchStub so test assertions still work.
+    sinon.stub(global, "fetch").callsFake((...args) => fetchStub(...args));
   });
 
   afterEach(() => {

@@ -5,6 +5,8 @@ import { Structs } from "../libraries/Structs.sol";
 
 /**
  * @title ISapphireAIAgent Interface
+ * @author Tradable
+ * @notice Interface for the SapphireAIAgent contract used by the escrow and TEE oracle components.
  * @dev Defines the external functions for the SapphireAIAgent contract, ensuring interoperability
  *      with the escrow contract, the TEE oracle, and other system components.
  */

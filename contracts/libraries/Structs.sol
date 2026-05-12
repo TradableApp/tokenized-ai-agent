@@ -2,6 +2,9 @@
 pragma solidity ^0.8.21;
 
 /**
+ * @title Structs
+ * @author Tradable
+ * @notice Central library of shared data structures used across the AI Agent contracts.
  * @dev A central library for shared data structures used across the AI Agent contracts.
  */
 library Structs {

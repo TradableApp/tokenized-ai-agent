@@ -8,6 +8,8 @@ import { Structs } from "./libraries/Structs.sol";
 
 /**
  * @title Sapphire AI Agent Contract
+ * @author Tradable
+ * @notice On-chain registry for the Sapphire-based AI agent system, managing conversations and TEE interactions.
  * @dev This contract acts as an on-chain registry for a decentralized AI agent system.
  *      It manages ownership of conversations and messages, emitting events that allow
  *      off-chain indexers (like The Graph) to build a queryable history of interactions.
@@ -52,6 +54,11 @@ contract SapphireAIAgent is Ownable {
 
   // TEE Trigger Events
   /// @notice Emitted when a new user prompt is submitted. This is the primary trigger for the TEE.
+  /// @param user The address of the user submitting the prompt.
+  /// @param conversationId The ID of the conversation.
+  /// @param promptMessageId The ID of the prompt message.
+  /// @param answerMessageId The ID of the expected answer message.
+  /// @param payload The encrypted context for the TEE.
   event PromptSubmitted(
     address indexed user,
     uint256 indexed conversationId,
@@ -60,6 +67,10 @@ contract SapphireAIAgent is Ownable {
     string payload
   );
   /// @notice Emitted when a new agent job is submitted. This is a trigger for the TEE.
+  /// @param user The address of the user submitting the job.
+  /// @param jobId The ID of the agent job.
+  /// @param triggerId The ID of the job trigger.
+  /// @param payload The encrypted context for the TEE.
   event AgentJobSubmitted(
     address indexed user,
     uint256 indexed jobId,
@@ -67,6 +78,12 @@ contract SapphireAIAgent is Ownable {
     string payload
   );
   /// @notice Emitted when a user requests the TEE to regenerate an answer.
+  /// @param user The address of the user requesting regeneration.
+  /// @param conversationId The ID of the conversation.
+  /// @param promptMessageId The ID of the original prompt message.
+  /// @param originalAnswerMessageId The ID of the answer being replaced.
+  /// @param answerMessageId The ID of the new expected answer message.
+  /// @param payload The encrypted context for the TEE.
   event RegenerationRequested(
     address indexed user,
     uint256 indexed conversationId,
@@ -76,7 +93,12 @@ contract SapphireAIAgent is Ownable {
     string payload
   );
   /// @notice Emitted when a user requests the TEE to branch a conversation.
-  event BranchRequested(
+  /// @param user The address of the user requesting the branch.
+  /// @param originalConversationId The ID of the source conversation.
+  /// @param branchPointMessageId The message ID at which the branch starts.
+  /// @param newConversationId The ID of the newly created branch conversation.
+  /// @param payload The encrypted context for the TEE.
+  event BranchRequested( // solhint-disable-line gas-indexed-events
     address indexed user,
     uint256 indexed originalConversationId,
     uint256 branchPointMessageId,
@@ -84,8 +106,13 @@ contract SapphireAIAgent is Ownable {
     string payload
   );
   /// @notice Emitted when a user successfully cancels a pending prompt. This instructs the TEE to halt processing.
+  /// @param user The address of the user cancelling the prompt.
+  /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
   /// @notice Emitted when a user requests a metadata update. This instructs the TEE to update decentralised storage.
+  /// @param user The address of the user requesting the update.
+  /// @param conversationId The ID of the conversation to update.
+  /// @param payload The encrypted metadata update payload for the TEE.
   event MetadataUpdateRequested(
     address indexed user,
     uint256 indexed conversationId,
@@ -94,6 +121,10 @@ contract SapphireAIAgent is Ownable {
 
   // Graph Historical Record Events
   /// @notice Emitted when a new conversation is started.
+  /// @param user The address of the conversation owner.
+  /// @param conversationId The ID of the new conversation.
+  /// @param conversationCID The CID of the immutable conversation data file.
+  /// @param metadataCID The CID of the mutable metadata file.
   event ConversationAdded(
     address indexed user,
     uint256 indexed conversationId,
@@ -101,7 +132,13 @@ contract SapphireAIAgent is Ownable {
     string metadataCID
   );
   /// @notice Emitted when a new conversation is forked from an existing one.
-  event ConversationBranched(
+  /// @param user The address of the user who created the branch.
+  /// @param newConversationId The ID of the newly created branch conversation.
+  /// @param originalConversationId The ID of the source conversation.
+  /// @param branchPointMessageId The message ID at which the branch starts.
+  /// @param conversationCID The CID of the new immutable conversation data file.
+  /// @param metadataCID The CID of the new mutable metadata file.
+  event ConversationBranched( // solhint-disable-line gas-indexed-events
     address indexed user,
     uint256 indexed newConversationId,
     uint256 originalConversationId,
@@ -110,20 +147,30 @@ contract SapphireAIAgent is Ownable {
     string metadataCID
   );
   /// @notice Emitted when a user adds a new prompt to a conversation.
+  /// @param conversationId The ID of the conversation.
+  /// @param messageId The ID of the prompt message.
+  /// @param messageCID The CID of the stored prompt message file.
   event PromptMessageAdded(
     uint256 indexed conversationId,
     uint256 indexed messageId,
     string messageCID
   );
   /// @notice Emitted when the oracle submits an answer to a prompt.
+  /// @param conversationId The ID of the conversation.
+  /// @param messageId The ID of the answer message.
+  /// @param messageCID The CID of the stored answer message file.
   event AnswerMessageAdded(
     uint256 indexed conversationId,
     uint256 indexed messageId,
     string messageCID
   );
   /// @notice Emitted with a prompt to provide keywords for off-chain search indexing.
+  /// @param messageId The ID of the message associated with this search delta.
+  /// @param searchDeltaCID The CID of the search index delta file.
   event SearchIndexDeltaAdded(uint256 indexed messageId, string searchDeltaCID);
   /// @notice Emitted when a conversation's metadata CID is updated by the TEE.
+  /// @param conversationId The ID of the conversation being updated.
+  /// @param newConversationMetadataCID The new CID of the conversation metadata file.
   event ConversationMetadataUpdated(
     uint256 indexed conversationId,
     string newConversationMetadataCID
@@ -131,8 +178,10 @@ contract SapphireAIAgent is Ownable {
 
   // Admin Events
   /// @notice Emitted when the linked escrow contract address is updated.
+  /// @param newAIAgentEscrow The address of the new escrow contract.
   event AgentEscrowUpdated(address indexed newAIAgentEscrow);
   /// @notice Emitted when the oracle address is updated by a TEE.
+  /// @param newOracle The address of the new oracle.
   event OracleUpdated(address indexed newOracle);
 
   // --- Errors ---
@@ -261,7 +310,7 @@ contract SapphireAIAgent is Ownable {
    */
   function reserveConversationId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newConversationId = conversationIdCounter;
-    conversationIdCounter++;
+    ++conversationIdCounter;
     return newConversationId;
   }
 
@@ -272,7 +321,7 @@ contract SapphireAIAgent is Ownable {
    */
   function reserveJobId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newJobId = jobIdCounter;
-    jobIdCounter++;
+    ++jobIdCounter;
     return newJobId;
   }
 
@@ -284,7 +333,7 @@ contract SapphireAIAgent is Ownable {
    */
   function reserveMessageId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newMessageId = messageIdCounter;
-    messageIdCounter++;
+    ++messageIdCounter;
     return newMessageId;
   }
 
@@ -295,7 +344,7 @@ contract SapphireAIAgent is Ownable {
    */
   function reserveTriggerId() external onlyAIAgentEscrow returns (uint256) {
     uint256 newTriggerId = triggerIdCounter;
-    triggerIdCounter++;
+    ++triggerIdCounter;
     return newTriggerId;
   }
 

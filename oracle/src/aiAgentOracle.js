@@ -1,5 +1,6 @@
+const Sentry = require("@sentry/node");
 const dotenv = require("dotenv");
-const ethCrypto = require("eth-crypto");
+const { eciesEncrypt, eciesDecrypt, publicKeyFromPrivateKey } = require("./ecies");
 const { ethers } = require("ethers");
 const path = require("path");
 const fs = require("fs/promises");
@@ -186,7 +187,7 @@ async function initializeEliza() {
 // --- Cryptography Helpers ---
 
 /**
- * [EVM ONLY] Removes the '0x' prefix from a hex string, which is required by eth-crypto.
+ * [EVM ONLY] Removes the '0x' prefix from a hex string.
  * @param {string} hexString - The hex string, which may or may not have a '0x' prefix.
  * @returns {string} The raw hex string without the '0x' prefix.
  */
@@ -258,17 +259,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
       return Buffer.from(strip0xPrefix(parsedPayload.sessionKey), "hex");
     }
   } else if (roflEncryptedKey && roflEncryptedKey !== "0x") {
-    // The roflEncryptedKey comes in as a Hex String (0x...).
-    // We must convert it to the original UTF-8 Cipher String (iv...ephemKey...mac)
-    // before passing it to ethCrypto.
-    const cipherString = ethers.toUtf8String(roflEncryptedKey);
-
-    const sessionKeyHex = await ethCrypto.decryptWithPrivateKey(
-      AI_AGENT_PRIVATE_KEY,
-      ethCrypto.cipher.parse(cipherString),
-    );
-
-    return Buffer.from(strip0xPrefix(sessionKeyHex), "hex");
+    const cipherBlob = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
+    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, cipherBlob);
   }
 
   if (conversationId) {
@@ -283,12 +275,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     if (!keyFileCID) {
       throw new Error(`Could not find Key File for conversation ${conversationId}.`);
     }
-    const fetchedRoflEncryptedKey = await fetchData(keyFileCID);
-    const sessionKeyHex = await ethCrypto.decryptWithPrivateKey(
-      AI_AGENT_PRIVATE_KEY,
-      ethCrypto.cipher.parse(fetchedRoflEncryptedKey),
-    );
-    return Buffer.from(strip0xPrefix(sessionKeyHex), "hex");
+    const fetchedHex = await fetchData(keyFileCID);
+    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, Buffer.from(fetchedHex, "hex"));
   }
 
   throw new Error(
@@ -356,8 +344,6 @@ async function reconstructHistory(startMessageCID, sessionKey) {
       history.unshift({
         role: messageFile.role,
         content: messageFile.content,
-        // We capture timestamp for Eliza hydration
-        createdAt: messageFile.createdAt,
       });
 
       // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID or answerMessageCID).
@@ -752,6 +738,26 @@ async function routeQueryIntent(conversationHistory) {
  * @returns {Promise<string>} The content of the AI's response.
  */
 async function queryAIModel(conversationHistory, conversationId, userWallet) {
+  const aiProvider = process.env.AI_PROVIDER;
+
+  // Direct provider bypass (used in tests and explicit operator config)
+  if (aiProvider === "ChainGPT") {
+    try {
+      return await queryChainGPT(conversationHistory, conversationId);
+    } catch (err) {
+      console.error("[queryAIModel] ChainGPT provider failed.", err.message);
+      return "Error: Could not generate a response from the ChainGPT service.";
+    }
+  }
+  if (aiProvider === "DeepSeek") {
+    try {
+      return await queryDeepSeek(conversationHistory);
+    } catch (err) {
+      console.error("[queryAIModel] DeepSeek provider failed.", err.message);
+      return "Error: Could not generate a response from the DeepSeek service.";
+    }
+  }
+
   // 1. Determine Intent
   const intent = await routeQueryIntent(conversationHistory);
 
@@ -780,7 +786,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
       );
 
       // 5. Failover 2: Local TEE Model (DeepSeek)
-      return await queryDeepSeek(conversationHistory);
+      try {
+        return await queryDeepSeek(conversationHistory);
+      } catch (err3) {
+        Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
+        return "Error: Could not generate a response. All AI providers are currently unavailable.";
+      }
     }
   }
 }
@@ -913,15 +924,10 @@ async function handlePrompt(
       // We must now encrypt it for persistent storage.
       let keyToStore;
       if (isSapphire) {
-        const AI_AGENT_PUBLIC_KEY = ethCrypto.publicKeyByPrivateKey(AI_AGENT_PRIVATE_KEY);
-
-        const encryptedKeyObject = await ethCrypto.encryptWithPublicKey(
-          AI_AGENT_PUBLIC_KEY,
-          sessionKey, // Encrypt the raw session key
-        );
-        keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
+        const AI_AGENT_PUBLIC_KEY = publicKeyFromPrivateKey(AI_AGENT_PRIVATE_KEY);
+        keyToStore = await eciesEncrypt(AI_AGENT_PUBLIC_KEY, Buffer.from(sessionKey));
       } else {
-        keyToStore = ethers.toUtf8String(roflEncryptedKey); // For EVM, we already have it.
+        keyToStore = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
       }
 
       const conversationFile = createConversationFile({
@@ -938,8 +944,9 @@ async function handlePrompt(
       const encryptedConv = encryptSymmetrically(conversationFile, sessionKey);
       const encryptedMeta = encryptSymmetrically(conversationMetadataFile, sessionKey);
 
-      // Stringify the eth-crypto object before saving
-      await uploadData(Buffer.from(keyToStore), keyFileTags);
+      // Store as hex string so fetchData's response.text() round-trip is lossless.
+      // Raw binary Buffers are corrupted by UTF-8 decoding on fetch.
+      await uploadData(Buffer.from(keyToStore.toString("hex")), keyFileTags);
 
       // Parallel Uploads
       const [conversationCID, metadataCID, promptMessageCID, searchDeltaCID] = await Promise.all([
@@ -1058,6 +1065,10 @@ async function handlePrompt(
       console.warn("  ⚠️ Could not verify job finalization status after error.");
     }
 
+    Sentry.captureException(error, {
+      tags: { site: "handle_prompt" },
+      extra: { convId: conversationId?.toString() },
+    });
     console.error(`Error in handlePrompt for convId ${conversationId}:`, error);
 
     throw error; // Propagate error to be caught by handleAndRecord
@@ -1244,19 +1255,13 @@ async function handleBranch(
     // We must now encrypt it for persistent storage.
     let keyToStore;
     if (isSapphire) {
-      const AI_AGENT_PUBLIC_KEY = ethCrypto.publicKeyByPrivateKey(AI_AGENT_PRIVATE_KEY);
-
-      const encryptedKeyObject = await ethCrypto.encryptWithPublicKey(
-        AI_AGENT_PUBLIC_KEY,
-        sessionKey, // Encrypt the raw session key
-      );
-      keyToStore = ethCrypto.cipher.stringify(encryptedKeyObject);
+      const AI_AGENT_PUBLIC_KEY = publicKeyFromPrivateKey(AI_AGENT_PRIVATE_KEY);
+      keyToStore = await eciesEncrypt(AI_AGENT_PUBLIC_KEY, Buffer.from(sessionKey));
     } else {
-      keyToStore = ethers.toUtf8String(roflEncryptedKey); // For EVM, we already have it.
+      keyToStore = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
     }
 
-    // Stringify the eth-crypto object before saving
-    await uploadData(Buffer.from(keyToStore), newKeyFileTags);
+    await uploadData(keyToStore, newKeyFileTags);
 
     const conversationFile = createConversationFile({
       id: newConversationId.toString(),
@@ -1507,6 +1512,9 @@ async function handleAndRecord(eventName, handler, ...args) {
       const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
       console.error(alertMessage, error);
 
+      Sentry.captureException(error, {
+        tags: { site: "handle_and_record_fatal", eventName, blockNumber: event.blockNumber },
+      });
       await sendAlert("CRITICAL: Oracle Fatal Error", alertMessage);
     }
   }
@@ -1620,6 +1628,13 @@ async function retryFailedJobs() {
 
         job.retryCount += 1;
         if (job.retryCount >= MAX_RETRIES) {
+          Sentry.captureException(error, {
+            tags: {
+              site: "retry_permanent_failure",
+              eventName: job.eventName,
+              blockNumber: job.event.blockNumber,
+            },
+          });
           await sendAlert(
             "CRITICAL: Job Failed Permanently",
             `A job for event ${job.eventName} from block ${job.event.blockNumber} has failed all ${MAX_RETRIES} retries and has been dropped. Manual intervention required. Final error: ${error.message}`,
@@ -1916,8 +1931,11 @@ async function start() {
   // Start background retry mechanism
   setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
 
-  // 2. Listening Phase
-  await pollEvents(latestBlock);
+  // 2. Listening Phase — fire-and-forget; the infinite poll loop never resolves
+  pollEvents(latestBlock).catch((err) => {
+    console.error("Fatal polling loop error:", err);
+    process.exit(1);
+  });
 }
 
 module.exports = {
