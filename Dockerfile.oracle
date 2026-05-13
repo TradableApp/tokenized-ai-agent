@@ -7,6 +7,9 @@ WORKDIR /app
 # Copy the compiled contract artifacts first, as they are needed by the oracle
 COPY ./artifacts ./artifacts
 
+# Copy shared-schema submodule before install — oracle depends on it via "../packages/shared-schema"
+COPY ./packages/shared-schema ./packages/shared-schema
+
 # Now, set the working directory to the oracle's specific subdirectory
 WORKDIR /app/oracle
 
