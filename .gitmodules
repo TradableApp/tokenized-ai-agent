@@ -1,0 +1,3 @@
+[submodule "packages/shared-schema"]
+	path = packages/shared-schema
+	url = https://github.com/TradableApp/sense-ai-shared-schema

@@ -17,6 +17,24 @@ This repo is **two separate Node.js packages** with different concerns:
 
 Always `cd oracle/` and run `npm install` separately when working on oracle code. Contract ABI artifacts (from `npm run compile` at root) are consumed by the oracle via `../../artifacts/contracts/`.
 
+## Shared schema submodule
+
+The oracle reads/writes to a shared GCP Cloud SQL Postgres instance with `sense-ai-core`. Table definitions + migrations live in [`TradableApp/sense-ai-shared-schema`](https://github.com/TradableApp/sense-ai-shared-schema), pulled in here as a git submodule at `packages/shared-schema/`.
+
+```bash
+# First clone:
+git clone --recurse-submodules https://github.com/TradableApp/tokenized-ai-agent
+
+# After a regular clone:
+git submodule update --init --recursive
+
+# Pulling latest schema updates:
+git submodule update --remote packages/shared-schema
+git add packages/shared-schema && git commit -m "chore: bump sense-ai-shared-schema to <version>"
+```
+
+Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-schema"` (path-based npm dep at `oracle/package.json` → `"../packages/shared-schema"`). Phase 3 of the v0.3.0 SenseAI plan introduces the actual adapter swap; this submodule lands now so both apps stay in lockstep on table shape and migration history.
+
 ## Scripts
 
 ### Contracts (run from root)
