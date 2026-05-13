@@ -34,9 +34,14 @@ function getProviderFromCID(cid) {
  * Initializes all configured storage providers.
  */
 async function initializeStorage() {
-  // We initialize BOTH so we can read old Arweave data AND write new Autonomys data.
-  await Promise.all([arweave.initializeIrys(), autonomys.initializeAutoDrive()]);
-  console.log("Storage providers initialized (Arweave + Autonomys).");
+  if (process.env.STORAGE_PROVIDER === "irys") {
+    await arweave.initializeIrys();
+    console.log("Storage providers initialized (Irys only — STORAGE_PROVIDER=irys).");
+  } else {
+    // Initialize BOTH so we can read old Arweave data AND write new Autonomys data.
+    await Promise.all([arweave.initializeIrys(), autonomys.initializeAutoDrive()]);
+    console.log("Storage providers initialized (Arweave + Autonomys).");
+  }
 }
 
 /**
