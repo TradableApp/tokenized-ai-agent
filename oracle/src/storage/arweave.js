@@ -39,6 +39,9 @@ async function initializeIrys() {
 async function topUpIrysBalanceIfNeeded() {
   if (!irysUploader) throw new Error("Irys not initialized.");
 
+  // Devnet uploads are free — no funding required.
+  if (process.env.IRYS_NETWORK === "devnet") return;
+
   try {
     const atomicBalance = await irysUploader.getBalance();
     const balanceConverted = parseFloat(irysUploader.utils.fromAtomic(atomicBalance));

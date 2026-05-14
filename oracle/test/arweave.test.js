@@ -25,11 +25,14 @@ describe("arweave storage utility", function () {
       token: "ETH",
     };
 
-    // Mock the Irys library's builder pattern
+    // Mock the Irys library's builder pattern.
+    // - devnet path: `await uploaderBuilder.withRpc(rpc).devnet()` resolves via `devnet()`
+    // - non-devnet path: `await uploaderBuilder` resolves via the builder's `then` method
     const irysUploaderBuilder = {
       withWallet: sinon.stub().returnsThis(),
       withRpc: sinon.stub().returnsThis(),
       devnet: sinon.stub().resolves(irysUploaderStub),
+      then: (resolve) => resolve(irysUploaderStub),
     };
 
     stubs = {
@@ -57,9 +60,11 @@ describe("arweave storage utility", function () {
     // Wire global.fetch to the stub so test assertions still work.
     sinon.stub(global, "fetch").callsFake((...args) => stubs["node-fetch"](...args));
 
-    // Set default env vars needed for initialization
+    // Set default env vars needed for initialization.
+    // Funding tests use IRYS_NETWORK=mainnet because devnet uploads are free
+    // and topUpIrysBalanceIfNeeded() short-circuits on devnet.
     process.env.IRYS_PAYMENT_PRIVATE_KEY = "mock_key";
-    process.env.IRYS_NETWORK = "devnet";
+    process.env.IRYS_NETWORK = "mainnet";
     process.env.IRYS_PAYMENT_RPC_URL = "mock_rpc";
   });
 
@@ -104,6 +109,20 @@ describe("arweave storage utility", function () {
 
       expect(stubs["../alerting"].sendAlert.called).to.be.false;
       expect(irysUploaderStub.fund.called).to.be.false;
+    });
+
+    it("should skip the balance check entirely on devnet (free uploads)", async () => {
+      // Devnet uploads cost nothing — topUpIrysBalanceIfNeeded() must short-circuit
+      // before calling getBalance/fund regardless of threshold settings.
+      process.env.IRYS_NETWORK = "devnet";
+      process.env.IRYS_BALANCE_ALERT_THRESHOLD = "0.2"; // would normally trigger funding
+      irysUploaderStub.getBalance.resolves("100000000000000000"); // low balance
+
+      await arweaveModule.initializeIrys();
+
+      expect(irysUploaderStub.getBalance.called).to.be.false;
+      expect(irysUploaderStub.fund.called).to.be.false;
+      expect(stubs["../alerting"].sendAlert.called).to.be.false;
     });
 
     it("should send a critical alert if funding the wallet fails", async () => {

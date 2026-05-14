@@ -191,3 +191,7 @@ ignition/deployments/chain-31337
 .dmux/
 .dmux-hooks/
 .dmux-session/
+
+# Oracle runtime state — generated at runtime, never tracked
+oracle/failed-jobs.json
+oracle/oracle-state.json

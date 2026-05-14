@@ -22,6 +22,7 @@ const RPC_URL_MAP = {
   "sapphire-localnet": process.env.SAPPHIRE_LOCALNET_RPC,
   base: process.env.BASE_MAINNET_RPC,
   baseSepolia: process.env.BASE_SEPOLIA_TESTNET_RPC,
+  "base-localnet": process.env.BASE_LOCALNET_RPC,
 };
 
 /**
