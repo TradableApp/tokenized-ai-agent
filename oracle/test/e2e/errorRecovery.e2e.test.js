@@ -180,6 +180,8 @@ describe("E2E: Error Recovery", function () {
     });
 
     it("increments retryCount and applies exponential backoff on failure", async function () {
+      const clock = sinon.useFakeTimers(Date.now());
+
       mockedOracleComponents.provider.getTransactionReceipt.rejects(
         new Error("RPC temporarily unavailable"),
       );
@@ -208,10 +210,11 @@ describe("E2E: Error Recovery", function () {
       expect(remaining).to.have.lengthOf(1);
       expect(remaining[0].retryCount).to.equal(3);
 
-      // base 30s * 2^3 = 240s = 240000ms
+      // base 30s * 2^3 = 240s = 240000ms — deterministic with frozen clock
       const expectedDelay = 30000 * Math.pow(2, 3);
-      const actualDelay = remaining[0].nextAttemptAt - Date.now();
-      expect(actualDelay).to.be.closeTo(expectedDelay, 5000);
+      expect(remaining[0].nextAttemptAt).to.equal(clock.now + expectedDelay);
+
+      clock.restore();
     });
 
     it("drops job and sends CRITICAL alert after 10 retries exhausted", async function () {

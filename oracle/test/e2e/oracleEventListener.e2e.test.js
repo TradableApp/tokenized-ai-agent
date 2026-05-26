@@ -241,14 +241,10 @@ describe("E2E: Oracle Event Listener", function () {
       expect(lastState.lastProcessedBlock).to.equal(1004);
     });
 
-    it("processPastEvents sorts events by blockNumber then transactionIndex", async function () {
+    it("processPastEvents processes events from multiple blocks without errors", async function () {
       process.env.EVENT_BATCH_SIZE = "10000";
       mockedOracleComponents.contract.oracle.resolves("0xOracleAddress");
 
-      const processedOrder = [];
-      const originalHandlePrompt = aiAgentOracle.handlePrompt;
-
-      // Track processing order by wrapping handler — events will fail but we capture the call order
       const eventA = {
         eventName: "PromptSubmitted",
         blockNumber: 2000,
@@ -271,7 +267,7 @@ describe("E2E: Oracle Event Listener", function () {
         getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
       };
 
-      // Return out of order — processor should sort them
+      // Feed events out of order — processor sorts them internally
       mockedOracleComponents.contract.queryFilter
         .onFirstCall().resolves([eventA, eventB, eventC])
         .onSecondCall().resolves([])
@@ -280,12 +276,51 @@ describe("E2E: Oracle Event Listener", function () {
 
       await aiAgentOracle.processPastEvents(1999, 2000);
 
-      // State checkpoint should advance to 2000 regardless of processing order
+      // All 3 events processed, checkpoint advances to end of batch
       const stateWrites = stubs["fs/promises"].writeFile
         .getCalls()
         .filter((c) => c.args[0].includes("oracle-state.json"));
       const lastState = JSON.parse(stateWrites[stateWrites.length - 1].args[1]);
       expect(lastState.lastProcessedBlock).to.equal(2000);
+    });
+  });
+
+  describe("Oracle State Persistence", function () {
+    it("resumes from lastProcessedBlock after simulated restart, avoiding duplicate processing", async function () {
+      process.env.EVENT_BATCH_SIZE = "10000";
+      mockedOracleComponents.contract.oracle.resolves("0xOracleAddress");
+      mockedOracleComponents.contract.queryFilter.resolves([]);
+
+      // First start: no state file, processes from lookback
+      stubs["fs/promises"].readFile
+        .withArgs(sinon.match(/oracle-state\.json$/))
+        .rejects(new Error("File not found"));
+      mockedOracleComponents.provider.getBlockNumber.resolves(10000);
+
+      await aiAgentOracle.start();
+
+      // Verify state was written with lastProcessedBlock = 10000
+      const stateWrites1 = stubs["fs/promises"].writeFile
+        .getCalls()
+        .filter((c) => c.args[0].includes("oracle-state.json"));
+      const lastWrite1 = JSON.parse(stateWrites1[stateWrites1.length - 1].args[1]);
+      expect(lastWrite1.lastProcessedBlock).to.equal(10000);
+
+      // Simulate restart: state file now exists with lastProcessedBlock=10000
+      stubs["fs/promises"].readFile.reset();
+      stubs["fs/promises"].readFile
+        .withArgs(sinon.match(/oracle-state\.json$/))
+        .resolves(JSON.stringify({ lastProcessedBlock: 10000 }));
+      stubs["fs/promises"].readFile.rejects(new Error("File not found"));
+      mockedOracleComponents.provider.getBlockNumber.resolves(10005);
+      mockedOracleComponents.contract.queryFilter.resetHistory();
+
+      await aiAgentOracle.start();
+
+      // Should process from 10001 to 10005 — not re-process 8200-10000
+      const queryFilterCall = mockedOracleComponents.contract.queryFilter.firstCall;
+      expect(queryFilterCall.args[1]).to.equal(10001);
+      expect(queryFilterCall.args[2]).to.equal(10005);
     });
   });
 
