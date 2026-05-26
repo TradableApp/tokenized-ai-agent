@@ -140,9 +140,10 @@ describe("E2E: Advanced Scenarios", function () {
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
 
       // Cannot cancel limit while prompts are pending
-      await expect(
-        escrow.connect(user).cancelSpendingLimit(),
-      ).to.be.revertedWithCustomError(escrow, "HasPendingPrompts");
+      await expect(escrow.connect(user).cancelSpendingLimit()).to.be.revertedWithCustomError(
+        escrow,
+        "HasPendingPrompts",
+      );
 
       // Answer all to clear pending count
       const cidBundle = {
@@ -214,9 +215,7 @@ describe("E2E: Advanced Scenarios", function () {
       await aiAgent.connect(oracle).submitAnswer(prompt2Id, answer2Id, cidBundle);
 
       // No double-charging: exactly 2x promptFee to treasury
-      expect(await token.balanceOf(treasury.address)).to.equal(
-        treasuryBalBefore + PROMPT_FEE * 2n,
-      );
+      expect(await token.balanceOf(treasury.address)).to.equal(treasuryBalBefore + PROMPT_FEE * 2n);
       expect(await escrow.pendingEscrowCount(user.address)).to.equal(0);
     });
   });

@@ -13,8 +13,7 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
   const MOCK_CID = "QmE2ETestCID000000000000000000000000000000000000";
 
   async function deployFullStackFixture() {
-    const [deployer, user, oracle, treasury, keeper, unauthorizedUser] =
-      await ethers.getSigners();
+    const [deployer, user, oracle, treasury, keeper, unauthorizedUser] = await ethers.getSigners();
 
     const MockTokenFactory = await ethers.getContractFactory("MockAbleToken");
     const token = await MockTokenFactory.deploy();
@@ -254,8 +253,7 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
 
   describe("Access Control", function () {
     it("only oracle can submit answers", async function () {
-      const { aiAgent, escrow, user, unauthorizedUser } =
-        await loadFixture(deployFullStackFixture);
+      const { aiAgent, escrow, user, unauthorizedUser } = await loadFixture(deployFullStackFixture);
 
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);

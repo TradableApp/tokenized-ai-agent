@@ -116,8 +116,7 @@ describe("E2E: Escrow Lifecycle", function () {
     });
 
     it("refunds prompt fee minus cancellation fee to user after timeout", async function () {
-      const { aiAgent, escrow, token, user, treasury } =
-        await loadFixture(deployFullStackFixture);
+      const { aiAgent, escrow, token, user, treasury } = await loadFixture(deployFullStackFixture);
 
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
@@ -268,9 +267,10 @@ describe("E2E: Escrow Lifecycle", function () {
       expect(await token.balanceOf(treasury.address)).to.equal(treasuryBalBefore + PROMPT_FEE);
 
       // Refund now fails because escrow is already finalized
-      await expect(
-        escrow.processRefund(answerMessageId),
-      ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
+      await expect(escrow.processRefund(answerMessageId)).to.be.revertedWithCustomError(
+        escrow,
+        "EscrowNotPending",
+      );
     });
   });
 
