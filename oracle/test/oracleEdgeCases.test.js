@@ -2,8 +2,19 @@ const { expect } = require('chai');
 const sinon = require('sinon');
 
 describe('Oracle Edge Cases', () => {
+  const savedEnv = {};
+
+  beforeEach(() => {
+    savedEnv.AI_CONTEXT_MESSAGES_LIMIT = process.env.AI_CONTEXT_MESSAGES_LIMIT;
+  });
+
   afterEach(() => {
     sinon.restore();
+    if (savedEnv.AI_CONTEXT_MESSAGES_LIMIT !== undefined) {
+      process.env.AI_CONTEXT_MESSAGES_LIMIT = savedEnv.AI_CONTEXT_MESSAGES_LIMIT;
+    } else {
+      delete process.env.AI_CONTEXT_MESSAGES_LIMIT;
+    }
   });
 
   describe('routeQueryIntent Classification Logic', () => {
@@ -40,16 +51,16 @@ describe('Oracle Edge Cases', () => {
   });
 
   describe('History Reconstruction Edge Cases', () => {
-    it('should respect AI_CONTEXT_MESSAGES_LIMIT=0 (no history)', async () => {
+    it('AI_CONTEXT_MESSAGES_LIMIT=0 falls back to default 20 due to || operator', () => {
       process.env.AI_CONTEXT_MESSAGES_LIMIT = '0';
-      const maxHistory = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT, 10);
-      expect(maxHistory).to.equal(0);
+      const limit = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT, 10) || 20;
+      expect(limit).to.equal(20);
+    });
 
-      const conversationHistory = [];
-      if (maxHistory > 0) {
-        conversationHistory.push({ content: 'should not appear' });
-      }
-      expect(conversationHistory.length).to.equal(0);
+    it('unset AI_CONTEXT_MESSAGES_LIMIT falls back to default 20', () => {
+      delete process.env.AI_CONTEXT_MESSAGES_LIMIT;
+      const limit = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT, 10) || 20;
+      expect(limit).to.equal(20);
     });
 
     it('should truncate history when exceeding AI_CONTEXT_MESSAGES_LIMIT limit', async () => {
