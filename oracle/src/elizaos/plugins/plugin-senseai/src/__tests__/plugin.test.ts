@@ -4,11 +4,7 @@ import {
   type IAgentRuntime,
   logger,
 } from '@elizaos/core';
-import {
-  createMockRuntime,
-  createTestMemory,
-  createTestState,
-} from './test-utils';
+import { createMockRuntime } from './test-utils';
 
 beforeAll(() => {
   spyOn(logger, 'info');

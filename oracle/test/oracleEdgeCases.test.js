@@ -1,49 +1,38 @@
 const { expect } = require('chai');
 const sinon = require('sinon');
-const crypto = require('crypto');
 
 describe('Oracle Edge Cases', () => {
   afterEach(() => {
     sinon.restore();
   });
 
-  describe('routeQueryIntent Edge Cases', () => {
-    it('should correctly route TRADABLE intent', async () => {
+  describe('routeQueryIntent Classification Logic', () => {
+    it('TRADABLE keyword in response triggers Tradable path', () => {
       const classifyResponse = 'TRADABLE';
       const isTradable = classifyResponse.includes('TRADABLE');
       expect(isTradable).to.be.true;
     });
 
-    it('should default to MARKET for unrecognized intent', async () => {
+    it('unrecognized response defaults to MARKET path', () => {
       const classifyResponse = 'RANDOM_GIBBERISH';
       const isTradable = classifyResponse.includes('TRADABLE');
       const isElizaOS = classifyResponse.includes('ELIZAOS');
-      const defaultsToMarket = !isTradable && !isElizaOS;
-      expect(defaultsToMarket).to.be.true;
+      expect(!isTradable && !isElizaOS).to.be.true;
     });
 
-    it('should handle Ollama network timeout', async () => {
+    it('undefined Ollama response defaults to MARKET path', () => {
       const classifyResponse = undefined;
       const isTradable = classifyResponse?.includes?.('TRADABLE') ?? false;
       const isElizaOS = classifyResponse?.includes?.('ELIZAOS') ?? false;
-      const defaultsToMarket = !isTradable && !isElizaOS;
-      expect(defaultsToMarket).to.be.true;
+      expect(!isTradable && !isElizaOS).to.be.true;
     });
 
-    it('should handle undefined response without crashing (bug at line 717)', async () => {
+    it('undefined response throws TypeError when accessed without optional chaining', () => {
       const response = undefined;
-      let threw = false;
-      try {
-        response.includes('TRADABLE');
-      } catch (e) {
-        threw = true;
-        expect(e).to.be.instanceOf(TypeError);
-        expect(e.message).to.include("Cannot read properties of undefined");
-      }
-      expect(threw).to.be.true;
+      expect(() => response.includes('TRADABLE')).to.throw(TypeError);
     });
 
-    it('should safely handle null classification with optional chaining', async () => {
+    it('null response returns false with optional chaining', () => {
       const response = null;
       const isTradable = response?.includes?.('TRADABLE') ?? false;
       expect(isTradable).to.be.false;
@@ -51,9 +40,9 @@ describe('Oracle Edge Cases', () => {
   });
 
   describe('History Reconstruction Edge Cases', () => {
-    it('should respect MAX_HISTORY=0 (no history)', async () => {
-      process.env.MAX_HISTORY = '0';
-      const maxHistory = parseInt(process.env.MAX_HISTORY, 10);
+    it('should respect AI_CONTEXT_MESSAGES_LIMIT=0 (no history)', async () => {
+      process.env.AI_CONTEXT_MESSAGES_LIMIT = '0';
+      const maxHistory = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT, 10);
       expect(maxHistory).to.equal(0);
 
       const conversationHistory = [];
@@ -63,9 +52,9 @@ describe('Oracle Edge Cases', () => {
       expect(conversationHistory.length).to.equal(0);
     });
 
-    it('should truncate history when exceeding MAX_HISTORY limit', async () => {
-      process.env.MAX_HISTORY = '3';
-      const maxHistory = parseInt(process.env.MAX_HISTORY, 10);
+    it('should truncate history when exceeding AI_CONTEXT_MESSAGES_LIMIT limit', async () => {
+      process.env.AI_CONTEXT_MESSAGES_LIMIT = '3';
+      const maxHistory = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT, 10);
 
       const fullHistory = [
         { cid: 'msg-1', parentCID: null },
