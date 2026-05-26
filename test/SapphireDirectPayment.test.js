@@ -153,9 +153,7 @@ describe("SapphireAIAgentEscrow — _processDirectPayment Coverage", function ()
 
       await time.increase(5);
       await escrow.connect(user).cancelPrompt(firstAnswerId);
-      expect(await escrow.deposits(user.address)).to.equal(
-        INITIAL_DEPOSIT - CANCELLATION_FEE,
-      );
+      expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT - CANCELLATION_FEE);
 
       await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
       const secondAnswerId = 3;

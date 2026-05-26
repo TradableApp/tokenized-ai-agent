@@ -193,9 +193,8 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       const exactAllowance = PROMPT_FEE * 2n;
       await escrow.connect(user).setSpendingLimit(exactAllowance, (await time.latest()) + 3600);
       await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
-      await expect(
-        escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
-      ).to.not.be.reverted;
+      await expect(escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY)).to
+        .not.be.reverted;
     });
   });
 
@@ -214,9 +213,7 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       await time.increase(5);
       await escrow.connect(user).cancelPrompt(firstAnswerId);
       expect(await mockToken.balanceOf(escrowAddr)).to.equal(0);
-      expect(await mockToken.balanceOf(user.address)).to.equal(
-        userStartBalance - CANCELLATION_FEE,
-      );
+      expect(await mockToken.balanceOf(user.address)).to.equal(userStartBalance - CANCELLATION_FEE);
 
       await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
       const secondAnswerId = 3;
@@ -230,9 +227,7 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       await escrow.connect(agentSigner).finalizePayment(secondAnswerId);
 
       expect(await mockToken.balanceOf(escrowAddr)).to.equal(0);
-      expect(await mockToken.balanceOf(treasury.address)).to.equal(
-        CANCELLATION_FEE + PROMPT_FEE,
-      );
+      expect(await mockToken.balanceOf(treasury.address)).to.equal(CANCELLATION_FEE + PROMPT_FEE);
       expect(await mockToken.balanceOf(user.address)).to.equal(
         userStartBalance - CANCELLATION_FEE - PROMPT_FEE,
       );
