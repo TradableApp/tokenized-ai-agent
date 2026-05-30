@@ -88,7 +88,7 @@
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^6.1.0",
     "@openzeppelin/hardhat-upgrades": "^3.9.1",
-    "chai": "^4.2.0",
+    "chai": "^6.2.2",
     "hardhat": "^2.26.3",
     "hardhat-gas-reporter": "^2.3.0",
     "hardhat-storage-layout": "^0.1.7",
