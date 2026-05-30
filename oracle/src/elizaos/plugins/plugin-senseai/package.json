@@ -46,7 +46,7 @@
   "devDependencies": {
     "@elizaos/cli": "1.7.0",
     "dotenv": "^17.2.3",
-    "prettier": "^3.7.4",
+    "prettier": "^3.8.3",
     "typescript": "^5.9.3"
   },
   "scripts": {
