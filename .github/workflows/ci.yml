@@ -2,29 +2,62 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: Compile & Test
+  CI:
+    name: CI
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: actions/setup-node@v6
+      # The shared-schema submodule is a separate PRIVATE repo, so the default
+      # GITHUB_TOKEN cannot fetch it via `submodules: recursive`. Check it out
+      # explicitly at the pinned submodule SHA using a PAT (same pattern as
+      # sense-ai-core). Requires the org/repo secret SUBMODULE_PAT.
+      - name: Resolve shared-schema submodule SHA
+        id: submodule-sha
+        run: echo "sha=$(git ls-tree HEAD packages/shared-schema | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout shared-schema submodule
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          node-version: '24'
-          cache: 'npm'
+          repository: TradableApp/sense-ai-shared-schema
+          ref: ${{ steps.submodule-sha.outputs.sha }}
+          token: ${{ secrets.SUBMODULE_PAT }}
+          path: packages/shared-schema
+          persist-credentials: false
 
-      - run: npm ci
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
 
       - name: Compile contracts
-        run: npm run compile
+        run: bun run compile
 
-      - name: Run tests
-        run: npm run test
+      - name: Test (contracts)
+        run: bun run test
 
-      - name: Lint
-        run: npm run lint
+      - name: Lint (contracts)
+        run: bun run lint
+
+      - name: Install oracle dependencies
+        run: cd oracle && bun install --frozen-lockfile
+
+      - name: Test (oracle)
+        run: cd oracle && bun run test

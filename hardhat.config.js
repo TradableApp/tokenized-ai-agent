@@ -33,7 +33,7 @@ module.exports = {
       chainId: 31337,
     },
     localnet: {
-      url: "http://127.0.0.1:8545", // This points to your running Hardhat node (npx hardhat node)
+      url: "http://127.0.0.1:8545", // This points to your running Hardhat node (bunx hardhat node)
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
       chainId: 31337,
     },
@@ -103,7 +103,7 @@ module.exports = {
   },
 
   gasReporter: {
-    enabled: REPORT_GAS === "true", // Run with `REPORT_GAS=true npx hardhat test`
+    enabled: REPORT_GAS === "true", // Run with `REPORT_GAS=true bunx hardhat test`
     currency: "USD",
     currencyDisplayPrecision: 8,
     outputFile: "gas-report.txt",
