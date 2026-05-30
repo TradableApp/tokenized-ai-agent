@@ -4,7 +4,6 @@
   "description": "Token-gated AI agent using Oasis ROFL. This repo connects an ERC-20 token to off-chain logic execution via a secure enclave (TDX), enabling trusted AI inference and verifiable on-chain payments.",
   "main": "index.js",
   "scripts": {
-    "precompile": "find . \\( -path './node_modules' -o -path './oracle/node_modules' -o -path './packages/shared-schema/node_modules' \\) -prune -o -name '._*' -print0 | xargs -0 -r rm -f",
     "compile": "hardhat compile",
     "test": "hardhat test",
     "coverage": "hardhat coverage",

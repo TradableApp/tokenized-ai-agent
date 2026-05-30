@@ -25,7 +25,8 @@ End-to-end guide for running the full SenseAI stack on a local Hardhat node. Cov
 Throughout this guide these paths are assumed:
 
 ```
-WORK_DIR=/Volumes/T7\ Touch/Work/Tradable/Web\ and\ App\ Development
+# Set this to wherever you cloned the Tradable repos
+WORK_DIR=/path/to/Tradable
 ```
 
 ---

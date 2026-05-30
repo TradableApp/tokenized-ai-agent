@@ -16,8 +16,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The shared-schema submodule is a separate PRIVATE repo, so the default
+      # GITHUB_TOKEN cannot fetch it via `submodules: recursive`. Check it out
+      # explicitly at the pinned submodule SHA using a PAT (same pattern as
+      # sense-ai-core). Requires the org/repo secret SUBMODULE_PAT.
+      - name: Resolve shared-schema submodule SHA
+        id: submodule-sha
+        run: echo "sha=$(git ls-tree HEAD packages/shared-schema | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout shared-schema submodule
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          submodules: 'recursive'
+          repository: TradableApp/sense-ai-shared-schema
+          ref: ${{ steps.submodule-sha.outputs.sha }}
+          token: ${{ secrets.SUBMODULE_PAT }}
+          path: packages/shared-schema
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -35,11 +50,8 @@ jobs:
       - name: Lint contracts
         run: bun run lint
 
-      - name: Checkout shared-schema submodule
-        run: git submodule update --init --recursive
-
       - name: Install oracle dependencies
         run: cd oracle && bun install --frozen-lockfile
 
       - name: Run oracle tests
-        run: cd oracle && DOTENV_CONFIG_PATH=./.env.oracle.example bun run mocha -r dotenv/config --timeout 5000 'test/**/*.test.js'
+        run: cd oracle && bun run test
