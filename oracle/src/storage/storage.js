@@ -1,5 +1,12 @@
 const arweave = require("./arweave");
 const autonomys = require("./autonomys");
+const crypto = require("crypto");
+
+// Mock storage in-memory cache (for USE_MOCK_STORAGE mode)
+const mockStorageCache = new Map();
+
+// --- Mock Flags ---
+const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
 
 // --- Provider Selection Logic ---
 
@@ -34,6 +41,12 @@ function getProviderFromCID(cid) {
  * Initializes all configured storage providers.
  */
 async function initializeStorage() {
+  if (USE_MOCK_STORAGE) {
+    console.log("Storage providers initialized (MOCK STORAGE MODE).");
+    mockStorageCache.clear();
+    return;
+  }
+
   if (process.env.STORAGE_PROVIDER === "irys") {
     await arweave.initializeIrys();
     console.log("Storage providers initialized (Irys only — STORAGE_PROVIDER=irys).");
@@ -46,11 +59,21 @@ async function initializeStorage() {
 
 /**
  * Uploads data using the primary (current) storage provider.
+ * In MOCK mode, stores data in-memory and returns a deterministic CID.
  * @param {Buffer} dataBuffer The data to upload.
  * @param {Array} tags Optional metadata tags.
  * @returns {Promise<string>} The resulting CID.
  */
 async function uploadData(dataBuffer, tags = []) {
+  if (USE_MOCK_STORAGE) {
+    // Generate a deterministic mock CID based on the data hash
+    const hash = crypto.createHash("sha256").update(dataBuffer).digest("hex");
+    const mockCid = `mock_${hash.substring(0, 20)}`;
+    mockStorageCache.set(mockCid, dataBuffer);
+    console.log(`[Mock Storage] Uploaded data: ${mockCid}`);
+    return mockCid;
+  }
+
   if (process.env.STORAGE_PROVIDER === "irys") {
     return arweave.uploadData(dataBuffer, tags);
   }
@@ -59,21 +82,39 @@ async function uploadData(dataBuffer, tags = []) {
 
 /**
  * Fetches data from the correct storage provider based on its CID.
+ * In MOCK mode, retrieves data from in-memory cache.
  * @param {string} cid The Content ID of the data to fetch.
  * @returns {Promise<string>} The raw data as a String (for consistency).
  */
 async function fetchData(cid) {
+  if (USE_MOCK_STORAGE) {
+    if (mockStorageCache.has(cid)) {
+      const data = mockStorageCache.get(cid);
+      console.log(`[Mock Storage] Retrieved data: ${cid}`);
+      // Return as string for consistency with real storage layer
+      return data.toString("utf-8");
+    }
+    console.warn(`[Mock Storage] CID not found in cache: ${cid}`);
+    return null;
+  }
+
   const provider = getProviderFromCID(cid);
   return provider.fetchData(cid);
 }
 
 /**
  * Queries for a transaction ID by its tags.
- * Implements a Waterfall Strategy for backward compatibility.
+ * In MOCK mode, always returns null (no stored conversations).
+ * In production, implements a Waterfall Strategy for backward compatibility.
  * @param {Array<{name: string, value: string}>} tags The tags to search for.
  * @returns {Promise<string|null>} The first matching CID, or null.
  */
 async function queryTransactionByTags(tags) {
+  if (USE_MOCK_STORAGE) {
+    console.log("[Mock Storage] queryTransactionByTags returning null (no persistent storage)");
+    return null;
+  }
+
   // Try Primary Provider (Autonomys) first
   try {
     const autoCid = await autonomys.queryTransactionByTags(tags);

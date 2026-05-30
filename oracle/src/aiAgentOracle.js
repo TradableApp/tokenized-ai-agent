@@ -56,6 +56,10 @@ const NETWORK_NAME = process.env.NETWORK_NAME;
 const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
+// --- Mock Flags (for local E2E testing without external dependencies) ---
+const MOCK_AI = process.env.MOCK_AI === "true";
+const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
+
 // This single function from our utility handles all environment-specific setup.
 let { provider, signer, contract, isSapphire } = initializeOracle(
   NETWORK_NAME,
@@ -738,6 +742,16 @@ async function routeQueryIntent(conversationHistory) {
  * @returns {Promise<string>} The content of the AI's response.
  */
 async function queryAIModel(conversationHistory, conversationId, userWallet) {
+  // --- MOCK MODE: Return deterministic response ---
+  if (MOCK_AI) {
+    const latestUserMessage = conversationHistory
+      .filter((msg) => msg.role === "user")
+      .pop()?.content || "unknown query";
+    const mockResponse = `[MOCK] I acknowledge your query about "${latestUserMessage.substring(0, 40)}...". This is a deterministic mock response for local testing.`;
+    console.log("[Mock AI] Returning deterministic mock response");
+    return mockResponse;
+  }
+
   const aiProvider = process.env.AI_PROVIDER;
 
   // Direct provider bypass (used in tests and explicit operator config)
