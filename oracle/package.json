@@ -65,7 +65,7 @@
     "zod": "^4.2.1"
   },
   "devDependencies": {
-    "chai": "^5.2.1",
+    "chai": "^6.2.2",
     "chai-as-promised": "^8.0.2",
     "eslint": "^8.57.0",
     "mocha": "^11.7.1",
