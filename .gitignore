@@ -140,6 +140,7 @@ vite.config.ts.timestamp-*
 
 # MacOS metadata files
 .DS_Store
+._*
 
 # VS Code directories
 .vscode/

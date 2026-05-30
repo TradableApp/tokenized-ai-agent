@@ -24,6 +24,7 @@ gas-report.txt
 
 # MacOS metadata files
 .DS_Store
+._*
 
 # Ignore documentation and other non-essential files
 README.md
