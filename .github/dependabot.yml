@@ -14,3 +14,10 @@ updates:
     directory: '/oracle'
     schedule:
       interval: 'weekly'
+
+  # Bundled ElizaOS plugin required at runtime by oracle/src/aiAgentOracle.js
+  # (own package.json + bun.lock; ships axios/zod/@elizaos deps).
+  - package-ecosystem: 'bun'
+    directory: '/oracle/src/elizaos/plugins/plugin-senseai'
+    schedule:
+      interval: 'weekly'
