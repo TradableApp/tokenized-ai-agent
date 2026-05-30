@@ -80,7 +80,7 @@
     "date-fns": "^4.1.0",
     "dotenv": "^17.0.1",
     "eth-crypto": "^2.6.0",
-    "inquirer": "^8.2.6",
+    "inquirer": "^14.0.1",
     "inquirer-datepicker-prompt": "^0.4.3",
     "ora": "^5.4.1",
     "siwe": "^3.0.0"
