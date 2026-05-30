@@ -13,7 +13,7 @@ End-to-end guide for running the full SenseAI stack on a local Hardhat node. Cov
 
 ## Prerequisites
 
-- Node.js v24+, npm
+- Bun 1.3.14+, Node.js v24+
 - Docker Desktop (for the local Graph node)
 - An AI API key — at minimum `GOOGLE_GENERATIVE_AI_API_KEY` for the oracle's ElizaOS brain
 - Browser wallet (MetaMask or equivalent)
@@ -49,7 +49,7 @@ Open **four terminals** and keep them in these directories:
 ### Step 1 — Start the Hardhat node (Tab 1)
 
 ```bash
-npx hardhat node
+bunx hardhat node
 ```
 
 Hardhat prints 20 pre-funded accounts. **Copy the private keys for Account #0 and Account #1.**
@@ -89,8 +89,8 @@ The `able-contracts/.env.localnet` already has the Hardhat account #0 keys pre-f
 
 ```bash
 cd $WORK_DIR/able-contracts
-npm run compile
-npm run deploy:localnet
+bun run compile
+bun run deploy:localnet
 ```
 
 > The script pauses for **60 seconds** then attempts Etherscan verification, which will fail on localnet — this is normal and harmless.
@@ -108,8 +108,8 @@ Copy the proxy address. This is your `TOKEN_CONTRACT_ADDRESS`.
 
 ```bash
 cd $WORK_DIR/tokenized-ai-agent
-npm run compile
-npm run deploy:base-localnet
+bun run compile
+bun run deploy:base-localnet
 ```
 
 Output:
@@ -181,7 +181,7 @@ Account #0 holds the full initial token supply. Account #1 needs tokens to pay f
 
 ```bash
 cd $WORK_DIR/tokenized-ai-agent
-npx hardhat console --network localnet
+bunx hardhat console --network localnet
 ```
 
 Inside the console:
@@ -237,10 +237,10 @@ Leave this running.
 cd $WORK_DIR/sense-ai-subgraph
 
 # Create the subgraph slot — only needed once per fresh Graph node
-npm run create-local
+bun run create-local
 
 # Prepare, codegen, build, and deploy in one command
-npm run deploy-local
+bun run deploy-local
 ```
 
 When prompted for a **version label**, enter anything (e.g. `v0.0.1`).
@@ -263,7 +263,7 @@ Queries (HTTP): http://localhost:8000/subgraphs/name/sense-ai
 
 ```bash
 cd $WORK_DIR/tokenized-ai-agent/oracle
-npm run start:base-localnet
+bun run start:base-localnet
 ```
 
 Watch for these two lines immediately:
@@ -392,8 +392,8 @@ The full test plan is documented in [E2E_TEST_PLAN.md](./E2E_TEST_PLAN.md). Test
 
 All of the following must be running before executing any tests:
 
-- Tab 1: Hardhat node (`npx hardhat node`)
-- Tab 2: Oracle (`npm run start:base-localnet`)
+- Tab 1: Hardhat node (`bunx hardhat node`)
+- Tab 2: Oracle (`bun run start:base-localnet`)
 - Tab 3: Graph node (`docker-compose up`) + subgraph deployed
 - Tab 4: dApp dev server (`bun run dev`)
 

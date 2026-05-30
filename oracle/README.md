@@ -10,7 +10,7 @@ This service listens for on-chain requests from the deployed Oracle smart contra
 
 ```bash
 cd oracle
-npm install
+bun install
 ```
 
 ---
@@ -20,13 +20,13 @@ npm install
 Make sure `.env.oracle` is configured with your wallet, RPC, and contract address.
 
 ```bash
-npm run start
+bun run start
 ```
 
 Or for hot-reloading during development:
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 ---
@@ -35,24 +35,24 @@ npm run dev
 
 | Command                      | Purpose                                 |
 | ---------------------------- | --------------------------------------- |
-| `npm run lint`               | Lint the code with ESLint               |
-| `npm run clean`              | Clean `node_modules`                    |
-| `npm run run-localnet`       | Start Oasis Sapphire localnet           |
-| `npm run run-localnet-debug` | Start Sapphire localnet with debug logs |
-| `npm run test`               | Placeholder for future tests            |
+| `bun run lint`               | Lint the code with ESLint               |
+| `bun run clean`              | Clean `node_modules`                    |
+| `bun run run-localnet`       | Start Oasis Sapphire localnet           |
+| `bun run run-localnet-debug` | Start Sapphire localnet with debug logs |
+| `bun run test`               | Placeholder for future tests            |
 
 ### Running Localnet (Optional)
 
 For local testing with Sapphire:
 
 ```bash
-npm run run-localnet
+bun run run-localnet
 ```
 
 With debug logging:
 
 ```bash
-npm run run-localnet-debug
+bun run run-localnet-debug
 ```
 
 ---

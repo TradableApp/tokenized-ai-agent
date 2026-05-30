@@ -50,8 +50,8 @@ Oracle Node (Oasis ROFL / TEE) ────────────────�
 ```bash
 git clone https://github.com/TradableApp/tokenized-ai-agent.git
 cd tokenized-ai-agent
-npm install
-cd oracle && npm install && cd ..
+bun install
+cd oracle && bun install && cd ..
 ```
 
 ### 2. Environment Configuration
@@ -91,7 +91,7 @@ This workflow allows you to test the Contracts and Oracle on your machine using 
 ### 1. Start Local Blockchain
 
 ```bash
-npx hardhat node
+bunx hardhat node
 ```
 
 Hardhat prints 20 funded test accounts. **Copy the private keys for Account #0 (oracle/deployer) and Account #1 (user)** — you will need them in the steps below.
@@ -114,7 +114,7 @@ AbleToken (the ERC-20 payment token) lives in the `able-contracts` repo. Deploy 
 
 ```bash
 cd ../able-contracts
-npx hardhat run scripts/deploy.js --network localhost
+bunx hardhat run scripts/deploy.js --network localhost
 ```
 
 Copy the printed token address into `tokenized-ai-agent/.env.base-localnet` → `TOKEN_CONTRACT_ADDRESS`.
@@ -124,8 +124,8 @@ Copy the printed token address into `tokenized-ai-agent/.env.base-localnet` → 
 Open a new terminal:
 
 ```bash
-npm run compile
-npm run deploy:base-localnet
+bun run compile
+bun run deploy:base-localnet
 ```
 
 Copy the printed `EVMAIAgent` and `EVMAIAgentEscrow` proxy addresses into:
@@ -138,7 +138,7 @@ Copy the printed `EVMAIAgent` and `EVMAIAgentEscrow` proxy addresses into:
 Open a third terminal:
 
 ```bash
-cd oracle && npm run start:base-localnet
+cd oracle && bun run start:base-localnet
 ```
 
 You should see `[Sentry] Initialized for environment: localnet` followed by the oracle starting its event polling loop.
@@ -162,7 +162,7 @@ The system is now ready. To test the end-to-end flow (encryption, payment, AI re
 Deploy the upgradable proxies to Base Sepolia:
 
 ```bash
-npm run deploy:base-testnet
+bun run deploy:base-testnet
 ```
 
 _Copy the `EVMAIAgent` and `EVMAIAgentEscrow` addresses into `oracle/.env.oracle.base-testnet`._
@@ -184,7 +184,7 @@ ENV_FILE=.env.base-testnet node scripts/getPublicKey.js
 Before deploying to the TEE, run the oracle on your machine to ensure it connects to Base Sepolia and Irys correctly.
 
 ```bash
-npm run start:base-testnet
+bun run start:base-testnet
 ```
 
 _If you see `✅ Oracle is running...`, you are ready for ROFL deployment._
@@ -209,8 +209,8 @@ oasis rofl create --network testnet --deployment base-testnet --account rofl_adm
 The ROFL network pulls the code from a container registry.
 
 ```bash
-npm run image:build:base-testnet
-npm run image:push:base-testnet
+bun run image:build:base-testnet
+bun run image:push:base-testnet
 ```
 
 ### 3. Build ROFL Bundle
@@ -218,7 +218,7 @@ npm run image:push:base-testnet
 Creates the canonical `.orc` file containing the TEE policy.
 
 ```bash
-npm run rofl:build:base-testnet
+bun run rofl:build:base-testnet
 ```
 
 ### 4. Update Secrets & Deploy
@@ -227,11 +227,11 @@ Injects your `.env` variables securely into the TEE and launches the machine.
 
 ```bash
 # Encrypts and sets secrets on-chain
-npm run rofl:set:base-testnet
-npm run rofl:update:base-testnet
+bun run rofl:set:base-testnet
+bun run rofl:update:base-testnet
 
 # Deploys the machine instance
-npm run rofl:deploy:base-testnet
+bun run rofl:deploy:base-testnet
 ```
 
 ---
@@ -241,7 +241,7 @@ npm run rofl:deploy:base-testnet
 For Mainnet releases, use the interactive script to manage versioning and tagging safely.
 
 ```bash
-npm run release:mainnet
+bun run release:mainnet
 ```
 
 This script will:
@@ -253,9 +253,9 @@ This script will:
 After running the release script, proceed with manual deployment to ensure safety:
 
 ```bash
-npm run rofl:build:mainnet
-npm run rofl:update:mainnet
-npm run rofl:deploy:mainnet
+bun run rofl:build:mainnet
+bun run rofl:update:mainnet
+bun run rofl:deploy:mainnet
 ```
 
 ---

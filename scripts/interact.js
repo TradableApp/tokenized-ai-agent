@@ -193,7 +193,7 @@ function loadContractArtifact(contractName) {
   );
   if (!fs.existsSync(contractPath)) {
     throw new Error(
-      `Contract artifacts for "${contractName}" not found. Please run 'npm run compile'.`,
+      `Contract artifacts for "${contractName}" not found. Please run 'bun run compile'.`,
     );
   }
   return JSON.parse(fs.readFileSync(contractPath, "utf-8"));
