@@ -1,23 +1,22 @@
 version: 2
 updates:
-  - package-ecosystem: 'github-actions'
-    directory: '/'
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: 'weekly'
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
 
-  - package-ecosystem: 'bun'
-    directory: '/'
+  - package-ecosystem: bun
+    directories:
+      - /
+      - /oracle
+      # Bundled ElizaOS plugin required at runtime by oracle/src/aiAgentOracle.js
+      # (own package.json + bun.lock; ships axios/zod/@elizaos deps).
+      - /oracle/src/elizaos/plugins/plugin-senseai
     schedule:
-      interval: 'weekly'
-
-  - package-ecosystem: 'bun'
-    directory: '/oracle'
-    schedule:
-      interval: 'weekly'
-
-  # Bundled ElizaOS plugin required at runtime by oracle/src/aiAgentOracle.js
-  # (own package.json + bun.lock; ships axios/zod/@elizaos deps).
-  - package-ecosystem: 'bun'
-    directory: '/oracle/src/elizaos/plugins/plugin-senseai'
-    schedule:
-      interval: 'weekly'
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
