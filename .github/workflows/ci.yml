@@ -2,29 +2,44 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: Compile & Test
+  CI:
+    name: CI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          node-version: '24'
-          cache: 'npm'
+          submodules: 'recursive'
 
-      - run: npm ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
 
       - name: Compile contracts
-        run: npm run compile
+        run: bun run compile
 
-      - name: Run tests
-        run: npm run test
+      - name: Run contract tests
+        run: bun run test
 
-      - name: Lint
-        run: npm run lint
+      - name: Lint contracts
+        run: bun run lint
+
+      - name: Checkout shared-schema submodule
+        run: git submodule update --init --recursive
+
+      - name: Install oracle dependencies
+        run: cd oracle && bun install --frozen-lockfile
+
+      - name: Run oracle tests
+        run: cd oracle && DOTENV_CONFIG_PATH=./.env.oracle.example bun run mocha -r dotenv/config --timeout 5000 'test/**/*.test.js'
