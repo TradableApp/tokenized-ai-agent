@@ -6,7 +6,7 @@ async function main() {
 
   if (!recipientAddress) {
     console.error("❌ Error: Please provide a recipient address via the 'TO' env var.");
-    console.log("Usage: TO=<ADDRESS> npx hardhat run scripts/fund.js --network localhost");
+    console.log("Usage: TO=<ADDRESS> bunx hardhat run scripts/fund.js --network localhost");
     process.exit(1);
   }
 

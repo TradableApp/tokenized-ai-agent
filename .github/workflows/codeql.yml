@@ -1,0 +1,54 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Check out the private shared-schema submodule so CodeQL can resolve the
+      # oracle's `@tradableapp/sense-ai-shared-schema` imports during extraction.
+      - name: Resolve shared-schema submodule SHA
+        id: submodule-sha
+        run: echo "sha=$(git ls-tree HEAD packages/shared-schema | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout shared-schema submodule
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TradableApp/sense-ai-shared-schema
+          ref: ${{ steps.submodule-sha.outputs.sha }}
+          token: ${{ secrets.SUBMODULE_PAT }}
+          path: packages/shared-schema
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          languages: javascript-typescript
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          category: '/language:javascript-typescript'

@@ -15,7 +15,7 @@ This repo is **two separate Node.js packages** with different concerns:
 - **Root** (`package.json`): Hardhat project — Solidity contracts, deployment scripts, tests
 - **`oracle/`** (`oracle/package.json`): Node.js oracle service — event listener, AI routing, storage, off-chain logic
 
-Always `cd oracle/` and run `npm install` separately when working on oracle code. Contract ABI artifacts (from `npm run compile` at root) are consumed by the oracle via `../../artifacts/contracts/`.
+Always `cd oracle/` and run `bun install` separately when working on oracle code. Contract ABI artifacts (from `bun run compile` at root) are consumed by the oracle via `../../artifacts/contracts/`.
 
 ## Shared schema submodule
 
@@ -33,65 +33,65 @@ git submodule update --remote packages/shared-schema
 git add packages/shared-schema && git commit -m "chore: bump sense-ai-shared-schema to <version>"
 ```
 
-Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-schema"` (path-based npm dep at `oracle/package.json` → `"../packages/shared-schema"`). Phase 3 of the v0.3.0 SenseAI plan introduces the actual adapter swap; this submodule lands now so both apps stay in lockstep on table shape and migration history.
+Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-schema"` (path-based dependency at `oracle/package.json` → `"../packages/shared-schema"`). Phase 3 of the v0.3.0 SenseAI plan introduces the actual adapter swap; this submodule lands now so both apps stay in lockstep on table shape and migration history.
 
 ## Scripts
 
 ### Contracts (run from root)
 | Command | Purpose |
 |---------|---------|
-| `npm run compile` | Compile Solidity contracts (required before starting oracle) |
-| `npm run test` | Run contract test suite |
-| `npm run coverage` | Coverage report |
-| `npm run lint` | Lint code |
-| `npm run format` | Format code |
-| `npm run deploy:localnet` | Deploy to local Hardhat network |
-| `npm run deploy:testnet` | Deploy to Oasis Sapphire testnet |
-| `npm run deploy:mainnet` | Deploy to Oasis Sapphire mainnet |
-| `npm run deploy:base-localnet` | Deploy to local Base network |
-| `npm run deploy:base-testnet` | Deploy to Base testnet |
-| `npm run deploy:base-mainnet` | Deploy to Base mainnet |
+| `bun run compile` | Compile Solidity contracts (required before starting oracle) |
+| `bun run test` | Run contract test suite |
+| `bun run coverage` | Coverage report |
+| `bun run lint` | Lint code |
+| `bun run format` | Format code |
+| `bun run deploy:localnet` | Deploy to local Hardhat network |
+| `bun run deploy:testnet` | Deploy to Oasis Sapphire testnet |
+| `bun run deploy:mainnet` | Deploy to Oasis Sapphire mainnet |
+| `bun run deploy:base-localnet` | Deploy to local Base network |
+| `bun run deploy:base-testnet` | Deploy to Base testnet |
+| `bun run deploy:base-mainnet` | Deploy to Base mainnet |
 
 ### Oracle (run from `oracle/`)
 | Command | Purpose |
 |---------|---------|
-| `npm test` | Run oracle test suite |
-| `npm run test -- --grep "pattern"` | Run a single matching test |
-| `npm run coverage` | Oracle coverage (nyc) |
-| `npm run start:localnet` | Start oracle against local Hardhat network |
-| `npm run start:testnet` | Start oracle against Sapphire testnet |
-| `npm run start:mainnet` | Start oracle against Sapphire mainnet |
-| `npm run start:base-testnet` | Start oracle against Base testnet |
-| `npm run start:base-mainnet` | Start oracle against Base mainnet |
-| `npm run dev` | Start with nodemon (hot reload) |
-| `npm run run-localnet` | Pull and run Sapphire localnet Docker image |
+| `bun test` | Run oracle test suite |
+| `bun run test -- --grep "pattern"` | Run a single matching test |
+| `bun run coverage` | Oracle coverage (nyc) |
+| `bun run start:localnet` | Start oracle against local Hardhat network |
+| `bun run start:testnet` | Start oracle against Sapphire testnet |
+| `bun run start:mainnet` | Start oracle against Sapphire mainnet |
+| `bun run start:base-testnet` | Start oracle against Base testnet |
+| `bun run start:base-mainnet` | Start oracle against Base mainnet |
+| `bun run dev` | Start with nodemon (hot reload) |
+| `bun run run-localnet` | Pull and run Sapphire localnet Docker image |
 
 Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.oracle.example mocha ...`
 
 ### ROFL — Sapphire (run from root)
 | Command | Purpose |
 |---------|---------|
-| `npm run rofl:create:testnet` | Create ROFL app on Sapphire testnet |
-| `npm run image:build:testnet` | Build ROFL Docker image (testnet) |
-| `npm run image:push:testnet` | Push ROFL image to registry (testnet) |
-| `npm run rofl:set:testnet` | Set ROFL app config (testnet) |
-| `npm run rofl:build:testnet` | Build ROFL bundle (testnet) |
-| `npm run rofl:update:testnet` | Update ROFL bundle on chain (testnet) |
-| `npm run rofl:deploy:testnet` | Full ROFL deploy workflow (testnet) |
-| `npm run rofl:create:mainnet` | Create ROFL app on Sapphire mainnet |
-| `npm run release:mainnet` | Release ROFL image (mainnet) |
-| `npm run rofl:set:mainnet` | Set ROFL app config (mainnet) |
-| `npm run rofl:build:mainnet` | Build ROFL bundle (mainnet) |
-| `npm run rofl:update:mainnet` | Update ROFL bundle on chain (mainnet) |
-| `npm run rofl:deploy:mainnet` | Full ROFL deploy workflow (mainnet) |
+| `bun run rofl:create:testnet` | Create ROFL app on Sapphire testnet |
+| `bun run image:build:testnet` | Build ROFL Docker image (testnet) |
+| `bun run image:push:testnet` | Push ROFL image to registry (testnet) |
+| `bun run rofl:set:testnet` | Set ROFL app config (testnet) |
+| `bun run rofl:build:testnet` | Build ROFL bundle (testnet) |
+| `bun run rofl:update:testnet` | Update ROFL bundle on chain (testnet) |
+| `bun run rofl:deploy:testnet` | Full ROFL deploy workflow (testnet) |
+| `bun run rofl:create:mainnet` | Create ROFL app on Sapphire mainnet |
+| `bun run release:mainnet` | Release ROFL image (mainnet) |
+| `bun run rofl:set:mainnet` | Set ROFL app config (mainnet) |
+| `bun run rofl:build:mainnet` | Build ROFL bundle (mainnet) |
+| `bun run rofl:update:mainnet` | Update ROFL bundle on chain (mainnet) |
+| `bun run rofl:deploy:mainnet` | Full ROFL deploy workflow (mainnet) |
 
 ### ROFL — Base (run from root)
 | Command | Purpose |
 |---------|---------|
-| `npm run rofl:create:base-testnet` | Create ROFL app on Base testnet |
-| `npm run rofl:deploy:base-testnet` | Full ROFL deploy workflow (Base testnet) |
-| `npm run rofl:create:base-mainnet` | Create ROFL app on Base mainnet |
-| `npm run rofl:deploy:base-mainnet` | Full ROFL deploy workflow (Base mainnet) |
+| `bun run rofl:create:base-testnet` | Create ROFL app on Base testnet |
+| `bun run rofl:deploy:base-testnet` | Full ROFL deploy workflow (Base testnet) |
+| `bun run rofl:create:base-mainnet` | Create ROFL app on Base mainnet |
+| `bun run rofl:deploy:base-mainnet` | Full ROFL deploy workflow (Base mainnet) |
 
 ## Architecture
 
@@ -192,10 +192,10 @@ When contracts change, keep downstream ABIs in sync:
 
 ```bash
 # 1. Compile contracts (root of this repo)
-npm run compile
+bun run compile
 
 # 2. Sync ABI artifacts to dApp
-cd ../sense-ai-dapp && npm run sync-contracts
+cd ../sense-ai-dapp && bun run sync-contracts
 
 # 3. Manually copy updated ABI JSON files to subgraph
 cp artifacts/contracts/EVMAIAgent.sol/EVMAIAgent.json ../sense-ai-subgraph/abis/
@@ -242,11 +242,11 @@ Phase 2 tests (153 passing) cover the full prompt lifecycle, spending limits, ca
 ## Key Notes
 
 - `deploy:mainnet` and all mainnet ROFL commands are irreversible — confirm before running
-- Run `npm run compile` at root before starting the oracle; it loads ABI artifacts from `../../artifacts/contracts/`
+- Run `bun run compile` at root before starting the oracle; it loads ABI artifacts from `../../artifacts/contracts/`
 - ROFL requires Oasis CLI tooling and Docker for image build/push
 - Confidential compute: on Sapphire, sensitive agent data remains encrypted via TEE; on Base, AES-256-GCM is applied client-side in the oracle
 - ABI artifacts from this repo are consumed by `sense-ai-dapp` via its `sync-contracts` script and by `sense-ai-subgraph/abis/` manually
-- `REPORT_GAS=true npx hardhat test` enables gas reporter for contract tests
+- `REPORT_GAS=true bunx hardhat test` enables gas reporter for contract tests
 - **SapphireAIAgent is Oasis grant-only** — the dApp has no Sapphire support; mainnet will be Base EVM only. Sapphire differences from EVMAIAgent are intentional per-ecosystem implementations.
 
 ## MCP Tools

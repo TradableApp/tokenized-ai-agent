@@ -9,7 +9,7 @@
 ### Compile Contracts
 
 ```bash
-npx hardhat compile
+bunx hardhat compile
 ```
 
 ### Deploy
@@ -17,13 +17,13 @@ npx hardhat compile
 **For Testnet:**
 
 ```bash
-ENV_FILE=.env.testnet npx hardhat run scripts/deploy.js --network sapphire-testnet
+ENV_FILE=.env.testnet bunx hardhat run scripts/deploy.js --network sapphire-testnet
 ```
 
 **For Mainnet:**
 
 ```bash
-ENV_FILE=.env.mainnet npx hardhat run scripts/deploy.js --network sapphire
+ENV_FILE=.env.mainnet bunx hardhat run scripts/deploy.js --network sapphire
 ```
 
 ---
@@ -31,7 +31,7 @@ ENV_FILE=.env.mainnet npx hardhat run scripts/deploy.js --network sapphire
 ## 🛠 Interact with Deployed Contract (Hardhat Console)
 
 ```bash
-npx hardhat console --network sapphire-testnet
+bunx hardhat console --network sapphire-testnet
 
 > const aiAgent = await ethers.getContractAt("SapphireAIAgent", "DEPLOYED_ADDRESS")
 > await aiAgent.appendPrompt("hello")
@@ -43,5 +43,5 @@ npx hardhat console --network sapphire-testnet
 ## ✅ Testing
 
 ```bash
-npx hardhat test
+bunx hardhat test
 ```

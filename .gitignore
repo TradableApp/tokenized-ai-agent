@@ -196,3 +196,6 @@ ignition/deployments/chain-31337
 # Oracle runtime state — generated at runtime, never tracked
 oracle/failed-jobs.json
 oracle/oracle-state.json
+
+# Stray compiled-contract exports (use hardhat artifacts/ instead)
+/bin/contracts/
