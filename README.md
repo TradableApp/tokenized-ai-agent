@@ -1,5 +1,6 @@
 # Tokenized AI Agent
 
+[![CI](https://img.shields.io/github/actions/workflow/status/TradableApp/tokenized-ai-agent/ci.yml?branch=main&label=CI)](https://github.com/TradableApp/tokenized-ai-agent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/TradableApp/tokenized-ai-agent.svg)](./LICENSE)
 [![Built with Oasis ROFL](https://img.shields.io/badge/built%20with-oasis%20rofl-7a00ff.svg)](https://docs.oasis.io/build/rofl/)
 
