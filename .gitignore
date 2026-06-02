@@ -152,6 +152,7 @@ node_modules
 !.env.example
 !.env.rofl.example
 !.env.oracle.example
+!.env.oracle.base-localnet.example
 
 # Hardhat files
 /cache
