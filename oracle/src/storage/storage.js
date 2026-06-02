@@ -4,6 +4,12 @@ const crypto = require("crypto");
 
 // Mock storage in-memory cache (for USE_MOCK_STORAGE mode)
 const mockStorageCache = new Map();
+// Mock tag index: { cid, tags } per upload, in insertion order. Lets
+// queryTransactionByTags resolve CIDs within a single run — notably the
+// per-conversation rofl-key file that getSessionKey() looks up on every
+// follow-up message (regeneration/branch/multi-turn). Newest-first matching
+// mirrors the real providers' "first match" semantics.
+const mockTagIndex = [];
 
 // --- Mock Flags ---
 const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
@@ -44,6 +50,7 @@ async function initializeStorage() {
   if (USE_MOCK_STORAGE) {
     console.log("Storage providers initialized (MOCK STORAGE MODE).");
     mockStorageCache.clear();
+    mockTagIndex.length = 0;
     return;
   }
 
@@ -70,6 +77,9 @@ async function uploadData(dataBuffer, tags = []) {
     const hash = crypto.createHash("sha256").update(dataBuffer).digest("hex");
     const mockCid = `mock_${hash.substring(0, 20)}`;
     mockStorageCache.set(mockCid, dataBuffer);
+    if (Array.isArray(tags) && tags.length > 0) {
+      mockTagIndex.push({ cid: mockCid, tags });
+    }
     console.log(`[Mock Storage] Uploaded data: ${mockCid}`);
     return mockCid;
   }
@@ -104,14 +114,26 @@ async function fetchData(cid) {
 
 /**
  * Queries for a transaction ID by its tags.
- * In MOCK mode, always returns null (no stored conversations).
+ * In MOCK mode, resolves against the in-memory tag index (newest match first)
+ * so within-run lookups — e.g. the per-conversation rofl-key file — succeed.
  * In production, implements a Waterfall Strategy for backward compatibility.
  * @param {Array<{name: string, value: string}>} tags The tags to search for.
  * @returns {Promise<string|null>} The first matching CID, or null.
  */
 async function queryTransactionByTags(tags) {
   if (USE_MOCK_STORAGE) {
-    console.log("[Mock Storage] queryTransactionByTags returning null (no persistent storage)");
+    // Return the most recently uploaded CID whose tags satisfy ALL query tags.
+    for (let i = mockTagIndex.length - 1; i >= 0; i--) {
+      const entry = mockTagIndex[i];
+      const matchesAll = tags.every((q) =>
+        entry.tags.some((t) => t.name === q.name && t.value === q.value),
+      );
+      if (matchesAll) {
+        console.log(`[Mock Storage] queryTransactionByTags matched ${entry.cid}`);
+        return entry.cid;
+      }
+    }
+    console.log("[Mock Storage] queryTransactionByTags: no match in mock tag index");
     return null;
   }
 
