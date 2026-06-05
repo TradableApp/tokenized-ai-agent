@@ -1,0 +1,66 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # On-demand: only runs when the `claude-review` label is added to a PR
+    if: github.event.label.name == 'claude-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write   # write required to post inline PR review comments
+      issues: read
+      id-token: write
+      actions: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0     # full history required for git diff against the base branch
+
+      - uses: anthropics/claude-code-action@70a6e5256e9e2366a1ed5c041904a982ba3a328f # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          include_fix_links: 'true'
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            PR: "${{ github.event.pull_request.title }}"
+            Author: ${{ github.event.pull_request.user.login }}
+            Branch: ${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}
+
+            STEPS:
+            1. Read CLAUDE.md (and .claude/CLAUDE.md if present) to understand project conventions, architecture, and non-obvious constraints.
+            2. Run: git diff origin/${{ github.event.pull_request.base.ref }}...HEAD --stat
+            3. Run: git diff origin/${{ github.event.pull_request.base.ref }}...HEAD
+            4. For files where surrounding context matters, read the full file — do not review diffs in isolation.
+            5. Post your findings as INLINE review comments on the exact diff lines where each issue occurs (these become resolvable threads), then a short summary comment.
+
+            PRIORITY ORDER:
+            🔴 Bugs — logic errors, wrong conditions, off-by-ones, race conditions, unhandled edge cases
+            🔴 Security — injection, auth gaps, secret exposure, path traversal, broken access control
+            🟡 Performance — N+1 queries, missing indexes, unbounded loops, large payloads
+            🟡 Completeness — missing error handling, missing tests for new behaviour, stale docs/migrations
+            🟡 Convention — patterns that conflict with CLAUDE.md, wrong abstractions
+            🟣 Pre-existing — real issues NOT introduced by this PR (flag informally, do not block)
+
+            RULES:
+            - Post inline comments at the exact diff line, not as a summary block
+            - Explain WHY it is a problem and give a concrete fix or alternative
+            - Do not comment on things that are correct, intentional, or purely stylistic
+            - 3 real findings beat 10 nitpicks
+            - Do not suggest reverting intentional decisions or patterns documented in CLAUDE.md
+          claude_args: |
+            --max-turns 15
+            --allowedTools Read,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git blame*),Bash(grep*),Bash(find . *)
+            --system-prompt "You are an independent senior code reviewer. You did NOT write this code and have no prior context — your job is to catch real bugs, security issues, and quality problems that the author and their coding assistant may have missed. Post each finding as an inline review comment on the specific diff line. Be direct and specific. Do not over-comment."
+          additional_permissions: |
+            actions: read
