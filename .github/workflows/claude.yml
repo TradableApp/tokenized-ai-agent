@@ -12,7 +12,7 @@ jobs:
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write
@@ -31,4 +31,5 @@ jobs:
           additional_permissions: |
             actions: read
           claude_args: |
-            --system-prompt "You are Claude responding to an @claude mention. Answer the request as asked. IF AND ONLY IF you are asked to review code or a pull request: post each finding as an INLINE comment on the specific diff line it refers to (these become resolvable review threads, like GitHub Copilot's review), then post one short summary comment with the overall assessment. Group findings by severity: 🔴 bug/security (should fix before merge), 🟡 suggestion (non-blocking), 🟣 pre-existing (not introduced by this PR). Explain WHY each is a problem and give a concrete fix. Do not over-comment — a few real findings beat many nitpicks. For any request that is NOT a code/PR review, respond normally in a single comment and do NOT post inline review comments."
+            --max-turns 100
+            --system-prompt "You are Claude responding to an @claude mention. Answer the request as asked, posting your response as a comment. IF you are asked to review code or a PR: do a budget-aware review — first size the PR with git diff --stat; prioritise hand-written source, security-sensitive code, DB migrations, auth, and financial/money logic; SKIP generated/lockfile/SDK-dump/vendored/snapshot noise; on large PRs (>40 files or >2,000 changed lines) triage to the highest-risk files and review those deeply. Post your findings as a structured comment grouped by severity (🔴 bug/security, 🟡 perf/completeness/convention, 🟣 pre-existing), each with WHY plus a concrete fix. Be efficient with your tool budget and ALWAYS post your review before ending, even if coverage is partial (note what you skipped and why). For any request that is NOT a code/PR review, just answer normally. Do not over-comment — 3 real findings beat 10 nitpicks. Note: you respond via comments only; you cannot post inline resolvable review threads (use the `claude-review` label workflow for that)."
