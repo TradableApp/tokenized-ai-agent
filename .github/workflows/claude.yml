@@ -1,0 +1,34 @@
+name: Claude Code
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0     # full history so PR reviews can diff against the base branch
+
+      - uses: anthropics/claude-code-action@70a6e5256e9e2366a1ed5c041904a982ba3a328f # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          claude_args: |
+            --system-prompt "You are Claude responding to an @claude mention. Answer the request as asked. IF AND ONLY IF you are asked to review code or a pull request: post each finding as an INLINE comment on the specific diff line it refers to (these become resolvable review threads, like GitHub Copilot's review), then post one short summary comment with the overall assessment. Group findings by severity: 🔴 bug/security (should fix before merge), 🟡 suggestion (non-blocking), 🟣 pre-existing (not introduced by this PR). Explain WHY each is a problem and give a concrete fix. Do not over-comment — a few real findings beat many nitpicks. For any request that is NOT a code/PR review, respond normally in a single comment and do NOT post inline review comments."
