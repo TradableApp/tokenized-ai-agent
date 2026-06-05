@@ -13,7 +13,7 @@ jobs:
     # On-demand: only runs when the `claude-review` label is added to a PR
     if: github.event.label.name == 'claude-review'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30   # true backstop — bounds wall-clock/quota for large PRs
     permissions:
       contents: read
       pull-requests: write   # write required to post inline PR review comments
@@ -37,12 +37,21 @@ jobs:
             Author: ${{ github.event.pull_request.user.login }}
             Branch: ${{ github.event.pull_request.head.ref }} → ${{ github.event.pull_request.base.ref }}
 
-            STEPS:
-            1. Read CLAUDE.md (and .claude/CLAUDE.md if present) to understand project conventions, architecture, and non-obvious constraints.
-            2. Run: git diff origin/${{ github.event.pull_request.base.ref }}...HEAD --stat
-            3. Run: git diff origin/${{ github.event.pull_request.base.ref }}...HEAD
-            4. For files where surrounding context matters, read the full file — do not review diffs in isolation.
-            5. Post your findings as INLINE review comments on the exact diff lines where each issue occurs (these become resolvable threads), then a short summary comment.
+            APPROACH (you have a finite tool budget — spend it on what matters):
+            1. Read CLAUDE.md (and .claude/CLAUDE.md if present) for conventions and constraints.
+            2. Run: git diff origin/${{ github.event.pull_request.base.ref }}...HEAD --stat — SIZE the PR before reading anything in full.
+            3. SCOPE the review:
+               - Prioritise hand-written source, security-sensitive code, DB migrations, auth, financial/money logic, and business rules.
+               - SKIP the noise and just note you skipped it: lockfiles, *.lock, generated OpenAPI/SDK/client output, snapshots, build artefacts, vendored code, large fixtures/data, and pure formatting churn.
+               - On LARGE PRs (>40 files or >2,000 changed lines): do NOT read every file. Triage to the highest-risk files and review those deeply.
+            4. For files where surrounding context matters, read the full file — don't review diffs in isolation.
+            5. Post findings as INLINE review comments on the exact diff lines (resolvable threads), then a short summary comment.
+
+            BUDGET DISCIPLINE (critical — a partial review that is POSTED beats an exhaustive one that never lands):
+            - Posting your review is MANDATORY. Never end the run without posting inline comments and/or a summary.
+            - Post inline comments AS YOU FIND issues — do not defer all posting to the very end.
+            - If you sense you are running low on budget, STOP investigating immediately and post the findings you have, plus one line on what you did not cover and why.
+            - On very large PRs, an explicit "I focused on X and Y; I did not deep-review the generated/Z files" summary is a good outcome.
 
             PRIORITY ORDER:
             🔴 Bugs — logic errors, wrong conditions, off-by-ones, race conditions, unhandled edge cases
@@ -59,8 +68,8 @@ jobs:
             - 3 real findings beat 10 nitpicks
             - Do not suggest reverting intentional decisions or patterns documented in CLAUDE.md
           claude_args: |
-            --max-turns 15
+            --max-turns 100
             --allowedTools Read,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git blame*),Bash(grep*),Bash(find . *)
-            --system-prompt "You are an independent senior code reviewer. You did NOT write this code and have no prior context — your job is to catch real bugs, security issues, and quality problems that the author and their coding assistant may have missed. Post each finding as an inline review comment on the specific diff line. Be direct and specific. Do not over-comment."
+            --system-prompt "You are an independent senior code reviewer. You did NOT write this code and have no prior context — your job is to catch real bugs, security issues, and quality problems that the author and their coding assistant may have missed. Be efficient with your tool budget: size the PR first, triage to the highest-risk changes on large PRs, and skip generated/vendored noise. Posting your review is mandatory — always post inline comments and a summary before ending, even if your coverage is partial. Be direct and specific; do not over-comment."
           additional_permissions: |
             actions: read
