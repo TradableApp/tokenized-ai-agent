@@ -35,6 +35,7 @@ const {
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { validatePayload } = require("./payloadValidator");
+const { reconcileCursor } = require("./blockCursor");
 
 // --- Configuration & Initialization ---
 
@@ -1804,6 +1805,18 @@ async function pollEvents(startBlock) {
   while (true) {
     try {
       const latestBlock = await provider.getBlockNumber();
+
+      // Reorg/revert reconciliation: if the head has dropped below our cursor (a
+      // chain reorg, or a localnet Hardhat evm_revert between e2e tests), rewind
+      // so the re-mined blocks get re-scanned instead of being skipped forever.
+      const reconciledBlock = reconcileCursor(currentBlock, latestBlock);
+      if (reconciledBlock !== currentBlock) {
+        console.warn(
+          `  ↩ Chain head ${latestBlock} dropped below cursor ${currentBlock} (reorg/revert) — rewinding cursor to ${reconciledBlock}.`,
+        );
+        currentBlock = reconciledBlock;
+        await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentBlock }));
+      }
 
       // Only proceed if there are new blocks to check
       if (latestBlock > currentBlock) {
