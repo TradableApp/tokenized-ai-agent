@@ -1,4 +1,4 @@
-'use strict';
+"use strict";
 
 const chai = require("chai");
 const sinon = require("sinon");
@@ -84,5 +84,68 @@ describe("storage router", function () {
       expect(autonomysStub.queryTransactionByTags.calledOnceWith(tags)).to.be.true;
       expect(txId).to.equal("autonomys_tx_id");
     });
+  });
+});
+
+describe("storage router — local IPFS mode (LOCAL_IPFS_API_URL set)", function () {
+  let storage;
+  let ipfsStub;
+  let arweaveStub;
+  let autonomysStub;
+
+  beforeEach(() => {
+    // The mode flags are read at module load, so set the env before proxyquire.
+    process.env.LOCAL_IPFS_API_URL = "http://localhost:5001";
+
+    ipfsStub = {
+      initialize: sinon.stub().resolves(),
+      uploadData: sinon.stub().resolves("bafkreilocalcid"),
+      fetchData: sinon.stub().resolves("ipfs_data"),
+    };
+    arweaveStub = { initializeIrys: sinon.stub().resolves() };
+    autonomysStub = { initializeAutoDrive: sinon.stub().resolves() };
+
+    storage = proxyquire("../src/storage/storage", {
+      "./ipfs": ipfsStub,
+      "./arweave": arweaveStub,
+      "./autonomys": autonomysStub,
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.LOCAL_IPFS_API_URL;
+    sinon.restore();
+  });
+
+  it("initializeStorage initialises only the local IPFS provider", async () => {
+    await storage.initializeStorage();
+    expect(ipfsStub.initialize.calledOnceWith("http://localhost:5001")).to.be.true;
+    expect(autonomysStub.initializeAutoDrive.called).to.be.false;
+    expect(arweaveStub.initializeIrys.called).to.be.false;
+  });
+
+  it("uploadData routes to IPFS and indexes tags for queryTransactionByTags", async () => {
+    const buffer = Buffer.from("answer payload");
+    const tags = [{ name: "Conversation-Id", value: "1" }];
+
+    const cid = await storage.uploadData(buffer, tags);
+    expect(ipfsStub.uploadData.calledOnceWith(buffer, tags)).to.be.true;
+    expect(cid).to.equal("bafkreilocalcid");
+
+    // The in-memory tag index now resolves the just-uploaded CID (IPFS itself
+    // has no tag query — this is what keeps session-key lookup working).
+    const found = await storage.queryTransactionByTags(tags);
+    expect(found).to.equal("bafkreilocalcid");
+  });
+
+  it("fetchData routes to the local IPFS provider", async () => {
+    const data = await storage.fetchData("bafkreilocalcid");
+    expect(ipfsStub.fetchData.calledOnceWith("bafkreilocalcid")).to.be.true;
+    expect(data).to.equal("ipfs_data");
+  });
+
+  it("queryTransactionByTags returns null when nothing matches", async () => {
+    const found = await storage.queryTransactionByTags([{ name: "Nope", value: "x" }]);
+    expect(found).to.equal(null);
   });
 });

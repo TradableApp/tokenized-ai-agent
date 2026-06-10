@@ -1,5 +1,6 @@
 const arweave = require("./arweave");
 const autonomys = require("./autonomys");
+const ipfs = require("./ipfs");
 const crypto = require("crypto");
 
 // Mock storage in-memory cache (for USE_MOCK_STORAGE mode)
@@ -13,6 +14,18 @@ const mockTagIndex = [];
 
 // --- Mock Flags ---
 const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
+
+// Local IPFS (Kubo) mode — LOCALNET ONLY. When LOCAL_IPFS_API_URL is set, answer
+// content is stored in / fetched from a real local IPFS node (so the dApp can
+// hydrate it by CID), while tag lookups still use the in-memory index above —
+// plain IPFS has no tag query. MOCK_AI stays true for deterministic answers; only
+// the storage layer becomes real. Never set in production (keeps Kubo out of the
+// TEE path).
+const LOCAL_IPFS_API_URL = process.env.LOCAL_IPFS_API_URL;
+const USE_LOCAL_IPFS = !!LOCAL_IPFS_API_URL;
+
+// Both mock and local-IPFS modes resolve tags via the in-memory index.
+const USE_IN_MEMORY_TAG_INDEX = USE_MOCK_STORAGE || USE_LOCAL_IPFS;
 
 // --- Provider Selection Logic ---
 
@@ -54,6 +67,13 @@ async function initializeStorage() {
     return;
   }
 
+  if (USE_LOCAL_IPFS) {
+    await ipfs.initialize(LOCAL_IPFS_API_URL);
+    console.log("Storage providers initialized (LOCAL IPFS MODE).");
+    mockTagIndex.length = 0;
+    return;
+  }
+
   if (process.env.STORAGE_PROVIDER === "irys") {
     await arweave.initializeIrys();
     console.log("Storage providers initialized (Irys only — STORAGE_PROVIDER=irys).");
@@ -84,6 +104,16 @@ async function uploadData(dataBuffer, tags = []) {
     return mockCid;
   }
 
+  if (USE_LOCAL_IPFS) {
+    // Real CID from the local node; record tags in the in-memory index so
+    // queryTransactionByTags resolves within the run (IPFS has no tag query).
+    const cid = await ipfs.uploadData(dataBuffer, tags);
+    if (Array.isArray(tags) && tags.length > 0) {
+      mockTagIndex.push({ cid, tags });
+    }
+    return cid;
+  }
+
   if (process.env.STORAGE_PROVIDER === "irys") {
     return arweave.uploadData(dataBuffer, tags);
   }
@@ -108,6 +138,10 @@ async function fetchData(cid) {
     return null;
   }
 
+  if (USE_LOCAL_IPFS) {
+    return ipfs.fetchData(cid);
+  }
+
   const provider = getProviderFromCID(cid);
   return provider.fetchData(cid);
 }
@@ -121,19 +155,21 @@ async function fetchData(cid) {
  * @returns {Promise<string|null>} The first matching CID, or null.
  */
 async function queryTransactionByTags(tags) {
-  if (USE_MOCK_STORAGE) {
-    // Return the most recently uploaded CID whose tags satisfy ALL query tags.
+  if (USE_IN_MEMORY_TAG_INDEX) {
+    // Mock and local-IPFS modes resolve tags from the in-memory index (plain IPFS
+    // has no tag query). Return the most recent CID whose tags satisfy ALL query
+    // tags.
     for (let i = mockTagIndex.length - 1; i >= 0; i--) {
       const entry = mockTagIndex[i];
       const matchesAll = tags.every((q) =>
         entry.tags.some((t) => t.name === q.name && t.value === q.value),
       );
       if (matchesAll) {
-        console.log(`[Mock Storage] queryTransactionByTags matched ${entry.cid}`);
+        console.log(`[Tag Index] queryTransactionByTags matched ${entry.cid}`);
         return entry.cid;
       }
     }
-    console.log("[Mock Storage] queryTransactionByTags: no match in mock tag index");
+    console.log("[Tag Index] queryTransactionByTags: no match in in-memory tag index");
     return null;
   }
 
