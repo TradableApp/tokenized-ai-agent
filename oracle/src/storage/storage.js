@@ -32,6 +32,11 @@ const USE_IN_MEMORY_TAG_INDEX = USE_MOCK_STORAGE || USE_LOCAL_IPFS;
 /**
  * Determines the storage provider based on the CID format.
  * This acts as a router to support multiple storage backends.
+ * NOTE: LOCAL_IPFS mode does NOT use this router — fetchData short-circuits to
+ * ipfs.fetchData before reaching here. So this only distinguishes Autonomys vs
+ * Arweave. The CID-format ordering contract that matters (Autonomys before the
+ * broad IPFS pattern) lives on the consumer side, sense-ai-dapp's
+ * getStorageProvider — keep the two in lockstep.
  * @param {string} cid The Content ID.
  * @returns {object} The appropriate storage utility module.
  */
