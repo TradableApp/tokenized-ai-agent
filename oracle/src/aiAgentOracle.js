@@ -1814,6 +1814,14 @@ async function pollEvents(startBlock) {
         console.warn(
           `  ↩ Chain head ${latestBlock} dropped below cursor ${currentBlock} (reorg/revert) — rewinding cursor to ${reconciledBlock}.`,
         );
+        // Page on-call: a reorg on a real chain is as operationally significant as the
+        // processing-lag/fatal alerts already routed through sendAlert. Fire-and-forget
+        // so an alert failure can't stall the rewind (localnet evm_revert is benign and
+        // frequent, but the same path covers a genuine Base reorg in production).
+        sendAlert(
+          "Chain reorg detected — oracle cursor rewound",
+          `Head ${latestBlock} dropped below cursor ${currentBlock}. Rewound to ${reconciledBlock}; re-mined events will be re-processed.`,
+        ).catch((err) => console.error("sendAlert (reorg) failed:", err.message));
         currentBlock = reconciledBlock;
         await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentBlock }));
       }
