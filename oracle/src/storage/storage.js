@@ -139,6 +139,9 @@ async function fetchData(cid) {
   }
 
   if (USE_LOCAL_IPFS) {
+    // Localnet routes EVERY CID to the local node (getProviderFromCID is bypassed):
+    // all CIDs this run were produced by ipfs.uploadData. A stale `mock_…` CID from
+    // a prior USE_MOCK_STORAGE run would 404 here, but each e2e run starts fresh.
     return ipfs.fetchData(cid);
   }
 

@@ -32,13 +32,16 @@ function ensureInitialized() {
  * @param {string} url e.g. "http://localhost:5001"
  */
 async function initialize(url) {
-  apiUrl = url.replace(/\/+$/, "");
+  const cleanUrl = url.replace(/\/+$/, "");
   // Fail fast with a clear message if Kubo isn't up (the Kubo API is POST-only).
-  const res = await fetch(`${apiUrl}/api/v0/version`, { method: "POST" });
+  const res = await fetch(`${cleanUrl}/api/v0/version`, { method: "POST" });
   if (!res.ok) {
-    throw new Error(`Local IPFS (Kubo) not reachable at ${apiUrl} (status ${res.status}).`);
+    throw new Error(`Local IPFS (Kubo) not reachable at ${cleanUrl} (status ${res.status}).`);
   }
   const { Version } = await res.json();
+  // Only set after the connectivity check passes, so a failed init leaves the
+  // provider uninitialised and ensureInitialized() still guards later calls.
+  apiUrl = cleanUrl;
   console.log(`Local IPFS provider initialized (Kubo ${Version} @ ${apiUrl}).`);
 }
 
@@ -67,7 +70,13 @@ async function uploadData(dataBuffer, _tags = []) {
 
   // Kubo returns newline-delimited JSON; the final line is the added file.
   const lines = (await res.text()).trim().split("\n").filter(Boolean);
+  if (lines.length === 0) {
+    throw new Error("IPFS add returned an empty response body (expected NDJSON with a Hash).");
+  }
   const { Hash } = JSON.parse(lines[lines.length - 1]);
+  if (!Hash) {
+    throw new Error(`IPFS add response missing Hash field: ${lines[lines.length - 1]}`);
+  }
   console.log(`Data uploaded to local IPFS ==> CID: ${Hash}`);
 
   return Hash;

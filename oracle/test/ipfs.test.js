@@ -1,7 +1,10 @@
 "use strict";
 
 const chai = require("chai");
+const chaiAsPromised = require("chai-as-promised");
 const sinon = require("sinon");
+
+chai.use(chaiAsPromised.default ?? chaiAsPromised);
 const { expect } = chai;
 
 const ipfs = require("../src/storage/ipfs");
@@ -86,5 +89,24 @@ describe("local IPFS provider (ipfs.js)", function () {
     } catch (e) {
       expect(e.message).to.contain("not reachable");
     }
+  });
+
+  it("uploadData/fetchData throw 'not initialized' before a successful initialize", async () => {
+    // Fresh module instance so apiUrl is null (it persists across tests otherwise).
+    delete require.cache[require.resolve("../src/storage/ipfs")];
+    const freshIpfs = require("../src/storage/ipfs");
+
+    await expect(freshIpfs.uploadData(Buffer.from("x"), [])).to.be.rejectedWith("not initialized");
+    await expect(freshIpfs.fetchData("bafkreiabc")).to.be.rejectedWith("not initialized");
+  });
+
+  it("a failed initialize leaves the provider uninitialized (guard still fires)", async () => {
+    delete require.cache[require.resolve("../src/storage/ipfs")];
+    const freshIpfs = require("../src/storage/ipfs");
+    sinon.stub(global, "fetch").resolves({ ok: false, status: 502, text: async () => "down" });
+
+    await expect(freshIpfs.initialize("http://localhost:5001")).to.be.rejectedWith("not reachable");
+    // apiUrl must NOT have been set by the failed init.
+    await expect(freshIpfs.fetchData("bafkreiabc")).to.be.rejectedWith("not initialized");
   });
 });
