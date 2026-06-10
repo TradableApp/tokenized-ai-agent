@@ -35,6 +35,7 @@ const {
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { validatePayload } = require("./payloadValidator");
+const { reconcileCursor } = require("./blockCursor");
 
 // --- Configuration & Initialization ---
 
@@ -1804,6 +1805,26 @@ async function pollEvents(startBlock) {
   while (true) {
     try {
       const latestBlock = await provider.getBlockNumber();
+
+      // Reorg/revert reconciliation: if the head has dropped below our cursor (a
+      // chain reorg, or a localnet Hardhat evm_revert between e2e tests), rewind
+      // so the re-mined blocks get re-scanned instead of being skipped forever.
+      const reconciledBlock = reconcileCursor(currentBlock, latestBlock);
+      if (reconciledBlock !== currentBlock) {
+        console.warn(
+          `  ↩ Chain head ${latestBlock} dropped below cursor ${currentBlock} (reorg/revert) — rewinding cursor to ${reconciledBlock}.`,
+        );
+        // Page on-call: a reorg on a real chain is as operationally significant as the
+        // processing-lag/fatal alerts already routed through sendAlert. Fire-and-forget
+        // so an alert failure can't stall the rewind (localnet evm_revert is benign and
+        // frequent, but the same path covers a genuine Base reorg in production).
+        sendAlert(
+          "Chain reorg detected — oracle cursor rewound",
+          `Head ${latestBlock} dropped below cursor ${currentBlock}. Rewound to ${reconciledBlock}; re-mined events will be re-processed.`,
+        ).catch((err) => console.error("sendAlert (reorg) failed:", err.message));
+        currentBlock = reconciledBlock;
+        await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentBlock }));
+      }
 
       // Only proceed if there are new blocks to check
       if (latestBlock > currentBlock) {
