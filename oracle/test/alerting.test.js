@@ -194,6 +194,15 @@ describe("alerting", function () {
       expect(fetchStub.calledOnce).to.be.true;
     });
 
+    it("treats bare 'mainnet' as mainnet for email", async () => {
+      process.env.NETWORK_NAME = "mainnet";
+      setSendGridVars();
+
+      await sendAlert("Prod incident", "needs attention");
+
+      expect(fetchStub.calledOnce).to.be.true;
+    });
+
     it("ALERT_EMAIL_ENABLED=true forces email on a non-mainnet network", async () => {
       process.env.NETWORK_NAME = "base-testnet";
       process.env.ALERT_EMAIL_ENABLED = "true";

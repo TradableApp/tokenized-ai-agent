@@ -51,11 +51,12 @@ function isEmailAlertingEnabled() {
  * @param {string} message The detailed alert message.
  */
 async function sendEmailAlert(title, message) {
+  // Email is mainnet-only by default (see isEmailAlertingEnabled). Return silently
+  // on non-mainnet rather than logging per call: this path is hit on exactly the
+  // high-frequency noise the gate exists to suppress (reorg/nonce alerts during
+  // e2e/testnet), and the alert itself is already surfaced by the console.error in
+  // sendAlert — so a per-call "skipping" line would just re-flood the logs.
   if (!isEmailAlertingEnabled()) {
-    console.log(
-      `Email alerts disabled for network "${process.env.NETWORK_NAME || "unknown"}" ` +
-        "(mainnet-only; set ALERT_EMAIL_ENABLED=true to override). Skipping email alert.",
-    );
     return;
   }
 
