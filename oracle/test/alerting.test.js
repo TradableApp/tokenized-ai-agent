@@ -6,8 +6,12 @@ const proxyquire = require("proxyquire");
 describe("alerting", function () {
   let sendAlert;
   let slackStub, fetchStub, consoleErrorStub, consoleWarnStub;
+  let originalNetworkName;
 
   beforeEach(() => {
+    // Capture so we can RESTORE (not delete) — other test files read NETWORK_NAME at
+    // module load via proxyquire, so a global delete here breaks them.
+    originalNetworkName = process.env.NETWORK_NAME;
     // Stub for the Slack WebClient
     slackStub = {
       chat: {
@@ -40,9 +44,20 @@ describe("alerting", function () {
     // Clear environment variables after each test to ensure isolation
     delete process.env.SLACK_ACCESS_TOKEN;
     delete process.env.SEND_GRID_API_KEY;
+    delete process.env.ALERT_EMAIL_ENABLED;
+    // Restore NETWORK_NAME to its pre-test value (other test files depend on it).
+    if (originalNetworkName === undefined) delete process.env.NETWORK_NAME;
+    else process.env.NETWORK_NAME = originalNetworkName;
   });
 
+  // Email alerts are mainnet-only by default (they hit a human inbox); the
+  // SendGrid-dependent tests below enable them explicitly via ALERT_EMAIL_ENABLED.
+  const enableEmail = () => {
+    process.env.ALERT_EMAIL_ENABLED = "true";
+  };
+
   it("should send both Slack and Email alerts when all env vars are set", async () => {
+    enableEmail();
     process.env.SLACK_ACCESS_TOKEN = "fake-slack-token";
     process.env.SLACK_ALERT_CHANNEL = "#fake-channel";
     process.env.SEND_GRID_API_KEY = "fake-sendgrid-key";
@@ -74,6 +89,7 @@ describe("alerting", function () {
   });
 
   it("should only send an email alert if Slack vars are missing", async () => {
+    enableEmail();
     // ONLY set SendGrid vars
     process.env.SEND_GRID_API_KEY = "fake-sendgrid-key";
     process.env.SEND_GRID_ALERT_TEMPLATE_ID = "d-123";
@@ -92,6 +108,9 @@ describe("alerting", function () {
   });
 
   it("should only send a Slack alert if SendGrid vars are missing", async () => {
+    // Enable email so we exercise the SendGrid-vars-missing path (downstream of the
+    // mainnet gate), not the gate's own early return.
+    enableEmail();
     // ONLY set Slack vars
     process.env.SLACK_ACCESS_TOKEN = "fake-slack-token";
     process.env.SLACK_ALERT_CHANNEL = "#fake-channel";
@@ -123,6 +142,7 @@ describe("alerting", function () {
   });
 
   it("should log an error if the email API call fails but not throw", async () => {
+    enableEmail();
     process.env.SEND_GRID_API_KEY = "fake-sendgrid-key";
     process.env.SEND_GRID_ALERT_TEMPLATE_ID = "d-123";
     process.env.ALERT_FROM_EMAIL = "from@test.com";
@@ -136,5 +156,71 @@ describe("alerting", function () {
     // The console.error inside the alerting module should be called
     expect(consoleErrorStub.calledWith("Failed to send email alert:", "SendGrid API is down")).to.be
       .true;
+  });
+
+  // --- Email environment gating (email is mainnet-only by default) ---
+  describe("email environment gating", () => {
+    const setSendGridVars = () => {
+      process.env.SEND_GRID_API_KEY = "fake-sendgrid-key";
+      process.env.SEND_GRID_ALERT_TEMPLATE_ID = "d-123";
+      process.env.ALERT_FROM_EMAIL = "from@test.com";
+      process.env.ALERT_TO_EMAIL = "to@test.com";
+    };
+
+    it("does NOT send email on localnet, even with SendGrid vars set", async () => {
+      process.env.NETWORK_NAME = "base-localnet";
+      setSendGridVars();
+
+      await sendAlert("Reorg", "benign localnet revert");
+
+      expect(fetchStub.called).to.be.false;
+    });
+
+    it("sends email on mainnet by default (no override flag)", async () => {
+      process.env.NETWORK_NAME = "base-mainnet";
+      setSendGridVars();
+
+      await sendAlert("Prod incident", "needs attention");
+
+      expect(fetchStub.calledOnce).to.be.true;
+    });
+
+    it("treats bare 'sapphire' as mainnet for email", async () => {
+      process.env.NETWORK_NAME = "sapphire";
+      setSendGridVars();
+
+      await sendAlert("Prod incident", "needs attention");
+
+      expect(fetchStub.calledOnce).to.be.true;
+    });
+
+    it("treats bare 'mainnet' as mainnet for email", async () => {
+      process.env.NETWORK_NAME = "mainnet";
+      setSendGridVars();
+
+      await sendAlert("Prod incident", "needs attention");
+
+      expect(fetchStub.calledOnce).to.be.true;
+    });
+
+    it("ALERT_EMAIL_ENABLED=true forces email on a non-mainnet network", async () => {
+      process.env.NETWORK_NAME = "base-testnet";
+      process.env.ALERT_EMAIL_ENABLED = "true";
+      setSendGridVars();
+
+      await sendAlert("Testing email", "verify the template renders");
+
+      expect(fetchStub.calledOnce).to.be.true;
+    });
+
+    it("ALERT_EMAIL_ENABLED=false suppresses email on mainnet", async () => {
+      process.env.NETWORK_NAME = "base-mainnet";
+      process.env.ALERT_EMAIL_ENABLED = "false";
+      setSendGridVars();
+
+      await sendAlert("Noisy incident", "silenced");
+
+      expect(fetchStub.called).to.be.false;
+    });
   });
 });

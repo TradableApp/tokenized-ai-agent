@@ -25,11 +25,41 @@ async function sendSlackAlert(title, message) {
 }
 
 /**
+ * Whether email alerts should fire in the current environment.
+ *
+ * Email alerts land in a human inbox (admin@tradable.app), so they are
+ * MAINNET-ONLY by default — localnet (including e2e) and testnet must never spam
+ * it. `ALERT_EMAIL_ENABLED` is an explicit override: "true" forces email on (e.g.
+ * to test email-alert functionality on a non-mainnet network), "false" forces it
+ * off (e.g. to silence a noisy mainnet incident). Defaulting ON for mainnet —
+ * rather than requiring a flag to be set — means a missing/forgotten flag can
+ * never silently disable production alerting. Slack alerts are unaffected (they go
+ * to a channel, not a personal inbox, and are already env-gated by their tokens).
+ * @returns {boolean}
+ */
+function isEmailAlertingEnabled() {
+  const override = process.env.ALERT_EMAIL_ENABLED;
+  if (override === "true") return true;
+  if (override === "false") return false;
+  const network = process.env.NETWORK_NAME || "";
+  return network === "sapphire" || network === "mainnet" || network.endsWith("-mainnet");
+}
+
+/**
  * Sends a formatted alert email via SendGrid.
  * @param {string} title The title of the alert.
  * @param {string} message The detailed alert message.
  */
 async function sendEmailAlert(title, message) {
+  // Email is mainnet-only by default (see isEmailAlertingEnabled). Return silently
+  // on non-mainnet rather than logging per call: this path is hit on exactly the
+  // high-frequency noise the gate exists to suppress (reorg/nonce alerts during
+  // e2e/testnet), and the alert itself is already surfaced by the console.error in
+  // sendAlert — so a per-call "skipping" line would just re-flood the logs.
+  if (!isEmailAlertingEnabled()) {
+    return;
+  }
+
   const apiKey = process.env.SEND_GRID_API_KEY;
   const templateId = process.env.SEND_GRID_ALERT_TEMPLATE_ID;
   const fromEmail = process.env.ALERT_FROM_EMAIL;
