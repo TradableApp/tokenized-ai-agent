@@ -61,6 +61,14 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 const MOCK_AI = process.env.MOCK_AI === "true";
 const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
 
+// MOCK-mode only: an e2e prompt may embed "__E2E_DELAY_MS__:<n>" to make the mock AI
+// hold its answer for <n> ms, so a test can exercise cancel/refund timing while the
+// prompt is genuinely pending. Honoured ONLY inside queryAIModel's MOCK_AI branch, so
+// it can never affect production (MOCK_AI is false there). Capped so a malformed value
+// can't stall the oracle indefinitely.
+const MOCK_DELAY_SENTINEL = /__E2E_DELAY_MS__:(\d+)/;
+const MAX_MOCK_DELAY_MS = 30000;
+
 // This single function from our utility handles all environment-specific setup.
 let { provider, signer, contract, isSapphire } = initializeOracle(
   NETWORK_NAME,
@@ -736,6 +744,18 @@ async function routeQueryIntent(conversationHistory) {
 }
 
 /**
+ * Parses the optional "__E2E_DELAY_MS__:<n>" marker from a prompt (mock-mode only).
+ * @param {string} text - The latest user message content.
+ * @returns {number} The requested delay in ms (capped at MAX_MOCK_DELAY_MS), or 0.
+ */
+function parseMockDelayMs(text) {
+  if (typeof text !== "string") return 0;
+  const match = text.match(MOCK_DELAY_SENTINEL);
+  if (!match) return 0;
+  return Math.min(Number(match[1]), MAX_MOCK_DELAY_MS);
+}
+
+/**
  * A dispatcher for querying the AI model specified by the routeQueryIntent.
  * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} conversationId - The on-chain conversation ID.
@@ -748,6 +768,15 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
     const latestUserMessage = conversationHistory
       .filter((msg) => msg.role === "user")
       .pop()?.content || "unknown query";
+
+    // E2E only: honour a "__E2E_DELAY_MS__:<n>" marker in the prompt so a test can
+    // keep the answer pending long enough to cancel/refund it. Mock-only => prod-safe.
+    const delayMs = parseMockDelayMs(latestUserMessage);
+    if (delayMs > 0) {
+      console.log(`[Mock AI] Honouring E2E delay sentinel — holding answer ${delayMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
     const mockResponse = `[MOCK] I acknowledge your query about "${latestUserMessage.substring(0, 40)}...". This is a deterministic mock response for local testing.`;
     console.log("[Mock AI] Returning deterministic mock response");
     return mockResponse;
@@ -1982,6 +2011,7 @@ module.exports = {
   handleBranch,
   handleMetadataUpdate,
   reconstructHistory,
+  parseMockDelayMs,
   getSessionKey,
   encryptSymmetrically,
   decryptSymmetrically,
