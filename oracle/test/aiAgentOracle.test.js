@@ -340,6 +340,23 @@ describe("aiAgentOracle", function () {
       expect(aiAgentOracle.parseMockDelayMs(undefined)).to.equal(0);
       expect(aiAgentOracle.parseMockDelayMs(null)).to.equal(0);
     });
+
+    it("queryAIModel actually applies the delay under MOCK_AI (wiring)", async () => {
+      // Parser correctness above doesn't prove the call site still invokes it. Load a
+      // fresh module instance with MOCK_AI=true (read once at module load) and confirm
+      // queryAIModel holds the mock response for at least the sentinel delay.
+      process.env.MOCK_AI = "true";
+      try {
+        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        const history = [{ role: "user", content: "buy BTC __E2E_DELAY_MS__:60" }];
+        const start = Date.now();
+        const answer = await mockAi.queryAIModel(history, "1", "0xabc");
+        expect(Date.now() - start).to.be.at.least(55);
+        expect(answer).to.include("[MOCK]");
+      } finally {
+        delete process.env.MOCK_AI;
+      }
+    });
   });
 
   describe("Oracle Reliability and Startup", () => {

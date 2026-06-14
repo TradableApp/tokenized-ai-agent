@@ -745,6 +745,12 @@ async function routeQueryIntent(conversationHistory) {
 
 /**
  * Parses the optional "__E2E_DELAY_MS__:<n>" marker from a prompt (mock-mode only).
+ * @dev The marker is read from the LATEST user message of the reconstructed history. For
+ *      handlePrompt that's the original prompt text. For handleRegeneration with non-empty
+ *      `instructions`, the latest user message is the injected "Please regenerate your
+ *      previous response. Make it ${instructions}." — so an e2e regeneration test must embed
+ *      the sentinel in `instructions`, not the original prompt. (Empty instructions fall back
+ *      to the original prompt, where the sentinel does fire.)
  * @param {string} text - The latest user message content.
  * @returns {number} The requested delay in ms (capped at MAX_MOCK_DELAY_MS), or 0.
  */
@@ -774,7 +780,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
     const delayMs = parseMockDelayMs(latestUserMessage);
     if (delayMs > 0) {
       console.log(`[Mock AI] Honouring E2E delay sentinel — holding answer ${delayMs}ms`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      // unref() so a pending sentinel delay never holds the process open on SIGTERM
+      // (CI/test teardown) — the oracle can still exit instead of lingering for delayMs.
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, delayMs);
+        timer.unref();
+      });
     }
 
     const mockResponse = `[MOCK] I acknowledge your query about "${latestUserMessage.substring(0, 40)}...". This is a deterministic mock response for local testing.`;
@@ -2010,6 +2021,7 @@ module.exports = {
   handleRegeneration,
   handleBranch,
   handleMetadataUpdate,
+  queryAIModel,
   reconstructHistory,
   parseMockDelayMs,
   getSessionKey,
