@@ -359,6 +359,78 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("hasMockDropSentinel (E2E never-answer sentinel)", () => {
+    // MOCK-mode only: a prompt may carry "__E2E_DROP__" so an e2e test can leave a prompt
+    // GENUINELY pending (the oracle never submits an answer), which is required to
+    // deterministically exercise the refund path — the delay sentinel always eventually
+    // delivers, which races the refund. This is the pure detector; the early-return is
+    // wired into handlePrompt's MOCK_AI branch.
+    it("detects the drop sentinel embedded in a prompt", () => {
+      expect(aiAgentOracle.hasMockDropSentinel("Please answer __E2E_DROP__")).to.equal(true);
+    });
+
+    it("returns false when no sentinel is present", () => {
+      expect(aiAgentOracle.hasMockDropSentinel("a normal prompt")).to.equal(false);
+    });
+
+    it("returns false for non-string input", () => {
+      expect(aiAgentOracle.hasMockDropSentinel(undefined)).to.equal(false);
+      expect(aiAgentOracle.hasMockDropSentinel(null)).to.equal(false);
+    });
+  });
+
+  describe("shouldInitializeConversation (orphaned-conversation backstop)", () => {
+    // A conversation whose first prompt was cancelled never had ConversationAdded emitted.
+    // The dApp is the primary fix (flags such a resend new); this predicate is the oracle's
+    // defensive backstop, disambiguating via the conversation's key file existence.
+    it("initialises when the client flags the conversation new", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({ isNewConversation: true }),
+      ).to.equal(true);
+    });
+
+    it("does NOT initialise a normal follow-up that threads off a parent message", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: "bafyParentCid",
+        }),
+      ).to.equal(false);
+    });
+
+    it("initialises a parentless non-new prompt when no key file exists yet (orphaned after cancel)", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: null,
+          conversationKeyExists: false,
+        }),
+      ).to.equal(true);
+    });
+
+    it("does NOT re-initialise a parentless prompt when a key file already exists (first-message edit)", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: null,
+          conversationKeyExists: true,
+        }),
+      ).to.equal(false);
+    });
+
+    // Documents the contract: on the orphan path the caller MUST resolve conversationKeyExists.
+    // Omitting it falls through to false ("don't initialise") — safe everywhere else, but the
+    // caller is responsible for supplying it here so a genuine orphan isn't silently declined.
+    it("returns false when conversationKeyExists is omitted (undefined is not 'no key file')", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: null,
+        }),
+      ).to.equal(false);
+    });
+  });
+
   describe("Oracle Reliability and Startup", () => {
     it("setOracleAddress should do nothing if addresses match", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
