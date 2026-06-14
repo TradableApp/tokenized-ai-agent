@@ -69,6 +69,21 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       expect(await escrow.branchFee()).to.equal(BRANCH_FEE);
     });
 
+    it("should emit the *FeeUpdated and TreasuryUpdated events on initialization", async function () {
+      // Indexers (the subgraph) derive protocol state (fees, treasury) from these events
+      // rather than an eth_call (The Graph "avoid eth_calls" best practice; an eth_call
+      // also breaks graph-node↔Hardhat on localnet). initialize() must emit them so the
+      // FeeConfig/treasury entities are populated from the deploy block on every network,
+      // not only after a post-deploy setter is called.
+      const { escrow, treasury } = await loadFixture(deployEscrowFixture);
+      const deployTx = escrow.deploymentTransaction();
+      await expect(deployTx).to.emit(escrow, "PromptFeeUpdated").withArgs(PROMPT_FEE);
+      await expect(deployTx).to.emit(escrow, "CancellationFeeUpdated").withArgs(CANCELLATION_FEE);
+      await expect(deployTx).to.emit(escrow, "MetadataUpdateFeeUpdated").withArgs(METADATA_FEE);
+      await expect(deployTx).to.emit(escrow, "BranchFeeUpdated").withArgs(BRANCH_FEE);
+      await expect(deployTx).to.emit(escrow, "TreasuryUpdated").withArgs(treasury.address);
+    });
+
     context("Initialization Failure", function () {
       it("should revert if initialized with any zero address", async function () {
         const { EVMAIAgentEscrow, mockToken, mockAgent, treasury, deployer } =
