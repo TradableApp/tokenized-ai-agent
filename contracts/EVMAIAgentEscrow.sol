@@ -215,14 +215,15 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     metadataUpdateFee = _initialMetadataUpdateFee;
     branchFee = _initialBranchFee;
 
-    // Emit the fee events on init so off-chain indexers (the subgraph) can derive the
-    // fee charged for each action from events instead of an eth_call (The Graph's
-    // "avoid eth_calls" best practice). Without this the FeeConfig entity stays unset
-    // until a post-deploy setter is called.
+    // Emit the config events on init so off-chain indexers (the subgraph) can derive
+    // protocol state from events instead of an eth_call (The Graph's "avoid eth_calls"
+    // best practice). Without this the FeeConfig/treasury entities stay unset until a
+    // post-deploy setter is called. Mirrors the setPromptFee/.../setTreasury emits.
     emit PromptFeeUpdated(_initialPromptFee);
     emit CancellationFeeUpdated(_initialCancellationFee);
     emit MetadataUpdateFeeUpdated(_initialMetadataUpdateFee);
     emit BranchFeeUpdated(_initialBranchFee);
+    emit TreasuryUpdated(_treasuryAddress);
   }
 
   // --- Modifiers ---
