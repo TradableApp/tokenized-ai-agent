@@ -318,6 +318,47 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("parseMockDelayMs (E2E delay sentinel)", () => {
+    // MOCK-mode only: a prompt may carry "__E2E_DELAY_MS__:<n>" so an e2e test can
+    // hold an answer pending long enough to exercise cancel/refund timing. This is
+    // the pure parser; the actual sleep is wired into queryAIModel's MOCK_AI branch.
+    it("extracts the millisecond value from a sentinel embedded in a prompt", () => {
+      expect(aiAgentOracle.parseMockDelayMs("What is BTC doing? __E2E_DELAY_MS__:8000")).to.equal(
+        8000,
+      );
+    });
+
+    it("returns 0 when no sentinel is present", () => {
+      expect(aiAgentOracle.parseMockDelayMs("a normal prompt")).to.equal(0);
+    });
+
+    it("caps the delay at the maximum to avoid a stuck oracle", () => {
+      expect(aiAgentOracle.parseMockDelayMs("__E2E_DELAY_MS__:999999999")).to.equal(30000);
+    });
+
+    it("returns 0 for non-string input", () => {
+      expect(aiAgentOracle.parseMockDelayMs(undefined)).to.equal(0);
+      expect(aiAgentOracle.parseMockDelayMs(null)).to.equal(0);
+    });
+
+    it("queryAIModel actually applies the delay under MOCK_AI (wiring)", async () => {
+      // Parser correctness above doesn't prove the call site still invokes it. Load a
+      // fresh module instance with MOCK_AI=true (read once at module load) and confirm
+      // queryAIModel holds the mock response for at least the sentinel delay.
+      process.env.MOCK_AI = "true";
+      try {
+        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        const history = [{ role: "user", content: "buy BTC __E2E_DELAY_MS__:60" }];
+        const start = Date.now();
+        const answer = await mockAi.queryAIModel(history, "1", "0xabc");
+        expect(Date.now() - start).to.be.at.least(55);
+        expect(answer).to.include("[MOCK]");
+      } finally {
+        delete process.env.MOCK_AI;
+      }
+    });
+  });
+
   describe("Oracle Reliability and Startup", () => {
     it("setOracleAddress should do nothing if addresses match", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
