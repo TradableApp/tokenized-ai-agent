@@ -781,6 +781,43 @@ function hasMockDropSentinel(text) {
 }
 
 /**
+ * Decides whether the oracle must initialise the conversation on storage (create the
+ * ConversationFile + emit a non-empty conversationCID, which makes EVMAIAgent emit
+ * ConversationAdded so the subgraph indexes the conversation).
+ *
+ * Normally driven by the client's `isNewConversation` flag. But a conversation whose first
+ * prompt was CANCELLED never had its first answer delivered, so ConversationAdded never
+ * fired — yet the client resends with `isNewConversation: false` (it reuses the existing
+ * conversationId). Without a guard the answer would be appended with an empty
+ * conversationCID, the Conversation entity would never be created, and the dApp's
+ * owner-filtered sync would never surface it (stuck "Thinking…" forever).
+ *
+ * The dApp is the primary fix (it flags such a resend new). This is the defensive backstop:
+ * when a non-new prompt arrives with NO parent CID — the structural signature of "first
+ * persisted message in this conversation" — we disambiguate via `conversationKeyExists`
+ * (whether a ROFL key file already exists for the conversation, looked up by tag, the same
+ * mechanism getSessionKey uses). No key file ⇒ the conversation was never persisted ⇒
+ * initialise. Key file present ⇒ it IS an established conversation (e.g. editing its first
+ * message) ⇒ append, so we don't re-emit ConversationAdded and clobber its metadata.
+ *
+ * @param {object} args
+ * @param {boolean} args.isNewConversation - The client's new-conversation flag.
+ * @param {string|null} [args.previousMessageCID] - Parent message CID, if any.
+ * @param {boolean} [args.conversationKeyExists] - Whether a key file already exists for the
+ *   conversation. Only consulted (and only worth looking up) when the prompt is non-new and
+ *   parentless.
+ * @returns {boolean} True if the conversation must be initialised on storage.
+ */
+function shouldInitializeConversation({ isNewConversation, previousMessageCID, conversationKeyExists }) {
+  if (isNewConversation) return true;
+  // A normal follow-up threads off a parent message — the conversation is already
+  // established, so never re-initialise.
+  if (previousMessageCID) return false;
+  // Orphan-risk: non-new but parentless. Initialise only if no key file exists yet.
+  return conversationKeyExists === false;
+}
+
+/**
  * A dispatcher for querying the AI model specified by the routeQueryIntent.
  * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} conversationId - The on-chain conversation ID.
@@ -997,7 +1034,33 @@ async function handlePrompt(
     const encryptedPrompt = encryptSymmetrically(promptMessageFile, sessionKey);
     const encryptedDelta = encryptSymmetrically(searchDeltaFile, sessionKey);
 
-    if (isNewConversation) {
+    // Backstop for an orphaned conversation: a non-new prompt with NO parent CID is the
+    // structural signature of "first persisted message". If the client failed to flag it
+    // new (e.g. its first prompt was cancelled, so ConversationAdded never fired), confirm
+    // via the conversation's key file — absent ⇒ never persisted ⇒ initialise. We only run
+    // this lookup in that rare ambiguous case, never on normal follow-ups. See
+    // shouldInitializeConversation.
+    let conversationKeyExists;
+    if (!isNewConversation && !previousMessageCID) {
+      const { chainId: guardChainId } = await provider.getNetwork();
+      const existingKeyCID = await queryTransactionByTags([
+        { name: "Content-Type", value: "application/rofl-key" },
+        { name: "SenseAI-Key-For-Conversation", value: `${guardChainId}-${conversationId}` },
+      ]);
+      conversationKeyExists = !!existingKeyCID;
+      if (!conversationKeyExists) {
+        console.warn(
+          `  ⚠️ Conversation ${conversationId} has no key file but the client did not flag it new — initialising defensively (orphaned after a cancelled first prompt).`,
+        );
+      }
+    }
+    const initialiseConversation = shouldInitializeConversation({
+      isNewConversation,
+      previousMessageCID,
+      conversationKeyExists,
+    });
+
+    if (initialiseConversation) {
       console.log(`Initializing new conversation ${conversationId} on storage...`);
       const { chainId } = await provider.getNetwork();
       const keyFileTags = [
@@ -2054,6 +2117,7 @@ module.exports = {
   reconstructHistory,
   parseMockDelayMs,
   hasMockDropSentinel,
+  shouldInitializeConversation,
   getSessionKey,
   encryptSymmetrically,
   decryptSymmetrically,

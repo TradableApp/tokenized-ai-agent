@@ -379,6 +379,46 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("shouldInitializeConversation (orphaned-conversation backstop)", () => {
+    // A conversation whose first prompt was cancelled never had ConversationAdded emitted.
+    // The dApp is the primary fix (flags such a resend new); this predicate is the oracle's
+    // defensive backstop, disambiguating via the conversation's key file existence.
+    it("initialises when the client flags the conversation new", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({ isNewConversation: true }),
+      ).to.equal(true);
+    });
+
+    it("does NOT initialise a normal follow-up that threads off a parent message", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: "bafyParentCid",
+        }),
+      ).to.equal(false);
+    });
+
+    it("initialises a parentless non-new prompt when no key file exists yet (orphaned after cancel)", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: null,
+          conversationKeyExists: false,
+        }),
+      ).to.equal(true);
+    });
+
+    it("does NOT re-initialise a parentless prompt when a key file already exists (first-message edit)", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: null,
+          conversationKeyExists: true,
+        }),
+      ).to.equal(false);
+    });
+  });
+
   describe("Oracle Reliability and Startup", () => {
     it("setOracleAddress should do nothing if addresses match", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
