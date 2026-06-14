@@ -804,8 +804,10 @@ function hasMockDropSentinel(text) {
  * @param {boolean} args.isNewConversation - The client's new-conversation flag.
  * @param {string|null} [args.previousMessageCID] - Parent message CID, if any.
  * @param {boolean} [args.conversationKeyExists] - Whether a key file already exists for the
- *   conversation. Only consulted (and only worth looking up) when the prompt is non-new and
- *   parentless.
+ *   conversation. Only reached on the orphan-risk path (non-new AND no parent CID), where the
+ *   caller MUST supply it (it has run the tag lookup). It is REQUIRED there: an omitted/undefined
+ *   value falls through to `false` ("don't initialise"), which is the safe default for any other
+ *   shape but would WRONGLY decline to initialise a genuine orphan — so never omit it on that path.
  * @returns {boolean} True if the conversation must be initialised on storage.
  */
 function shouldInitializeConversation({ isNewConversation, previousMessageCID, conversationKeyExists }) {
@@ -813,7 +815,8 @@ function shouldInitializeConversation({ isNewConversation, previousMessageCID, c
   // A normal follow-up threads off a parent message — the conversation is already
   // established, so never re-initialise.
   if (previousMessageCID) return false;
-  // Orphan-risk: non-new but parentless. Initialise only if no key file exists yet.
+  // Orphan-risk: non-new but parentless. Initialise only if no key file exists yet. The caller
+  // must have resolved conversationKeyExists here (undefined would decline to initialise).
   return conversationKeyExists === false;
 }
 
@@ -1041,11 +1044,14 @@ async function handlePrompt(
     // this lookup in that rare ambiguous case, never on normal follow-ups. See
     // shouldInitializeConversation.
     let conversationKeyExists;
+    // Fetched once and shared between the orphan-backstop key lookup and the init block below,
+    // so the two `${chainId}-${conversationId}` tag values can't diverge.
+    let chainId;
     if (!isNewConversation && !previousMessageCID) {
-      const { chainId: guardChainId } = await provider.getNetwork();
+      ({ chainId } = await provider.getNetwork());
       const existingKeyCID = await queryTransactionByTags([
         { name: "Content-Type", value: "application/rofl-key" },
-        { name: "SenseAI-Key-For-Conversation", value: `${guardChainId}-${conversationId}` },
+        { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },
       ]);
       conversationKeyExists = !!existingKeyCID;
       if (!conversationKeyExists) {
@@ -1062,7 +1068,11 @@ async function handlePrompt(
 
     if (initialiseConversation) {
       console.log(`Initializing new conversation ${conversationId} on storage...`);
-      const { chainId } = await provider.getNetwork();
+      // Reuse the chainId from the orphan-backstop lookup if it ran; otherwise fetch it now
+      // (the normal new-conversation path skips that block).
+      if (chainId === undefined) {
+        ({ chainId } = await provider.getNetwork());
+      }
       const keyFileTags = [
         { name: "Content-Type", value: "application/rofl-key" },
         { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },

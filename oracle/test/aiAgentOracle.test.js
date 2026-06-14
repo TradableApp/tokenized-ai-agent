@@ -417,6 +417,18 @@ describe("aiAgentOracle", function () {
         }),
       ).to.equal(false);
     });
+
+    // Documents the contract: on the orphan path the caller MUST resolve conversationKeyExists.
+    // Omitting it falls through to false ("don't initialise") — safe everywhere else, but the
+    // caller is responsible for supplying it here so a genuine orphan isn't silently declined.
+    it("returns false when conversationKeyExists is omitted (undefined is not 'no key file')", () => {
+      expect(
+        aiAgentOracle.shouldInitializeConversation({
+          isNewConversation: false,
+          previousMessageCID: null,
+        }),
+      ).to.equal(false);
+    });
   });
 
   describe("Oracle Reliability and Startup", () => {
