@@ -359,6 +359,26 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("hasMockDropSentinel (E2E never-answer sentinel)", () => {
+    // MOCK-mode only: a prompt may carry "__E2E_DROP__" so an e2e test can leave a prompt
+    // GENUINELY pending (the oracle never submits an answer), which is required to
+    // deterministically exercise the refund path — the delay sentinel always eventually
+    // delivers, which races the refund. This is the pure detector; the early-return is
+    // wired into handlePrompt's MOCK_AI branch.
+    it("detects the drop sentinel embedded in a prompt", () => {
+      expect(aiAgentOracle.hasMockDropSentinel("Please answer __E2E_DROP__")).to.equal(true);
+    });
+
+    it("returns false when no sentinel is present", () => {
+      expect(aiAgentOracle.hasMockDropSentinel("a normal prompt")).to.equal(false);
+    });
+
+    it("returns false for non-string input", () => {
+      expect(aiAgentOracle.hasMockDropSentinel(undefined)).to.equal(false);
+      expect(aiAgentOracle.hasMockDropSentinel(null)).to.equal(false);
+    });
+  });
+
   describe("Oracle Reliability and Startup", () => {
     it("setOracleAddress should do nothing if addresses match", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;

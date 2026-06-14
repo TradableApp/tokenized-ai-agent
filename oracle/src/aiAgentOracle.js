@@ -69,6 +69,13 @@ const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
 const MOCK_DELAY_SENTINEL = /__E2E_DELAY_MS__:(\d+)/;
 const MAX_MOCK_DELAY_MS = 30000;
 
+// MOCK-mode only: an e2e prompt may embed "__E2E_DROP__" to make the oracle skip
+// submitting the answer entirely, leaving the on-chain job GENUINELY pending. Required to
+// deterministically exercise the refund path: the delay sentinel always eventually
+// delivers (and is capped at 30s), which races processRefund. Honoured ONLY inside
+// handlePrompt's MOCK_AI branch, so it can never affect production (MOCK_AI is false there).
+const MOCK_DROP_SENTINEL = /__E2E_DROP__/;
+
 // This single function from our utility handles all environment-specific setup.
 let { provider, signer, contract, isSapphire } = initializeOracle(
   NETWORK_NAME,
@@ -762,6 +769,18 @@ function parseMockDelayMs(text) {
 }
 
 /**
+ * Detects the optional "__E2E_DROP__" marker (mock-mode only). When present, handlePrompt
+ * returns early WITHOUT submitting an answer, so the on-chain job stays unfinalized and the
+ * prompt is genuinely pending — required to deterministically exercise the refund flow.
+ * @param {string} text - The prompt text.
+ * @returns {boolean} True if the drop sentinel is present.
+ */
+function hasMockDropSentinel(text) {
+  if (typeof text !== "string") return false;
+  return MOCK_DROP_SENTINEL.test(text);
+}
+
+/**
  * A dispatcher for querying the AI model specified by the routeQueryIntent.
  * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} conversationId - The on-chain conversation ID.
@@ -922,6 +941,16 @@ async function handlePrompt(
     const clientPayload = validatePayload(decryptedData, "PromptSubmitted");
 
     const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
+
+    // E2E only: a "__E2E_DROP__" marker makes the oracle never answer this prompt, leaving
+    // the on-chain job pending so a test can deterministically exercise the refund flow
+    // (forward EVM time past REFUND_TIMEOUT → processRefund). Mock-only => prod-safe.
+    if (MOCK_AI && hasMockDropSentinel(promptText)) {
+      console.log(
+        `  ℹ️ Dropping prompt ${promptMessageId} (E2E __E2E_DROP__ sentinel) — leaving it pending for the refund flow.`,
+      );
+      return;
+    }
 
     console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(previousMessageCID, sessionKey);
@@ -2024,6 +2053,7 @@ module.exports = {
   queryAIModel,
   reconstructHistory,
   parseMockDelayMs,
+  hasMockDropSentinel,
   getSessionKey,
   encryptSymmetrically,
   decryptSymmetrically,
