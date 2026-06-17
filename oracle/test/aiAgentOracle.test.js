@@ -379,6 +379,27 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("hasMockReasoningSentinel (E2E reasoning/sources sentinel)", () => {
+    // MOCK-mode only: a prompt may carry "__E2E_REASONING__" so an e2e test can make the
+    // oracle attach deterministic reasoning + sources to the answer MessageFile, exercising
+    // the dApp's (currently unwired) reasoning/sources render path end-to-end. This is the
+    // pure detector; the attach is wired into handlePrompt's MOCK_AI branch.
+    it("detects the reasoning sentinel embedded in a prompt", () => {
+      expect(
+        aiAgentOracle.hasMockReasoningSentinel("Explain BTC trends __E2E_REASONING__"),
+      ).to.equal(true);
+    });
+
+    it("returns false when no sentinel is present", () => {
+      expect(aiAgentOracle.hasMockReasoningSentinel("a normal prompt")).to.equal(false);
+    });
+
+    it("returns false for non-string input", () => {
+      expect(aiAgentOracle.hasMockReasoningSentinel(undefined)).to.equal(false);
+      expect(aiAgentOracle.hasMockReasoningSentinel(null)).to.equal(false);
+    });
+  });
+
   describe("shouldInitializeConversation (orphaned-conversation backstop)", () => {
     // A conversation whose first prompt was cancelled never had ConversationAdded emitted.
     // The dApp is the primary fix (flags such a resend new); this predicate is the oracle's
