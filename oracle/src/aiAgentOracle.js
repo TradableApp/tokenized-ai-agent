@@ -98,7 +98,7 @@ const MOCK_E2E_SOURCES = [
   { title: "Tradable Documentation", url: "https://tradable.app/docs" },
   { title: "SenseAI Reference", url: "https://senseai.tradable.app" },
 ];
-const MOCK_E2E_REASONING_DURATION = 3;
+const MOCK_E2E_REASONING_DURATION = 3; // seconds — the dApp renders "Thought for {n} seconds"
 
 // This single function from our utility handles all environment-specific setup.
 let { provider, signer, contract, isSapphire } = initializeOracle(

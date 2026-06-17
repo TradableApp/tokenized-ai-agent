@@ -398,6 +398,82 @@ describe("aiAgentOracle", function () {
       expect(aiAgentOracle.hasMockReasoningSentinel(undefined)).to.equal(false);
       expect(aiAgentOracle.hasMockReasoningSentinel(null)).to.equal(false);
     });
+
+    it("handlePrompt attaches reasoning + sources to the answer under MOCK_AI (wiring)", async () => {
+      // Detector correctness above doesn't prove the call site still spreads the extras into
+      // the answer MessageFile — a createMessageFile refactor could silently drop them and all
+      // detector tests would still pass. Load a fresh module with MOCK_AI=true (read once at
+      // load) and assert the assistant MessageFile carries reasoning/sources/reasoningDuration.
+      // Mirrors the "queryAIModel actually applies the delay under MOCK_AI (wiring)" test above.
+      process.env.MOCK_AI = "true";
+      try {
+        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        mockAi.initForTest(stubs["./contractUtility"].initializeOracle());
+
+        const clientPayload = {
+          promptText: "Explain BTC momentum __E2E_REASONING__",
+          isNewConversation: true,
+          previousMessageId: null,
+          previousMessageCID: null,
+        };
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+        );
+        const fakeEvent = {
+          blockNumber: 1,
+          getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+        };
+
+        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0xkey", fakeEvent);
+
+        const answerCall = stubs["./formatters"].createMessageFile
+          .getCalls()
+          .find(c => c.args[0].role === "assistant");
+        expect(answerCall, "an assistant MessageFile should be created").to.exist;
+        expect(answerCall.args[0].reasoning).to.have.lengthOf(2);
+        expect(answerCall.args[0].reasoning[0]).to.include.keys("title", "description");
+        expect(answerCall.args[0].sources).to.have.lengthOf(2);
+        expect(answerCall.args[0].sources[0]).to.include.keys("title", "url");
+        expect(answerCall.args[0].reasoningDuration).to.be.a("number");
+      } finally {
+        delete process.env.MOCK_AI;
+      }
+    });
+
+    it("handlePrompt attaches NO reasoning when the sentinel is absent (wiring)", async () => {
+      // The negative wiring case: a normal prompt must leave the answer MessageFile without the
+      // AI-extras, so the dApp's disclosure stays hidden (mirrors dApp T-REASON-02).
+      process.env.MOCK_AI = "true";
+      try {
+        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        mockAi.initForTest(stubs["./contractUtility"].initializeOracle());
+
+        const clientPayload = {
+          promptText: "A plain question",
+          isNewConversation: true,
+          previousMessageId: null,
+          previousMessageCID: null,
+        };
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+        );
+        const fakeEvent = {
+          blockNumber: 1,
+          getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+        };
+
+        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0xkey", fakeEvent);
+
+        const answerCall = stubs["./formatters"].createMessageFile
+          .getCalls()
+          .find(c => c.args[0].role === "assistant");
+        expect(answerCall, "an assistant MessageFile should be created").to.exist;
+        expect(answerCall.args[0].reasoning).to.equal(undefined);
+        expect(answerCall.args[0].sources).to.equal(undefined);
+      } finally {
+        delete process.env.MOCK_AI;
+      }
+    });
   });
 
   describe("shouldInitializeConversation (orphaned-conversation backstop)", () => {
