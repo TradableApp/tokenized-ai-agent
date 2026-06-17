@@ -76,6 +76,30 @@ const MAX_MOCK_DELAY_MS = 30000;
 // handlePrompt's MOCK_AI branch, so it can never affect production (MOCK_AI is false there).
 const MOCK_DROP_SENTINEL = /__E2E_DROP__/;
 
+// MOCK-mode only: an e2e prompt may embed "__E2E_REASONING__" to make the oracle attach
+// deterministic reasoning + sources to the answer MessageFile. The dApp's reasoning/sources
+// render path is built but production doesn't yet emit them (tracked in ClickUp 86d3cfa41), so
+// this lets the e2e exercise that render path end-to-end now; when the real feature lands the
+// test upgrades to assert real data. Honoured ONLY inside handlePrompt's MOCK_AI branch, so it
+// can never affect production (MOCK_AI is false there). Shapes match createMessageFile +
+// the dApp components: reasoning = {title, description}, sources = {title, url}.
+const MOCK_REASONING_SENTINEL = /__E2E_REASONING__/;
+const MOCK_E2E_REASONING = [
+  {
+    title: "Interpreting the request",
+    description: "Identified the user's intent and the key entities to address.",
+  },
+  {
+    title: "Synthesising the answer",
+    description: "Combined the relevant on-chain and market context into a concise response.",
+  },
+];
+const MOCK_E2E_SOURCES = [
+  { title: "Tradable Documentation", url: "https://tradable.app/docs" },
+  { title: "SenseAI Reference", url: "https://senseai.tradable.app" },
+];
+const MOCK_E2E_REASONING_DURATION = 3; // seconds — the dApp renders "Thought for {n} seconds"
+
 // This single function from our utility handles all environment-specific setup.
 let { provider, signer, contract, isSapphire } = initializeOracle(
   NETWORK_NAME,
@@ -781,6 +805,18 @@ function hasMockDropSentinel(text) {
 }
 
 /**
+ * Detects the optional "__E2E_REASONING__" marker (mock-mode only). When present, handlePrompt
+ * attaches deterministic reasoning + sources to the answer MessageFile so the dApp's
+ * reasoning/sources render path can be asserted end-to-end (see MOCK_REASONING_SENTINEL).
+ * @param {string} text - The prompt text.
+ * @returns {boolean} True if the reasoning sentinel is present.
+ */
+function hasMockReasoningSentinel(text) {
+  if (typeof text !== "string") return false;
+  return MOCK_REASONING_SENTINEL.test(text);
+}
+
+/**
  * Decides whether the oracle must initialise the conversation on storage (create the
  * ConversationFile + emit a non-empty conversationCID, which makes EVMAIAgent emit
  * ConversationAdded so the subgraph indexes the conversation).
@@ -992,6 +1028,18 @@ async function handlePrompt(
       return;
     }
 
+    // E2E only: "__E2E_REASONING__" attaches deterministic reasoning + sources to the answer
+    // MessageFile below, so the dApp's reasoning/sources render path can be asserted
+    // end-to-end. Empty object otherwise (and always in production — MOCK_AI is false there).
+    const mockAnswerExtras =
+      MOCK_AI && hasMockReasoningSentinel(promptText)
+        ? {
+            reasoning: MOCK_E2E_REASONING,
+            sources: MOCK_E2E_SOURCES,
+            reasoningDuration: MOCK_E2E_REASONING_DURATION,
+          }
+        : {};
+
     console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(previousMessageCID, sessionKey);
 
@@ -1125,6 +1173,7 @@ async function handlePrompt(
         createdAt: now + 1,
         role: "assistant",
         content: answerText,
+        ...mockAnswerExtras,
       });
       const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
 
@@ -1158,6 +1207,7 @@ async function handlePrompt(
         createdAt: now + 1,
         role: "assistant",
         content: answerText,
+        ...mockAnswerExtras,
       });
       const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
 
@@ -2127,6 +2177,7 @@ module.exports = {
   reconstructHistory,
   parseMockDelayMs,
   hasMockDropSentinel,
+  hasMockReasoningSentinel,
   shouldInitializeConversation,
   getSessionKey,
   encryptSymmetrically,
