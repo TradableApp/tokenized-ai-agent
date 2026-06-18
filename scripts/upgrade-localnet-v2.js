@@ -17,10 +17,22 @@
  */
 const hre = require("hardhat");
 
+// localnet-only: the V2 contracts live under contracts/test/ and compile on every network, so without
+// this guard a stray `--network base`/`--network baseSepolia` with a real proxy would trigger an
+// irreversible upgrade to a bare test implementation on a live chain.
+const LOCALNET_NETWORKS = new Set(["localnet", "hardhat"]);
+
 async function main() {
+  if (!LOCALNET_NETWORKS.has(hre.network.name)) {
+    throw new Error(`This script is localnet-only — refusing to run on "${hre.network.name}".`);
+  }
+
   const proxy = process.env.PROXY_ADDRESS;
   if (!proxy) {
     throw new Error("PROXY_ADDRESS env var is required (the UUPS proxy address to upgrade).");
+  }
+  if (!hre.ethers.isAddress(proxy)) {
+    throw new Error(`PROXY_ADDRESS is not a valid EVM address: "${proxy}".`);
   }
 
   const target = (process.env.UPGRADE_TARGET || "escrow").toLowerCase();
