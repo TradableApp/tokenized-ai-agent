@@ -16,6 +16,8 @@
     "deploy:base-localnet": "ENV_FILE=.env.base-localnet hardhat run scripts/deploy.js --network localnet",
     "deploy:base-testnet": "ENV_FILE=.env.base-testnet hardhat run scripts/deploy.js --network baseSepolia",
     "deploy:base-mainnet": "ENV_FILE=.env.base-mainnet hardhat run scripts/deploy.js --network base",
+    "// --- E2E UPGRADE SUPPORT (localnet only) ---": "---",
+    "upgrade:base-localnet-v2": "ENV_FILE=.env.base-localnet hardhat run scripts/upgrade-localnet-v2.js --network localnet",
     "// --- ROFL: TESTNET WORKFLOWS (SAPPHIRE) ---": "---",
     "rofl:create:testnet": "oasis rofl create --network testnet --deployment testnet --account oasis_testnet",
     "image:build:testnet": "docker build --platform linux/amd64 -t ghcr.io/tradableapp/tokenized-ai-agent:testnet -f Dockerfile.oracle .",
