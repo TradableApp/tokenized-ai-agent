@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       # The shared-schema submodule is a separate PRIVATE repo, so the default
       # GITHUB_TOKEN cannot fetch it via `submodules: recursive`. Check it out
@@ -28,7 +28,7 @@ jobs:
         run: echo "sha=$(git ls-tree HEAD packages/shared-schema | awk '{print $3}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout shared-schema submodule
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: TradableApp/sense-ai-shared-schema
           ref: ${{ steps.submodule-sha.outputs.sha }}
