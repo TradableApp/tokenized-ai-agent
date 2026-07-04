@@ -26,7 +26,7 @@ jobs:
         with:
           fetch-depth: 0     # full history required for git diff against the base branch
 
-      - uses: anthropics/claude-code-action@70a6e5256e9e2366a1ed5c041904a982ba3a328f # v1
+      - uses: anthropics/claude-code-action@fad22eb3fa582b7357fc0ea48af6645851b884fd # v1.0.161
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           include_fix_links: 'true'
@@ -69,7 +69,7 @@ jobs:
             - Do not suggest reverting intentional decisions or patterns documented in CLAUDE.md
           claude_args: |
             --max-turns 100
-            --allowedTools Read,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git blame*),Bash(grep*),Bash(find . *)
+            --allowedTools Read,Bash(git diff*),Bash(git log*),Bash(git show*),Bash(git blame*),Bash(grep*),Bash(find . *),mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment
             --system-prompt "You are an independent senior code reviewer. You did NOT write this code and have no prior context — your job is to catch real bugs, security issues, and quality problems that the author and their coding assistant may have missed. Be efficient with your tool budget: size the PR first, triage to the highest-risk changes on large PRs, and skip generated/vendored noise. Posting your review is mandatory — always post inline comments and a summary before ending, even if your coverage is partial. Be direct and specific; do not over-comment."
           additional_permissions: |
             actions: read
