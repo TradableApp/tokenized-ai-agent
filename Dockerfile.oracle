@@ -15,6 +15,14 @@ WORKDIR /app/oracle
 
 # Copy the oracle's package files and install production dependencies
 COPY ./oracle/package*.json ./
+
+# The Brain ships compiled dist/ built with Bun on the HOST (image:build:*
+# scripts run prepare:brain first) — this Node image can't build it. Guard so
+# a missing dist fails the build loudly instead of at container start.
+COPY ./oracle/packages/sense-ai-brain ./packages/sense-ai-brain
+RUN test -f packages/sense-ai-brain/dist/index.js || \
+    (echo "sense-ai-brain dist/ missing — run 'bun run prepare:brain' before docker build" && exit 1)
+
 RUN npm install --omit=dev --no-progress
 
 # Copy the oracle's source code into the current directory (/app/oracle)

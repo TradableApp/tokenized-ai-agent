@@ -36,6 +36,34 @@ jobs:
           path: packages/shared-schema
           persist-credentials: false
 
+      # The Brain submodule is likewise a separate PRIVATE repo (with its own
+      # nested shared-schema submodule, needed to build its dist).
+      - name: Resolve sense-ai-brain submodule SHA
+        id: brain-sha
+        run: echo "sha=$(git ls-tree HEAD oracle/packages/sense-ai-brain | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout sense-ai-brain submodule
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TradableApp/sense-ai-brain
+          ref: ${{ steps.brain-sha.outputs.sha }}
+          token: ${{ secrets.SUBMODULE_PAT }}
+          path: oracle/packages/sense-ai-brain
+          persist-credentials: false
+
+      - name: Resolve brain nested shared-schema SHA
+        id: brain-schema-sha
+        run: echo "sha=$(git -C oracle/packages/sense-ai-brain ls-tree HEAD packages/shared-schema | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout brain nested shared-schema submodule
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TradableApp/sense-ai-shared-schema
+          ref: ${{ steps.brain-schema-sha.outputs.sha }}
+          token: ${{ secrets.SUBMODULE_PAT }}
+          path: oracle/packages/sense-ai-brain/packages/shared-schema
+          persist-credentials: false
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .nvmrc
@@ -55,6 +83,13 @@ jobs:
 
       - name: Lint (contracts)
         run: bun run lint
+
+      # Build the Brain dist BEFORE the oracle install (bun copies path deps at
+      # install time; the copy must contain dist/ and must NOT contain the
+      # Brain's node_modules — its drizzle-orm devDependency would shadow the
+      # host copy).
+      - name: Prepare Brain package
+        run: bun run prepare:brain
 
       - name: Install oracle dependencies
         run: cd oracle && bun install --frozen-lockfile
