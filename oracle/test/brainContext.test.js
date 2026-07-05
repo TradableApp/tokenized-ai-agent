@@ -37,12 +37,99 @@ describe("brainContext (oracle Brain wiring)", () => {
     expect(result).to.equal(null);
   });
 
-  it("builds contextText and sources from the warm cache via the Brain", async () => {
+  function setFullEnv() {
     process.env.POSTGRES_HOST = "10.0.0.5";
     process.env.POSTGRES_PORT = "5432";
     process.env.POSTGRES_DATABASE = "senseai";
     process.env.POSTGRES_USER = "senseai";
     process.env.POSTGRES_PASSWORD = "pw";
+    process.env.POSTGRES_CLIENT_CERT = "-----BEGIN CERTIFICATE-----";
+    process.env.POSTGRES_CLIENT_KEY = "-----BEGIN PRIVATE KEY-----";
+    process.env.POSTGRES_SERVER_CA_CERT = "-----BEGIN CERTIFICATE-----";
+  }
+
+  it("returns null when base keys are set but no cert source is configured", async () => {
+    process.env.POSTGRES_HOST = "10.0.0.5";
+    process.env.POSTGRES_PORT = "5432";
+    process.env.POSTGRES_DATABASE = "senseai";
+    process.env.POSTGRES_USER = "senseai";
+    process.env.POSTGRES_PASSWORD = "pw";
+    let brainLoads = 0;
+    brainContext._setTestOverrides({
+      createDb: () => ({}),
+      loadBrain: async () => {
+        brainLoads++;
+        throw new Error("must not be reached");
+      },
+    });
+
+    const result = await brainContext.getMarketContext();
+    expect(result).to.equal(null);
+    expect(brainLoads).to.equal(0);
+  });
+
+  it("concurrent calls share ONE initialization (no pg Pool leak under p-queue concurrency)", async () => {
+    setFullEnv();
+    let dbCreations = 0;
+    brainContext._setTestOverrides({
+      createDb: () => {
+        dbCreations++;
+        return {};
+      },
+      loadBrain: async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        return {
+          SentimentEngine: class {
+            async getLatestMacro() {
+              return null;
+            }
+          },
+          getLatestEnrichedNews: async () => [],
+          formatMacroEnvironment: () => "",
+          formatNewsTicker: () => "",
+        };
+      },
+    });
+
+    await Promise.all([
+      brainContext.getMarketContext(),
+      brainContext.getMarketContext(),
+      brainContext.getMarketContext(),
+    ]);
+    expect(dbCreations).to.equal(1);
+  });
+
+  it("a transient read failure returns null WITHOUT tearing down the initialized client", async () => {
+    setFullEnv();
+    let dbCreations = 0;
+    let reads = 0;
+    brainContext._setTestOverrides({
+      createDb: () => {
+        dbCreations++;
+        return {};
+      },
+      loadBrain: async () => ({
+        SentimentEngine: class {
+          async getLatestMacro() {
+            reads++;
+            if (reads === 1) throw new Error("transient blip");
+            return { fearGreedIndex: 50, fearGreedClassification: "Neutral" };
+          }
+        },
+        getLatestEnrichedNews: async () => [],
+        formatMacroEnvironment: () => "### MACRO MARKET ENVIRONMENT",
+        formatNewsTicker: () => "",
+      }),
+    });
+
+    expect(await brainContext.getMarketContext()).to.equal(null);
+    const second = await brainContext.getMarketContext();
+    expect(second).to.be.an("object");
+    expect(dbCreations).to.equal(1);
+  });
+
+  it("builds contextText and sources from the warm cache via the Brain", async () => {
+    setFullEnv();
 
     brainContext._setTestOverrides({
       createDb: () => ({}),
@@ -73,11 +160,7 @@ describe("brainContext (oracle Brain wiring)", () => {
   });
 
   it("degrades to null when the warm-cache read throws (DB blip must not fail the answer)", async () => {
-    process.env.POSTGRES_HOST = "10.0.0.5";
-    process.env.POSTGRES_PORT = "5432";
-    process.env.POSTGRES_DATABASE = "senseai";
-    process.env.POSTGRES_USER = "senseai";
-    process.env.POSTGRES_PASSWORD = "pw";
+    setFullEnv();
 
     brainContext._setTestOverrides({
       createDb: () => ({}),

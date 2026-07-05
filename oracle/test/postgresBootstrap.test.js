@@ -83,6 +83,15 @@ describe("postgresBootstrap (oracle port)", () => {
     expect(written).to.include("-----BEGIN CERTIFICATE-----");
   });
 
+  it("rejects a *_PATH that is not a regular file (directory misconfiguration)", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY_PATH = certDir; // a directory, not a key file
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    expect(() => bootstrapPostgresFromEnv({ certDir })).to.throw(/regular file/);
+  });
+
   it("prefers *_PATH file sources over inline PEM and rejects group-readable keys", () => {
     setBaseEnv();
     const keyPath = join(certDir, "loose.key");
