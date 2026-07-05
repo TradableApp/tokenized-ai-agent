@@ -20,7 +20,7 @@ COPY ./packages/shared-schema ./packages/shared-schema
 
 WORKDIR /app/oracle
 
-COPY ./oracle/package*.json ./
+COPY ./oracle/package.json ./oracle/bun.lock ./
 
 # Brain: build from source in-image, then drop its node_modules in the same
 # layer — its drizzle-orm devDependency would shadow the host copy and split
@@ -29,9 +29,11 @@ COPY ./oracle/packages/sense-ai-brain ./packages/sense-ai-brain
 RUN cd packages/sense-ai-brain && bun install --frozen-lockfile && bun run build && \
     rm -rf node_modules
 
-# Production deps AFTER the Brain dist exists — npm symlinks the path dep, so
-# the target must already be complete.
-RUN npm install --omit=dev --no-progress && npm cache clean --force
+# Production deps AFTER the Brain dist exists — bun copies the path dep into
+# node_modules at install time, so the target must already be complete.
+# --frozen-lockfile keeps release builds reproducible against bun.lock (a bare
+# npm install here would drift with transitive releases — Copilot, PR #50).
+RUN bun install --frozen-lockfile --production && rm -rf ~/.bun/install/cache
 
 COPY ./oracle/src ./src
 
@@ -52,8 +54,9 @@ COPY --from=builder --chown=node:node /app/packages/shared-schema ./packages/sha
 WORKDIR /app/oracle
 
 COPY --from=builder --chown=node:node /app/oracle/node_modules ./node_modules
-# node_modules/@tradableapp/sense-ai-brain is npm's symlink to ../packages/
-# sense-ai-brain — ship the dist + manifest at that path so it resolves.
+# Depending on the installer's linker the Brain lands in node_modules as a
+# copy (bun's observed behaviour) or a symlink to ../packages/sense-ai-brain —
+# ship the dist + manifest at the target path so BOTH layouts resolve.
 COPY --from=builder --chown=node:node /app/oracle/packages/sense-ai-brain/dist ./packages/sense-ai-brain/dist
 COPY --from=builder --chown=node:node /app/oracle/packages/sense-ai-brain/package.json ./packages/sense-ai-brain/package.json
 COPY --from=builder --chown=node:node /app/oracle/src ./src

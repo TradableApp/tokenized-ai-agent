@@ -41,7 +41,7 @@
   "dependencies": {
     "@elizaos/core": "1.7.2",
     "axios": "^1.16.1",
-    "zod": "^4.2.1"
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@elizaos/cli": "1.7.2",
@@ -60,9 +60,6 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "resolutions": {
-    "zod": "4.1.13"
   },
   "agentConfig": {
     "pluginType": "elizaos:plugin:1.0.0",
