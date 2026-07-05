@@ -39,12 +39,12 @@
     "package.json"
   ],
   "dependencies": {
-    "@elizaos/core": "1.7.0",
-    "axios": "^1.13.2",
-    "zod": "^4.1.13"
+    "@elizaos/core": "1.7.2",
+    "axios": "^1.16.1",
+    "zod": "^4.3.5"
   },
   "devDependencies": {
-    "@elizaos/cli": "1.7.0",
+    "@elizaos/cli": "1.7.2",
     "dotenv": "^17.2.3",
     "prettier": "^3.7.4",
     "typescript": "^5.9.3"
@@ -60,9 +60,6 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "resolutions": {
-    "zod": "4.1.13"
   },
   "agentConfig": {
     "pluginType": "elizaos:plugin:1.0.0",

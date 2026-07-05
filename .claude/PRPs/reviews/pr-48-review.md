@@ -11,6 +11,7 @@
 | 4 | Copilot (key path isFile) | AGREE | Applied to ALL cert *_PATH inputs — non-regular-file fails fast | 1e35dc8 |
 | 5 | claude[bot] 🔴 (singleton race + pool leak under p-queue concurrency 5) | AGREE | Sharpest finding: promise memoization; failed init self-resets; read errors keep the live pool. 2 regression tests (3 concurrent calls → 1 db; transient read failure → no teardown). Propagation: core has no equivalent lazy pool | 1e35dc8 |
 | 6 | claude[bot] (duplicate of #5) | AGREE | Cross-referenced | 1e35dc8 |
+| 8 | Copilot r2 (resolveCert check ordering) | AGREE | ONE lstat for keys, symlink→isFile→0600 order restores the dedicated TOCTOU message; non-key certs use statSync so symlinked CA/certs stay allowed (core parity). +2 regression tests | 2031546 |
 | 7 | claude[bot] summary notes | REPLIED | Prompt-injection: injected text is enrichment OUTPUT (schema-constrained), not raw provider text; full hardening + adversarial-title assertion logged for Phase 4. Integration-test gap acknowledged — Phase 4 seeded-cache e2e is the answer | — |
 
 ## Own findings
@@ -23,10 +24,10 @@ None beyond the above. Sentinel behaviour verified unchanged (delay/drop/reasoni
 ## Validation
 | Check | Result |
 |---|---|
-| bun run test (oracle, mocha) | Pass (190/190, incl. 4 new RED→GREEN regression tests) |
+| bun run test (oracle, mocha) | Pass (192/192, incl. 6 new RED→GREEN regression tests) |
 | Solhint / lint | Pass |
-| CI on final commit (1e35dc8) | Pass (incl. brain submodule checkout + prepare:brain) |
-| Mergeable | MERGEABLE (BLOCKED = required review; gated on brain #6 pointer bump) |
+| CI on final commit (2031546) | Pass (incl. brain submodule checkout @ main squash 20a356c + prepare:brain) |
+| Mergeable | MERGEABLE (BLOCKED = required review only; pointer bumped to brain main 20a356c) |
 
 ## Cross-PR conjunction review (#6 × #48, 2026-07-05)
 **Verdict: ALIGNED.** Real-#6-dist-through-real-#48-brainContext smoke under plain Node: PASS (6/6 checks — macro formatter parity incl. F&G-zero fix, string + non-string source guards, oracle wrapper block, sources shape = MessageFile contract).
