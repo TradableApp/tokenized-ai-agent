@@ -57,10 +57,15 @@ EXISTING=$(gcloud sql ssl client-certs list \
   --project="$GCP_PROJECT" \
   --format='value(commonName)' 2>/dev/null | grep -c "^${CERT_NAME}$" || true)
 
+# The private key is only ever emitted at creation time, so an existing cert
+# means the cert/key push is skipped — but the Secret Manager values and the
+# POSTGRES_HOST stamp below STILL run, keeping re-runs useful for password/CA
+# refresh and instance recreation (Copilot, PR #52).
+CREATE_CERT=1
 if [ "$EXISTING" -gt 0 ]; then
-  echo "✅ Cert '$CERT_NAME' already exists — skipping creation."
+  echo "✅ Cert '$CERT_NAME' already exists — skipping cert creation/push."
   echo "   (To rotate: gcloud sql ssl client-certs delete $CERT_NAME --instance=$INSTANCE --project=$GCP_PROJECT, then re-run.)"
-  exit 0
+  CREATE_CERT=0
 fi
 
 # Private 0700 temp dir for all sensitive material; EXIT trap removes it on
@@ -71,18 +76,20 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 TMP_KEY="$TMP_DIR/client.key"
 TMP_CERT="$TMP_DIR/client.crt"
 
-echo "🔐 Generating client cert '$CERT_NAME' on $INSTANCE..."
-gcloud sql ssl client-certs create "$CERT_NAME" "$TMP_KEY" \
-  --instance="$INSTANCE" \
-  --project="$GCP_PROJECT"
-chmod 600 "$TMP_KEY"
+if [ "$CREATE_CERT" -eq 1 ]; then
+  echo "🔐 Generating client cert '$CERT_NAME' on $INSTANCE..."
+  gcloud sql ssl client-certs create "$CERT_NAME" "$TMP_KEY" \
+    --instance="$INSTANCE" \
+    --project="$GCP_PROJECT"
+  chmod 600 "$TMP_KEY"
 
-echo "📥 Fetching signed cert PEM..."
-gcloud sql ssl client-certs describe "$CERT_NAME" \
-  --instance="$INSTANCE" \
-  --project="$GCP_PROJECT" \
-  --format='value(cert)' > "$TMP_CERT"
-chmod 600 "$TMP_CERT"
+  echo "📥 Fetching signed cert PEM..."
+  gcloud sql ssl client-certs describe "$CERT_NAME" \
+    --instance="$INSTANCE" \
+    --project="$GCP_PROJECT" \
+    --format='value(cert)' > "$TMP_CERT"
+  chmod 600 "$TMP_CERT"
+fi
 
 push_b64_secret() {
   local name="$1" src="$2" b64="$TMP_DIR/$1.b64"
@@ -90,9 +97,11 @@ push_b64_secret() {
   oasis rofl secret set "$name" --deployment "$ENV" "$b64"
 }
 
-echo "🛰️  Pushing POSTGRES_CLIENT_CERT / POSTGRES_CLIENT_KEY to deployment '$ENV' (base64)..."
-push_b64_secret POSTGRES_CLIENT_CERT "$TMP_CERT"
-push_b64_secret POSTGRES_CLIENT_KEY "$TMP_KEY"
+if [ "$CREATE_CERT" -eq 1 ]; then
+  echo "🛰️  Pushing POSTGRES_CLIENT_CERT / POSTGRES_CLIENT_KEY to deployment '$ENV' (base64)..."
+  push_b64_secret POSTGRES_CLIENT_CERT "$TMP_CERT"
+  push_b64_secret POSTGRES_CLIENT_KEY "$TMP_KEY"
+fi
 
 echo "🛰️  Fetching POSTGRES_PASSWORD + server CA from Secret Manager and pushing..."
 TMP_PW="$TMP_DIR/pw"
@@ -105,9 +114,13 @@ oasis rofl secret set POSTGRES_PASSWORD --deployment "$ENV" "$TMP_PW"
 push_b64_secret POSTGRES_SERVER_CA_CERT "$TMP_CA"
 
 # Stamp the Cloud SQL public IP into the env file (handles instance recreation).
+# PRIMARY address selected explicitly (instances can carry multiple IPs), and
+# the whole lookup is non-fatal under set -e — a describe failure falls through
+# to the warning branch instead of killing the script.
 PUBLIC_IP=$(gcloud sql instances describe "$INSTANCE" \
   --project="$GCP_PROJECT" \
-  --format='value(ipAddresses[0].ipAddress)' 2>/dev/null)
+  --format=json 2>/dev/null \
+  | python3 -c "import json,sys; ips=json.load(sys.stdin).get('ipAddresses',[]); print(next((i.get('ipAddress','') for i in ips if i.get('type')=='PRIMARY'), ''))" 2>/dev/null || true)
 
 if [ -z "$PUBLIC_IP" ]; then
   echo "⚠️  Could not fetch Cloud SQL public IP — leaving $ENV_FILE unchanged."
