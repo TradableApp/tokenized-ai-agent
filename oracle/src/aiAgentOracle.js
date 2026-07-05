@@ -58,6 +58,8 @@ const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
+const { getMarketContext } = require("./brainContext");
+
 const MOCK_AI = process.env.MOCK_AI === "true";
 const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
 
@@ -651,6 +653,13 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   // --- PROCESS NEW MESSAGE ---
   console.log("[ElizaOS] Processing new message via runtime handleMessage logic...");
 
+  // Phase 2 (CU-86d3dwme6): read the Brain's warm cache (kept warm by the
+  // Social body) and inject the same macro + news context blocks it uses.
+  // Null when unconfigured (localnet e2e) or on a DB blip — never blocks.
+  const marketContext = await getMarketContext();
+  const brainSources = marketContext ? marketContext.sources : [];
+  const reasoningStart = Date.now();
+
   // We use handleMessage which runs the full processing pipeline:
   // Context -> Action Selection -> Evaluation -> Response
   return new Promise(async (resolve, reject) => {
@@ -664,7 +673,9 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           entityId,
           roomId,
           content: {
-            text: currentMessage.content,
+            text: marketContext
+              ? `${currentMessage.content}\n\n[MARKET CONTEXT — verified warm-cache data]\n${marketContext.contextText}`
+              : currentMessage.content,
             source: "onchain",
           },
         },
@@ -691,9 +702,17 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           onComplete: async () => {
             console.log("[ElizaOS] Processing complete signal received.");
             if (finalResponseText) {
-              // In a production scenario, you would pass reasoningSteps back to handlePrompt
-              // to include in the MessageFile's reasoning array.
-              resolve(finalResponseText.trim());
+              // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
+              // thought steps from the runtime + the warm-cache sources injected above.
+              resolve({
+                text: finalResponseText.trim(),
+                reasoning: reasoningSteps.map((thought, index) => ({
+                  title: `Step ${index + 1}`,
+                  description: thought,
+                })),
+                sources: brainSources,
+                reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
+              });
             } else {
               reject(new Error("ElizaOS completed but generated no text."));
             }
@@ -861,8 +880,14 @@ function shouldInitializeConversation({ isNewConversation, previousMessageCID, c
  * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} conversationId - The on-chain conversation ID.
  * @param {string} userWallet - The user's wallet address.
- * @returns {Promise<string>} The content of the AI's response.
+ * @returns {Promise<{text: string, reasoning: Array<{title: string, description: string}>, sources: Array<{title: string, url: string}>, reasoningDuration?: number}>}
+ *          The normalized answer object (CU-86d3cfa41) — string-only provider
+ *          paths carry empty reasoning/sources.
  */
+function asAnswer(text) {
+  return { text, reasoning: [], sources: [] };
+}
+
 async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // --- MOCK MODE: Return deterministic response ---
   if (MOCK_AI) {
@@ -885,7 +910,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     const mockResponse = `[MOCK] I acknowledge your query about "${latestUserMessage.substring(0, 40)}...". This is a deterministic mock response for local testing.`;
     console.log("[Mock AI] Returning deterministic mock response");
-    return mockResponse;
+    return asAnswer(mockResponse);
   }
 
   const aiProvider = process.env.AI_PROVIDER;
@@ -893,18 +918,18 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // Direct provider bypass (used in tests and explicit operator config)
   if (aiProvider === "ChainGPT") {
     try {
-      return await queryChainGPT(conversationHistory, conversationId);
+      return asAnswer(await queryChainGPT(conversationHistory, conversationId));
     } catch (err) {
       console.error("[queryAIModel] ChainGPT provider failed.", err.message);
-      return "Error: Could not generate a response from the ChainGPT service.";
+      return asAnswer("Error: Could not generate a response from the ChainGPT service.");
     }
   }
   if (aiProvider === "DeepSeek") {
     try {
-      return await queryDeepSeek(conversationHistory);
+      return asAnswer(await queryDeepSeek(conversationHistory));
     } catch (err) {
       console.error("[queryAIModel] DeepSeek provider failed.", err.message);
-      return "Error: Could not generate a response from the DeepSeek service.";
+      return asAnswer("Error: Could not generate a response from the DeepSeek service.");
     }
   }
 
@@ -914,7 +939,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // 2. Path A: 1st Party Tradable Backend
   if (intent === "TRADABLE") {
     try {
-      return await queryTradableAssistant(conversationHistory, userWallet);
+      return asAnswer(await queryTradableAssistant(conversationHistory, userWallet));
     } catch (err) {
       console.warn("[Failover] First-party path failed. Falling back to ElizaOS.");
     }
@@ -929,7 +954,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     // 4. Failover 1: ChainGPT
     try {
-      return await queryChainGPT(conversationHistory, conversationId);
+      return asAnswer(await queryChainGPT(conversationHistory, conversationId));
     } catch (err2) {
       console.error(
         "[Failover] All external providers failed. Executing final local TEE fallback.",
@@ -937,10 +962,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
       // 5. Failover 2: Local TEE Model (DeepSeek)
       try {
-        return await queryDeepSeek(conversationHistory);
+        return asAnswer(await queryDeepSeek(conversationHistory));
       } catch (err3) {
         Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
-        return "Error: Could not generate a response. All AI providers are currently unavailable.";
+        return asAnswer(
+          "Error: Could not generate a response. All AI providers are currently unavailable.",
+        );
       }
     }
   }
@@ -1045,7 +1072,18 @@ async function handlePrompt(
 
     history.push({ role: "user", content: promptText, createdAt: Date.now() });
 
-    const answerText = await queryAIModel(history, conversationId.toString(), user);
+    const answer = await queryAIModel(history, conversationId.toString(), user);
+    const answerText = answer.text;
+    // Real reasoning/sources from the answer path (empty on string-only
+    // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
+    // so mock runs stay deterministic.
+    const realAnswerExtras = {
+      ...(answer.reasoning?.length ? { reasoning: answer.reasoning } : {}),
+      ...(answer.sources?.length ? { sources: answer.sources } : {}),
+      ...(answer.reasoningDuration !== undefined
+        ? { reasoningDuration: answer.reasoningDuration }
+        : {}),
+    };
 
     // Check again before paying for storage
     try {
@@ -1173,6 +1211,7 @@ async function handlePrompt(
         createdAt: now + 1,
         role: "assistant",
         content: answerText,
+        ...realAnswerExtras,
         ...mockAnswerExtras,
       });
       const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
@@ -1207,6 +1246,7 @@ async function handlePrompt(
         createdAt: now + 1,
         role: "assistant",
         content: answerText,
+        ...realAnswerExtras,
         ...mockAnswerExtras,
       });
       const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
@@ -1330,7 +1370,18 @@ async function handleRegeneration(
       });
     }
 
-    const answerText = await queryAIModel(history, conversationId.toString(), user);
+    const answer = await queryAIModel(history, conversationId.toString(), user);
+    const answerText = answer.text;
+    // Real reasoning/sources from the answer path (empty on string-only
+    // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
+    // so mock runs stay deterministic.
+    const realAnswerExtras = {
+      ...(answer.reasoning?.length ? { reasoning: answer.reasoning } : {}),
+      ...(answer.sources?.length ? { sources: answer.sources } : {}),
+      ...(answer.reasoningDuration !== undefined
+        ? { reasoningDuration: answer.reasoningDuration }
+        : {}),
+    };
 
     // Check again before paying for storage
     try {
@@ -1356,6 +1407,7 @@ async function handleRegeneration(
       createdAt: now,
       role: "assistant",
       content: answerText,
+      ...realAnswerExtras,
     });
     const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
 
