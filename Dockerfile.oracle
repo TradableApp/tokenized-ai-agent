@@ -1,32 +1,64 @@
-# Use a modern, slim Node.js base image
-FROM node:24-slim
+# syntax=docker/dockerfile:1
 
-# Set the root working directory for the entire application
+# =============================================================================
+# Stage 1 — builder: Node + Bun toolchain. Builds the Brain dist and the
+# oracle's ElizaOS plugin dist IN-IMAGE (both are Bun builds the old
+# single-stage image silently expected the HOST to have run), then installs
+# production deps. Mirrors sense-ai-core's builder/runner split.
+# =============================================================================
+FROM node:24-slim AS builder
+
+RUN npm install -g bun@1.3.14
+
 WORKDIR /app
 
-# Copy the compiled contract artifacts first, as they are needed by the oracle
+# Compiled contract artifacts (consumed via ../../artifacts/contracts/)
 COPY ./artifacts ./artifacts
 
-# Copy shared-schema submodule before install — oracle depends on it via "../packages/shared-schema"
+# shared-schema submodule — oracle depends on it via "../packages/shared-schema"
 COPY ./packages/shared-schema ./packages/shared-schema
 
-# Now, set the working directory to the oracle's specific subdirectory
 WORKDIR /app/oracle
 
-# Copy the oracle's package files and install production dependencies
 COPY ./oracle/package*.json ./
 
-# The Brain ships compiled dist/ built with Bun on the HOST (image:build:*
-# scripts run prepare:brain first) — this Node image can't build it. Guard so
-# a missing dist fails the build loudly instead of at container start.
+# Brain: build from source in-image, then drop its node_modules in the same
+# layer — its drizzle-orm devDependency would shadow the host copy and split
+# drizzle into two identities (see core PR #62 / oracle PR #48).
 COPY ./oracle/packages/sense-ai-brain ./packages/sense-ai-brain
-RUN test -f packages/sense-ai-brain/dist/index.js || \
-    (echo "sense-ai-brain dist/ missing — run 'bun run prepare:brain' before docker build" && exit 1)
+RUN cd packages/sense-ai-brain && bun install --frozen-lockfile && bun run build && \
+    rm -rf node_modules
 
-RUN npm install --omit=dev --no-progress
+# Production deps AFTER the Brain dist exists — npm symlinks the path dep, so
+# the target must already be complete.
+RUN npm install --omit=dev --no-progress && npm cache clean --force
 
-# Copy the oracle's source code into the current directory (/app/oracle)
 COPY ./oracle/src ./src
 
-# The command will be run from /app/oracle, so the entrypoint path is simple
+# ElizaOS plugin: build from source in-image (bun build.ts), drop its dev tree.
+RUN cd src/elizaos/plugins/plugin-senseai && bun install --frozen-lockfile && bun run build && \
+    rm -rf node_modules
+
+# =============================================================================
+# Stage 2 — runner: Node only. No bun, no npm cache, no dev/toolchain layers.
+# =============================================================================
+FROM node:24-slim
+
+WORKDIR /app
+
+COPY --from=builder --chown=node:node /app/artifacts ./artifacts
+COPY --from=builder --chown=node:node /app/packages/shared-schema ./packages/shared-schema
+
+WORKDIR /app/oracle
+
+COPY --from=builder --chown=node:node /app/oracle/node_modules ./node_modules
+# node_modules/@tradableapp/sense-ai-brain is npm's symlink to ../packages/
+# sense-ai-brain — ship the dist + manifest at that path so it resolves.
+COPY --from=builder --chown=node:node /app/oracle/packages/sense-ai-brain/dist ./packages/sense-ai-brain/dist
+COPY --from=builder --chown=node:node /app/oracle/packages/sense-ai-brain/package.json ./packages/sense-ai-brain/package.json
+COPY --from=builder --chown=node:node /app/oracle/src ./src
+COPY --from=builder --chown=node:node /app/oracle/package.json ./package.json
+
+USER node
+
 CMD ["node", "src/index.js"]

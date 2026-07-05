@@ -43,7 +43,6 @@ rm "${COMPOSE_FILE}.bak"
 # Build and push the version-tagged Docker image
 IMAGE_FULL_NAME="${IMAGE_BASE_NAME}:${NEW_VERSION}"
 echo "Building mainnet image: $IMAGE_FULL_NAME..."
-bun run prepare:brain
 docker build --platform linux/amd64 -t "$IMAGE_FULL_NAME" -f Dockerfile.oracle .
 
 echo "Pushing mainnet image..."
