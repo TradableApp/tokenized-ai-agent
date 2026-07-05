@@ -10,7 +10,7 @@
  * `POSTGRES_*` (inline PEM or base64 PEM — the ROFL on-chain secret format;
  * base64 because docker-compose env substitution truncates multi-line values).
  */
-const { chmodSync, existsSync, lstatSync, mkdirSync, writeFileSync } = require("node:fs");
+const { chmodSync, existsSync, lstatSync, mkdirSync, statSync, writeFileSync } = require("node:fs");
 const { homedir, tmpdir } = require("node:os");
 const { join } = require("node:path");
 
@@ -38,20 +38,18 @@ function resolveCert(inlineKey, pathKey, fileName, certDir, isPrivateKey) {
     if (!existsSync(expanded)) {
       throw new Error(`${pathKey} points to ${expanded} which does not exist`);
     }
-    // Directories/sockets pass an existence check but fail later inside libpq
-    // with a much harder-to-diagnose error — fail fast here instead.
-    if (!lstatSync(expanded).isFile()) {
-      throw new Error(`${pathKey} (${expanded}) is not a regular file`);
-    }
     if (isPrivateKey) {
-      // lstatSync doesn't follow symlinks — reject them outright (TOCTOU on the
-      // link target), then enforce 0600 like node-postgres does.
+      // ONE lstat (doesn't follow symlinks), checks ordered so each failure
+      // gets its dedicated message: symlink (TOCTOU) → regular file → 0600.
       const linkStats = lstatSync(expanded);
       if (linkStats.isSymbolicLink()) {
         throw new Error(
           `${pathKey} (${expanded}) is a symlink — refusing for security (TOCTOU on link target). ` +
             `Point ${pathKey} at the real key file.`,
         );
+      }
+      if (!linkStats.isFile()) {
+        throw new Error(`${pathKey} (${expanded}) is not a regular file`);
       }
       const mode = linkStats.mode & 0o777;
       if (mode & 0o077) {
@@ -60,6 +58,11 @@ function resolveCert(inlineKey, pathKey, fileName, certDir, isPrivateKey) {
             `Run: chmod 600 ${expanded}`,
         );
       }
+    } else if (!statSync(expanded).isFile()) {
+      // Non-key certs may be symlinks (statSync follows them) but must resolve
+      // to a regular file — directories/sockets fail fast here instead of as a
+      // cryptic libpq error later.
+      throw new Error(`${pathKey} (${expanded}) is not a regular file`);
     }
     return expanded;
   }
