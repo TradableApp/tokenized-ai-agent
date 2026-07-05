@@ -92,6 +92,36 @@ describe("postgresBootstrap (oracle port)", () => {
     expect(() => bootstrapPostgresFromEnv({ certDir })).to.throw(/regular file/);
   });
 
+  it("rejects a symlinked KEY path with the dedicated TOCTOU error (not the generic isFile one)", () => {
+    setBaseEnv();
+    const { symlinkSync } = require("node:fs");
+    const realKey = join(certDir, "real.key");
+    writeFileSync(realKey, KEY_STUB, { mode: 0o600 });
+    const linkPath = join(certDir, "link.key");
+    symlinkSync(realKey, linkPath);
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY_PATH = linkPath;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    expect(() => bootstrapPostgresFromEnv({ certDir })).to.throw(/symlink/);
+  });
+
+  it("allows a symlinked NON-key cert path that resolves to a regular file", () => {
+    setBaseEnv();
+    const { symlinkSync } = require("node:fs");
+    const realCert = join(certDir, "real.crt");
+    writeFileSync(realCert, PEM_STUB);
+    const linkPath = join(certDir, "link.crt");
+    symlinkSync(realCert, linkPath);
+    process.env.POSTGRES_CLIENT_CERT_PATH = linkPath;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    bootstrapPostgresFromEnv({ certDir });
+    const url = new URL(process.env.POSTGRES_URL);
+    expect(url.searchParams.get("sslcert")).to.equal(linkPath);
+  });
+
   it("prefers *_PATH file sources over inline PEM and rejects group-readable keys", () => {
     setBaseEnv();
     const keyPath = join(certDir, "loose.key");
