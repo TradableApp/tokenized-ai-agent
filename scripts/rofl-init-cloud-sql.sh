@@ -61,6 +61,14 @@ EXISTING=$(gcloud sql ssl client-certs list \
 # means the cert/key push is skipped — but the Secret Manager values and the
 # POSTGRES_HOST stamp below STILL run, keeping re-runs useful for password/CA
 # refresh and instance recreation (Copilot, PR #52).
+#
+# ⚠️  Operator note (partial-failure recovery): if a PREVIOUS run created the
+# cert but died before pushing all four secrets, this skip makes the loss
+# permanent — the private key lived only in that run's temp dir. Recovery is
+# the rotation path: delete the cert (hint below) and re-run. After any run,
+# confirm all four secrets appear in rofl.yaml post-'oasis rofl update':
+# POSTGRES_CLIENT_CERT, POSTGRES_CLIENT_KEY, POSTGRES_PASSWORD,
+# POSTGRES_SERVER_CA_CERT.
 CREATE_CERT=1
 if [ "$EXISTING" -gt 0 ]; then
   echo "✅ Cert '$CERT_NAME' already exists — skipping cert creation/push."
@@ -138,7 +146,9 @@ else
 fi
 
 echo ""
-echo "✅ Done. Client cert valid ~10 years."
+echo "✅ Done. Verify all four secrets landed (they appear in rofl.yaml after 'oasis rofl update'):"
+echo "   POSTGRES_CLIENT_CERT, POSTGRES_CLIENT_KEY, POSTGRES_PASSWORD, POSTGRES_SERVER_CA_CERT"
+echo "   Client cert valid ~10 years."
 echo ""
 echo "Next steps:"
 echo "  1. bash scripts/rofl-set-secrets.sh $ENV       # sync the .env-driven secrets/config"
