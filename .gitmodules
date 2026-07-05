@@ -1,3 +1,6 @@
 [submodule "packages/shared-schema"]
 	path = packages/shared-schema
 	url = https://github.com/TradableApp/sense-ai-shared-schema
+[submodule "oracle/packages/sense-ai-brain"]
+	path = oracle/packages/sense-ai-brain
+	url = https://github.com/TradableApp/sense-ai-brain

@@ -352,7 +352,26 @@ describe("aiAgentOracle", function () {
         const start = Date.now();
         const answer = await mockAi.queryAIModel(history, "1", "0xabc");
         expect(Date.now() - start).to.be.at.least(55);
-        expect(answer).to.include("[MOCK]");
+        expect(answer.text).to.include("[MOCK]");
+      } finally {
+        delete process.env.MOCK_AI;
+      }
+    });
+
+    it("queryAIModel returns the normalized answer object contract (CU-86d3cfa41)", async () => {
+      // Phase 2 of the Brain migration: every provider path resolves to
+      // { text, reasoning, sources, reasoningDuration? } so handlePrompt can
+      // write REAL reasoning/sources into the answer MessageFile instead of
+      // only the e2e-sentinel mocks.
+      process.env.MOCK_AI = "true";
+      try {
+        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        const history = [{ role: "user", content: "what moved BTC today?" }];
+        const answer = await mockAi.queryAIModel(history, "1", "0xabc");
+        expect(answer).to.be.an("object");
+        expect(answer.text).to.be.a("string").and.include("[MOCK]");
+        expect(answer.reasoning).to.deep.equal([]);
+        expect(answer.sources).to.deep.equal([]);
       } finally {
         delete process.env.MOCK_AI;
       }
