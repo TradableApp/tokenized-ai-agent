@@ -38,6 +38,11 @@ function resolveCert(inlineKey, pathKey, fileName, certDir, isPrivateKey) {
     if (!existsSync(expanded)) {
       throw new Error(`${pathKey} points to ${expanded} which does not exist`);
     }
+    // Directories/sockets pass an existence check but fail later inside libpq
+    // with a much harder-to-diagnose error — fail fast here instead.
+    if (!lstatSync(expanded).isFile()) {
+      throw new Error(`${pathKey} (${expanded}) is not a regular file`);
+    }
     if (isPrivateKey) {
       // lstatSync doesn't follow symlinks — reject them outright (TOCTOU on the
       // link target), then enforce 0600 like node-postgres does.

@@ -25,8 +25,11 @@ const REQUIRED_KEYS = [
   "POSTGRES_PASSWORD",
 ];
 
-// Lazy singletons — the pool/engine survive across prompts.
-let initialized = null; // { brain, ctx, sentimentEngine } | "disabled"
+// Lazy singleton — the pool/engine survive across prompts. The IN-FLIGHT
+// promise is memoized (not just the resolved value): prompts run through a
+// p-queue with concurrency 5, and without this, concurrent first prompts
+// would each build their own pg Pool and orphan all but the last.
+let initPromise = null; // Promise<{ brain, ctx, sentimentEngine } | "disabled">
 let overrides = {};
 
 function _setTestOverrides(next) {
@@ -34,13 +37,27 @@ function _setTestOverrides(next) {
 }
 
 function _resetForTests() {
-  initialized = null;
+  initPromise = null;
   overrides = {};
 }
 
+const CERT_KEY_PAIRS = [
+  ["POSTGRES_CLIENT_CERT", "POSTGRES_CLIENT_CERT_PATH"],
+  ["POSTGRES_CLIENT_KEY", "POSTGRES_CLIENT_KEY_PATH"],
+  ["POSTGRES_SERVER_CA_CERT", "POSTGRES_SERVER_CA_CERT_PATH"],
+];
+
 function isConfigured() {
   if (process.env.BRAIN_CONTEXT_ENABLED === "false") return false;
-  return REQUIRED_KEYS.every((key) => (process.env[key] || "").trim().length > 0);
+  const hasBase = REQUIRED_KEYS.every((key) => (process.env[key] || "").trim().length > 0);
+  // Certs are part of "configured" — otherwise every prompt would retry the
+  // bootstrap and fail noisily until the env is complete.
+  const hasCerts = CERT_KEY_PAIRS.every(
+    ([inlineKey, pathKey]) =>
+      (process.env[inlineKey] || "").trim().length > 0 ||
+      (process.env[pathKey] || "").trim().length > 0,
+  );
+  return hasBase && hasCerts;
 }
 
 async function defaultLoadBrain() {
@@ -62,15 +79,24 @@ function defaultCreateDb() {
   return drizzle(pool);
 }
 
-async function init() {
-  if (initialized) return initialized;
+function init() {
+  if (!initPromise) {
+    initPromise = doInit().catch((error) => {
+      // A failed init may be a fixable config problem — allow the next prompt
+      // to retry. (Post-init read failures do NOT reset — see getMarketContext.)
+      initPromise = null;
+      throw error;
+    });
+  }
+  return initPromise;
+}
 
+async function doInit() {
   if (!isConfigured()) {
     console.log(
       "[BrainContext] Postgres config absent or BRAIN_CONTEXT_ENABLED=false — market context disabled.",
     );
-    initialized = "disabled";
-    return initialized;
+    return "disabled";
   }
 
   const loadBrain = overrides.loadBrain ?? defaultLoadBrain;
@@ -89,12 +115,11 @@ async function init() {
     // No `ai` — Oracle-body mode: the Brain skips enrichment and we only read.
   };
 
-  initialized = {
+  return {
     brain,
     ctx,
     sentimentEngine: new brain.SentimentEngine(ctx),
   };
-  return initialized;
 }
 
 /**
@@ -131,8 +156,11 @@ async function getMarketContext() {
     };
   } catch (error) {
     // Never fail the answer path over context — log and answer without it.
-    console.error(`[BrainContext] Market context unavailable: ${error.message}`);
-    initialized = null; // retry init on the next prompt
+    // The initialized client is kept: a transient read/format failure must not
+    // orphan a live pg Pool (init failures reset themselves in init()).
+    console.error(
+      `[BrainContext] Market context unavailable: ${String(error?.message ?? error)}`,
+    );
     return null;
   }
 }
