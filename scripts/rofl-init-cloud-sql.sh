@@ -25,6 +25,7 @@
 # provisioned by the Infrastructure repo's Terraform.
 
 set -e
+set -o pipefail
 
 ENV="$1"
 
@@ -115,7 +116,9 @@ echo "🛰️  Fetching POSTGRES_PASSWORD + server CA from Secret Manager and pu
 TMP_PW="$TMP_DIR/pw"
 TMP_CA="$TMP_DIR/server-ca.crt"
 ( umask 077
-  gcloud secrets versions access latest --secret=SENSE_AI_APP_SQL_PASSWORD --project="$GCP_PROJECT" > "$TMP_PW"
+  # tr strips the trailing newline Secret Manager may append — a newline-
+  # terminated password would fail auth (mirrors the secrets script intent).
+  gcloud secrets versions access latest --secret=SENSE_AI_APP_SQL_PASSWORD --project="$GCP_PROJECT" | tr -d '\n' > "$TMP_PW"
   gcloud secrets versions access latest --secret=SENSE_AI_APP_SQL_SERVER_CA_CERT --project="$GCP_PROJECT" > "$TMP_CA"
 )
 oasis rofl secret set POSTGRES_PASSWORD --deployment "$ENV" "$TMP_PW"
