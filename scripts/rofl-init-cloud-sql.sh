@@ -1,0 +1,159 @@
+#!/bin/bash
+# rofl-init-cloud-sql.sh — ONE-TIME Cloud SQL setup per ORACLE ROFL deployment.
+#
+# Port of sense-ai-core's script for the Oracle body (Phase 4, CU-86d3dwme6),
+# with two deliberate differences:
+#   - Cert name is "rofl-oracle-<env>" — the SOCIAL body already owns
+#     "rofl-<env>" on the SAME shared Cloud SQL instance; each body gets its
+#     own client cert so rotation never couples them.
+#   - Also fetches POSTGRES_PASSWORD + POSTGRES_SERVER_CA_CERT from GCP
+#     Secret Manager and pushes them: unlike core, this repo's
+#     rofl-set-secrets.sh has no Secret Manager stage, and these values are
+#     one-time/rotation-rare — folding them here keeps the per-release flow
+#     untouched.
+#
+# Multi-line PEMs bypass the .env pipeline entirely (docker-compose env
+# substitution truncates at the first newline): everything is base64-encoded
+# and pushed via file, and oracle/src/postgresBootstrap.js auto-detects
+# raw-vs-base64 at read time.
+#
+# Usage:
+#   bash scripts/rofl-init-cloud-sql.sh testnet | base-testnet | mainnet | base-mainnet
+#
+# Prereqs: gcloud authenticated for the target project; oasis CLI
+# authenticated for the matching deployment account; Cloud SQL instance
+# provisioned by the Infrastructure repo's Terraform.
+
+set -e
+set -o pipefail
+
+ENV="$1"
+
+if [ -z "$ENV" ]; then
+  echo "❌ Usage: $0 <env>   (testnet | base-testnet | mainnet | base-mainnet)"
+  exit 1
+fi
+
+case "$ENV" in
+  testnet|base-testnet)
+    GCP_PROJECT="tradable-app-garrick"
+    INSTANCE="sense-ai-app-garrick"
+    ;;
+  mainnet|base-mainnet)
+    GCP_PROJECT="tradable-app"
+    INSTANCE="sense-ai-app"
+    ;;
+  *)
+    echo "❌ Unknown env: $ENV (expected testnet, base-testnet, mainnet, or base-mainnet)"
+    exit 1
+    ;;
+esac
+
+CERT_NAME="rofl-oracle-${ENV}"
+ENV_FILE="oracle/.env.oracle.${ENV}"
+
+echo "🔍 Checking for existing client cert '$CERT_NAME' on $INSTANCE ($GCP_PROJECT)..."
+EXISTING=$(gcloud sql ssl client-certs list \
+  --instance="$INSTANCE" \
+  --project="$GCP_PROJECT" \
+  --format='value(commonName)' 2>/dev/null | grep -c "^${CERT_NAME}$" || true)
+
+# The private key is only ever emitted at creation time, so an existing cert
+# means the cert/key push is skipped — but the Secret Manager values and the
+# POSTGRES_HOST stamp below STILL run, keeping re-runs useful for password/CA
+# refresh and instance recreation (Copilot, PR #52).
+#
+# ⚠️  Operator note (partial-failure recovery): if a PREVIOUS run created the
+# cert but died before pushing all four secrets, this skip makes the loss
+# permanent — the private key lived only in that run's temp dir. Recovery is
+# the rotation path: delete the cert (hint below) and re-run. After any run,
+# confirm all four secrets appear in rofl.yaml post-'oasis rofl update':
+# POSTGRES_CLIENT_CERT, POSTGRES_CLIENT_KEY, POSTGRES_PASSWORD,
+# POSTGRES_SERVER_CA_CERT.
+CREATE_CERT=1
+if [ "$EXISTING" -gt 0 ]; then
+  echo "✅ Cert '$CERT_NAME' already exists — skipping cert creation/push."
+  echo "   (To rotate: gcloud sql ssl client-certs delete $CERT_NAME --instance=$INSTANCE --project=$GCP_PROJECT, then re-run.)"
+  CREATE_CERT=0
+fi
+
+# Private 0700 temp dir for all sensitive material; EXIT trap removes it on
+# success or failure. gcloud requires the key path NOT to pre-exist.
+TMP_DIR=$(mktemp -d)
+chmod 700 "$TMP_DIR"
+trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_KEY="$TMP_DIR/client.key"
+TMP_CERT="$TMP_DIR/client.crt"
+
+if [ "$CREATE_CERT" -eq 1 ]; then
+  echo "🔐 Generating client cert '$CERT_NAME' on $INSTANCE..."
+  gcloud sql ssl client-certs create "$CERT_NAME" "$TMP_KEY" \
+    --instance="$INSTANCE" \
+    --project="$GCP_PROJECT"
+  chmod 600 "$TMP_KEY"
+
+  echo "📥 Fetching signed cert PEM..."
+  gcloud sql ssl client-certs describe "$CERT_NAME" \
+    --instance="$INSTANCE" \
+    --project="$GCP_PROJECT" \
+    --format='value(cert)' > "$TMP_CERT"
+  chmod 600 "$TMP_CERT"
+fi
+
+push_b64_secret() {
+  local name="$1" src="$2" b64="$TMP_DIR/$1.b64"
+  ( umask 077; base64 -i "$src" | tr -d '\n' > "$b64" )
+  oasis rofl secret set "$name" --deployment "$ENV" "$b64"
+}
+
+if [ "$CREATE_CERT" -eq 1 ]; then
+  echo "🛰️  Pushing POSTGRES_CLIENT_CERT / POSTGRES_CLIENT_KEY to deployment '$ENV' (base64)..."
+  push_b64_secret POSTGRES_CLIENT_CERT "$TMP_CERT"
+  push_b64_secret POSTGRES_CLIENT_KEY "$TMP_KEY"
+fi
+
+echo "🛰️  Fetching POSTGRES_PASSWORD + server CA from Secret Manager and pushing..."
+TMP_PW="$TMP_DIR/pw"
+TMP_CA="$TMP_DIR/server-ca.crt"
+( umask 077
+  # tr strips the trailing newline Secret Manager may append — a newline-
+  # terminated password would fail auth (mirrors the secrets script intent).
+  gcloud secrets versions access latest --secret=SENSE_AI_APP_SQL_PASSWORD --project="$GCP_PROJECT" | tr -d '\n' > "$TMP_PW"
+  gcloud secrets versions access latest --secret=SENSE_AI_APP_SQL_SERVER_CA_CERT --project="$GCP_PROJECT" > "$TMP_CA"
+)
+oasis rofl secret set POSTGRES_PASSWORD --deployment "$ENV" "$TMP_PW"
+push_b64_secret POSTGRES_SERVER_CA_CERT "$TMP_CA"
+
+# Stamp the Cloud SQL public IP into the env file (handles instance recreation).
+# PRIMARY address selected explicitly (instances can carry multiple IPs), and
+# the whole lookup is non-fatal under set -e — a describe failure falls through
+# to the warning branch instead of killing the script.
+PUBLIC_IP=$(gcloud sql instances describe "$INSTANCE" \
+  --project="$GCP_PROJECT" \
+  --format=json 2>/dev/null \
+  | python3 -c "import json,sys; ips=json.load(sys.stdin).get('ipAddresses',[]); print(next((i.get('ipAddress','') for i in ips if i.get('type')=='PRIMARY'), ''))" 2>/dev/null || true)
+
+if [ -z "$PUBLIC_IP" ]; then
+  echo "⚠️  Could not fetch Cloud SQL public IP — leaving $ENV_FILE unchanged."
+elif [ ! -f "$ENV_FILE" ]; then
+  echo "⚠️  $ENV_FILE not found — add manually: POSTGRES_HOST=$PUBLIC_IP"
+elif grep -q "^POSTGRES_HOST=" "$ENV_FILE"; then
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
+  else
+    sed -i "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
+  fi
+  echo "📝 Stamped POSTGRES_HOST=$PUBLIC_IP in $ENV_FILE"
+else
+  echo "⚠️  $ENV_FILE has no POSTGRES_HOST line — add manually: POSTGRES_HOST=$PUBLIC_IP"
+fi
+
+echo ""
+echo "✅ Done. Verify all four secrets landed (they appear in rofl.yaml after 'oasis rofl update'):"
+echo "   POSTGRES_CLIENT_CERT, POSTGRES_CLIENT_KEY, POSTGRES_PASSWORD, POSTGRES_SERVER_CA_CERT"
+echo "   Client cert valid ~10 years."
+echo ""
+echo "Next steps:"
+echo "  1. bash scripts/rofl-set-secrets.sh $ENV       # sync the .env-driven secrets/config"
+echo "  2. oasis rofl update --deployment $ENV          # commit manifest on-chain"
+echo "  3. bun run rofl:deploy:$ENV                     # apply to the machine"
