@@ -15,30 +15,23 @@ const { expect } = require("chai");
 // Node/CommonJS oracle and produces the expected shape end-to-end.
 
 const brainContext = require("../src/brainContext");
+const { clearPostgresEnv, setFullPostgresEnv } = require("./helpers/postgresTestEnv");
 
-function clearPostgresEnv() {
-  for (const key of Object.keys(process.env)) {
-    if (key.startsWith("POSTGRES_") || key === "BRAIN_CONTEXT_ENABLED") delete process.env[key];
-  }
-}
-
-function setFullEnv() {
-  process.env.POSTGRES_HOST = "10.0.0.5";
-  process.env.POSTGRES_PORT = "5432";
-  process.env.POSTGRES_DATABASE = "senseai";
-  process.env.POSTGRES_USER = "senseai";
-  process.env.POSTGRES_PASSWORD = "pw";
-  process.env.POSTGRES_CLIENT_CERT = "-----BEGIN CERTIFICATE-----";
-  process.env.POSTGRES_CLIENT_KEY = "-----BEGIN PRIVATE KEY-----";
-  process.env.POSTGRES_SERVER_CA_CERT = "-----BEGIN CERTIFICATE-----";
-}
+// getMarketContext passes NEWS_LIMIT (6) to getLatestEnrichedNews; getLatestMacro
+// takes the single newest row (limit 1). Asserting the observed limits below turns
+// the stub into a real regression guard against those query shapes changing.
+const EXPECTED_MACRO_LIMIT = 1;
+const EXPECTED_NEWS_LIMIT = 6;
 
 // Seeded warm cache. Two reads hit ctx.db.select():
 //   - getLatestMacro():        select().from(macro).orderBy().limit(1)      — NO .where()
 //   - getLatestEnrichedNews(): select().from(news).where(isNotNull).orderBy().limit(6)
 // Route each read by whether .where() was called — identity-free, because the
 // shared schema is raw TS and cannot be required from Node to compare tables.
+// The observed limit for each read is captured on `db.observedLimits` so tests
+// can assert the production query still uses the expected limit.
 function seededStubDb({ macroRows, newsRows }) {
+  const observedLimits = { macro: undefined, news: undefined };
   const makeChain = () => {
     let hasWhere = false;
     const chain = {
@@ -48,11 +41,16 @@ function seededStubDb({ macroRows, newsRows }) {
         return chain;
       },
       orderBy: () => chain,
-      limit: () => Promise.resolve(hasWhere ? newsRows : macroRows),
+      limit: (n) => {
+        observedLimits[hasWhere ? "news" : "macro"] = n;
+        return Promise.resolve(hasWhere ? newsRows : macroRows);
+      },
     };
     return chain;
   };
-  return { select: () => makeChain() };
+  const db = { select: () => makeChain() };
+  db.observedLimits = observedLimits;
+  return db;
 }
 
 // A stored macro snapshot row (shape per macroSentimentHistoryTable → GlobalMacroData).
@@ -88,6 +86,24 @@ const NEWS_ROWS = [
 ];
 
 describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
+  // This suite depends on the built Brain dist (git submodule at
+  // oracle/packages/sense-ai-brain, prepare:brain). CI checks it out + builds it;
+  // a fresh local clone without --recurse-submodules won't have it, and
+  // getMarketContext would swallow the import error and return null — surfacing
+  // as a misleading "expected null to be an object". Fail loudly + actionably
+  // instead. NOT this.skip(): a broken dist in CI must still fail the suite.
+  before(async () => {
+    try {
+      await import("@tradableapp/sense-ai-brain");
+    } catch (error) {
+      throw new Error(
+        "Brain dist not loadable — the @tradableapp/sense-ai-brain submodule is " +
+          "missing or unbuilt. Run `git submodule update --init --recursive` then " +
+          `\`bun run prepare:brain\` from the repo root. Underlying error: ${error?.message ?? error}`,
+      );
+    }
+  });
+
   beforeEach(() => {
     clearPostgresEnv();
     brainContext._resetForTests();
@@ -99,11 +115,10 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
   });
 
   it("renders real macro + news context and sources from the seeded cache via the REAL Brain dist", async () => {
-    setFullEnv();
+    setFullPostgresEnv();
     // loadBrain intentionally NOT overridden → the real dist runs.
-    brainContext._setTestOverrides({
-      createDb: () => seededStubDb({ macroRows: [MACRO_ROW], newsRows: NEWS_ROWS }),
-    });
+    const db = seededStubDb({ macroRows: [MACRO_ROW], newsRows: NEWS_ROWS });
+    brainContext._setTestOverrides({ createDb: () => db });
 
     const result = await brainContext.getMarketContext();
 
@@ -124,10 +139,14 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
       { title: "BTC breaks range", url: "https://example.com/a" },
       { title: "ETH upgrade ships", url: "https://example.com/b" },
     ]);
+    // The production queries still request the expected row counts — guards
+    // against a dropped/changed limit() silently widening the warm-cache read.
+    expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
+    expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
   });
 
   it("omits the macro block but still returns news + sources when the macro cache is empty", async () => {
-    setFullEnv();
+    setFullPostgresEnv();
     brainContext._setTestOverrides({
       createDb: () => seededStubDb({ macroRows: [], newsRows: NEWS_ROWS }),
     });
@@ -141,7 +160,7 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
   });
 
   it("returns null when the seeded cache is entirely empty (no macro, no news)", async () => {
-    setFullEnv();
+    setFullPostgresEnv();
     brainContext._setTestOverrides({
       createDb: () => seededStubDb({ macroRows: [], newsRows: [] }),
     });
