@@ -119,6 +119,13 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     ]) {
       if (!brain[name]) throw new Error(`Brain dist missing expected export: ${name}`);
     }
+    // getLatestMacro is an INSTANCE method on SentimentEngine, not a module
+    // export — a rename passes the loop above but throws a TypeError inside
+    // doInit()'s `new SentimentEngine(ctx).getLatestMacro()`, which
+    // getMarketContext swallows to null → the same misleading assertion. Check it.
+    if (typeof brain.SentimentEngine?.prototype?.getLatestMacro !== "function") {
+      throw new Error("Brain dist: SentimentEngine missing getLatestMacro instance method");
+    }
   });
 
   beforeEach(() => {
@@ -160,12 +167,14 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     // against a dropped/changed limit() silently widening the warm-cache read.
     expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
     expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
-    // Routing guard: the WHERE-less read served macro; the isNotNull(tldr) read
-    // served news — in that order (getMarketContext calls getLatestMacro first in
-    // its Promise.all array, and each .limit() fires synchronously before its
-    // await). If getLatestMacro ever adds a .where() the macro read would be
-    // misrouted to newsRows — this fails loudly instead of asserting wrong data.
-    expect(db.observedRequests).to.deep.equal(["macro", "news"]);
+    // Routing guard: exactly one WHERE-less read (macro) and one isNotNull(tldr)
+    // read (news) were issued. If getLatestMacro ever adds a .where(), its read
+    // misroutes to newsRows → observedRequests becomes ["news","news"] and this
+    // fails loudly instead of asserting on wrong data. Order-independent (sorted)
+    // on purpose: the two reads run concurrently under Promise.all, so their
+    // call order is an implementation detail of the Brain, not a contract worth
+    // coupling to — routing correctness is what matters, not sequencing.
+    expect([...db.observedRequests].sort()).to.deep.equal(["macro", "news"]);
   });
 
   it("omits the macro block but still returns news + sources when the macro cache is empty", async () => {
@@ -183,7 +192,7 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     // read runs and returns null (empty), it is NOT skipped.
     expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
     expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
-    expect(db.observedRequests).to.deep.equal(["macro", "news"]);
+    expect([...db.observedRequests].sort()).to.deep.equal(["macro", "news"]);
   });
 
   it("returns null when the seeded cache is entirely empty (no macro, no news)", async () => {
@@ -197,6 +206,6 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     // observed, guarding against a dropped limit() on the empty path too.
     expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
     expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
-    expect(db.observedRequests).to.deep.equal(["macro", "news"]);
+    expect([...db.observedRequests].sort()).to.deep.equal(["macro", "news"]);
   });
 });
