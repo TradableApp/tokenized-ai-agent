@@ -22,7 +22,7 @@
  *
  * Optional overrides (sensible Base-Sepolia defaults below):
  *   SMOKE_RPC_URL, SMOKE_ESCROW_ADDRESS, SMOKE_AGENT_ADDRESS, SMOKE_TOKEN_ADDRESS,
- *   SMOKE_PROMPT, SMOKE_TIMEOUT_MS, SMOKE_POLL_MS
+ *   SMOKE_PROMPT, SMOKE_TIMEOUT_MS, SMOKE_POLL_MS, SMOKE_FETCH_TIMEOUT_MS
  */
 const crypto = require("node:crypto");
 const { ethers } = require("ethers");
