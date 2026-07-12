@@ -32,6 +32,7 @@ const EXPECTED_NEWS_LIMIT = 6;
 // can assert the production query still uses the expected limit.
 function seededStubDb({ macroRows, newsRows }) {
   const observedLimits = { macro: undefined, news: undefined };
+  const observedRequests = []; // which read each resolved chain served, in call order
   const makeChain = () => {
     let hasWhere = false;
     const chain = {
@@ -42,7 +43,9 @@ function seededStubDb({ macroRows, newsRows }) {
       },
       orderBy: () => chain,
       limit: (n) => {
-        observedLimits[hasWhere ? "news" : "macro"] = n;
+        const key = hasWhere ? "news" : "macro";
+        observedLimits[key] = n;
+        observedRequests.push(key);
         return Promise.resolve(hasWhere ? newsRows : macroRows);
       },
     };
@@ -50,6 +53,7 @@ function seededStubDb({ macroRows, newsRows }) {
   };
   const db = { select: () => makeChain() };
   db.observedLimits = observedLimits;
+  db.observedRequests = observedRequests;
   return db;
 }
 
@@ -93,14 +97,27 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
   // as a misleading "expected null to be an object". Fail loudly + actionably
   // instead. NOT this.skip(): a broken dist in CI must still fail the suite.
   before(async () => {
+    let brain;
     try {
-      await import("@tradableapp/sense-ai-brain");
+      brain = await import("@tradableapp/sense-ai-brain");
     } catch (error) {
       throw new Error(
         "Brain dist not loadable — the @tradableapp/sense-ai-brain submodule is " +
           "missing or unbuilt. Run `git submodule update --init --recursive` then " +
           `\`bun run prepare:brain\` from the repo root. Underlying error: ${error?.message ?? error}`,
       );
+    }
+    // A dist that LOADS but renamed/dropped an export would otherwise throw
+    // later inside doInit()/getMarketContext (e.g. `new brain.SentimentEngine`
+    // → TypeError), which getMarketContext swallows to null — resurfacing as the
+    // misleading "expected null to be an object". Fail on the real cause here.
+    for (const name of [
+      "SentimentEngine",
+      "getLatestEnrichedNews",
+      "formatMacroEnvironment",
+      "formatNewsTicker",
+    ]) {
+      if (!brain[name]) throw new Error(`Brain dist missing expected export: ${name}`);
     }
   });
 
@@ -143,13 +160,18 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     // against a dropped/changed limit() silently widening the warm-cache read.
     expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
     expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
+    // Routing guard: the WHERE-less read served macro; the isNotNull(tldr) read
+    // served news — in that order (getMarketContext calls getLatestMacro first in
+    // its Promise.all array, and each .limit() fires synchronously before its
+    // await). If getLatestMacro ever adds a .where() the macro read would be
+    // misrouted to newsRows — this fails loudly instead of asserting wrong data.
+    expect(db.observedRequests).to.deep.equal(["macro", "news"]);
   });
 
   it("omits the macro block but still returns news + sources when the macro cache is empty", async () => {
     setFullPostgresEnv();
-    brainContext._setTestOverrides({
-      createDb: () => seededStubDb({ macroRows: [], newsRows: NEWS_ROWS }),
-    });
+    const db = seededStubDb({ macroRows: [], newsRows: NEWS_ROWS });
+    brainContext._setTestOverrides({ createDb: () => db });
 
     const result = await brainContext.getMarketContext();
 
@@ -157,14 +179,24 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     expect(result.contextText).to.not.include("MACRO MARKET ENVIRONMENT");
     expect(result.contextText).to.include("### SOVEREIGN MARKET INTELLIGENCE (Warm Cache)");
     expect(result.sources).to.have.length(2);
+    // Both reads still issue their queries at the expected limits — the macro
+    // read runs and returns null (empty), it is NOT skipped.
+    expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
+    expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
+    expect(db.observedRequests).to.deep.equal(["macro", "news"]);
   });
 
   it("returns null when the seeded cache is entirely empty (no macro, no news)", async () => {
     setFullPostgresEnv();
-    brainContext._setTestOverrides({
-      createDb: () => seededStubDb({ macroRows: [], newsRows: [] }),
-    });
+    const db = seededStubDb({ macroRows: [], newsRows: [] });
+    brainContext._setTestOverrides({ createDb: () => db });
 
     expect(await brainContext.getMarketContext()).to.equal(null);
+    // Both reads ARE issued even when the cache is empty (the queries run, then
+    // the empty results collapse the context to null) — so the limits are still
+    // observed, guarding against a dropped limit() on the empty path too.
+    expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
+    expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
+    expect(db.observedRequests).to.deep.equal(["macro", "news"]);
   });
 });
