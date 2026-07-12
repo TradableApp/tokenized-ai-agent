@@ -41,6 +41,7 @@ const TOKEN_ADDRESS =
 const PROMPT = process.env.SMOKE_PROMPT || "What is the latest news on Bitcoin?";
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 300_000);
 const POLL_MS = Number(process.env.SMOKE_POLL_MS || 6_000);
+const FETCH_TIMEOUT_MS = Number(process.env.SMOKE_FETCH_TIMEOUT_MS || 30_000);
 
 // ── Minimal ABIs ──────────────────────────────────────────────────────────
 const ESCROW_ABI = [
@@ -93,21 +94,33 @@ function gatewayUrl(cid) {
   throw new Error(`Unrecognised CID format: ${cid}`);
 }
 async function fetchEncrypted(cid) {
-  const res = await fetch(gatewayUrl(cid));
-  if (!res.ok) throw new Error(`storage fetch ${res.status} for ${cid}`);
-  const text = (await res.text()).trim();
-  // Stored value is the encrypted MessageFile string (`iv.ct`). Some providers
-  // wrap it in JSON — unwrap if so, and fail LOUDLY on an unexpected shape rather
-  // than passing raw JSON to aesGcmDecrypt (which would throw a misleading GCM
-  // auth-tag error instead of a clear storage-format error).
-  if (text.startsWith("{")) {
-    const j = JSON.parse(text);
-    const inner = j.encryptedContent ?? j.content ?? j.data;
-    if (inner == null)
-      throw new Error(`storage file has unexpected JSON shape, keys: ${Object.keys(j).join(", ")}`);
-    return inner;
+  // Bound the whole fetch (headers AND body read) with an AbortSignal — the outer
+  // TIMEOUT_MS only guards the event poll, so a slow/hung gateway here would
+  // otherwise hang the process indefinitely. clearTimeout in finally, after
+  // .text(), so the signal stays live through the body stream too.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(gatewayUrl(cid), { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`storage fetch ${res.status} for ${cid}`);
+    const text = (await res.text()).trim();
+    // Stored value is the encrypted MessageFile string (`iv.ct`). Some providers
+    // wrap it in JSON — unwrap if so, and fail LOUDLY on an unexpected shape rather
+    // than passing raw JSON to aesGcmDecrypt (which would throw a misleading GCM
+    // auth-tag error instead of a clear storage-format error).
+    if (text.startsWith("{")) {
+      const j = JSON.parse(text);
+      const inner = j.encryptedContent ?? j.content ?? j.data;
+      if (inner == null)
+        throw new Error(
+          `storage file has unexpected JSON shape, keys: ${Object.keys(j).join(", ")}`,
+        );
+      return inner;
+    }
+    return text;
+  } finally {
+    clearTimeout(timer);
   }
-  return text;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
