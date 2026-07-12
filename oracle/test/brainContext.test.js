@@ -7,12 +7,7 @@ const { expect } = require("chai");
 // path when Postgres/config is absent — localnet e2e has no Cloud SQL.
 
 const brainContext = require("../src/brainContext");
-
-function clearPostgresEnv() {
-  for (const key of Object.keys(process.env)) {
-    if (key.startsWith("POSTGRES_") || key === "BRAIN_CONTEXT_ENABLED") delete process.env[key];
-  }
-}
+const { clearPostgresEnv, setFullPostgresEnv } = require("./helpers/postgresTestEnv");
 
 describe("brainContext (oracle Brain wiring)", () => {
   beforeEach(() => {
@@ -37,17 +32,6 @@ describe("brainContext (oracle Brain wiring)", () => {
     expect(result).to.equal(null);
   });
 
-  function setFullEnv() {
-    process.env.POSTGRES_HOST = "10.0.0.5";
-    process.env.POSTGRES_PORT = "5432";
-    process.env.POSTGRES_DATABASE = "senseai";
-    process.env.POSTGRES_USER = "senseai";
-    process.env.POSTGRES_PASSWORD = "pw";
-    process.env.POSTGRES_CLIENT_CERT = "-----BEGIN CERTIFICATE-----";
-    process.env.POSTGRES_CLIENT_KEY = "-----BEGIN PRIVATE KEY-----";
-    process.env.POSTGRES_SERVER_CA_CERT = "-----BEGIN CERTIFICATE-----";
-  }
-
   it("returns null when base keys are set but no cert source is configured", async () => {
     process.env.POSTGRES_HOST = "10.0.0.5";
     process.env.POSTGRES_PORT = "5432";
@@ -69,7 +53,7 @@ describe("brainContext (oracle Brain wiring)", () => {
   });
 
   it("concurrent calls share ONE initialization (no pg Pool leak under p-queue concurrency)", async () => {
-    setFullEnv();
+    setFullPostgresEnv();
     let dbCreations = 0;
     brainContext._setTestOverrides({
       createDb: () => {
@@ -100,7 +84,7 @@ describe("brainContext (oracle Brain wiring)", () => {
   });
 
   it("a transient read failure returns null WITHOUT tearing down the initialized client", async () => {
-    setFullEnv();
+    setFullPostgresEnv();
     let dbCreations = 0;
     let reads = 0;
     brainContext._setTestOverrides({
@@ -129,7 +113,7 @@ describe("brainContext (oracle Brain wiring)", () => {
   });
 
   it("builds contextText and sources from the warm cache via the Brain", async () => {
-    setFullEnv();
+    setFullPostgresEnv();
 
     brainContext._setTestOverrides({
       createDb: () => ({}),
@@ -143,7 +127,8 @@ describe("brainContext (oracle Brain wiring)", () => {
           { title: "BTC breaks range", tldr: "Structure shifted.", url: "https://example.com/a" },
           { title: "ETH upgrade ships", tldr: "Fees drop.", url: "https://example.com/b" },
         ],
-        formatMacroEnvironment: () => "### MACRO MARKET ENVIRONMENT\n- Global Fear & Greed: 71/100 (Greed)",
+        formatMacroEnvironment: () =>
+          "### MACRO MARKET ENVIRONMENT\n- Global Fear & Greed: 71/100 (Greed)",
         formatNewsTicker: (rows) => rows.map((r) => `• ${r.title}`).join("\n"),
       }),
     });
@@ -160,7 +145,7 @@ describe("brainContext (oracle Brain wiring)", () => {
   });
 
   it("degrades to null when the warm-cache read throws (DB blip must not fail the answer)", async () => {
-    setFullEnv();
+    setFullPostgresEnv();
 
     brainContext._setTestOverrides({
       createDb: () => ({}),
