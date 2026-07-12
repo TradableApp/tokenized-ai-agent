@@ -1,0 +1,261 @@
+#!/usr/bin/env node
+/**
+ * Base-Sepolia post-deploy SMOKE TEST for the Brain-migrated oracle (CU-86d3dwme6).
+ *
+ * Exercises the exact production path — approve → activate plan → initiatePrompt →
+ * wait for the on-chain answer → fetch + decrypt it — and asserts the deployed
+ * oracle produced a Brain-enriched answer (`reasoning[]` + `sources[]` populated).
+ * Structural assertions only (the LLM answer is non-deterministic). Doubles as a
+ * re-runnable canary against the live deployment.
+ *
+ * Reuses the oracle's own ECIES module (src/ecies.js) so the session-key wire
+ * format is guaranteed to match what the oracle decrypts with. The AES-256-GCM
+ * `base64(iv).base64(ct+tag)` format mirrors the dApp's src/lib/crypto.ts.
+ *
+ * Discovers the answer via the on-chain `AnswerMessageAdded(convId, msgId, cid)`
+ * event (msgId = answerMessageId, indexed) — NO subgraph dependency.
+ *
+ * Usage (env-driven; keep the private key in a gitignored env, never commit it):
+ *   SMOKE_PRIVATE_KEY=0x... \
+ *   SMOKE_ORACLE_PUBLIC_KEY=04... \
+ *   node scripts/base-testnet-smoke.js
+ *
+ * Optional overrides (sensible Base-Sepolia defaults below):
+ *   SMOKE_RPC_URL, SMOKE_ESCROW_ADDRESS, SMOKE_AGENT_ADDRESS, SMOKE_TOKEN_ADDRESS,
+ *   SMOKE_PROMPT, SMOKE_TIMEOUT_MS, SMOKE_POLL_MS
+ */
+const crypto = require("node:crypto");
+const { ethers } = require("ethers");
+const { eciesEncrypt } = require("../src/ecies");
+
+// ── Config ────────────────────────────────────────────────────────────────
+const RPC_URL = process.env.SMOKE_RPC_URL || "https://sepolia.base.org";
+const PRIVATE_KEY = process.env.SMOKE_PRIVATE_KEY;
+const ORACLE_PUBLIC_KEY = process.env.SMOKE_ORACLE_PUBLIC_KEY; // uncompressed 04-prefixed
+const ESCROW_ADDRESS =
+  process.env.SMOKE_ESCROW_ADDRESS || "0x36ec08471F2b995024967204D7542713cFaf5Fa4";
+const AGENT_ADDRESS =
+  process.env.SMOKE_AGENT_ADDRESS || "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D";
+const TOKEN_ADDRESS =
+  process.env.SMOKE_TOKEN_ADDRESS || "0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80";
+const PROMPT = process.env.SMOKE_PROMPT || "What is the latest news on Bitcoin?";
+const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 300_000);
+const POLL_MS = Number(process.env.SMOKE_POLL_MS || 6_000);
+
+// ── Minimal ABIs ──────────────────────────────────────────────────────────
+const ESCROW_ABI = [
+  "function promptFee() view returns (uint256)",
+  "function spendingLimits(address) view returns (uint256 allowance, uint256 spent, uint256 expiresAt)",
+  "function setSpendingLimit(uint256 allowance, uint256 expiresAt)",
+  "function initiatePrompt(uint256 conversationId, bytes encryptedPayload, bytes roflEncryptedKey)",
+];
+const AGENT_ABI = [
+  "event PromptSubmitted(address indexed user, uint256 indexed conversationId, uint256 indexed promptMessageId, uint256 answerMessageId, bytes encryptedPayload, bytes roflEncryptedKey)",
+  "event AnswerMessageAdded(uint256 indexed conversationId, uint256 indexed messageId, string messageCID)",
+  "function isJobFinalized(uint256 answerMessageId) view returns (bool)",
+];
+const ERC20_ABI = [
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function balanceOf(address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+  "function symbol() view returns (string)",
+];
+
+// ── Crypto (mirrors dApp src/lib/crypto.ts format) ─────────────────────────
+function aesGcmEncrypt(keyBytes, obj) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", keyBytes, iv);
+  const ct = Buffer.concat([
+    cipher.update(Buffer.from(JSON.stringify(obj), "utf8")),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString("base64")}.${Buffer.concat([ct, tag]).toString("base64")}`;
+}
+function aesGcmDecrypt(keyBytes, str) {
+  const [ivB64, dataB64] = str.split(".");
+  const iv = Buffer.from(ivB64, "base64");
+  const data = Buffer.from(dataB64, "base64");
+  const tag = data.subarray(data.length - 16);
+  const ct = data.subarray(0, data.length - 16);
+  const decipher = crypto.createDecipheriv("aes-256-gcm", keyBytes, iv);
+  decipher.setAuthTag(tag);
+  return JSON.parse(Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf8"));
+}
+
+// ── Storage gateway (mirrors dApp syncService.getStorageProvider) ──────────
+function gatewayUrl(cid) {
+  if (/^bafkr6i[a-z2-7]{52}$/.test(cid)) return `https://gateway.autonomys.xyz/file/${cid}`; // Autonomys
+  if (/^[A-Za-z0-9_-]{43,44}$/.test(cid)) return `https://gateway.irys.xyz/${cid}`; // Irys/Arweave
+  if (/^bafy/.test(cid) && process.env.SMOKE_STORAGE_GATEWAY_URL)
+    return `${process.env.SMOKE_STORAGE_GATEWAY_URL}${cid}`; // IPFS/localnet
+  throw new Error(`Unrecognised CID format: ${cid}`);
+}
+async function fetchEncrypted(cid) {
+  const res = await fetch(gatewayUrl(cid));
+  if (!res.ok) throw new Error(`storage fetch ${res.status} for ${cid}`);
+  const text = (await res.text()).trim();
+  // Stored value is the encrypted MessageFile string (`iv.ct`). Some providers
+  // wrap it in JSON — unwrap if so.
+  if (text.startsWith("{")) {
+    const j = JSON.parse(text);
+    return j.encryptedContent || j.content || j.data || text;
+  }
+  return text;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const log = (...a) => console.log(...a);
+
+async function main() {
+  if (!PRIVATE_KEY) throw new Error("SMOKE_PRIVATE_KEY is required");
+  if (!ORACLE_PUBLIC_KEY)
+    throw new Error(
+      "SMOKE_ORACLE_PUBLIC_KEY is required (the oracle's uncompressed 04-prefixed ECIES pubkey)",
+    );
+
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+  const net = await provider.getNetwork();
+  log(`\n── Base-testnet oracle smoke test ──`);
+  log(`chain=${net.chainId} wallet=${wallet.address}`);
+  log(`escrow=${ESCROW_ADDRESS} agent=${AGENT_ADDRESS} token=${TOKEN_ADDRESS}`);
+
+  const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
+  const agent = new ethers.Contract(AGENT_ADDRESS, AGENT_ABI, provider);
+  const token = new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, wallet);
+
+  // 1. Balances + fee
+  const [dec, sym, bal, ethBal, fee] = await Promise.all([
+    token.decimals(),
+    token.symbol(),
+    token.balanceOf(wallet.address),
+    provider.getBalance(wallet.address),
+    escrow.promptFee(),
+  ]);
+  const fmt = (v) => ethers.formatUnits(v, dec);
+  log(
+    `balances: ${ethers.formatEther(ethBal)} ETH · ${fmt(bal)} ${sym} · promptFee=${fmt(fee)} ${sym}`,
+  );
+  if (bal < fee) throw new Error(`insufficient ${sym}: have ${fmt(bal)}, prompt costs ${fmt(fee)}`);
+
+  // 2. Plan: approve + setSpendingLimit (headroom for a few prompts)
+  const allowance = fee > 0n ? fee * 5n : ethers.parseUnits("10", dec);
+  const capped = allowance > bal ? bal : allowance;
+  const curAllow = await token.allowance(wallet.address, ESCROW_ADDRESS);
+  if (curAllow < capped) {
+    log(`approve ${fmt(capped)} ${sym} → escrow...`);
+    await (await token.approve(ESCROW_ADDRESS, capped)).wait();
+  }
+  const plan = await escrow.spendingLimits(wallet.address);
+  const now = Math.floor(Date.now() / 1000);
+  const planLive = plan.allowance - plan.spent >= fee && Number(plan.expiresAt) > now;
+  if (!planLive) {
+    log(`setSpendingLimit(${fmt(capped)}, +1d)...`);
+    await (await escrow.setSpendingLimit(capped, now + 86400)).wait();
+  } else {
+    log(`plan already active (allowance=${fmt(plan.allowance)}, spent=${fmt(plan.spent)})`);
+  }
+
+  // 3. Encrypt payload + session key (random one-shot session key; the oracle
+  //    recovers it from roflEncryptedKey via ECIES, then encrypts the answer with it)
+  const sessionKey = crypto.randomBytes(32);
+  const payload = {
+    promptText: PROMPT,
+    isNewConversation: true,
+    previousMessageId: null,
+    previousMessageCID: null,
+  };
+  const aesString = aesGcmEncrypt(sessionKey, payload);
+  const encryptedPayload = "0x" + Buffer.from(aesString, "utf8").toString("hex");
+  const roflEncryptedKey = await eciesEncrypt(ORACLE_PUBLIC_KEY, sessionKey); // 0x-hex
+
+  // 4. initiatePrompt (conversationId 0 = new)
+  log(`\ninitiatePrompt("${PROMPT}")...`);
+  const rc = await (await escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)).wait();
+  let answerMessageId, conversationId;
+  for (const lg of rc.logs) {
+    try {
+      const p = agent.interface.parseLog(lg);
+      if (p && p.name === "PromptSubmitted") {
+        answerMessageId = p.args.answerMessageId;
+        conversationId = p.args.conversationId;
+        break;
+      }
+    } catch {
+      /* not an agent log */
+    }
+  }
+  if (answerMessageId === undefined) throw new Error("PromptSubmitted not found in receipt logs");
+  log(
+    `submitted: conversationId=${conversationId} answerMessageId=${answerMessageId} (tx ${rc.hash})`,
+  );
+
+  // 5. Wait for the on-chain answer CID (AnswerMessageAdded, indexed by messageId)
+  log(`waiting up to ${TIMEOUT_MS / 1000}s for the oracle's answer...`);
+  const deadline = Date.now() + TIMEOUT_MS;
+  let messageCID;
+  const filter = agent.filters.AnswerMessageAdded(conversationId, answerMessageId);
+  while (Date.now() < deadline) {
+    const head = await provider.getBlockNumber();
+    const evts = await agent.queryFilter(filter, Math.max(0, head - 5000), head);
+    if (evts.length) {
+      messageCID = evts[evts.length - 1].args.messageCID;
+      break;
+    }
+    if (await agent.isJobFinalized(answerMessageId))
+      log(`  job finalized; awaiting AnswerMessageAdded...`);
+    await sleep(POLL_MS);
+  }
+  if (!messageCID)
+    throw new Error(
+      `TIMEOUT: no AnswerMessageAdded for answerMessageId=${answerMessageId} within ${TIMEOUT_MS / 1000}s`,
+    );
+  log(`answer CID: ${messageCID}`);
+
+  // 6. Fetch + decrypt the answer MessageFile
+  const encryptedAnswer = await fetchEncrypted(messageCID);
+  const answer = aesGcmDecrypt(sessionKey, encryptedAnswer);
+
+  // 7. Assert Brain-enriched answer
+  const reasoning = Array.isArray(answer.reasoning) ? answer.reasoning : [];
+  const sources = Array.isArray(answer.sources) ? answer.sources : [];
+  log(`\n── answer ──`);
+  log(
+    `role=${answer.role} contentLen=${(answer.content || "").length} reasoning=${reasoning.length} sources=${sources.length}`,
+  );
+  log(
+    `content: ${(answer.content || "").slice(0, 400)}${(answer.content || "").length > 400 ? "…" : ""}`,
+  );
+  if (reasoning.length) log(`reasoning[0]: ${JSON.stringify(reasoning[0]).slice(0, 200)}`);
+  if (sources.length)
+    log(
+      `sources: ${sources
+        .map((s) => s.title)
+        .slice(0, 5)
+        .join(" · ")}`,
+    );
+
+  const problems = [];
+  if (answer.role !== "assistant") problems.push(`role is '${answer.role}', expected 'assistant'`);
+  if (!answer.content || answer.content.length < 20) problems.push("content missing/too short");
+  if (!reasoning.length)
+    problems.push("reasoning[] is EMPTY — Brain context not injected (or warm cache is cold)");
+  if (!sources.length)
+    problems.push("sources[] is EMPTY — no news citations from the Brain warm cache");
+
+  if (problems.length) {
+    log(`\n❌ SMOKE FAIL:\n - ${problems.join("\n - ")}`);
+    log(
+      `(If reasoning/sources are empty but content is a real answer, check the warm cache has rows — the social testnet body keeps it warm; seed market_news/macro if cold.)`,
+    );
+    process.exit(1);
+  }
+  log(`\n✅ SMOKE PASS — deployed oracle answered with Brain-enriched reasoning + sources.`);
+}
+
+main().catch((e) => {
+  console.error(`\n❌ SMOKE ERROR: ${e?.stack || e}`);
+  process.exit(1);
+});
