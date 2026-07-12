@@ -97,10 +97,15 @@ async function fetchEncrypted(cid) {
   if (!res.ok) throw new Error(`storage fetch ${res.status} for ${cid}`);
   const text = (await res.text()).trim();
   // Stored value is the encrypted MessageFile string (`iv.ct`). Some providers
-  // wrap it in JSON — unwrap if so.
+  // wrap it in JSON — unwrap if so, and fail LOUDLY on an unexpected shape rather
+  // than passing raw JSON to aesGcmDecrypt (which would throw a misleading GCM
+  // auth-tag error instead of a clear storage-format error).
   if (text.startsWith("{")) {
     const j = JSON.parse(text);
-    return j.encryptedContent || j.content || j.data || text;
+    const inner = j.encryptedContent ?? j.content ?? j.data;
+    if (inner == null)
+      throw new Error(`storage file has unexpected JSON shape, keys: ${Object.keys(j).join(", ")}`);
+    return inner;
   }
   return text;
 }
@@ -197,12 +202,21 @@ async function main() {
   const deadline = Date.now() + TIMEOUT_MS;
   let messageCID;
   const filter = agent.filters.AnswerMessageAdded(conversationId, answerMessageId);
+  // Anchor the scan at the initiatePrompt tx block and advance it each poll. The
+  // public Base Sepolia RPC caps eth_getLogs at ~2000 blocks, so a fixed
+  // [head-5000, head] range would be rejected every iteration. Advancing
+  // fromBlock keeps each window to ~POLL_MS/blocktime blocks (contiguous, no gap,
+  // no re-scan). The answer event always lands after rc.blockNumber.
+  let fromBlock = rc.blockNumber;
   while (Date.now() < deadline) {
     const head = await provider.getBlockNumber();
-    const evts = await agent.queryFilter(filter, Math.max(0, head - 5000), head);
-    if (evts.length) {
-      messageCID = evts[evts.length - 1].args.messageCID;
-      break;
+    if (head >= fromBlock) {
+      const evts = await agent.queryFilter(filter, fromBlock, head);
+      if (evts.length) {
+        messageCID = evts[evts.length - 1].args.messageCID;
+        break;
+      }
+      fromBlock = head + 1;
     }
     if (await agent.isJobFinalized(answerMessageId))
       log(`  job finalized; awaiting AnswerMessageAdded...`);
