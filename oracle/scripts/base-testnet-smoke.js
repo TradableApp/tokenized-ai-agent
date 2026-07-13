@@ -21,8 +21,14 @@
  *   node scripts/base-testnet-smoke.js
  *
  * Optional overrides (sensible Base-Sepolia defaults below):
- *   SMOKE_RPC_URL, SMOKE_ESCROW_ADDRESS, SMOKE_AGENT_ADDRESS, SMOKE_TOKEN_ADDRESS,
- *   SMOKE_PROMPT, SMOKE_TIMEOUT_MS, SMOKE_POLL_MS, SMOKE_FETCH_TIMEOUT_MS
+ *   SMOKE_RPC_URL, SMOKE_CHAIN_ID, SMOKE_ESCROW_ADDRESS, SMOKE_AGENT_ADDRESS,
+ *   SMOKE_TOKEN_ADDRESS, SMOKE_PROMPT, SMOKE_TIMEOUT_MS, SMOKE_POLL_MS,
+ *   SMOKE_FETCH_TIMEOUT_MS
+ *
+ * Exit codes (for scheduled-canary alerting):
+ *   0 = pass (oracle answered, Brain reasoning + sources present)
+ *   1 = oracle broken (no/short answer, timeout, wrong network, error)
+ *   2 = oracle healthy but Brain warm cache is cold (reasoning/sources empty)
  */
 const crypto = require("node:crypto");
 const { ethers } = require("ethers");
@@ -142,6 +148,13 @@ async function main() {
   log(`\n── Base-testnet oracle smoke test ──`);
   log(`chain=${net.chainId} wallet=${wallet.address}`);
   log(`escrow=${ESCROW_ADDRESS} agent=${AGENT_ADDRESS} token=${TOKEN_ADDRESS}`);
+  // Guard the chain BEFORE any approve/spend — a wrong SMOKE_RPC_URL (e.g. Base
+  // mainnet) would otherwise approve real tokens + burn real gas before failing.
+  const EXPECTED_CHAIN_ID = BigInt(process.env.SMOKE_CHAIN_ID || 84532); // Base Sepolia
+  if (net.chainId !== EXPECTED_CHAIN_ID)
+    throw new Error(
+      `wrong network: expected chainId ${EXPECTED_CHAIN_ID} (Base Sepolia), got ${net.chainId} — check SMOKE_RPC_URL / SMOKE_CHAIN_ID`,
+    );
 
   const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
   const agent = new ethers.Contract(AGENT_ADDRESS, AGENT_ABI, provider);
@@ -237,17 +250,28 @@ async function main() {
   // no re-scan). The answer event always lands after rc.blockNumber.
   let fromBlock = rc.blockNumber;
   while (Date.now() < deadline) {
-    const head = await provider.getBlockNumber();
-    if (head >= fromBlock) {
-      const evts = await agent.queryFilter(filter, fromBlock, head);
-      if (evts.length) {
-        messageCID = evts[evts.length - 1].args.messageCID;
-        break;
+    try {
+      const head = await provider.getBlockNumber();
+      if (head >= fromBlock) {
+        const evts = await agent.queryFilter(filter, fromBlock, head);
+        if (evts.length) {
+          messageCID = evts[evts.length - 1].args.messageCID;
+          break;
+        }
+        fromBlock = head + 1;
       }
-      fromBlock = head + 1;
+      // Informational only — a transient failure here must not abort the poll.
+      try {
+        if (await agent.isJobFinalized(answerMessageId))
+          log(`  job finalized; awaiting AnswerMessageAdded...`);
+      } catch {
+        /* ignore — status log only */
+      }
+    } catch (e) {
+      // Load-bearing RPC calls (getBlockNumber/queryFilter): a transient blip or
+      // rate-limit must not fail the run — log and retry on the next poll.
+      log(`  transient RPC error (${e?.shortMessage || e?.message || e}) — retrying...`);
     }
-    if (await agent.isJobFinalized(answerMessageId))
-      log(`  job finalized; awaiting AnswerMessageAdded...`);
     await sleep(POLL_MS);
   }
   if (!messageCID)
@@ -279,20 +303,30 @@ async function main() {
         .join(" · ")}`,
     );
 
-  const problems = [];
-  if (answer.role !== "assistant") problems.push(`role is '${answer.role}', expected 'assistant'`);
-  if (!answer.content || answer.content.length < 20) problems.push("content missing/too short");
+  // Split oracle-health from cache-warmth so a scheduled canary can alert
+  // differently: exit 1 = oracle broken (page), exit 2 = oracle healthy but the
+  // Brain warm cache is cold (seed it — not an oracle failure), exit 0 = full pass.
+  const fatal = [];
+  const brain = [];
+  if (answer.role !== "assistant") fatal.push(`role is '${answer.role}', expected 'assistant'`);
+  if (!answer.content || answer.content.length < 20) fatal.push("content missing/too short");
   if (!reasoning.length)
-    problems.push("reasoning[] is EMPTY — Brain context not injected (or warm cache is cold)");
+    brain.push("reasoning[] is EMPTY — Brain context not injected (or warm cache is cold)");
   if (!sources.length)
-    problems.push("sources[] is EMPTY — no news citations from the Brain warm cache");
+    brain.push("sources[] is EMPTY — no news citations from the Brain warm cache");
 
-  if (problems.length) {
-    log(`\n❌ SMOKE FAIL:\n - ${problems.join("\n - ")}`);
-    log(
-      `(If reasoning/sources are empty but content is a real answer, check the warm cache has rows — the social testnet body keeps it warm; seed market_news/macro if cold.)`,
-    );
+  if (fatal.length) {
+    log(`\n❌ SMOKE FAIL (oracle broken):\n - ${fatal.join("\n - ")}`);
     process.exit(1);
+  }
+  if (brain.length) {
+    log(
+      `\n⚠️  SMOKE PARTIAL (oracle healthy, Brain cache cold — exit 2):\n - ${brain.join("\n - ")}`,
+    );
+    log(
+      `(The social testnet body keeps the warm cache populated; seed market_news/macro rows if cold, then re-run. NOT an oracle failure.)`,
+    );
+    process.exit(2);
   }
   log(`\n✅ SMOKE PASS — deployed oracle answered with Brain-enriched reasoning + sources.`);
 }
