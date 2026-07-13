@@ -87,7 +87,10 @@ function aesGcmDecrypt(keyBytes, str) {
 
 // ── Storage gateway (mirrors dApp syncService.getStorageProvider) ──────────
 function gatewayUrl(cid) {
-  if (/^bafkr6i[a-z2-7]{52}$/.test(cid)) return `https://gateway.autonomys.xyz/file/${cid}`; // Autonomys
+  // Prefix-only match: AutoDrive CIDv1 base32 length can shift with codec/hash
+  // changes, so don't hard-code the char count. Irys (43-44 base64url) can't
+  // collide with a bafkr6i-prefixed base32 CID, so it's still a safe guard below.
+  if (/^bafkr6i/.test(cid)) return `https://gateway.autonomys.xyz/file/${cid}`; // Autonomys
   if (/^[A-Za-z0-9_-]{43,44}$/.test(cid)) return `https://gateway.irys.xyz/${cid}`; // Irys/Arweave
   if (/^bafy/.test(cid) && process.env.SMOKE_STORAGE_GATEWAY_URL)
     return `${process.env.SMOKE_STORAGE_GATEWAY_URL}${cid}`; // IPFS/localnet
@@ -157,6 +160,16 @@ async function main() {
     `balances: ${ethers.formatEther(ethBal)} ETH · ${fmt(bal)} ${sym} · promptFee=${fmt(fee)} ${sym}`,
   );
   if (bal < fee) throw new Error(`insufficient ${sym}: have ${fmt(bal)}, prompt costs ${fmt(fee)}`);
+  // Gas guard: without ETH the approve/setSpendingLimit/initiatePrompt txs fail
+  // with a raw INSUFFICIENT_FUNDS that looks like a contract bug. Hard-fail on
+  // zero; warn (not block) on low — Base Sepolia gas is cheap/variable and the
+  // test wallet is intentionally small + toppable, so don't false-block it.
+  if (ethBal === 0n)
+    throw new Error("no ETH for gas — fund the wallet with Base Sepolia ETH before running");
+  if (ethBal < ethers.parseEther("0.001"))
+    log(
+      `⚠️  low ETH for gas (${ethers.formatEther(ethBal)}) — top up if a tx fails with INSUFFICIENT_FUNDS`,
+    );
 
   // 2. Plan: approve + setSpendingLimit (headroom for a few prompts)
   const allowance = fee > 0n ? fee * 5n : ethers.parseUnits("10", dec);
@@ -187,7 +200,9 @@ async function main() {
   };
   const aesString = aesGcmEncrypt(sessionKey, payload);
   const encryptedPayload = "0x" + Buffer.from(aesString, "utf8").toString("hex");
-  const roflEncryptedKey = await eciesEncrypt(ORACLE_PUBLIC_KEY, sessionKey); // 0x-hex
+  // eciesEncrypt returns a Buffer (0x01|ephemPubKey|nonce|GCM); ethers v6 accepts
+  // a Uint8Array/Buffer directly for the `bytes` param.
+  const roflEncryptedKey = await eciesEncrypt(ORACLE_PUBLIC_KEY, sessionKey);
 
   // 4. initiatePrompt (conversationId 0 = new)
   log(`\ninitiatePrompt("${PROMPT}")...`);
