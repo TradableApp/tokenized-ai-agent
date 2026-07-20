@@ -85,9 +85,12 @@ SECRETS_YAML=""   # 🔒 section body (compose)
 CONFIG_YAML=""    # 📄 section body (compose)
 SECRETS_LIST=""   # KEY__SEP__VALUE lines to push on-chain
 SEEN_KEYS=""      # |KEY| dedup registry (env-specific wins)
+KEEP_KEYS=""      # |KEY| the secrets that SHOULD stay on-chain (for orphan purge)
 
 is_seen()  { case "$SEEN_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
 mark_seen(){ SEEN_KEYS="${SEEN_KEYS}|$1|"; }
+is_kept()  { case "$KEEP_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
+keep_key() { KEEP_KEYS="${KEEP_KEYS}|$1|"; }
 
 process_file() {
   local file="$1" is_config=0 line key remainder value
@@ -108,11 +111,15 @@ process_file() {
       # 🔒 SECRETS SECTION
       if is_externally_managed_key "$key"; then
         SECRETS_YAML+="      - $key=\${$key:-}\n"      # inject, don't push
+        keep_key "$key"                                # PART 3 / init own the value
         continue
       fi
       value=$(echo "$remainder" | awk -F'#' '{print $1}' | sed 's/[[:space:]]*$//')
       SECRETS_LIST+="${key}__SEP__${value}"$'\n'        # push (or purge if blank)
-      [ -n "$value" ] && SECRETS_YAML+="      - $key=\${$key:-}\n"
+      if [ -n "$value" ]; then
+        SECRETS_YAML+="      - $key=\${$key:-}\n"
+        keep_key "$key"                                 # non-blank ⇒ stays on-chain
+      fi
     else
       # 📄 CONFIG SECTION (plaintext literal)
       if [ "$key" = "mcp" ]; then
@@ -213,6 +220,31 @@ if [ -n "$GCP_PROJECT" ]; then
     rm -f "$TMP_SM"
   done
 fi
+
+# --- PART 4: PURGE ORPHANED SECRETS (config keys that migrated to plaintext) ---
+# Keys previously pushed on-chain (e.g. by an earlier everything-as-secret run) that
+# are now in the 📄 CONFIG section must be removed so they stop consuming ROFL slots.
+# Purge any base-testnet secret NOT in the KEEP set (real secrets with a value +
+# the externally-managed Cloud-SQL keys). CLIENT_CERT/KEY are kept (init owns them).
+echo "🧹 Reconciling — purging orphaned secrets no longer in the 🔒 section..."
+list_onchain_secret_names() {
+  awk -v target="^  $DEPLOYMENT_TARGET:" '
+    $0 ~ target { inblk=1; next }
+    inblk && /^  [a-zA-Z]/ { inblk=0; insec=0 }
+    inblk && /^    secrets:/ { insec=1; next }
+    inblk && insec && /^    [a-zA-Z]/ { insec=0 }
+    inblk && insec && /name:/ {
+      n=$0; sub(/.*name:[[:space:]]*/,"",n); sub(/[[:space:]].*/,"",n); print n
+    }
+  ' rofl.yaml
+}
+list_onchain_secret_names | while IFS= read -r sname; do
+  [ -z "$sname" ] && continue
+  if ! is_kept "$sname"; then
+    echo "  - Purging orphaned:    $sname  (now plaintext config)"
+    oasis rofl secret rm "$sname" --deployment "$DEPLOYMENT_TARGET" 2>/dev/null || true
+  fi
+done
 
 echo "✅ Done: secrets synced + compose regenerated for '$ENV'."
 echo "   (POSTGRES_CLIENT_CERT/KEY owned by rofl-init-cloud-sql.sh — not pushed here.)"
