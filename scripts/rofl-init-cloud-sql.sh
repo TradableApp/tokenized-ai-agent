@@ -112,17 +112,9 @@ if [ "$CREATE_CERT" -eq 1 ]; then
   push_b64_secret POSTGRES_CLIENT_KEY "$TMP_KEY"
 fi
 
-echo "🛰️  Fetching POSTGRES_PASSWORD + server CA from Secret Manager and pushing..."
-TMP_PW="$TMP_DIR/pw"
-TMP_CA="$TMP_DIR/server-ca.crt"
-( umask 077
-  # tr strips the trailing newline Secret Manager may append — a newline-
-  # terminated password would fail auth (mirrors the secrets script intent).
-  gcloud secrets versions access latest --secret=SENSE_AI_APP_SQL_PASSWORD --project="$GCP_PROJECT" | tr -d '\n' > "$TMP_PW"
-  gcloud secrets versions access latest --secret=SENSE_AI_APP_SQL_SERVER_CA_CERT --project="$GCP_PROJECT" > "$TMP_CA"
-)
-oasis rofl secret set POSTGRES_PASSWORD --deployment "$ENV" "$TMP_PW"
-push_b64_secret POSTGRES_SERVER_CA_CERT "$TMP_CA"
+# NOTE: POSTGRES_PASSWORD + POSTGRES_SERVER_CA_CERT are fetched from Secret Manager
+# and pushed by scripts/rofl-set-secrets.sh (PART 3) — matching sense-ai-core's
+# ownership split. This script owns ONLY the per-deployment minted CLIENT cert/key.
 
 # Stamp the Cloud SQL public IP into the env file (handles instance recreation).
 # PRIMARY address selected explicitly (instances can carry multiple IPs), and
@@ -149,9 +141,9 @@ else
 fi
 
 echo ""
-echo "✅ Done. Verify all four secrets landed (they appear in rofl.yaml after 'oasis rofl update'):"
-echo "   POSTGRES_CLIENT_CERT, POSTGRES_CLIENT_KEY, POSTGRES_PASSWORD, POSTGRES_SERVER_CA_CERT"
-echo "   Client cert valid ~10 years."
+echo "✅ Done. Pushed POSTGRES_CLIENT_CERT + POSTGRES_CLIENT_KEY (the per-deployment"
+echo "   minted cert, valid ~10 years). POSTGRES_PASSWORD + SERVER_CA come from"
+echo "   Secret Manager via rofl-set-secrets.sh in the next step."
 echo ""
 echo "Next steps:"
 echo "  1. bash scripts/rofl-set-secrets.sh $ENV       # sync the .env-driven secrets/config"
