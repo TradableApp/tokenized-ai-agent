@@ -77,6 +77,44 @@ lives in the Brain), plus gutting the oracle's stale fork. There is also **model
 - No periodic loops in the oracle; $ABLE-bounded.
 - **Complexity: MEDIUM–HIGH.**
 
+#### Phase 2 — VERIFIED EVIDENCE (2026-07-20, do not re-research)
+
+**Code paths (Brain @ `oracle/packages/sense-ai-brain/src`):**
+- `engines/sentimentEngine.ts:435` `async getAssetSentiment(symbol, forceRefresh=false)` —
+  reads `sentimentHistoryTable` fresher than `CACHE_TTL_MS` (23h); on miss/stale/`forceRefresh`
+  fetches via the adapters and stores. Constructor (`:104-106`) wires `SantimentAdapter`,
+  `CmcMacroAdapter`, `CfgiAdapter`. Engine header: *"the Oracle body mostly just reads the warm
+  cache via `getAssetSentiment` / `getLatestMacro`."*
+- The oracle TODAY (`oracle/src/brainContext.js`) calls only `getLatestMacro()` +
+  `getLatestEnrichedNews()` (both cache reads) — never `getAssetSentiment`, never builds
+  `MarketNewsEngine`. Wiring `getAssetSentiment` on a per-token prompt is the Phase 2 change.
+- **`ctx.ai` requirement:** only `MarketNewsEngine.enrichmentCycle()` needs `ctx.ai`
+  (`ctx.ai.generateObject` + `ctx.ai.embed`). All `SentimentEngine` methods (incl.
+  `getAssetSentiment`) and news *ingestion* work WITHOUT `ctx.ai`. The oracle passes no `ctx.ai`
+  today. So on-demand SENTIMENT needs **no** shim; on-demand enriched NEWS does.
+- Brain reads config via `ctx.settings.get(KEY)` — `brainContext.js` provides
+  `settings: { get: (k) => process.env[k] }`, so every Brain var resolves from the oracle env.
+
+**Env vars the oracle already has (Phase 0 — full read-only power is COMPLETE):**
+LLM inference (`GOOGLE_GENERATIVE_AI_API_KEY` + optional `OPENAI/ANTHROPIC/OPENROUTER`, `*_MODEL`,
+`CHAIN_GPT_API_KEY`, `OLLAMA_URL`, `TRADABLE_ASSISTANT_URL`+`TRADABLE_API_ACCESS_TOKEN`);
+**CoinGecko price data via MCP** (`plugin-mcp` loaded + `character.js` `coingecko_mcp_local`,
+`COINGECKO_API_KEY`, and **bare `mcp=` — REQUIRED**: any truthy `mcp` value makes plugin-mcp skip
+the `character.settings.mcp` fallback and register zero servers → no CoinGecko); Brain warm-cache
+read (`POSTGRES_*`, `BRAIN_CONTEXT_ENABLED`). `AI_PROVIDER` is an optional operator bypass
+(`aiAgentOracle.js:916`; absent → normal routing).
+
+**Env vars MISSING for full parity — ADD in Phase 2 (all resolve via `ctx.settings.get`):**
+
+| Capability | Secrets (🔒) | Config (📄, defaults) |
+|---|---|---|
+| On-demand **sentiment** (`getAssetSentiment` → Santiment/CMC/CFGI) | `SANTIMENT_API_KEY`, `CMC_API_KEY`, `CFGI_API_KEY` | `SANTIMENT_ENABLED`(true), `SANTIMENT_TIER`(PRO), `CMC_ENABLED`(true), `CFGI_ENABLED`(true) |
+| On-demand **news** (+ `ctx.ai` shim) | `CRYPTOPANIC_API_KEY`, `CRYPTORANK_API_KEY`, `COINDESK_API_KEY` | `CRYPTOPANIC_ENABLED`/`_FETCH_INTERVAL`, `CRYPTORANK_ENABLED`/`_FETCH_INTERVAL`, `COINDESK_ENABLED`/`_FETCH_INTERVAL`, `COINGECKO_NEWS_ENABLED`/`_FETCH_INTERVAL` (reuses `COINGECKO_API_KEY`), `FREE_CRYPTO_NEWS_BASE_URL` |
+
+Values come from sense-ai-core's env (same provider accounts). Adding the keys is **inert until**
+the `getAssetSentiment` call + `ctx.ai` shim land — do env + code together in Phase 2. Secret
+placeholders cost zero ROFL slots, so they may be pre-staged blank in the env if desired.
+
 ### Phase 3 — Model standardization + knowledge RAG *(last; coordinate with the sense-ai-core instance)*
 - Standardize the embedding (and reconcile LLM) model across both bodies; re-ingest core's
   docs if the embedding model changes.
