@@ -59,6 +59,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
 const { getMarketContext } = require("./brainContext");
+const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
 const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
@@ -178,6 +179,13 @@ async function initializeEliza() {
 
   // Isolate plugin-sql's agent DB BEFORE the runtime initializes it (see fn doc).
   wireAgentDbForPluginSql();
+
+  // Create the ElizaOS core schema (agents, memories, …) on the (possibly fresh)
+  // Postgres DB BEFORE the runtime's first query. The programmatic boot path skips
+  // AgentServer's server-level migration, so without this `ensureAgentExists()`
+  // fails with `relation "agents" does not exist` on a brand-new oracle_agent DB.
+  // No-op on localnet/e2e (no Postgres → plugin-sql's PGLite fallback).
+  await runServerLevelMigrations({ postgresUrl: process.env.POSTGRES_URL });
 
   // Create the orchestrator
   elizaOS = new ElizaOS();
