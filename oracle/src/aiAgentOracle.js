@@ -433,7 +433,7 @@ async function queryDeepSeek(conversationHistory) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "deepseek-r1:1.5b",
+      model: "gemma3:1b",
       messages,
       stream: false,
     }),
@@ -759,7 +759,7 @@ async function routeQueryIntent(conversationHistory) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "deepseek-r1:1.5b",
+        model: "gemma3:1b",
         prompt: classificationPrompt,
         stream: false,
         format: "json", // Forces Ollama to ensure the output is JSON
@@ -775,8 +775,10 @@ async function routeQueryIntent(conversationHistory) {
     const json = await res.json();
     let responseText = json.response;
 
-    // DeepSeek-R1 often includes <thought> blocks even in JSON mode.
-    // We strip everything before and including the closing thought tag.
+    // Reasoning models (e.g. DeepSeek-R1) can emit <thought> blocks even in JSON
+    // mode; strip everything up to and including the closing tag. gemma3:1b
+    // (instruct) doesn't emit them, so this is a defensive no-op for the current
+    // model but keeps the router robust if the local model is ever swapped back.
     if (responseText.includes("</thought>")) {
       responseText = responseText.split("</thought>").pop().trim();
     }
