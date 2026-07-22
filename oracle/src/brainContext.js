@@ -65,12 +65,15 @@ async function defaultLoadBrain() {
 }
 
 function defaultCreateDb() {
-  bootstrapPostgresFromEnv();
+  // The Brain cache lives in the shared `senseai` DB. Build ITS url explicitly (via
+  // the return value) — plugin-sql owns process.env.POSTGRES_URL, pointed at the
+  // oracle's separate `oracle_agent` DB, so we must not read that shared var here.
+  const cacheUrl = bootstrapPostgresFromEnv({ database: process.env.POSTGRES_DATABASE });
   // Lazy requires so localnet/e2e runs (no Brain context) never load pg.
   const { Pool } = require("pg");
   const { drizzle } = require("drizzle-orm/node-postgres");
   const pool = new Pool({
-    connectionString: process.env.POSTGRES_URL,
+    connectionString: cacheUrl,
     max: 3,
     connectionTimeoutMillis: QUERY_TIMEOUT_MS,
     query_timeout: QUERY_TIMEOUT_MS,

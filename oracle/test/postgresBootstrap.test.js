@@ -132,4 +132,42 @@ describe("postgresBootstrap (oracle port)", () => {
 
     expect(() => bootstrapPostgresFromEnv({ certDir })).to.throw(/0600/);
   });
+
+  // --- separate agent DB (CU-86d3dwme6): plugin-sql gets its own DB, isolated
+  //     from the shared `senseai` Brain-cache DB (and from core's agent tables). ---
+
+  it("overrides the DB name via the `database` option and returns the built URL", () => {
+    setBaseEnv(); // POSTGRES_DATABASE = senseai
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    const returned = bootstrapPostgresFromEnv({ certDir, database: "oracle_agent" });
+
+    // Returned so a caller can build its own pool without depending on the env side-effect.
+    expect(returned).to.equal(process.env.POSTGRES_URL);
+    const url = new URL(returned);
+    expect(url.pathname).to.equal("/oracle_agent");
+    expect(url.username).to.equal("senseai"); // same instance/creds/ssl
+    expect(url.searchParams.get("sslmode")).to.equal("verify-ca");
+  });
+
+  it("defaults to POSTGRES_DATABASE when no `database` option is given", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    const returned = bootstrapPostgresFromEnv({ certDir });
+    expect(new URL(returned).pathname).to.equal("/senseai");
+  });
+
+  it("throws when the `database` option is provided but blank", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    expect(() => bootstrapPostgresFromEnv({ certDir, database: "  " })).to.throw(/database/i);
+  });
 });

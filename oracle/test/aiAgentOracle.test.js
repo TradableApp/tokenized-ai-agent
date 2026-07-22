@@ -228,7 +228,7 @@ describe("aiAgentOracle", function () {
     const FAKE_ANSWER_MESSAGE_ID = 3;
     const FAKE_ROFL_KEY = "0xkey";
 
-    it("should default to DeepSeek if AI_PROVIDER is not set", async () => {
+    it("should default to the local model (gemma3:1b) if AI_PROVIDER is not set", async () => {
       const clientPayload = { promptText: "test", isNewConversation: false };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -248,7 +248,7 @@ describe("aiAgentOracle", function () {
       const fetchCall = stubs["node-fetch"].getCalls().find((c) => c.args[0].includes("/api/chat"));
       expect(fetchCall).to.exist;
       const body = JSON.parse(fetchCall.args[1].body);
-      expect(body.model).to.equal("deepseek-r1:1.5b");
+      expect(body.model).to.equal("gemma3:1b");
     });
 
     it("should call queryChainGPT if AI_PROVIDER is 'ChainGPT'", async () => {

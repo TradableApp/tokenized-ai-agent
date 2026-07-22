@@ -111,6 +111,14 @@ function bootstrapPostgresFromEnv(options = {}) {
     }
   }
 
+  // Target database. Callers isolate connections by passing `database`: the oracle
+  // points plugin-sql at its own `oracle_agent` DB (agent state) while brainContext
+  // reads the shared `senseai` Brain cache (default POSTGRES_DATABASE).
+  const database = (options.database ?? process.env.POSTGRES_DATABASE) || "";
+  if (!database.trim()) {
+    throw new Error("A Postgres database name is required (options.database or POSTGRES_DATABASE)");
+  }
+
   const certDir = options.certDir ?? DEFAULT_CERT_DIR;
 
   const clientCert = resolveCert(
@@ -141,7 +149,7 @@ function bootstrapPostgresFromEnv(options = {}) {
       `:${encodeURIComponent(process.env.POSTGRES_PASSWORD ?? "")}` +
       `@${process.env.POSTGRES_HOST}` +
       `:${process.env.POSTGRES_PORT}` +
-      `/${encodeURIComponent(process.env.POSTGRES_DATABASE ?? "")}`,
+      `/${encodeURIComponent(database)}`,
   );
   url.searchParams.set("sslmode", sslMode);
   url.searchParams.set("sslcert", clientCert);
@@ -152,7 +160,9 @@ function bootstrapPostgresFromEnv(options = {}) {
   // public-IP connections (server cert SAN is GCP's internal hostname).
   url.searchParams.set("uselibpqcompat", "true");
 
-  process.env.POSTGRES_URL = url.toString();
+  const connectionString = url.toString();
+  process.env.POSTGRES_URL = connectionString;
+  return connectionString;
 }
 
 module.exports = { bootstrapPostgresFromEnv };

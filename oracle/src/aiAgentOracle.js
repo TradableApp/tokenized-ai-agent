@@ -146,8 +146,38 @@ console.log(
 let elizaOS = null;
 let senseAiAgentId = null;
 
+/**
+ * Point ElizaOS `plugin-sql` at the oracle's OWN isolated Postgres database
+ * (POSTGRES_AGENT_DATABASE, e.g. `oracle_agent`) — NOT PGLite (flaky) and NOT the
+ * shared `senseai` Brain-cache DB. Both bodies derive the same agentId, so a
+ * shared agent DB would collide with sense-ai-core's agent tables; a dedicated DB
+ * on the same instance (same client cert) keeps the oracle's agent state isolated
+ * + concurrency-safe. MUST run before `addAgents()` — plugin-sql reads POSTGRES_URL
+ * at init. If the agent DB / certs aren't configured (e.g. localnet e2e), skip and
+ * let plugin-sql fall back to PGLite.
+ */
+function wireAgentDbForPluginSql() {
+  const agentDb = process.env.POSTGRES_AGENT_DATABASE;
+  if (!agentDb || !agentDb.trim()) {
+    console.log(
+      "[ElizaOS] POSTGRES_AGENT_DATABASE unset — plugin-sql uses its local PGLite fallback.",
+    );
+    return;
+  }
+  try {
+    const { bootstrapPostgresFromEnv } = require("./postgresBootstrap");
+    bootstrapPostgresFromEnv({ database: agentDb }); // stamps POSTGRES_URL → agent DB
+    console.log(`[ElizaOS] plugin-sql wired to isolated Postgres agent DB "${agentDb}".`);
+  } catch (err) {
+    console.warn(`[ElizaOS] Agent-DB bootstrap failed (${err.message}) — falling back to PGLite.`);
+  }
+}
+
 async function initializeEliza() {
   console.log("[ElizaOS] Initializing Orchestrator...");
+
+  // Isolate plugin-sql's agent DB BEFORE the runtime initializes it (see fn doc).
+  wireAgentDbForPluginSql();
 
   // Create the orchestrator
   elizaOS = new ElizaOS();
