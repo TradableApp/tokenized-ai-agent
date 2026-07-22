@@ -70,6 +70,14 @@ COPY --from=builder --chown=node:node /app/oracle/packages/sense-ai-brain/packag
 COPY --from=builder --chown=node:node /app/oracle/src ./src
 COPY --from=builder --chown=node:node /app/oracle/package.json ./package.json
 
+# The oracle runs as USER node but writes runtime artefacts into its WORKDIR
+# (/app/oracle): the ephemeral PGLite agent DB (./.eliza/.elizadb, created by
+# @elizaos/plugin-sql when no Postgres adapter is pre-registered), plus
+# oracle-state.json / failed-jobs.json. WORKDIR is created root-owned (only the
+# COPYed files are --chown node), so make the dir itself node-writable — else
+# the agent EACCES's on `mkdir ./.eliza/.elizadb` at first boot.
+RUN chown node:node /app/oracle
+
 USER node
 
 CMD ["node", "src/index.js"]
