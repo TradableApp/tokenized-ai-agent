@@ -68,7 +68,7 @@ describe("wireAgentDbForPluginSql (agent-DB isolation guard)", () => {
       isPostgresConfigured: () => true, // configured, but no agent DB requested
     });
 
-    wire();
+    expect(wire()).to.equal(null); // null ⇒ caller skips the migration too
 
     expect(called).to.equal(0);
   });
@@ -85,22 +85,28 @@ describe("wireAgentDbForPluginSql (agent-DB isolation guard)", () => {
     });
     process.env.POSTGRES_AGENT_DATABASE = "oracle_agent";
 
-    expect(() => wire()).to.not.throw();
+    expect(wire()).to.equal(null);
     expect(called).to.equal(0);
   });
 
   it("bootstraps with the agent DB name when both the name and the config are present", () => {
     const calls = [];
     const wire = loadWithBootstrapStub({
-      bootstrapPostgresFromEnv: (opts) => calls.push(opts),
+      bootstrapPostgresFromEnv: (opts) => {
+        calls.push(opts);
+        return "postgresql://u:p@h:5432/oracle_agent?sslmode=verify-ca";
+      },
       isPostgresConfigured: () => true,
     });
     process.env.POSTGRES_AGENT_DATABASE = "oracle_agent";
 
-    wire();
+    const returned = wire();
 
     expect(calls).to.have.lengthOf(1);
     expect(calls[0].database).to.equal("oracle_agent");
+    // Returned so initializeEliza can hand it to runServerLevelMigrations directly
+    // instead of reading process.env.POSTGRES_URL back out.
+    expect(returned).to.equal("postgresql://u:p@h:5432/oracle_agent?sslmode=verify-ca");
   });
 
   it("propagates a bootstrap failure (configured-but-broken must NOT fall back to PGLite)", () => {

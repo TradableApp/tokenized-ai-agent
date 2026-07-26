@@ -163,7 +163,7 @@ function wireAgentDbForPluginSql() {
     console.log(
       "[ElizaOS] POSTGRES_AGENT_DATABASE unset — plugin-sql uses its local PGLite fallback.",
     );
-    return;
+    return null;
   }
   const { bootstrapPostgresFromEnv, isPostgresConfigured } = require("./postgresBootstrap");
 
@@ -175,7 +175,7 @@ function wireAgentDbForPluginSql() {
     console.log(
       "[ElizaOS] Postgres connection config absent — plugin-sql uses its local PGLite fallback.",
     );
-    return;
+    return null;
   }
 
   // Deliberately NOT wrapped in a try/catch: Postgres is configured, so a bad
@@ -183,22 +183,30 @@ function wireAgentDbForPluginSql() {
   // PGLite — which we retired for being corruption-prone, and which would quietly
   // discard all agent state on every restart while the oracle looked healthy. This
   // matches the fatal contract runServerLevelMigrations already has.
-  bootstrapPostgresFromEnv({ database: agentDb }); // stamps POSTGRES_URL → agent DB
+  // Still stamps POSTGRES_URL (plugin-sql reads that var) AND returns the url, so the
+  // caller can pass it on explicitly rather than reading the global back out.
+  const agentDbUrl = bootstrapPostgresFromEnv({ database: agentDb });
   console.log(`[ElizaOS] plugin-sql wired to isolated Postgres agent DB "${agentDb}".`);
+  return agentDbUrl;
 }
 
 async function initializeEliza() {
   console.log("[ElizaOS] Initializing Orchestrator...");
 
   // Isolate plugin-sql's agent DB BEFORE the runtime initializes it (see fn doc).
-  wireAgentDbForPluginSql();
+  const agentDbUrl = wireAgentDbForPluginSql();
 
   // Create the ElizaOS core schema (agents, memories, …) on the (possibly fresh)
   // Postgres DB BEFORE the runtime's first query. The programmatic boot path skips
   // AgentServer's server-level migration, so without this `ensureAgentExists()`
   // fails with `relation "agents" does not exist` on a brand-new oracle_agent DB.
   // No-op on localnet/e2e (no Postgres → plugin-sql's PGLite fallback).
-  await runServerLevelMigrations({ postgresUrl: process.env.POSTGRES_URL });
+  // Take the url straight from the wiring rather than reading process.env back out —
+  // the env round-trip only worked because the two calls are adjacent and synchronous.
+  // Falls back to a directly-provided POSTGRES_URL so an operator who sets that var
+  // WITHOUT POSTGRES_AGENT_DATABASE still gets their schema migrated (plugin-sql would
+  // otherwise connect to an unmigrated DB and fail on `relation "agents"`).
+  await runServerLevelMigrations({ postgresUrl: agentDbUrl ?? process.env.POSTGRES_URL });
 
   // Create the orchestrator
   elizaOS = new ElizaOS();

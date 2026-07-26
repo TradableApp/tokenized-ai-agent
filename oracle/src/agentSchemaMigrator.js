@@ -45,8 +45,8 @@ async function runServerLevelMigrations(options = {}) {
   } = await loadSqlPlugin();
 
   // Same sequence as AgentServer.initialize(): adapter → init → register the core
-  // schema → run its migrations. The adapter shares plugin-sql's connection so the
-  // agent runtime that starts next sees the freshly created tables.
+  // schema → run its migrations, so the agent runtime that starts next sees the
+  // freshly created tables.
   const adapter = createDatabaseAdapter({ postgresUrl }, SERVER_AGENT_ID);
   await adapter.init();
 
@@ -55,6 +55,29 @@ async function runServerLevelMigrations(options = {}) {
   migrationService.discoverAndRegisterPluginSchemas([sqlPlugin]);
   await migrationService.runAllPluginMigrations();
 
+  // DO NOT add `await adapter.close()` here — it would break the boot.
+  //
+  // `createDatabaseAdapter` caches its PostgresConnectionManager in a GLOBAL
+  // singleton keyed `"default:pg"` — not by url and not by agentId
+  // (@elizaos/plugin-sql/dist/node/index.node.js:21110 sets managerKey = "default"
+  // unless ENABLE_DATA_ISOLATION=true; :21124 builds the key; :21128-21142 is the
+  // singleton Map, and on a hit the cached manager is returned while
+  // `config.postgresUrl` is IGNORED). `PgDatabaseAdapter.close()` is
+  // `this.manager.close()` (:15774), i.e. it closes that SHARED manager.
+  //
+  // Two consequences:
+  //  1. Nothing leaks — the ElizaOS runtime reuses this very manager rather than
+  //     opening a second pool, so there is no per-boot idle connection to reclaim.
+  //  2. Closing it would drop the pool the runtime is about to use, forcing a
+  //     reconnect through the isClosed() → recreate path, which re-reads
+  //     process.env.POSTGRES_URL and re-opens the clobbering risk that
+  //     `writeEnv: false` exists to prevent.
+  //
+  // Corollary that makes this function load-bearing: because the key is
+  // first-caller-wins, running these migrations BEFORE `new ElizaOS()` is what
+  // pins the agent runtime to the oracle_agent DB. Revisit if a plugin-sql
+  // upgrade makes managerKey url-derived — then the adapters diverge and closing
+  // becomes correct.
   return true;
 }
 
