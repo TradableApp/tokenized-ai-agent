@@ -22,9 +22,16 @@ const PG_KEYS = [
 ];
 
 function loadWithBootstrapStub(stub) {
-  // Stub only postgresBootstrap; everything else the module pulls in is heavy
-  // (ethers/ElizaOS/storage) but already exercised by the main suite.
-  const mod = proxyquire("../src/aiAgentOracle", { "./postgresBootstrap": stub });
+  // Stub postgresBootstrap (the unit under test) plus the two ElizaOS modules the
+  // main aiAgentOracle suite also stubs. The plugin `dist/` is BUILD OUTPUT — built
+  // in the Dockerfile builder stage and gitignored — so it exists locally but NOT in
+  // CI. Without these keys, proxyquire (noCallThru) resolves the real path and the
+  // require fails with `Cannot find module …/plugin-senseai/dist/index.js` on CI only.
+  const mod = proxyquire("../src/aiAgentOracle", {
+    "./postgresBootstrap": stub,
+    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    "./elizaos/character.js": {},
+  });
   // Requiring the module runs dotenv.config() against the real ../.env.oracle, which
   // re-populates POSTGRES_* (dotenv fills only unset vars, and beforeEach cleared
   // them). Clear again AFTER load so each test controls the env it exercises.
