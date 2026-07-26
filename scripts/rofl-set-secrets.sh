@@ -249,7 +249,28 @@ list_onchain_secret_names() {
     }
   ' rofl.yaml
 }
-list_onchain_secret_names | while IFS= read -r sname; do
+# The enumeration above parses rofl.yaml with indentation-sensitive awk because the
+# oasis CLI has no `secret list` (only get/import/rm/set) and no JSON output. That
+# makes a CLI formatting change able to turn the purge into a SILENT no-op, letting
+# orphans pile up and re-consume slots — the very thing this section exists to stop.
+# So assert the parse still works: if the manifest clearly has a secrets: block for
+# this deployment but we extracted nothing, the parser has drifted — fail loudly.
+deployment_has_secrets_block() {
+  awk -v target="^  $DEPLOYMENT_TARGET:" '
+    $0 ~ target { inblk=1; next }
+    inblk && /^  [a-zA-Z]/ { inblk=0 }
+    inblk && /^    secrets:/ { found=1; exit }
+    END { if (found) print "true" }
+  ' rofl.yaml
+}
+ONCHAIN_NAMES="$(list_onchain_secret_names)"
+if [ -z "$ONCHAIN_NAMES" ] && [ "$(deployment_has_secrets_block)" == "true" ]; then
+  echo "❌ Purge aborted: rofl.yaml has a secrets: block for '$DEPLOYMENT_TARGET' but the"
+  echo "   parser extracted no names — its indentation assumptions have drifted from the"
+  echo "   oasis CLI's output. Fix list_onchain_secret_names before trusting this step."
+  exit 1
+fi
+printf '%s\n' "$ONCHAIN_NAMES" | while IFS= read -r sname; do
   [ -z "$sname" ] && continue
   if ! is_kept "$sname"; then
     echo "  - Purging orphaned:    $sname  (now plaintext config)"

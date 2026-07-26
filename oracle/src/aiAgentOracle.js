@@ -2294,4 +2294,5 @@ module.exports = {
   setOracleAddress,
   processPastEvents,
   retryFailedJobs,
+  wireAgentDbForPluginSql,
 };
