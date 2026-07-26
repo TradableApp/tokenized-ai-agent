@@ -12,18 +12,10 @@
  * - No `ctx.ai`: the oracle omits the AI capability — enrichment belongs to
  *   the Social body.
  */
-const { bootstrapPostgresFromEnv } = require("./postgresBootstrap");
+const { bootstrapPostgresFromEnv, isPostgresConfigured } = require("./postgresBootstrap");
 
 const NEWS_LIMIT = 6;
 const QUERY_TIMEOUT_MS = 3000;
-
-const REQUIRED_KEYS = [
-  "POSTGRES_HOST",
-  "POSTGRES_PORT",
-  "POSTGRES_DATABASE",
-  "POSTGRES_USER",
-  "POSTGRES_PASSWORD",
-];
 
 // Lazy singleton — the pool/engine survive across prompts. The IN-FLIGHT
 // promise is memoized (not just the resolved value): prompts run through a
@@ -41,23 +33,12 @@ function _resetForTests() {
   overrides = {};
 }
 
-const CERT_KEY_PAIRS = [
-  ["POSTGRES_CLIENT_CERT", "POSTGRES_CLIENT_CERT_PATH"],
-  ["POSTGRES_CLIENT_KEY", "POSTGRES_CLIENT_KEY_PATH"],
-  ["POSTGRES_SERVER_CA_CERT", "POSTGRES_SERVER_CA_CERT_PATH"],
-];
-
 function isConfigured() {
   if (process.env.BRAIN_CONTEXT_ENABLED === "false") return false;
-  const hasBase = REQUIRED_KEYS.every((key) => (process.env[key] || "").trim().length > 0);
-  // Certs are part of "configured" — otherwise every prompt would retry the
-  // bootstrap and fail noisily until the env is complete.
-  const hasCerts = CERT_KEY_PAIRS.every(
-    ([inlineKey, pathKey]) =>
-      (process.env[inlineKey] || "").trim().length > 0 ||
-      (process.env[pathKey] || "").trim().length > 0,
-  );
-  return hasBase && hasCerts;
+  // Base keys AND certs both count as "configured" (see isPostgresConfigured) —
+  // otherwise every prompt would retry the bootstrap and fail noisily until the
+  // env is complete. Shared with the agent-DB wiring so the two can't drift.
+  return isPostgresConfigured();
 }
 
 async function defaultLoadBrain() {
@@ -65,10 +46,15 @@ async function defaultLoadBrain() {
 }
 
 function defaultCreateDb() {
-  // The Brain cache lives in the shared `senseai` DB. Build ITS url explicitly (via
-  // the return value) — plugin-sql owns process.env.POSTGRES_URL, pointed at the
-  // oracle's separate `oracle_agent` DB, so we must not read that shared var here.
-  const cacheUrl = bootstrapPostgresFromEnv({ database: process.env.POSTGRES_DATABASE });
+  // The Brain cache lives in the shared `senseai` DB. Build ITS url explicitly and
+  // with `writeEnv: false` — plugin-sql owns process.env.POSTGRES_URL, pointed at the
+  // oracle's separate `oracle_agent` DB, so we must neither read NOR write that
+  // shared var here (writing it would repoint the agent runtime at the cache DB the
+  // next time plugin-sql's global pool is recreated).
+  const cacheUrl = bootstrapPostgresFromEnv({
+    database: process.env.POSTGRES_DATABASE,
+    writeEnv: false,
+  });
   // Lazy requires so localnet/e2e runs (no Brain context) never load pg.
   const { Pool } = require("pg");
   const { drizzle } = require("drizzle-orm/node-postgres");

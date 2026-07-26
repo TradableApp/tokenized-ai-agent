@@ -1,5 +1,8 @@
 #!/bin/bash
-set -e
+# pipefail so a failure on the LEFT of a pipeline (e.g. the awk that enumerates
+# on-chain secret names feeding the PART 4 purge loop) aborts instead of being
+# masked by the exit status of the loop it feeds.
+set -eo pipefail
 
 # Syncs the oracle's env-driven secrets/config to a ROFL deployment AND
 # regenerates the deployment compose `environment:` block from the same source
@@ -114,7 +117,11 @@ process_file() {
         keep_key "$key"                                # PART 3 / init own the value
         continue
       fi
-      value=$(echo "$remainder" | awk -F'#' '{print $1}' | sed 's/[[:space:]]*$//')
+      # Strip ONLY a whitespace-preceded inline comment (` # …`) — the .env convention.
+      # A bare `#` is legal inside a secret value (passwords with special characters,
+      # URL fragments), and splitting on the first `#` would silently truncate it and
+      # push a corrupted secret on-chain, causing opaque auth failures later.
+      value=$(echo "$remainder" | sed 's/[[:space:]]#.*$//' | sed 's/[[:space:]]*$//')
       SECRETS_LIST+="${key}__SEP__${value}"$'\n'        # push (or purge if blank)
       if [ -n "$value" ]; then
         SECRETS_YAML+="      - $key=\${$key:-}\n"

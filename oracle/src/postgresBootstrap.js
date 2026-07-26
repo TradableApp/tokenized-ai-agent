@@ -25,6 +25,34 @@ const REQUIRED_BASE_KEYS = [
 const DEFAULT_SSL_MODE = "verify-ca";
 const DEFAULT_CERT_DIR = join(tmpdir(), "senseai-oracle-postgres-certs");
 
+const CERT_KEY_PAIRS = [
+  ["POSTGRES_CLIENT_CERT", "POSTGRES_CLIENT_CERT_PATH"],
+  ["POSTGRES_CLIENT_KEY", "POSTGRES_CLIENT_KEY_PATH"],
+  ["POSTGRES_SERVER_CA_CERT", "POSTGRES_SERVER_CA_CERT_PATH"],
+];
+
+/**
+ * True when every base key AND every cert (inline PEM or *_PATH) is present — i.e.
+ * the operator has actually configured Cloud SQL for this deployment.
+ *
+ * Callers use this to distinguish the two failure modes, which must behave very
+ * differently: "no Postgres configured here" (localnet/e2e/tests — degrade quietly)
+ * versus "Postgres configured but broken" (bad cert/host/password — fail LOUDLY
+ * rather than silently running on ephemeral storage). Note a bare
+ * POSTGRES_AGENT_DATABASE / POSTGRES_DATABASE name is NOT sufficient: the committed
+ * .env.oracle.example carries those names with no credentials.
+ * @returns {boolean}
+ */
+function isPostgresConfigured() {
+  const hasBase = REQUIRED_BASE_KEYS.every((key) => (process.env[key] || "").trim().length > 0);
+  const hasCerts = CERT_KEY_PAIRS.every(
+    ([inlineKey, pathKey]) =>
+      (process.env[inlineKey] || "").trim().length > 0 ||
+      (process.env[pathKey] || "").trim().length > 0,
+  );
+  return hasBase && hasCerts;
+}
+
 /**
  * Resolves a single cert input to a file path libpq can read.
  * @returns {string} path to the materialized (or user-provided) cert file
@@ -161,8 +189,16 @@ function bootstrapPostgresFromEnv(options = {}) {
   url.searchParams.set("uselibpqcompat", "true");
 
   const connectionString = url.toString();
-  process.env.POSTGRES_URL = connectionString;
+  // `writeEnv: false` opts out of the env side-effect. plugin-sql's pg connection
+  // manager is a GLOBAL singleton keyed "default:pg" — NOT by url — and a closed
+  // manager is transparently recreated from whatever POSTGRES_URL says at that
+  // moment. A second caller stamping the var (brainContext reading the shared
+  // `senseai` cache) could therefore silently repoint the AGENT runtime at the
+  // cache DB — the exact collision the separate oracle_agent DB exists to prevent.
+  if (options.writeEnv !== false) {
+    process.env.POSTGRES_URL = connectionString;
+  }
   return connectionString;
 }
 
-module.exports = { bootstrapPostgresFromEnv };
+module.exports = { bootstrapPostgresFromEnv, isPostgresConfigured };

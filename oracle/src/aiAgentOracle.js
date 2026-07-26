@@ -165,13 +165,26 @@ function wireAgentDbForPluginSql() {
     );
     return;
   }
-  try {
-    const { bootstrapPostgresFromEnv } = require("./postgresBootstrap");
-    bootstrapPostgresFromEnv({ database: agentDb }); // stamps POSTGRES_URL → agent DB
-    console.log(`[ElizaOS] plugin-sql wired to isolated Postgres agent DB "${agentDb}".`);
-  } catch (err) {
-    console.warn(`[ElizaOS] Agent-DB bootstrap failed (${err.message}) — falling back to PGLite.`);
+  const { bootstrapPostgresFromEnv, isPostgresConfigured } = require("./postgresBootstrap");
+
+  // A bare DB *name* isn't enough to mean "use Postgres" — the committed
+  // .env.oracle.example carries the name with no credentials, and localnet/e2e run
+  // that way. Only treat Postgres as intended when the connection config is actually
+  // present (shared with brainContext so the two checks can't drift).
+  if (!isPostgresConfigured()) {
+    console.log(
+      "[ElizaOS] Postgres connection config absent — plugin-sql uses its local PGLite fallback.",
+    );
+    return;
   }
+
+  // Deliberately NOT wrapped in a try/catch: Postgres is configured, so a bad
+  // cert/host/password must fail the boot LOUDLY rather than silently degrade to
+  // PGLite — which we retired for being corruption-prone, and which would quietly
+  // discard all agent state on every restart while the oracle looked healthy. This
+  // matches the fatal contract runServerLevelMigrations already has.
+  bootstrapPostgresFromEnv({ database: agentDb }); // stamps POSTGRES_URL → agent DB
+  console.log(`[ElizaOS] plugin-sql wired to isolated Postgres agent DB "${agentDb}".`);
 }
 
 async function initializeEliza() {

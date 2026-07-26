@@ -170,4 +170,37 @@ describe("postgresBootstrap (oracle port)", () => {
 
     expect(() => bootstrapPostgresFromEnv({ certDir, database: "  " })).to.throw(/database/i);
   });
+
+  // --- writeEnv opt-out: plugin-sql's connection manager is a GLOBAL singleton keyed
+  //     "default:pg" (NOT by url), and a closed manager is recreated from whatever
+  //     POSTGRES_URL says at that moment. So a second caller stamping the env var
+  //     could silently repoint the AGENT runtime at the shared Brain-cache DB. ---
+
+  it("does NOT stamp process.env.POSTGRES_URL when writeEnv is false (still returns the url)", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    // plugin-sql's url is stamped first (the agent DB) …
+    bootstrapPostgresFromEnv({ certDir, database: "oracle_agent" });
+    const agentUrl = process.env.POSTGRES_URL;
+    expect(new URL(agentUrl).pathname).to.equal("/oracle_agent");
+
+    // … and a cache-DB caller must NOT clobber it.
+    const cacheUrl = bootstrapPostgresFromEnv({ certDir, database: "senseai", writeEnv: false });
+
+    expect(new URL(cacheUrl).pathname).to.equal("/senseai");
+    expect(process.env.POSTGRES_URL).to.equal(agentUrl); // untouched
+  });
+
+  it("still stamps POSTGRES_URL by default (writeEnv omitted) for the plugin-sql caller", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    const url = bootstrapPostgresFromEnv({ certDir, database: "oracle_agent" });
+    expect(process.env.POSTGRES_URL).to.equal(url);
+  });
 });
