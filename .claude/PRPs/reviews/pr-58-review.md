@@ -36,6 +36,31 @@ Therefore the runtime **reuses** the migrator's manager (no second pool, nothing
 
 **Load-bearing corollary:** because the manager is keyed `"default:pg"` and first-caller-wins, running the migrator *before* `new ElizaOS()` is what guarantees the agent runtime lands on `oracle_agent`. Revisit on a plugin-sql upgrade — if `managerKey` becomes url-derived, finding #2 becomes correct.
 
+## Bot-comment triage — Round 2 (run `30224965952`, completed/success)
+
+| # | Finding | Verdict | Resolution |
+|---|---------|---------|------------|
+| 5 | `TEXT_EMBEDDING_MODEL` left at `text-embedding-004` while `GOOGLE_EMBEDDING_MODEL` moved | **AGREE** (rationale corrected) | Aligned to core's `gemini-embedding-001` across all 3 env files — `ada44be` |
+| 6 | `wireAgentDbForPluginSql` has 3 branches, zero tests | **AGREE** | Exported via the existing test-seam block + 4 tests — `ada44be` |
+| 7 | PART 4 purge could silently no-op if the awk drifts | **AGREE** | Drift guard (`deployment_has_secrets_block`); CLI has no `secret list` — `ada44be` |
+| 8 | Close the migration adapter (conditional re-raise) | **Confirmed reuse** | Answered with line refs; no code change |
+
+Corrections issued to the bot on #5: `text-embedding-004` is a **Google** model (not OpenAI), and **nothing** in the tree reads `TEXT_EMBEDDING_MODEL` (`plugin-google-genai` reads only `GOOGLE_EMBEDDING_MODEL`). The fix was still right — `sense-ai-core` sets both to `gemini-embedding-001`, and aligning to core is this PR's whole point.
+
+## Bot-comment triage — Round 3 (run `30225620381`, completed/success)
+
+| # | Finding | Verdict | Resolution |
+|---|---------|---------|------------|
+| 9 | Document *why* `adapter.close()` is omitted, so nobody adds it | **AGREE** | Full mechanism + line refs in the code — `e9889b5` |
+| 10 | ` #` inside a secret still truncated by round-2's rule | **AGREE** | Secrets now **opaque** (no comment-stripping at all) + header note — `e9889b5` |
+| 11 | Stale comments claim "Gemini 3 Flash/Pro" | **AGREE** | Rewritten to the real models + a verify-200 note — `e9889b5` |
+| 12 | `POSTGRES_URL` read back from env right after stamping | **AGREE** | Returns the url; caller passes it (keeps an env fallback) — `e9889b5` |
+| 13 | Compose rewrite has no drift guard | **AGREE** | Asserts the marker **and** our AUTO-GENERATED banner — `e9889b5` |
+
+**Integrity note:** finding #9 exposed a false statement in my own round-2 reply — I had told the bot `ada44be` upgraded that comment when it had not (`ada44be` never touched `agentSchemaMigrator.js`). Corrected in-thread and the change actually made in `e9889b5`.
+
+**Convergence call (stopped at 3 rounds, as instructed):** severity descended clearly — R1 found real defects (silent secret truncation, silent PGLite degradation, env clobbering), R2 found one real gap plus consistency, R3 found documentation and defensive guards only. A 4th round would keep yielding polish, so the cost/benefit turned. Copilot also hit its review quota during R3.
+
 ## Own findings
 
 ### HIGH
@@ -60,7 +85,8 @@ None.
 
 | Check | Result |
 |---|---|
-| Oracle tests | ✅ **203 passing** (201 → +2 for `writeEnv`) |
+| Oracle tests | ✅ **207 passing** (201 → +2 `writeEnv`, +4 `wireAgentDbForPluginSql`) |
+| CI regression I introduced | ⚠️ → ✅ `e9889b5` failed `Test (oracle)`: my new test proxyquired the real `aiAgentOracle`, which requires the **gitignored plugin `dist/`** (built only in the Docker builder stage) — green locally, `Cannot find module` on CI. Fixed in `8667899` by stubbing the same two ElizaOS modules the main suite stubs; **verified by moving the dist aside locally to reproduce CI conditions** |
 | Contracts compile / test / solhint | ✅ via CI (untouched by this PR) |
 | CI (GitHub) | ✅ SUCCESS on the fix commit |
 | CodeQL / Analyze | ✅ SUCCESS |
