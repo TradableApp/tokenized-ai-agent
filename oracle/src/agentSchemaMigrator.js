@@ -38,7 +38,11 @@ async function runServerLevelMigrations(options = {}) {
   }
 
   const loadSqlPlugin = options.loadSqlPlugin ?? defaultLoadSqlPlugin;
-  const { DatabaseMigrationService, createDatabaseAdapter, default: sqlPlugin } = await loadSqlPlugin();
+  const {
+    DatabaseMigrationService,
+    createDatabaseAdapter,
+    default: sqlPlugin,
+  } = await loadSqlPlugin();
 
   // Same sequence as AgentServer.initialize(): adapter → init → register the core
   // schema → run its migrations. The adapter shares plugin-sql's connection so the

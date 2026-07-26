@@ -58,7 +58,10 @@ describe("agentSchemaMigrator", () => {
     const { calls, mod, sqlPlugin, fakeDb } = makeFakePlugin();
     const url = "postgresql://u:p@h:5432/oracle_agent?sslmode=verify-ca";
 
-    const result = await runServerLevelMigrations({ postgresUrl: url, loadSqlPlugin: async () => mod });
+    const result = await runServerLevelMigrations({
+      postgresUrl: url,
+      loadSqlPlugin: async () => mod,
+    });
 
     expect(result).to.equal(true);
     // adapter built with the url + the reserved server agent id (matches core)
@@ -98,7 +101,10 @@ describe("agentSchemaMigrator", () => {
 
     let threw = null;
     try {
-      await runServerLevelMigrations({ postgresUrl: "postgresql://x/y", loadSqlPlugin: async () => mod });
+      await runServerLevelMigrations({
+        postgresUrl: "postgresql://x/y",
+        loadSqlPlugin: async () => mod,
+      });
     } catch (e) {
       threw = e;
     }

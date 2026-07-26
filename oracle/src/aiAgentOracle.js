@@ -905,7 +905,11 @@ function hasMockReasoningSentinel(text) {
  *   shape but would WRONGLY decline to initialise a genuine orphan — so never omit it on that path.
  * @returns {boolean} True if the conversation must be initialised on storage.
  */
-function shouldInitializeConversation({ isNewConversation, previousMessageCID, conversationKeyExists }) {
+function shouldInitializeConversation({
+  isNewConversation,
+  previousMessageCID,
+  conversationKeyExists,
+}) {
   if (isNewConversation) return true;
   // A normal follow-up threads off a parent message — the conversation is already
   // established, so never re-initialise.
@@ -931,9 +935,8 @@ function asAnswer(text) {
 async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // --- MOCK MODE: Return deterministic response ---
   if (MOCK_AI) {
-    const latestUserMessage = conversationHistory
-      .filter((msg) => msg.role === "user")
-      .pop()?.content || "unknown query";
+    const latestUserMessage =
+      conversationHistory.filter((msg) => msg.role === "user").pop()?.content || "unknown query";
 
     // E2E only: honour a "__E2E_DELAY_MS__:<n>" marker in the prompt so a test can
     // keep the answer pending long enough to cancel/refund it. Mock-only => prod-safe.

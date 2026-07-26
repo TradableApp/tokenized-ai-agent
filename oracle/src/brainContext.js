@@ -146,24 +146,22 @@ async function getMarketContext() {
       blocks.push(brain.formatMacroEnvironment(macro));
     }
     if (news.length > 0) {
-      blocks.push(`### SOVEREIGN MARKET INTELLIGENCE (Warm Cache)\n${brain.formatNewsTicker(news)}`);
+      blocks.push(
+        `### SOVEREIGN MARKET INTELLIGENCE (Warm Cache)\n${brain.formatNewsTicker(news)}`,
+      );
     }
 
     if (blocks.length === 0) return null;
 
     return {
       contextText: blocks.join("\n\n"),
-      sources: news
-        .filter((n) => n.title && n.url)
-        .map((n) => ({ title: n.title, url: n.url })),
+      sources: news.filter((n) => n.title && n.url).map((n) => ({ title: n.title, url: n.url })),
     };
   } catch (error) {
     // Never fail the answer path over context — log and answer without it.
     // The initialized client is kept: a transient read/format failure must not
     // orphan a live pg Pool (init failures reset themselves in init()).
-    console.error(
-      `[BrainContext] Market context unavailable: ${String(error?.message ?? error)}`,
-    );
+    console.error(`[BrainContext] Market context unavailable: ${String(error?.message ?? error)}`);
     return null;
   }
 }
