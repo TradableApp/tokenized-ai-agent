@@ -176,9 +176,13 @@ echo "✅ $COMPOSE_TEMPLATE updated."
 # --- PART 2: PUSH .ENV SECRETS ON-CHAIN (rm-then-set; purge blanks) ---
 echo "🛰️  Synchronizing secrets on-chain for deployment '$DEPLOYMENT_TARGET'..."
 secret_exists() {
+  # Bound the block at the next 2-space key (the sibling deployment), matching
+  # list_onchain_secret_names below. Resetting only on a column-0 key would let the
+  # scan run on past `  base-mainnet:` into other deployments, so a key present ONLY
+  # in another deployment would report as existing here.
   awk -v target="^  $DEPLOYMENT_TARGET:" -v key="$1" '
     $0 ~ target { in_block=1; next }
-    in_block && /^[a-zA-Z]/ { in_block=0 }
+    in_block && /^  [a-zA-Z]/ { in_block=0 }
     in_block && $0 ~ "name: " key " *$" { found=1; exit }
     END { if(found) print "true" }
   ' rofl.yaml
