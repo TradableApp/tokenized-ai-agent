@@ -28,7 +28,7 @@ function defaultLoadSqlPlugin() {
 }
 
 /**
- * @param {{ postgresUrl?: string, loadSqlPlugin?: () => Promise<any> }} [options]
+ * @param {{ postgresUrl?: string, expectDatabase?: string, loadSqlPlugin?: () => Promise<any> }} [options]
  * @returns {Promise<boolean>} true when migrations ran, false when skipped (no Postgres)
  */
 async function runServerLevelMigrations(options = {}) {
@@ -49,6 +49,26 @@ async function runServerLevelMigrations(options = {}) {
   // freshly created tables.
   const adapter = createDatabaseAdapter({ postgresUrl }, SERVER_AGENT_ID);
   await adapter.init();
+
+  // Assert the adapter really is pointed at the DB we asked for, BEFORE creating any
+  // tables. Cheap, and version-independent in a way that inspecting pool internals is
+  // not: it asks Postgres itself. Without it, a plugin-sql change that made the
+  // connection-manager key url-derived (see the close() note below) could route these
+  // migrations — and then the agent's tables — into the shared `senseai` cache with no
+  // error at all, which is precisely the collision the separate DB exists to prevent.
+  if (options.expectDatabase) {
+    const db = adapter.getDatabase();
+    const result = await db.execute("select current_database() as db");
+    const actual = (result?.rows ?? result)?.[0]?.db;
+    if (actual && actual !== options.expectDatabase) {
+      throw new Error(
+        `plugin-sql connected to Postgres database "${actual}" but "${options.expectDatabase}" was ` +
+          `requested. Refusing to migrate: the agent schema would land in the wrong database. ` +
+          `Check POSTGRES_URL and whether @elizaos/plugin-sql's connection-manager key ` +
+          `(currently the global "default:pg" singleton) has changed.`,
+      );
+    }
+  }
 
   const migrationService = new DatabaseMigrationService();
   await migrationService.initializeWithDatabase(adapter.getDatabase());

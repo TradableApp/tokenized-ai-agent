@@ -167,6 +167,20 @@ ENV_YAML+="$CONFIG_YAML"
 
 # --- PART 1: REGENERATE THE COMPOSE environment: BLOCK ---
 echo "📄 Updating '${COMPOSE_TEMPLATE}' environment block..."
+# The rewrite below targets the FIRST `environment:` key in the file, which is only
+# correct while the oracle service owns the only one. `ollama` is declared ABOVE
+# `oracle`, so if it ever gains an `environment:` block the rewrite would inject the
+# oracle's secrets into the OLLAMA container and leave the oracle's block stale — a
+# silent misconfiguration that also leaks credentials into the wrong service. The drift
+# guard cannot catch this (it only detects "no environment: found"), so assert the
+# assumption; if this ever fires, anchor the awk on `/^  oracle:/` instead.
+ENV_BLOCK_COUNT=$(grep -c '^[[:space:]]*environment:' "$COMPOSE_TEMPLATE" || true)
+if [ "${ENV_BLOCK_COUNT:-0}" -ne 1 ]; then
+  echo "❌ $COMPOSE_TEMPLATE has $ENV_BLOCK_COUNT 'environment:' blocks; this script"
+  echo "   assumes exactly 1 (the oracle service). Anchor the awk on the service name"
+  echo "   before proceeding — otherwise the wrong service would receive the secrets."
+  exit 1
+fi
 printf "%b" "$ENV_YAML" > "$SECRETS_TMP_DIR/env.yaml"
 # Drift guard: if `environment:` is ever removed or renamed, awk matches nothing,
 # copies the file through verbatim and exits 0 — the secrets block would silently NOT
@@ -174,7 +188,13 @@ printf "%b" "$ENV_YAML" > "$SECRETS_TMP_DIR/env.yaml"
 # whether it substituted (exit 3), which is the only reliable signal: grepping the
 # output for our banner does NOT work, because a verbatim copy still carries the
 # banner emitted by the PREVIOUS run.
-if ! awk '
+# Capture awk's own status: exit 3 is OUR drift signal, anything else non-zero is an
+# awk/IO failure (unreadable template, full disk, unwritable dir). Conflating them
+# would print "no environment: key" during an I/O outage and send the operator hunting
+# a renamed key that was never renamed. `$?` inside an `if !` branch is the status of
+# the negation, not of awk, so it must be captured here.
+awk_rc=0
+awk '
   /^[[:space:]]*environment:/ {
     print
     while ((getline l < "'"$SECRETS_TMP_DIR"'/env.yaml") > 0) print l
@@ -186,10 +206,17 @@ if ! awk '
   in_env { next }
   { print }
   END { if (!substituted) exit 3 }
-' "$COMPOSE_TEMPLATE" > "${COMPOSE_TEMPLATE}.new"; then
+' "$COMPOSE_TEMPLATE" > "${COMPOSE_TEMPLATE}.new" || awk_rc=$?
+if [ "$awk_rc" -eq 3 ]; then
   echo "❌ compose rewrite failed: no 'environment:' key found in $COMPOSE_TEMPLATE, so"
   echo "   the block was NOT regenerated. Fix the template (or the awk) rather than"
   echo "   deploying a stale environment block."
+  rm -f "${COMPOSE_TEMPLATE}.new"
+  exit 1
+elif [ "$awk_rc" -ne 0 ]; then
+  echo "❌ compose rewrite failed: awk exited $awk_rc while rewriting $COMPOSE_TEMPLATE."
+  echo "   This is NOT the drift guard (which exits 3) — check for an unreadable template,"
+  echo "   an unwritable directory or a full disk before assuming the key was renamed."
   rm -f "${COMPOSE_TEMPLATE}.new"
   exit 1
 fi
@@ -324,6 +351,17 @@ if [ -z "$ONCHAIN_NAMES" ] && [ "$(deployment_has_secrets_block)" == "true" ]; t
 fi
 printf '%s\n' "$ONCHAIN_NAMES" | while IFS= read -r sname; do
   [ -z "$sname" ] && continue
+  # HARD floor, independent of how KEEP_KEYS was built: never purge a key whose value
+  # is owned elsewhere (mTLS cert/key from rofl-init-cloud-sql.sh; password/server-CA
+  # from Secret Manager in PART 3). keep_key() only fires for these when the key still
+  # appears in an env file's 🔒 section, so deleting a blank placeholder — which looks
+  # like harmless dead weight, since the value comes from elsewhere — would otherwise
+  # make PART 4 destroy the on-chain mTLS cert and break the next boot's Cloud SQL
+  # connection. For the SM pair it would be worse still: PART 4 runs AFTER PART 3, so
+  # it would purge the value PART 3 had just pushed.
+  if is_externally_managed_key "$sname"; then
+    continue
+  fi
   if ! is_kept "$sname"; then
     echo "  - Purging orphaned:    $sname  (now plaintext config)"
     oasis rofl secret rm "$sname" --deployment "$DEPLOYMENT_TARGET" 2>/dev/null || true

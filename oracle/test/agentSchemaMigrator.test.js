@@ -111,4 +111,44 @@ describe("agentSchemaMigrator", () => {
     expect(threw).to.be.an("error");
     expect(threw.message).to.match(/migrate boom/);
   });
+  it("refuses to migrate when the pool landed on a DIFFERENT database than expected", async () => {
+    const { mod } = makeFakePlugin();
+    mod.createDatabaseAdapter = () => ({
+      init: async () => {},
+      getDatabase: () => ({ execute: async () => ({ rows: [{ db: "senseai" }] }) }),
+    });
+
+    let threw = null;
+    try {
+      await runServerLevelMigrations({
+        postgresUrl: "postgresql://x/y",
+        expectDatabase: "oracle_agent",
+        loadSqlPlugin: async () => mod,
+      });
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).to.be.an("error");
+    expect(threw.message).to.match(/"senseai".*"oracle_agent"|wrong database/s);
+  });
+
+  it("proceeds when current_database() matches the expected agent DB", async () => {
+    const { mod, calls } = makeFakePlugin();
+    mod.createDatabaseAdapter = (config, agentId) => {
+      calls.push(["createDatabaseAdapter", config, agentId]);
+      return {
+        init: async () => {},
+        getDatabase: () => ({ execute: async () => ({ rows: [{ db: "oracle_agent" }] }) }),
+      };
+    };
+
+    const result = await runServerLevelMigrations({
+      postgresUrl: "postgresql://x/y",
+      expectDatabase: "oracle_agent",
+      loadSqlPlugin: async () => mod,
+    });
+
+    expect(result).to.equal(true);
+    expect(calls.map((c) => c[0])).to.include("runAllPluginMigrations");
+  });
 });

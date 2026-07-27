@@ -171,12 +171,31 @@ function bootstrapPostgresFromEnv(options = {}) {
     false,
   );
 
+  // HOST and PORT are the only parts interpolated RAW (user/password/database are all
+  // encodeURIComponent'd), so validate them here. Without this, a port with stray
+  // whitespace — which passes the trim-length check above, since that trims before
+  // measuring — or a pasted connection string in HOST surfaces as a bare
+  // `Invalid URL`, or worse silently rewrites the URL authority and bypasses the
+  // supplied credentials.
+  const port = Number(String(process.env.POSTGRES_PORT).trim());
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `POSTGRES_PORT must be an integer between 1 and 65535, got: ${JSON.stringify(process.env.POSTGRES_PORT)}`,
+    );
+  }
+  const host = String(process.env.POSTGRES_HOST).trim();
+  if (/[@/\\?#[\]:]/.test(host)) {
+    throw new Error(
+      `POSTGRES_HOST must be a bare hostname or IP with no scheme, port, credentials or path, got: ${JSON.stringify(process.env.POSTGRES_HOST)}`,
+    );
+  }
+
   const sslMode = process.env.POSTGRES_SSL_MODE || DEFAULT_SSL_MODE;
   const url = new URL(
     `postgresql://${encodeURIComponent(process.env.POSTGRES_USER ?? "")}` +
       `:${encodeURIComponent(process.env.POSTGRES_PASSWORD ?? "")}` +
-      `@${process.env.POSTGRES_HOST}` +
-      `:${process.env.POSTGRES_PORT}` +
+      `@${host}` +
+      `:${port}` +
       `/${encodeURIComponent(database)}`,
   );
   url.searchParams.set("sslmode", sslMode);

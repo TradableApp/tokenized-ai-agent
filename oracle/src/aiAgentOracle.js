@@ -206,7 +206,11 @@ async function initializeEliza() {
   // Falls back to a directly-provided POSTGRES_URL so an operator who sets that var
   // WITHOUT POSTGRES_AGENT_DATABASE still gets their schema migrated (plugin-sql would
   // otherwise connect to an unmigrated DB and fail on `relation "agents"`).
-  await runServerLevelMigrations({ postgresUrl: agentDbUrl ?? process.env.POSTGRES_URL });
+  await runServerLevelMigrations({
+    postgresUrl: agentDbUrl ?? process.env.POSTGRES_URL,
+    // Guard the invariant: refuse to migrate if the pool didn't land on the agent DB.
+    expectDatabase: agentDbUrl ? process.env.POSTGRES_AGENT_DATABASE : undefined,
+  });
 
   // Create the orchestrator
   elizaOS = new ElizaOS();
