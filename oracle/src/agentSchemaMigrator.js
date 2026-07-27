@@ -56,11 +56,27 @@ async function runServerLevelMigrations(options = {}) {
   // connection-manager key url-derived (see the close() note below) could route these
   // migrations — and then the agent's tables — into the shared `senseai` cache with no
   // error at all, which is precisely the collision the separate DB exists to prevent.
+  // Cache the handle: plugin-sql's getDatabase() is a synchronous getter today, but
+  // calling it twice reads as if two databases might be involved, and a future version
+  // that lazily built or validated a connection would do that work twice.
+  const db = adapter.getDatabase();
+
   if (options.expectDatabase) {
-    const db = adapter.getDatabase();
     const result = await db.execute("select current_database() as db");
     const actual = (result?.rows ?? result)?.[0]?.db;
-    if (actual && actual !== options.expectDatabase) {
+    // FAIL CLOSED on an unreadable answer. Treating a null/empty/reshaped result as
+    // "probably fine" would silently disarm this guard — the exact silent-wrong-DB
+    // outcome it exists to prevent — and the shape (`.rows[0].db`) depends on the
+    // driver, so a plugin-sql/drizzle change is a realistic way for it to go quiet.
+    if (!actual) {
+      throw new Error(
+        `Could not read current_database() to verify the pool is on "${options.expectDatabase}" ` +
+          `(no usable value in the result). Refusing to migrate rather than assuming the ` +
+          `database is correct — check connectivity and whether @elizaos/plugin-sql's ` +
+          `execute() result shape has changed.`,
+      );
+    }
+    if (actual !== options.expectDatabase) {
       throw new Error(
         `plugin-sql connected to Postgres database "${actual}" but "${options.expectDatabase}" was ` +
           `requested. Refusing to migrate: the agent schema would land in the wrong database. ` +
@@ -71,7 +87,7 @@ async function runServerLevelMigrations(options = {}) {
   }
 
   const migrationService = new DatabaseMigrationService();
-  await migrationService.initializeWithDatabase(adapter.getDatabase());
+  await migrationService.initializeWithDatabase(db);
   migrationService.discoverAndRegisterPluginSchemas([sqlPlugin]);
   await migrationService.runAllPluginMigrations();
 

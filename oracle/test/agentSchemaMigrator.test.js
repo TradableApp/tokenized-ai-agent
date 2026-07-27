@@ -151,4 +151,48 @@ describe("agentSchemaMigrator", () => {
     expect(result).to.equal(true);
     expect(calls.map((c) => c[0])).to.include("runAllPluginMigrations");
   });
+  it("FAILS CLOSED when current_database() returns nothing usable (guard must not self-disarm)", async () => {
+    // A well-formed but empty/reshaped result must not be read as "probably fine" —
+    // that would silently disarm the wrong-DB guard.
+    for (const shape of [{}, { rows: [] }, { rows: [{}] }, null, { rows: [{ db: null }] }]) {
+      const { mod } = makeFakePlugin();
+      mod.createDatabaseAdapter = () => ({
+        init: async () => {},
+        getDatabase: () => ({ execute: async () => shape }),
+      });
+
+      let threw = null;
+      try {
+        await runServerLevelMigrations({
+          postgresUrl: "postgresql://x/y",
+          expectDatabase: "oracle_agent",
+          loadSqlPlugin: async () => mod,
+        });
+      } catch (e) {
+        threw = e;
+      }
+      expect(threw, `shape=${JSON.stringify(shape)}`).to.be.an("error");
+      expect(threw.message).to.match(/current_database\(\)/);
+    }
+  });
+
+  it("calls adapter.getDatabase() once and reuses the handle", async () => {
+    const { mod } = makeFakePlugin();
+    let getDbCalls = 0;
+    mod.createDatabaseAdapter = () => ({
+      init: async () => {},
+      getDatabase: () => {
+        getDbCalls += 1;
+        return { execute: async () => ({ rows: [{ db: "oracle_agent" }] }) };
+      },
+    });
+
+    await runServerLevelMigrations({
+      postgresUrl: "postgresql://x/y",
+      expectDatabase: "oracle_agent",
+      loadSqlPlugin: async () => mod,
+    });
+
+    expect(getDbCalls).to.equal(1);
+  });
 });
