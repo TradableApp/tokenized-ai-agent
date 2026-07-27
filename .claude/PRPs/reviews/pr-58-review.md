@@ -75,6 +75,38 @@ None.
 4. **ollama pinned by tag, not digest** (`ollama/ollama:0.9.6`) — a tag is mutable, so the TEE image isn't byte-reproducible. Already tracked as sibling subtask **CU-86d3t1137** ("slim CPU-only ollama + digest pin for mainnet"), so deliberately out of scope here.
 5. **`compose.yaml` is a tracked build artifact** — `rofl:build:<env>` does `cp compose.<env>.yaml compose.yaml`, so the tracked file is whatever env was last built and the tree goes dirty after every build. Excluded from this PR deliberately; `.gitignore`-ing it is a candidate follow-up.
 
+## Final pass — regression / lost-functionality audit
+
+Explicit hunt for functionality removed, regressed or reduced by mistake. Result: **no accidental loss**, one *intentional* reduction, and two defects of my own found and fixed.
+
+| Surface | Risk checked | Verdict |
+|---|---|---|
+| `.env.oracle.example` / `.base-localnet.example` | a key silently dropped in the rewrite | ✅ none — 67→68 keys (the +1 is `POSTGRES_AGENT_DATABASE`), localnet 20→20 |
+| Secret values now opaque (no `#` stripping) | a value that *relied* on stripping would now push the comment | ✅ safe — **all 6** env files have zero `#` in any 🔒 value |
+| Shared `isPostgresConfigured()` | narrower/wider gate than `brainContext`'s old check | ✅ identical — same 5 base keys, cert pairs moved verbatim |
+| `rofl-init-cloud-sql.sh` lost the SM fetch | `POSTGRES_PASSWORD`/`SERVER_CA` never pushed | ✅ deliberate ownership split, documented in both scripts; init prints the next steps, and `rofl:update:<env>` always runs `rofl:set:<env>` first |
+| `secret_exists` bounding fix | could it now MISS a legitimate in-block match? | ✅ no — secrets sit at 4–6 space indent, reset is exactly 2; probe-verified |
+| `set -eo pipefail` | a pipeline with an expected-nonzero left side aborting | ✅ audited — only `grep` is inside `if !`; all substitutions are `echo \| cut/sed/tr` |
+| Dockerfile prunes `bun`/`typescript` | a runtime dependency removed | ✅ only reference is `build.ts` (build-time); image reports 0 of each and core modules load |
+| `wireAgentDbForPluginSql` no longer catches | boots that previously succeeded now fail | ⚠️ **intentional** — only when Postgres is *configured and broken*, where silent ephemeral PGLite is the worse outcome. Unconfigured still degrades quietly; both paths tested |
+
+### Two defects found in this final pass (both mine, both fixed in `4408bd2`)
+
+1. **My round-3 compose drift guard was ineffective** — worse than none, because it implied safety it didn't deliver. It grepped the output for our `AUTO-GENERATED` banner, but when awk matches nothing it copies the file **verbatim**, and that copy still carries the banner from the *previous* run, so the check always passed. Replaced with `END { if (!substituted) exit 3 }` — awk reporting its own substitution is the only reliable signal. Probe-verified against a renamed-key pass-through that retains the banner: old check passed, new one aborts.
+2. **I had wrongly concluded the oasis CLI can't enumerate secrets**, based only on `oasis rofl secret --help`. `oasis rofl show --deployment <env> --format json` exposes `.app.secrets` as a name-keyed object (verified: 14 for base-testnet, matching the manifest). Added as an independent cross-check on the purge. Kept manifest-based reconciliation deliberately — `rofl.yaml` is what `oasis rofl update` pushes and can hold entries not yet on-chain, so reconciling against the chain would skip purging exactly those pending orphans.
+
+## Upstream backport — sense-ai-core PR #78
+
+`scripts/rofl-set-secrets.sh` was **ported from sense-ai-core**, so the review's script findings apply upstream too — in the mainnet-live repo. Raised as [sense-ai-core#78](https://github.com/TradableApp/sense-ai-core/pull/78) from an isolated worktree (another agent works in that checkout):
+
+| Fix | Applies upstream? | Evidence |
+|---|---|---|
+| `awk -F'#'` secret truncation | ✅ yes (line 139) | latent — core's env files are `#`-clean today |
+| `SECRET_EXISTS` deployment bounding | ✅ yes, **both** copies | proven on core's own `rofl.yaml`: `TWITTER_EMAIL`/`TWITTER_PASSWORD` are testnet-only yet reported as existing while scanning **mainnet** |
+| Compose `environment:` drift guard | ✅ yes (no guard at all) | probe-verified `exit 3` |
+| `set -eo pipefail` | ✅ yes | audited safe for core's pipelines |
+| PART 4 orphan purge + CLI cross-check | ❌ **not** backported | feature additions here, not fixes — adding destructive behaviour to a mainnet-live deploy script is out of scope |
+
 ## Propagation follow-ups
 
 - **Toolchain alignment epic** — `oracle`'s `"lint": "eslint ."` is rotten (no eslint config exists anywhere in the repo) and CI gates **no** JS lint/format/typecheck. 92 files fail `prettier --check` repo-wide. Recommendation: standardise JS/TS on **Biome** (matching `sense-ai-core`/`sense-ai-brain`), keep solhint+prettier for Solidity, add the org-mandated `Lint`/`Typecheck` steps. Tracked for Omni-FI as Task 1.43/1.44; Tradable equivalent still to be raised.
