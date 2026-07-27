@@ -41,6 +41,14 @@ COPY ./oracle/src ./src
 RUN cd src/elizaos/plugins/plugin-senseai && bun install --frozen-lockfile && bun run build && \
     rm -rf node_modules
 
+# Prune build-only packages the RUNNER never executes. Unlike sense-ai-core —
+# whose runner keeps bun+typescript because `elizaos start` re-bundles from
+# source at container start — the oracle runs plain `node src/index.js` (plugins
+# are pre-built to dist/). `bun` is only a build dep (pulled transitively by
+# @elizaos/plugin-bootstrap); the only `import 'bun'` in the tree is build.ts.
+# @oven/bun (~275MB) + bun (~96MB) + typescript (~24MB) ≈ 395MB off the runner.
+RUN rm -rf node_modules/@oven node_modules/bun node_modules/typescript
+
 # =============================================================================
 # Stage 2 — runner: Node only. No bun, no npm cache, no dev/toolchain layers.
 # =============================================================================
@@ -61,6 +69,14 @@ COPY --from=builder --chown=node:node /app/oracle/packages/sense-ai-brain/dist .
 COPY --from=builder --chown=node:node /app/oracle/packages/sense-ai-brain/package.json ./packages/sense-ai-brain/package.json
 COPY --from=builder --chown=node:node /app/oracle/src ./src
 COPY --from=builder --chown=node:node /app/oracle/package.json ./package.json
+
+# The oracle runs as USER node but writes runtime artefacts into its WORKDIR
+# (/app/oracle): the ephemeral PGLite agent DB (./.eliza/.elizadb, created by
+# @elizaos/plugin-sql when no Postgres adapter is pre-registered), plus
+# oracle-state.json / failed-jobs.json. WORKDIR is created root-owned (only the
+# COPYed files are --chown node), so make the dir itself node-writable — else
+# the agent EACCES's on `mkdir ./.eliza/.elizadb` at first boot.
+RUN chown node:node /app/oracle
 
 USER node
 

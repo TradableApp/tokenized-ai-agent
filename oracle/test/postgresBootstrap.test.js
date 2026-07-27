@@ -132,4 +132,119 @@ describe("postgresBootstrap (oracle port)", () => {
 
     expect(() => bootstrapPostgresFromEnv({ certDir })).to.throw(/0600/);
   });
+
+  // --- separate agent DB (CU-86d3dwme6): plugin-sql gets its own DB, isolated
+  //     from the shared `senseai` Brain-cache DB (and from core's agent tables). ---
+
+  it("overrides the DB name via the `database` option and returns the built URL", () => {
+    setBaseEnv(); // POSTGRES_DATABASE = senseai
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    const returned = bootstrapPostgresFromEnv({ certDir, database: "oracle_agent" });
+
+    // Returned so a caller can build its own pool without depending on the env side-effect.
+    expect(returned).to.equal(process.env.POSTGRES_URL);
+    const url = new URL(returned);
+    expect(url.pathname).to.equal("/oracle_agent");
+    expect(url.username).to.equal("senseai"); // same instance/creds/ssl
+    expect(url.searchParams.get("sslmode")).to.equal("verify-ca");
+  });
+
+  it("defaults to POSTGRES_DATABASE when no `database` option is given", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    const returned = bootstrapPostgresFromEnv({ certDir });
+    expect(new URL(returned).pathname).to.equal("/senseai");
+  });
+
+  it("throws when the `database` option is provided but blank", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    expect(() => bootstrapPostgresFromEnv({ certDir, database: "  " })).to.throw(/database/i);
+  });
+
+  // --- writeEnv opt-out: plugin-sql's connection manager is a GLOBAL singleton keyed
+  //     "default:pg" (NOT by url), and a closed manager is recreated from whatever
+  //     POSTGRES_URL says at that moment. So a second caller stamping the env var
+  //     could silently repoint the AGENT runtime at the shared Brain-cache DB. ---
+
+  it("does NOT stamp process.env.POSTGRES_URL when writeEnv is false (still returns the url)", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    // plugin-sql's url is stamped first (the agent DB) …
+    bootstrapPostgresFromEnv({ certDir, database: "oracle_agent" });
+    const agentUrl = process.env.POSTGRES_URL;
+    expect(new URL(agentUrl).pathname).to.equal("/oracle_agent");
+
+    // … and a cache-DB caller must NOT clobber it.
+    const cacheUrl = bootstrapPostgresFromEnv({ certDir, database: "senseai", writeEnv: false });
+
+    expect(new URL(cacheUrl).pathname).to.equal("/senseai");
+    expect(process.env.POSTGRES_URL).to.equal(agentUrl); // untouched
+  });
+
+  it("still stamps POSTGRES_URL by default (writeEnv omitted) for the plugin-sql caller", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    const url = bootstrapPostgresFromEnv({ certDir, database: "oracle_agent" });
+    expect(process.env.POSTGRES_URL).to.equal(url);
+  });
+  // --- host/port validation: everything else is encodeURIComponent'd, but these two
+  //     are interpolated raw, so a bad value surfaced as a cryptic `Invalid URL`. ---
+
+  it("rejects a non-numeric / out-of-range POSTGRES_PORT with an actionable message", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    for (const bad of ["not-a-port", "0", "70000", "-1", "5432.5"]) {
+      process.env.POSTGRES_PORT = bad;
+      expect(() => bootstrapPostgresFromEnv({ certDir }), `port=${JSON.stringify(bad)}`).to.throw(
+        /POSTGRES_PORT/,
+      );
+    }
+  });
+
+  it("tolerates surrounding whitespace on POSTGRES_PORT (trims rather than throwing)", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+    process.env.POSTGRES_PORT = " 5432 ";
+
+    // A stray space is a harmless .env typo; previously it slipped past the
+    // trim-length check and produced a bare `Invalid URL` from `:5432 /`.
+    const url = new URL(bootstrapPostgresFromEnv({ certDir }));
+    expect(url.port).to.equal("5432");
+    expect(url.hostname).to.equal("10.0.0.5");
+  });
+
+  it("rejects a POSTGRES_HOST that carries URL authority characters", () => {
+    setBaseEnv();
+    process.env.POSTGRES_CLIENT_CERT = PEM_STUB;
+    process.env.POSTGRES_CLIENT_KEY = KEY_STUB;
+    process.env.POSTGRES_SERVER_CA_CERT = PEM_STUB;
+
+    // A pasted connection string would otherwise silently rewrite the URL authority
+    // and bypass the supplied credentials.
+    for (const bad of ["user:pw@10.0.0.5", "10.0.0.5/db", "10.0.0.5:5432"]) {
+      process.env.POSTGRES_HOST = bad;
+      expect(() => bootstrapPostgresFromEnv({ certDir }), `host=${bad}`).to.throw(/POSTGRES_HOST/);
+    }
+  });
 });

@@ -25,6 +25,34 @@ const REQUIRED_BASE_KEYS = [
 const DEFAULT_SSL_MODE = "verify-ca";
 const DEFAULT_CERT_DIR = join(tmpdir(), "senseai-oracle-postgres-certs");
 
+const CERT_KEY_PAIRS = [
+  ["POSTGRES_CLIENT_CERT", "POSTGRES_CLIENT_CERT_PATH"],
+  ["POSTGRES_CLIENT_KEY", "POSTGRES_CLIENT_KEY_PATH"],
+  ["POSTGRES_SERVER_CA_CERT", "POSTGRES_SERVER_CA_CERT_PATH"],
+];
+
+/**
+ * True when every base key AND every cert (inline PEM or *_PATH) is present — i.e.
+ * the operator has actually configured Cloud SQL for this deployment.
+ *
+ * Callers use this to distinguish the two failure modes, which must behave very
+ * differently: "no Postgres configured here" (localnet/e2e/tests — degrade quietly)
+ * versus "Postgres configured but broken" (bad cert/host/password — fail LOUDLY
+ * rather than silently running on ephemeral storage). Note a bare
+ * POSTGRES_AGENT_DATABASE / POSTGRES_DATABASE name is NOT sufficient: the committed
+ * .env.oracle.example carries those names with no credentials.
+ * @returns {boolean}
+ */
+function isPostgresConfigured() {
+  const hasBase = REQUIRED_BASE_KEYS.every((key) => (process.env[key] || "").trim().length > 0);
+  const hasCerts = CERT_KEY_PAIRS.every(
+    ([inlineKey, pathKey]) =>
+      (process.env[inlineKey] || "").trim().length > 0 ||
+      (process.env[pathKey] || "").trim().length > 0,
+  );
+  return hasBase && hasCerts;
+}
+
 /**
  * Resolves a single cert input to a file path libpq can read.
  * @returns {string} path to the materialized (or user-provided) cert file
@@ -111,6 +139,14 @@ function bootstrapPostgresFromEnv(options = {}) {
     }
   }
 
+  // Target database. Callers isolate connections by passing `database`: the oracle
+  // points plugin-sql at its own `oracle_agent` DB (agent state) while brainContext
+  // reads the shared `senseai` Brain cache (default POSTGRES_DATABASE).
+  const database = (options.database ?? process.env.POSTGRES_DATABASE) || "";
+  if (!database.trim()) {
+    throw new Error("A Postgres database name is required (options.database or POSTGRES_DATABASE)");
+  }
+
   const certDir = options.certDir ?? DEFAULT_CERT_DIR;
 
   const clientCert = resolveCert(
@@ -135,13 +171,32 @@ function bootstrapPostgresFromEnv(options = {}) {
     false,
   );
 
+  // HOST and PORT are the only parts interpolated RAW (user/password/database are all
+  // encodeURIComponent'd), so validate them here. Without this, a port with stray
+  // whitespace — which passes the trim-length check above, since that trims before
+  // measuring — or a pasted connection string in HOST surfaces as a bare
+  // `Invalid URL`, or worse silently rewrites the URL authority and bypasses the
+  // supplied credentials.
+  const port = Number(String(process.env.POSTGRES_PORT).trim());
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `POSTGRES_PORT must be an integer between 1 and 65535, got: ${JSON.stringify(process.env.POSTGRES_PORT)}`,
+    );
+  }
+  const host = String(process.env.POSTGRES_HOST).trim();
+  if (/[@/\\?#[\]:]/.test(host)) {
+    throw new Error(
+      `POSTGRES_HOST must be a bare hostname or IP with no scheme, port, credentials or path, got: ${JSON.stringify(process.env.POSTGRES_HOST)}`,
+    );
+  }
+
   const sslMode = process.env.POSTGRES_SSL_MODE || DEFAULT_SSL_MODE;
   const url = new URL(
     `postgresql://${encodeURIComponent(process.env.POSTGRES_USER ?? "")}` +
       `:${encodeURIComponent(process.env.POSTGRES_PASSWORD ?? "")}` +
-      `@${process.env.POSTGRES_HOST}` +
-      `:${process.env.POSTGRES_PORT}` +
-      `/${encodeURIComponent(process.env.POSTGRES_DATABASE ?? "")}`,
+      `@${host}` +
+      `:${port}` +
+      `/${encodeURIComponent(database)}`,
   );
   url.searchParams.set("sslmode", sslMode);
   url.searchParams.set("sslcert", clientCert);
@@ -152,7 +207,17 @@ function bootstrapPostgresFromEnv(options = {}) {
   // public-IP connections (server cert SAN is GCP's internal hostname).
   url.searchParams.set("uselibpqcompat", "true");
 
-  process.env.POSTGRES_URL = url.toString();
+  const connectionString = url.toString();
+  // `writeEnv: false` opts out of the env side-effect. plugin-sql's pg connection
+  // manager is a GLOBAL singleton keyed "default:pg" — NOT by url — and a closed
+  // manager is transparently recreated from whatever POSTGRES_URL says at that
+  // moment. A second caller stamping the var (brainContext reading the shared
+  // `senseai` cache) could therefore silently repoint the AGENT runtime at the
+  // cache DB — the exact collision the separate oracle_agent DB exists to prevent.
+  if (options.writeEnv !== false) {
+    process.env.POSTGRES_URL = connectionString;
+  }
+  return connectionString;
 }
 
-module.exports = { bootstrapPostgresFromEnv };
+module.exports = { bootstrapPostgresFromEnv, isPostgresConfigured };

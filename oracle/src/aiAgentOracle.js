@@ -59,6 +59,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
 const { getMarketContext } = require("./brainContext");
+const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
 const USE_MOCK_STORAGE = process.env.USE_MOCK_STORAGE === "true";
@@ -146,8 +147,95 @@ console.log(
 let elizaOS = null;
 let senseAiAgentId = null;
 
+/**
+ * Point ElizaOS `plugin-sql` at the oracle's OWN isolated Postgres database
+ * (POSTGRES_AGENT_DATABASE, e.g. `oracle_agent`) — NOT PGLite (flaky) and NOT the
+ * shared `senseai` Brain-cache DB. Both bodies derive the same agentId, so a
+ * shared agent DB would collide with sense-ai-core's agent tables; a dedicated DB
+ * on the same instance (same client cert) keeps the oracle's agent state isolated
+ * + concurrency-safe. MUST run before `addAgents()` — plugin-sql reads POSTGRES_URL
+ * at init. If the agent DB / certs aren't configured (e.g. localnet e2e), skip and
+ * let plugin-sql fall back to PGLite.
+ */
+function wireAgentDbForPluginSql() {
+  const agentDb = process.env.POSTGRES_AGENT_DATABASE;
+  if (!agentDb || !agentDb.trim()) {
+    console.log(
+      "[ElizaOS] POSTGRES_AGENT_DATABASE unset — plugin-sql uses its local PGLite fallback.",
+    );
+    return null;
+  }
+  const { bootstrapPostgresFromEnv, isPostgresConfigured } = require("./postgresBootstrap");
+
+  // A bare DB *name* isn't enough to mean "use Postgres" — the committed
+  // .env.oracle.example carries the name with no credentials, and localnet/e2e run
+  // that way. Only treat Postgres as intended when the connection config is actually
+  // present (shared with brainContext so the two checks can't drift).
+  if (!isPostgresConfigured()) {
+    console.log(
+      "[ElizaOS] Postgres connection config absent — plugin-sql uses its local PGLite fallback.",
+    );
+    return null;
+  }
+
+  // Deliberately NOT wrapped in a try/catch: Postgres is configured, so a bad
+  // cert/host/password must fail the boot LOUDLY rather than silently degrade to
+  // PGLite — which we retired for being corruption-prone, and which would quietly
+  // discard all agent state on every restart while the oracle looked healthy. This
+  // matches the fatal contract runServerLevelMigrations already has.
+  // Still stamps POSTGRES_URL (plugin-sql reads that var) AND returns the url, so the
+  // caller can pass it on explicitly rather than reading the global back out.
+  const agentDbUrl = bootstrapPostgresFromEnv({ database: agentDb });
+  console.log(`[ElizaOS] plugin-sql wired to isolated Postgres agent DB "${agentDb}".`);
+  return agentDbUrl;
+}
+
 async function initializeEliza() {
   console.log("[ElizaOS] Initializing Orchestrator...");
+
+  // Isolate plugin-sql's agent DB BEFORE the runtime initializes it (see fn doc).
+  const agentDbUrl = wireAgentDbForPluginSql();
+
+  // Create the ElizaOS core schema (agents, memories, …) on the (possibly fresh)
+  // Postgres DB BEFORE the runtime's first query. The programmatic boot path skips
+  // AgentServer's server-level migration, so without this `ensureAgentExists()`
+  // fails with `relation "agents" does not exist` on a brand-new oracle_agent DB.
+  // No-op on localnet/e2e (no Postgres → plugin-sql's PGLite fallback).
+  // Take the url straight from the wiring rather than reading process.env back out —
+  // the env round-trip only worked because the two calls are adjacent and synchronous.
+  // Falls back to a directly-provided POSTGRES_URL so an operator who sets that var
+  // WITHOUT POSTGRES_AGENT_DATABASE still gets their schema migrated (plugin-sql would
+  // otherwise connect to an unmigrated DB and fail on `relation "agents"`).
+  // Guard the invariant on BOTH paths. Leaving the fallback unguarded was backwards:
+  // it is precisely the path where we did NOT choose the database, so if POSTGRES_URL
+  // pointed at the shared `senseai` cache the ElizaOS schema would be created there —
+  // the agent-table collision this whole change exists to prevent.
+  let expectDatabase;
+  if (agentDbUrl) {
+    expectDatabase = process.env.POSTGRES_AGENT_DATABASE;
+  } else if (process.env.POSTGRES_URL) {
+    console.warn(
+      "[ElizaOS] POSTGRES_AGENT_DATABASE is not set — migrating against POSTGRES_URL " +
+        "directly (legacy path). Set POSTGRES_AGENT_DATABASE to get an isolated agent DB.",
+    );
+    // Recover the guard by deriving the expectation from the url we're about to use.
+    // Narrower than the primary path — it proves the POOL honoured the url (catching a
+    // plugin-sql singleton that ignored config.postgresUrl), not that the url names the
+    // right database — but it closes the asymmetry at zero config cost.
+    try {
+      expectDatabase =
+        decodeURIComponent(new URL(process.env.POSTGRES_URL).pathname.replace(/^\//, "")) ||
+        undefined;
+    } catch {
+      // Unparseable url: leave the expectation unset rather than throwing here —
+      // bootstrapPostgresFromEnv / plugin-sql will surface the real problem.
+    }
+  }
+
+  await runServerLevelMigrations({
+    postgresUrl: agentDbUrl ?? process.env.POSTGRES_URL,
+    expectDatabase,
+  });
 
   // Create the orchestrator
   elizaOS = new ElizaOS();
@@ -433,7 +521,7 @@ async function queryDeepSeek(conversationHistory) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "deepseek-r1:1.5b",
+      model: "gemma3:1b",
       messages,
       stream: false,
     }),
@@ -759,7 +847,7 @@ async function routeQueryIntent(conversationHistory) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "deepseek-r1:1.5b",
+        model: "gemma3:1b",
         prompt: classificationPrompt,
         stream: false,
         format: "json", // Forces Ollama to ensure the output is JSON
@@ -775,8 +863,10 @@ async function routeQueryIntent(conversationHistory) {
     const json = await res.json();
     let responseText = json.response;
 
-    // DeepSeek-R1 often includes <thought> blocks even in JSON mode.
-    // We strip everything before and including the closing thought tag.
+    // Reasoning models (e.g. DeepSeek-R1) can emit <thought> blocks even in JSON
+    // mode; strip everything up to and including the closing tag. gemma3:1b
+    // (instruct) doesn't emit them, so this is a defensive no-op for the current
+    // model but keeps the router robust if the local model is ever swapped back.
     if (responseText.includes("</thought>")) {
       responseText = responseText.split("</thought>").pop().trim();
     }
@@ -865,7 +955,11 @@ function hasMockReasoningSentinel(text) {
  *   shape but would WRONGLY decline to initialise a genuine orphan — so never omit it on that path.
  * @returns {boolean} True if the conversation must be initialised on storage.
  */
-function shouldInitializeConversation({ isNewConversation, previousMessageCID, conversationKeyExists }) {
+function shouldInitializeConversation({
+  isNewConversation,
+  previousMessageCID,
+  conversationKeyExists,
+}) {
   if (isNewConversation) return true;
   // A normal follow-up threads off a parent message — the conversation is already
   // established, so never re-initialise.
@@ -891,9 +985,8 @@ function asAnswer(text) {
 async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // --- MOCK MODE: Return deterministic response ---
   if (MOCK_AI) {
-    const latestUserMessage = conversationHistory
-      .filter((msg) => msg.role === "user")
-      .pop()?.content || "unknown query";
+    const latestUserMessage =
+      conversationHistory.filter((msg) => msg.role === "user").pop()?.content || "unknown query";
 
     // E2E only: honour a "__E2E_DELAY_MS__:<n>" marker in the prompt so a test can
     // keep the answer pending long enough to cancel/refund it. Mock-only => prod-safe.
@@ -2238,4 +2331,5 @@ module.exports = {
   setOracleAddress,
   processPastEvents,
   retryFailedJobs,
+  wireAgentDbForPluginSql,
 };
