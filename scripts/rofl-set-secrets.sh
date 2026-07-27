@@ -131,6 +131,21 @@ process_file() {
       # opaque auth error inside the TEE. Inline comments are therefore UNSUPPORTED
       # in the 🔒 section (see the header note); put them on their own `#` line.
       value=$(echo "$remainder" | sed 's/[[:space:]]*$//')
+      # SECRETS_LIST is a newline-delimited KEY__SEP__VALUE string, so a value
+      # containing a newline would split into bogus entries: the real secret gets
+      # truncated at the first line AND a phantom secret named after the second line is
+      # pushed. Multi-line material (PEMs) belongs in Secret Manager / rofl-init, which
+      # never routes through here, so treat a newline as an operator error.
+      # NOTE: must be $'\n', not "$(printf '\n')" — command substitution strips trailing
+      # newlines, yielding an EMPTY pattern that matches every value and would reject
+      # every secret.
+      case "$value" in
+      *$'\n'*)
+        echo "❌ Secret '$key' contains a newline. Multi-line values must come from"
+        echo "   Secret Manager (PART 3) or rofl-init-cloud-sql.sh, not the .env file."
+        exit 1
+        ;;
+      esac
       SECRETS_LIST+="${key}__SEP__${value}"$'\n'        # push (or purge if blank)
       if [ -n "$value" ]; then
         SECRETS_YAML+="      - $key=\${$key:-}\n"

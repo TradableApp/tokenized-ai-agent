@@ -50,20 +50,23 @@ async function runServerLevelMigrations(options = {}) {
   const adapter = createDatabaseAdapter({ postgresUrl }, SERVER_AGENT_ID);
   await adapter.init();
 
+  // Cache the handle: plugin-sql's getDatabase() is a synchronous getter today, but
+  // calling it twice reads as if two databases might be involved, and a future version
+  // that lazily built or validated a connection would do that work twice.
+  const db = adapter.getDatabase();
+
   // Assert the adapter really is pointed at the DB we asked for, BEFORE creating any
   // tables. Cheap, and version-independent in a way that inspecting pool internals is
   // not: it asks Postgres itself. Without it, a plugin-sql change that made the
   // connection-manager key url-derived (see the close() note below) could route these
   // migrations — and then the agent's tables — into the shared `senseai` cache with no
   // error at all, which is precisely the collision the separate DB exists to prevent.
-  // Cache the handle: plugin-sql's getDatabase() is a synchronous getter today, but
-  // calling it twice reads as if two databases might be involved, and a future version
-  // that lazily built or validated a connection would do that work twice.
-  const db = adapter.getDatabase();
-
   if (options.expectDatabase) {
     const result = await db.execute("select current_database() as db");
-    const actual = (result?.rows ?? result)?.[0]?.db;
+    // Explicit about the two driver shapes (top-level array vs `{rows: [...]}`) so the
+    // fail-closed path is obvious rather than resting on a `??` short-circuit.
+    const rows = Array.isArray(result) ? result : (result?.rows ?? []);
+    const actual = rows[0]?.db;
     // FAIL CLOSED on an unreadable answer. Treating a null/empty/reshaped result as
     // "probably fine" would silently disarm this guard — the exact silent-wrong-DB
     // outcome it exists to prevent — and the shape (`.rows[0].db`) depends on the

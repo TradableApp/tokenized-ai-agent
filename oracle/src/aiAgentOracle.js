@@ -206,10 +206,35 @@ async function initializeEliza() {
   // Falls back to a directly-provided POSTGRES_URL so an operator who sets that var
   // WITHOUT POSTGRES_AGENT_DATABASE still gets their schema migrated (plugin-sql would
   // otherwise connect to an unmigrated DB and fail on `relation "agents"`).
+  // Guard the invariant on BOTH paths. Leaving the fallback unguarded was backwards:
+  // it is precisely the path where we did NOT choose the database, so if POSTGRES_URL
+  // pointed at the shared `senseai` cache the ElizaOS schema would be created there —
+  // the agent-table collision this whole change exists to prevent.
+  let expectDatabase;
+  if (agentDbUrl) {
+    expectDatabase = process.env.POSTGRES_AGENT_DATABASE;
+  } else if (process.env.POSTGRES_URL) {
+    console.warn(
+      "[ElizaOS] POSTGRES_AGENT_DATABASE is not set — migrating against POSTGRES_URL " +
+        "directly (legacy path). Set POSTGRES_AGENT_DATABASE to get an isolated agent DB.",
+    );
+    // Recover the guard by deriving the expectation from the url we're about to use.
+    // Narrower than the primary path — it proves the POOL honoured the url (catching a
+    // plugin-sql singleton that ignored config.postgresUrl), not that the url names the
+    // right database — but it closes the asymmetry at zero config cost.
+    try {
+      expectDatabase =
+        decodeURIComponent(new URL(process.env.POSTGRES_URL).pathname.replace(/^\//, "")) ||
+        undefined;
+    } catch {
+      // Unparseable url: leave the expectation unset rather than throwing here —
+      // bootstrapPostgresFromEnv / plugin-sql will surface the real problem.
+    }
+  }
+
   await runServerLevelMigrations({
     postgresUrl: agentDbUrl ?? process.env.POSTGRES_URL,
-    // Guard the invariant: refuse to migrate if the pool didn't land on the agent DB.
-    expectDatabase: agentDbUrl ? process.env.POSTGRES_AGENT_DATABASE : undefined,
+    expectDatabase,
   });
 
   // Create the orchestrator
