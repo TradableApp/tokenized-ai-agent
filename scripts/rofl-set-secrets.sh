@@ -2,7 +2,7 @@
 # pipefail so a failure on the LEFT of a pipeline (e.g. the awk that enumerates
 # on-chain secret names feeding the PART 4 purge loop) aborts instead of being
 # masked by the exit status of the loop it feeds.
-set -eo pipefail
+set -euo pipefail
 
 # Syncs the oracle's env-driven secrets/config to a ROFL deployment AND
 # regenerates the deployment compose `environment:` block from the same source
@@ -314,12 +314,17 @@ list_onchain_secret_names() {
     }
   ' rofl.yaml
 }
-# The enumeration above parses rofl.yaml with indentation-sensitive awk because the
-# oasis CLI has no `secret list` (only get/import/rm/set) and no JSON output. That
-# makes a CLI formatting change able to turn the purge into a SILENT no-op, letting
-# orphans pile up and re-consume slots — the very thing this section exists to stop.
-# So assert the parse still works: if the manifest clearly has a secrets: block for
-# this deployment but we extracted nothing, the parser has drifted — fail loudly.
+# Enumeration parses rofl.yaml because that is the right SOURCE: the manifest is what
+# `oasis rofl update` will push, and it can legitimately hold entries not yet on-chain,
+# which reconciling against the chain would skip. (For reference, the authoritative
+# on-chain view is `oasis rofl show --deployment <env> --format json` → `.app.secrets`,
+# a name-keyed object — useful for debugging, but the wrong source for this purge.)
+#
+# The indentation-sensitive parse could in principle drift and turn the purge into a
+# silent no-op. Guarding that proportionately: the worst case is orphaned secrets
+# continuing to occupy slots — not data loss — so the count is printed (a run reporting
+# 0 is immediately visible to whoever is deploying) plus one cheap local assertion for
+# the clear-cut case where the manifest plainly has secrets but the parse found none.
 deployment_has_secrets_block() {
   awk -v target="^  $DEPLOYMENT_TARGET:" '
     $0 ~ target { inblk=1; next }
@@ -328,40 +333,13 @@ deployment_has_secrets_block() {
     END { if (found) print "true" }
   ' rofl.yaml
 }
-
-# Independent cross-check against the CLI's own view. `oasis rofl show --format json`
-# reports `.app.secrets` as a name-keyed object, so it can confirm the manifest parse
-# without any indentation assumptions.
-#
-# NOTE we reconcile the MANIFEST (rofl.yaml), not this, and that is deliberate: the
-# manifest is what `oasis rofl update` will push, and it can legitimately hold entries
-# that are not on-chain yet (rofl:set writes locally; the push is a separate step).
-# Reconciling against the chain would skip purging exactly those pending orphans.
-# Best-effort: any CLI/parse failure returns 0 and simply skips the cross-check, so a
-# tooling hiccup or an offline run can never block a deploy.
-cli_onchain_secret_count() {
-  oasis rofl show --deployment "$DEPLOYMENT_TARGET" --format json 2>/dev/null |
-    python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)
-    print(len((d.get("app") or {}).get("secrets") or {}))
-except Exception:
-    print(0)' 2>/dev/null || echo 0
-}
-
 ONCHAIN_NAMES="$(list_onchain_secret_names)"
-CLI_COUNT="$(cli_onchain_secret_count)"
-if [ -z "$ONCHAIN_NAMES" ] && [ "${CLI_COUNT:-0}" -gt 0 ]; then
-  echo "❌ Purge aborted: 'oasis rofl show --format json' reports $CLI_COUNT on-chain"
-  echo "   secret(s) for '$DEPLOYMENT_TARGET', but the rofl.yaml parser extracted none —"
-  echo "   list_onchain_secret_names has drifted from the manifest format. Fix it before"
-  echo "   trusting this step."
-  exit 1
-fi
+ONCHAIN_COUNT="$(printf '%s\n' "$ONCHAIN_NAMES" | grep -c '[^[:space:]]' || true)"
+echo "   Examining ${ONCHAIN_COUNT:-0} secret(s) currently in the manifest for '$DEPLOYMENT_TARGET'."
 if [ -z "$ONCHAIN_NAMES" ] && [ "$(deployment_has_secrets_block)" == "true" ]; then
   echo "❌ Purge aborted: rofl.yaml has a secrets: block for '$DEPLOYMENT_TARGET' but the"
-  echo "   parser extracted no names — its indentation assumptions have drifted from the"
-  echo "   oasis CLI's output. Fix list_onchain_secret_names before trusting this step."
+  echo "   parser extracted no names — its indentation assumptions have drifted. Fix"
+  echo "   list_onchain_secret_names before trusting this step."
   exit 1
 fi
 printf '%s\n' "$ONCHAIN_NAMES" | while IFS= read -r sname; do
