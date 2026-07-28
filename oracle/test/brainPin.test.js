@@ -22,8 +22,13 @@ const { expect } = require("chai");
 // not present. Keeping the two constants equal is a review step, documented in
 // docs/BRAIN_PIN.md.
 //
-// Asserted against the GITLINK recorded in the commit (`git ls-tree`), not the checked-out
-// working tree, so it is meaningful even when the submodule was not checked out recursively.
+// Asserted against the GITLINK in the INDEX (`git ls-files -s`), not the checked-out working
+// tree, so it is meaningful even when the submodule was not checked out recursively (CI
+// without `--recursive` would otherwise read an empty directory and prove nothing).
+//
+// The index rather than `ls-tree HEAD` deliberately: after a fresh CI checkout the two are
+// identical, but locally the index is what is about to BE committed — so a staged bump is
+// validated before it lands, instead of the guard reporting the previous commit's pin.
 
 const EXPECTED_BRAIN_SHA = "18f30084e0505e468f18c18a607e06db8b0ded41";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
@@ -40,8 +45,8 @@ function git(args) {
 
 describe("sense-ai-brain submodule pin", () => {
   it("pins the reviewed Brain commit", () => {
-    // `160000 commit <sha>\t<path>` — 160000 is git's mode for a gitlink.
-    const entry = git(["ls-tree", "HEAD", "--", SUBMODULE_PATH]).trim();
+    // `160000 <sha> 0\t<path>` — 160000 is git's mode for a gitlink, 0 the merge stage.
+    const entry = git(["ls-files", "-s", "--", SUBMODULE_PATH]).trim();
 
     // An empty result means the submodule is not in the tree at all. Assert it explicitly:
     // a bare regex match on "" would otherwise throw something unreadable, and a guard that
@@ -49,7 +54,7 @@ describe("sense-ai-brain submodule pin", () => {
     expect(entry, `no git entry for ${SUBMODULE_PATH} — was the submodule removed or moved?`).to
       .not.be.empty;
 
-    const match = /^160000 commit ([0-9a-f]{40})\t/.exec(entry);
+    const match = /^160000 ([0-9a-f]{40}) 0\t/.exec(entry);
     expect(match, `expected a gitlink (mode 160000) at ${SUBMODULE_PATH}, got: ${entry}`).to.not.be
       .null;
 
