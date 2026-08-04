@@ -12,7 +12,10 @@ const { expect } = require("chai");
 
    https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions */
 
-const RETIRED_MODEL = /gemini-(?:1\.5|2\.0|2\.5)-[a-z0-9.-]+/g;
+/* Extend this alternation each time a generation reaches its retirement date — the test
+   is only worth what this list is kept current at. 1.0 retired 2025-04, 1.5 in 2025-09,
+   2.0 on 2026-06-01, and 2.5 goes on 2026-10-20. */
+const RETIRED_MODEL = /gemini-(?:1\.0|1\.5|2\.0|2\.5)-[a-z0-9.-]+/g;
 
 const ENV_EXAMPLE = path.join(__dirname, "..", ".env.oracle.example");
 
@@ -28,7 +31,17 @@ describe("model lifecycle", function () {
   it("should load model ids from the example that dotenv actually exposes", () => {
     /* The suite runs with DOTENV_CONFIG_PATH=./.env.oracle.example, so these are the
        values every other test runs against — a broken example silently changes them. */
-    for (const key of ["GOOGLE_SMALL_MODEL", "GOOGLE_LARGE_MODEL", "GOOGLE_EMBEDDING_MODEL"]) {
+    /* Both sets matter: the template defines GOOGLE_* and bare keys side by side, and
+       ElizaOS reads the bare ones. Guarding only one set would let a half-finished bump
+       through with the two disagreeing. */
+    for (const key of [
+      "GOOGLE_SMALL_MODEL",
+      "GOOGLE_LARGE_MODEL",
+      "GOOGLE_EMBEDDING_MODEL",
+      "SMALL_MODEL",
+      "LARGE_MODEL",
+      "TEXT_EMBEDDING_MODEL",
+    ]) {
       expect(process.env[key], `${key} missing from .env.oracle.example`).to.be.a("string");
       expect(process.env[key]).to.not.match(RETIRED_MODEL);
     }
