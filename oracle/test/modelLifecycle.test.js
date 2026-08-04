@@ -15,7 +15,17 @@ const { expect } = require("chai");
 /* Extend this alternation each time a generation reaches its retirement date — the test
    is only worth what this list is kept current at. 1.0 retired 2025-04, 1.5 in 2025-09,
    2.0 on 2026-06-01, and 2.5 goes on 2026-10-20. */
-const RETIRED_MODEL = /gemini-(?:1\.0|1\.5|2\.0|2\.5)-[a-z0-9.-]+/g;
+/* One source of truth, two derived matchers, because the /g flag is required for one use
+   and actively harmful for the other.
+
+   String.prototype.match needs /g to return every offender rather than just the first.
+   Chai's .match() calls RegExp.exec, which on a /g regex advances lastIndex and carries
+   that state into the next assertion — so a shared global regex silently skips the second
+   of two retired values, defeating exactly the half-finished-bump case this guard exists
+   to catch. A fresh non-global regex per assertion has no state to leak. */
+const RETIRED_MODEL_SOURCE = "gemini-(?:1\\.0|1\\.5|2\\.0|2\\.5)-[a-z0-9.-]+";
+const RETIRED_MODEL = new RegExp(RETIRED_MODEL_SOURCE, "g");
+const retiredModelMatcher = () => new RegExp(RETIRED_MODEL_SOURCE);
 
 const ENV_EXAMPLE = path.join(__dirname, "..", ".env.oracle.example");
 
@@ -43,7 +53,7 @@ describe("model lifecycle", function () {
       "TEXT_EMBEDDING_MODEL",
     ]) {
       expect(process.env[key], `${key} missing from .env.oracle.example`).to.be.a("string");
-      expect(process.env[key]).to.not.match(RETIRED_MODEL);
+      expect(process.env[key]).to.not.match(retiredModelMatcher());
     }
   });
 
