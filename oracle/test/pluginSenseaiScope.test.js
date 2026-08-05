@@ -56,7 +56,12 @@ function pluginDirs() {
     .map(e => path.join(PLUGINS_ROOT, e.name));
 }
 
-/** Every .ts file under the given roots, recursively, excluding tests and build output. */
+// The tree is TypeScript today, but the guard promises to cover "every plugin directory", and
+// a plugin shipping a plain .js helper (or a committed compiled file) must not be invisible to
+// it. Cheaper to widen the net now than to discover the hole via a regression.
+const SOURCE_EXT = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+
+/** Every source file under the given roots, recursively, excluding tests and build output. */
 function sourcesUnder(roots) {
   const out = [];
   const walk = dir => {
@@ -67,7 +72,7 @@ function sourcesUnder(roots) {
           continue;
         }
         walk(full);
-      } else if (entry.name.endsWith(".ts")) {
+      } else if (SOURCE_EXT.some(ext => entry.name.endsWith(ext))) {
         out.push(full);
       }
     }
@@ -76,19 +81,53 @@ function sourcesUnder(roots) {
   return out;
 }
 
+/**
+ * Drops comment LINES, never parts of a line.
+ *
+ * Stripping is necessary — index.ts legitimately documents why Telegram belongs in
+ * sense-ai-core, and that prose must not read as coupling. But the obvious approach, a regex
+ * that cuts from `//` to end-of-line, can cut inside a string literal:
+ *
+ *     const s = "a // b"; runtime.getService("telegram");
+ *
+ * and would silently swallow the real reference after it — a FALSE NEGATIVE in the exact guard
+ * meant to stop Telegram creeping back. (An earlier version guarded `[^:]` so `https://` was
+ * safe; that covers URLs, not arbitrary strings.)
+ *
+ * Working line-at-a-time removes the failure mode rather than narrowing it: a trailing comment
+ * like `const x = 1; // telegram` now TRIPS the guard instead of hiding something. That is a
+ * false positive — loud, immediately understood, and fixed by moving the note to its own line.
+ * A silent miss is the one outcome a regression guard must never have.
+ */
+function stripCommentLines(src) {
+  let inBlock = false;
+  return src
+    .split("\n")
+    .filter(line => {
+      const t = line.trim();
+      if (inBlock) {
+        if (t.includes("*/")) inBlock = false;
+        return false;
+      }
+      if (t.startsWith("/*")) {
+        if (!t.includes("*/")) inBlock = true;
+        return false;
+      }
+      return !t.startsWith("//") && !t.startsWith("*");
+    })
+    .join("\n");
+}
+
 const rel = f => path.relative(PLUGINS_ROOT, f);
 
 describe("oracle ElizaOS plugins stay oracle-scoped", () => {
   it("registers no Telegram-coupled code", () => {
-    // Comments are stripped first: this guard's own rationale, and any note explaining WHY
-    // Telegram handling belongs in sense-ai-core, is documentation — not a coupling.
-    const offenders = sourcesUnder(pluginDirs()).filter(f => {
-      const code = fs
-        .readFileSync(f, "utf8")
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/(^|[^:])\/\/.*$/gm, "$1");
-      return /telegram/i.test(code);
-    });
+    // Comment LINES are dropped first (see stripCommentLines): a note explaining WHY Telegram
+    // handling belongs in sense-ai-core is documentation, not coupling. Trailing comments are
+    // deliberately NOT stripped — see that function for why failing loud beats failing silent.
+    const offenders = sourcesUnder(pluginDirs()).filter(f =>
+      /telegram/i.test(stripCommentLines(fs.readFileSync(f, "utf8"))),
+    );
 
     expect(
       offenders.map(rel),
@@ -112,8 +151,10 @@ describe("oracle ElizaOS plugins stay oracle-scoped", () => {
     expect(
       scaffolds,
       `Unreferenced ElizaOS quick-starter scaffolding. Delete it rather than leaving template ` +
-        `code that looks load-bearing. (If a plugin ever genuinely needs a module named ` +
-        `plugin.ts, make it referenced — the problem is dead template code, not the filename.)`,
+        `code that looks load-bearing. NOTE this check is a filename sentinel, not a liveness ` +
+        `check — it cannot tell whether anything imports the file. So if a plugin ever genuinely ` +
+        `needs a module here, RENAME it (e.g. pluginConfig.ts); wiring up an import will not ` +
+        `satisfy this guard.`,
     ).to.deep.equal([]);
   });
 });
