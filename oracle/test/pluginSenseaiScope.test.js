@@ -3,6 +3,8 @@ const path = require("node:path");
 
 const { expect } = require("chai");
 
+const { stripCommentLines } = require("./helpers/stripCommentLines");
+
 // Oracle plugin scope guard — CU-86d3ud1va (epic CU-86d3dwme6).
 //
 // This oracle's plugin-senseai began as a COPY of sense-ai-core's plugin and then drifted.
@@ -79,64 +81,6 @@ function sourcesUnder(roots) {
   };
   for (const r of roots) if (fs.existsSync(r)) walk(r);
   return out;
-}
-
-/**
- * Drops comment LINES, never parts of a line.
- *
- * Stripping is necessary — index.ts legitimately documents why Telegram belongs in
- * sense-ai-core, and that prose must not read as coupling. But the obvious approach, a regex
- * that cuts from `//` to end-of-line, can cut inside a string literal:
- *
- *     const s = "a // b"; runtime.getService("telegram");
- *
- * and would silently swallow the real reference after it — a FALSE NEGATIVE in the exact guard
- * meant to stop Telegram creeping back. (An earlier version guarded `[^:]` so `https://` was
- * safe; that covers URLs, not arbitrary strings.)
- *
- * Working line-at-a-time removes the failure mode rather than narrowing it: a trailing comment
- * like `const x = 1; // telegram` now TRIPS the guard instead of hiding something. That is a
- * false positive — loud, immediately understood, and fixed by moving the note to its own line.
- * A silent miss is the one outcome a regression guard must never have.
- */
-function stripCommentLines(src) {
-  let inBlock = false;
-  const kept = [];
-
-  for (const raw of src.split("\n")) {
-    let t = raw.trim();
-
-    // Closing an open block comment KEEPS whatever follows `*/` on the same line. Dropping the
-    // whole line here was the first version's bug, and it was the very fault this function was
-    // written to fix, just relocated: `*/ const svc = getService("telegram");` vanished
-    // entirely. Block delimiters are explicit, so slicing at them is safe — unlike slicing at
-    // `//`, which cannot be told apart from a `//` inside a string literal.
-    if (inBlock) {
-      const close = t.indexOf("*/");
-      if (close === -1) continue;
-      inBlock = false;
-      t = t.slice(close + 2).trim();
-    }
-
-    // Same for a line that OPENS a block comment: `/* note */ code` keeps `code`. A `while`
-    // rather than an `if` because a single line may open and close several.
-    while (t.startsWith("/*")) {
-      const close = t.indexOf("*/");
-      if (close === -1) {
-        inBlock = true;
-        t = "";
-        break;
-      }
-      t = t.slice(close + 2).trim();
-    }
-
-    // Whole-line `//` comments and docblock continuation lines go; trailing comments stay, on
-    // purpose — see the note above about failing loud rather than silent.
-    if (t === "" || t.startsWith("//") || t.startsWith("*")) continue;
-    kept.push(t);
-  }
-
-  return kept.join("\n");
 }
 
 const rel = f => path.relative(PLUGINS_ROOT, f);
