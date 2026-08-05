@@ -121,18 +121,23 @@ function stripCommentLines(src) {
 const rel = f => path.relative(PLUGINS_ROOT, f);
 
 describe("oracle ElizaOS plugins stay oracle-scoped", () => {
-  it("registers no Telegram-coupled code", () => {
+  it("registers no Telegram- or X-coupled code", () => {
     // Comment LINES are dropped first (see stripCommentLines): a note explaining WHY Telegram
     // handling belongs in sense-ai-core is documentation, not coupling. Trailing comments are
     // deliberately NOT stripped — see that function for why failing loud beats failing silent.
+    // Telegram AND Twitter/X: the acceptance criterion is "no Telegram/X/social-only code", and
+    // sense-ai-core carries plugin-twitter-senseai alongside plugin-telegram-senseai. Matching
+    // only "telegram" would let an X-coupled fork land while the guard reported success. "X"
+    // itself is not greppable, so "twitter" is the searchable handle for it — every X module in
+    // core is named plugin-twitter-senseai / twitter*.
     const offenders = sourcesUnder(pluginDirs()).filter(f =>
-      /telegram/i.test(stripCommentLines(fs.readFileSync(f, "utf8"))),
+      /telegram|twitter/i.test(stripCommentLines(fs.readFileSync(f, "utf8"))),
     );
 
     expect(
       offenders.map(rel),
-      `These files reference Telegram inside the ON-CHAIN ORACLE, which has no Telegram ` +
-        `service — they are leftovers from the sense-ai-core fork and cannot fire here. ` +
+      `These files reference Telegram or Twitter/X inside the ON-CHAIN ORACLE, which runs neither ` +
+        `— they are leftovers from the sense-ai-core fork and cannot fire here. ` +
         `Telegram/X delivery is the Social body's job; this plugin should hold oracle glue and ` +
         `Brain-backed analysis only (CU-86d3ud1va).`,
     ).to.deep.equal([]);
