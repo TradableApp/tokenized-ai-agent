@@ -63,6 +63,12 @@ function pluginDirs() {
 // it. Cheaper to widen the net now than to discover the hole via a regression.
 const SOURCE_EXT = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 
+// Directories whose contents are not the plugin's shipped source. `__tests__` is this repo's
+// convention, but the next oracle-only plugin may be scaffolded with any of the common
+// alternatives, and a test file may legitimately name a social platform while mocking one.
+// Excluding build output and dependencies is for the obvious reason: they are not source.
+const SKIP_DIRS = ["__tests__", "test", "tests", "spec", "__mocks__", "dist", "node_modules"];
+
 /** Every source file under the given roots, recursively, excluding tests and build output. */
 function sourcesUnder(roots) {
   const out = [];
@@ -70,9 +76,7 @@ function sourcesUnder(roots) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === "__tests__" || entry.name === "dist" || entry.name === "node_modules") {
-          continue;
-        }
+        if (SKIP_DIRS.includes(entry.name)) continue;
         walk(full);
       } else if (SOURCE_EXT.some(ext => entry.name.endsWith(ext))) {
         out.push(full);
@@ -85,6 +89,38 @@ function sourcesUnder(roots) {
 
 const rel = f => path.relative(PLUGINS_ROOT, f);
 
+/**
+ * The files to scan, with the guard's own premise asserted first.
+ *
+ * `pluginDirs()` returns [] when PLUGINS_ROOT is absent — after a directory move, a rename, or
+ * a checkout that did not materialise the tree. That cascades to `sourcesUnder([]) === []`, and
+ * `expect([]).to.deep.equal([])` PASSES. The guard would report green having scanned exactly
+ * zero files, which is the worst failure mode available to a regression guard: CI stays green
+ * while the invariant it exists to enforce is entirely unenforced.
+ *
+ * Raised independently by both review bots, which is a fair signal it is not a corner case.
+ * Silence is not success — if this cannot find the tree, it must say so instead of passing.
+ */
+function scanTargets() {
+  const dirs = pluginDirs();
+  expect(
+    dirs.length,
+    `No plugin directories found under ${PLUGINS_ROOT}. The guard cannot run, so it must FAIL ` +
+      `rather than pass having scanned nothing. Check whether the plugins tree moved or was ` +
+      `renamed, and update PLUGINS_ROOT to match.`,
+  ).to.be.greaterThan(0);
+
+  const files = sourcesUnder(dirs);
+  expect(
+    files.length,
+    `Found ${dirs.length} plugin director(ies) under ${PLUGINS_ROOT} but zero source files in ` +
+      `them. Either the tree is empty (in which case there is nothing to guard and this check ` +
+      `is misconfigured) or SOURCE_EXT no longer matches how plugins are written.`,
+  ).to.be.greaterThan(0);
+
+  return files;
+}
+
 describe("oracle ElizaOS plugins stay oracle-scoped", () => {
   it("registers no Telegram- or X-coupled code", () => {
     // Comment LINES are dropped first (see stripCommentLines): a note explaining WHY Telegram
@@ -95,7 +131,7 @@ describe("oracle ElizaOS plugins stay oracle-scoped", () => {
     // only "telegram" would let an X-coupled fork land while the guard reported success. "X"
     // itself is not greppable, so "twitter" is the searchable handle for it — every X module in
     // core is named plugin-twitter-senseai / twitter*.
-    const offenders = sourcesUnder(pluginDirs()).filter(f =>
+    const offenders = scanTargets().filter(f =>
       /telegram|twitter/i.test(stripCommentLines(fs.readFileSync(f, "utf8"))),
     );
 
