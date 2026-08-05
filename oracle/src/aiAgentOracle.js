@@ -1043,6 +1043,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
     // We pass conversationId here to ensure proper room isolation in Eliza
     return await queryElizaOS(conversationHistory, conversationId, userWallet);
   } catch (err) {
+    /* A retired or misspelled GOOGLE_* model id surfaces here, not at startup: Gemini
+       404s the generateContent call, queryElizaOS throws, and we fall through to ChainGPT
+       with no reasoning or sources. The answer degrades silently rather than erroring, so
+       check this warning first when quality drops after a config change. Model ids are
+       guarded by test/modelLifecycle.test.js and retirement dates are published at
+       https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions */
     console.warn("[Failover] ElizaOS path failed. Falling back to ChainGPT.", err);
 
     // 4. Failover 1: ChainGPT
