@@ -101,21 +101,42 @@ function sourcesUnder(roots) {
  */
 function stripCommentLines(src) {
   let inBlock = false;
-  return src
-    .split("\n")
-    .filter(line => {
-      const t = line.trim();
-      if (inBlock) {
-        if (t.includes("*/")) inBlock = false;
-        return false;
+  const kept = [];
+
+  for (const raw of src.split("\n")) {
+    let t = raw.trim();
+
+    // Closing an open block comment KEEPS whatever follows `*/` on the same line. Dropping the
+    // whole line here was the first version's bug, and it was the very fault this function was
+    // written to fix, just relocated: `*/ const svc = getService("telegram");` vanished
+    // entirely. Block delimiters are explicit, so slicing at them is safe — unlike slicing at
+    // `//`, which cannot be told apart from a `//` inside a string literal.
+    if (inBlock) {
+      const close = t.indexOf("*/");
+      if (close === -1) continue;
+      inBlock = false;
+      t = t.slice(close + 2).trim();
+    }
+
+    // Same for a line that OPENS a block comment: `/* note */ code` keeps `code`. A `while`
+    // rather than an `if` because a single line may open and close several.
+    while (t.startsWith("/*")) {
+      const close = t.indexOf("*/");
+      if (close === -1) {
+        inBlock = true;
+        t = "";
+        break;
       }
-      if (t.startsWith("/*")) {
-        if (!t.includes("*/")) inBlock = true;
-        return false;
-      }
-      return !t.startsWith("//") && !t.startsWith("*");
-    })
-    .join("\n");
+      t = t.slice(close + 2).trim();
+    }
+
+    // Whole-line `//` comments and docblock continuation lines go; trailing comments stay, on
+    // purpose — see the note above about failing loud rather than silent.
+    if (t === "" || t.startsWith("//") || t.startsWith("*")) continue;
+    kept.push(t);
+  }
+
+  return kept.join("\n");
 }
 
 const rel = f => path.relative(PLUGINS_ROOT, f);
