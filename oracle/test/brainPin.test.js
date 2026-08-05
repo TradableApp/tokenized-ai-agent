@@ -34,13 +34,25 @@ const EXPECTED_BRAIN_SHA = "18f30084e0505e468f18c18a607e06db8b0ded41";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
-/** Repo root, so the test works regardless of the cwd mocha was invoked from. */
-function repoRoot() {
-  return execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-}
+// Repo root, resolved ONCE at load so the test works regardless of the cwd mocha was invoked
+// from. Deliberately at module scope rather than per call: it avoids forking a second
+// subprocess for every git() call, and if this fails (not inside a git repo) the file fails
+// loudly at load — which is the honest signal, since a guard that reads git cannot function
+// there at all. Buried inside git(), the same failure would surface mid-assertion as a
+// confusing "Command failed".
+const ROOT = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 
 function git(args) {
-  return execFileSync("git", args, { cwd: repoRoot(), encoding: "utf8" });
+  return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" });
+}
+
+/** git() but returning "" instead of throwing, for reads whose ABSENCE is itself a finding. */
+function gitOrEmpty(args) {
+  try {
+    return git(args);
+  } catch {
+    return "";
+  }
 }
 
 describe("sense-ai-brain submodule pin", () => {
@@ -73,12 +85,22 @@ describe("sense-ai-brain submodule pin", () => {
     // The most literal form of the re-fork this architecture exists to prevent: repoint the
     // submodule at a personal fork, and the two bodies diverge permanently while every test
     // that only checks the SHA still passes.
-    const url = git(["config", "--file", ".gitmodules", `submodule.${SUBMODULE_PATH}.url`]).trim();
+    // gitOrEmpty, not git: `git config` EXITS NON-ZERO when the key is absent, so a renamed or
+    // deleted submodule section would throw a raw "Command failed" and this message — the whole
+    // point of the test — would never print. Absence is a finding here, not an error.
+    const url = gitOrEmpty([
+      "config",
+      "--file",
+      ".gitmodules",
+      `submodule.${SUBMODULE_PATH}.url`,
+    ]).trim();
 
     expect(
       url,
-      `The Brain submodule must track the canonical repo. A fork would let this body's Brain ` +
-        `diverge from sense-ai-core's permanently.`,
+      `The Brain submodule must track the canonical repo — got ${url ? `"${url}"` : "no entry at all"}. ` +
+        `An empty result means the submodule section was renamed or removed from .gitmodules; a ` +
+        `different URL means it points at a fork, which would let this body's Brain diverge from ` +
+        `sense-ai-core's permanently.`,
     ).to.equal(CANONICAL_BRAIN_URL);
   });
 });
