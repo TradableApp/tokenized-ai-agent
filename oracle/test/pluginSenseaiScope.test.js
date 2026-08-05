@@ -4,6 +4,7 @@ const path = require("node:path");
 const { expect } = require("chai");
 
 const { stripCommentLines } = require("./helpers/stripCommentLines");
+const { PLUGINS_ROOT, pluginDirs, sourcesUnder } = require("./helpers/pluginScope");
 
 // Oracle plugin scope guard — CU-86d3ud1va (epic CU-86d3dwme6).
 //
@@ -43,50 +44,6 @@ const { stripCommentLines } = require("./helpers/stripCommentLines");
 // which is when the "consumes the shared Brain" assertion joins this file. It is deliberately
 // absent here rather than landing knowingly-red on main.
 
-// Scoped to the whole plugins tree, not just plugin-senseai. The oracle is expected to grow
-// ORACLE-ONLY plugins alongside it (the harness stays ElizaOS; the Brain supplies the
-// analysis), and a guard aimed at one directory would leave every future plugin exempt from
-// the rule it exists to enforce.
-const PLUGINS_ROOT = path.resolve(__dirname, "../src/elizaos/plugins");
-
-/** Every plugin directory under the plugins root. */
-function pluginDirs() {
-  if (!fs.existsSync(PLUGINS_ROOT)) return [];
-  return fs
-    .readdirSync(PLUGINS_ROOT, { withFileTypes: true })
-    .filter(e => e.isDirectory())
-    .map(e => path.join(PLUGINS_ROOT, e.name));
-}
-
-// The tree is TypeScript today, but the guard promises to cover "every plugin directory", and
-// a plugin shipping a plain .js helper (or a committed compiled file) must not be invisible to
-// it. Cheaper to widen the net now than to discover the hole via a regression.
-const SOURCE_EXT = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
-
-// Directories whose contents are not the plugin's shipped source. `__tests__` is this repo's
-// convention, but the next oracle-only plugin may be scaffolded with any of the common
-// alternatives, and a test file may legitimately name a social platform while mocking one.
-// Excluding build output and dependencies is for the obvious reason: they are not source.
-const SKIP_DIRS = ["__tests__", "test", "tests", "spec", "__mocks__", "dist", "node_modules"];
-
-/** Every source file under the given roots, recursively, excluding tests and build output. */
-function sourcesUnder(roots) {
-  const out = [];
-  const walk = dir => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.includes(entry.name)) continue;
-        walk(full);
-      } else if (SOURCE_EXT.some(ext => entry.name.endsWith(ext))) {
-        out.push(full);
-      }
-    }
-  };
-  for (const r of roots) if (fs.existsSync(r)) walk(r);
-  return out;
-}
-
 const rel = f => path.relative(PLUGINS_ROOT, f);
 
 /**
@@ -102,7 +59,10 @@ const rel = f => path.relative(PLUGINS_ROOT, f);
  * Silence is not success — if this cannot find the tree, it must say so instead of passing.
  */
 function scanTargets() {
-  const dirs = pluginDirs();
+  // Root passed EXPLICITLY rather than leaning on the helper's default: the guard states which
+  // tree it guards, and a probe that overrides PLUGINS_ROOT then actually exercises this code
+  // path. Relying on the default silently decoupled the two during extraction.
+  const dirs = pluginDirs(PLUGINS_ROOT);
   expect(
     dirs.length,
     `No plugin directories found under ${PLUGINS_ROOT}. The guard cannot run, so it must FAIL ` +
