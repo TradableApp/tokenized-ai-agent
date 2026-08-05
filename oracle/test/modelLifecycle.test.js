@@ -47,9 +47,11 @@ describe("model lifecycle", function () {
     for (const key of [
       "GOOGLE_SMALL_MODEL",
       "GOOGLE_LARGE_MODEL",
+      "GOOGLE_IMAGE_MODEL",
       "GOOGLE_EMBEDDING_MODEL",
       "SMALL_MODEL",
       "LARGE_MODEL",
+      "IMAGE_MODEL",
       "TEXT_EMBEDDING_MODEL",
     ]) {
       expect(process.env[key], `${key} missing from .env.oracle.example`).to.be.a("string");
