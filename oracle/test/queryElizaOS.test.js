@@ -29,24 +29,42 @@ const ROOM_ID = "room-1";
 
 /** Builds an ElizaOS stub that records what it was asked to do. */
 function makeElizaStub({ providerData, thoughts }) {
-  const captured = { text: null, composeArgs: null, eventHandlers: {} };
+  const captured = { text: null, composeArgs: null, eventHandlers: {}, runtimes: [] };
+  // Held in a box so a test can change what the run emits WITHOUT reloading the module —
+  // reloading would hand back a fresh runProvenance singleton and quietly void the assertion.
+  const script = { thoughts };
 
   // Mirrors the real runtime surface queryElizaOS touches — agentId, ensureConnection,
   // createMemory, getMemoryById — plus the two used by the new behaviour. A stub thinner than
   // the real dependency would make these tests pass against code that cannot run.
-  const runtime = {
-    agentId: "agent-uuid",
-    ensureConnection: sinon.stub().resolves(),
-    createMemory: sinon.stub().resolves(),
-    getMemoryById: sinon.stub().resolves(null),
-    composeState: sinon.stub().callsFake(async (_message, includeList, onlyInclude) => {
-      captured.composeArgs = { includeList, onlyInclude };
-      return { values: {}, text: "", data: { providers: providerData } };
-    }),
-    registerEvent: (event, handler) => {
-      captured.eventHandlers[event] = handler;
-    },
+  //
+  // Built per call rather than once, because handler registration is keyed on the runtime
+  // INSTANCE: a test that can only ever see one runtime cannot tell instance-keying apart from
+  // a one-way boolean, which is exactly how the restart-safety gap survived a round of review.
+  const makeRuntime = () => {
+    const own = { eventHandlers: {} };
+    const runtime = {
+      agentId: "agent-uuid",
+      ownHandlers: own.eventHandlers,
+      ensureConnection: sinon.stub().resolves(),
+      createMemory: sinon.stub().resolves(),
+      getMemoryById: sinon.stub().resolves(null),
+      composeState: sinon.stub().callsFake(async (_message, includeList, onlyInclude) => {
+        captured.composeArgs = { includeList, onlyInclude };
+        return { values: {}, text: "", data: { providers: providerData } };
+      }),
+      registerEvent: (event, handler) => {
+        own.eventHandlers[event] = handler;
+        // `captured.eventHandlers` stays "whatever was registered most recently", which is what
+        // handleMessage drives; per-runtime handlers are asserted via `ownHandlers`.
+        captured.eventHandlers[event] = handler;
+      },
+    };
+    captured.runtimes.push(runtime);
+    return runtime;
   };
+
+  let runtime = makeRuntime();
 
   class ElizaOS {
     async addAgents() {
@@ -59,7 +77,7 @@ function makeElizaStub({ providerData, thoughts }) {
     async handleMessage(_target, message, options) {
       captured.text = message.content.text;
       // Drive the runtime's own signals in the order ElizaOS emits them.
-      for (const t of thoughts) {
+      for (const t of script.thoughts) {
         if (t.action && captured.eventHandlers.ACTION_STARTED) {
           await captured.eventHandlers.ACTION_STARTED({ roomId: ROOM_ID, content: {} , actionName: t.action });
         }
@@ -70,7 +88,18 @@ function makeElizaStub({ providerData, thoughts }) {
     }
   }
 
-  return { ElizaOS, captured, runtime };
+  /** Simulates the runtime being replaced — a re-init, or a supervisor restarting the agents. */
+  function replaceRuntime() {
+    runtime = makeRuntime();
+    return runtime;
+  }
+
+  /** Rewrites what the next run emits, on the SAME module instance. */
+  function setThoughts(next) {
+    script.thoughts = next;
+  }
+
+  return { ElizaOS, captured, runtime, replaceRuntime, setThoughts };
 }
 
 function loadOracle(elizaStub) {
@@ -176,6 +205,7 @@ describe("queryElizaOS — provider-composed context", () => {
     // stranded until cap eviction. Every other fixture here resolves, which is precisely why the
     // suite missed it.
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
+    const realHandleMessage = stub.ElizaOS.prototype.handleMessage;
     stub.ElizaOS.prototype.handleMessage = async () => {
       throw new Error("boom");
     };
@@ -189,15 +219,68 @@ describe("queryElizaOS — provider-composed context", () => {
     }
     expect(threw, "the rejection must still propagate").to.equal(true);
 
-    // A second run in the same room must attribute normally, which only holds if the first was
-    // released — a stranded run would leave the room ambiguous forever.
-    const stub2 = makeElizaStub({
-      providerData,
-      thoughts: [{ thought: "after", action: "GET_ASSET_SENTIMENT" }],
-    });
-    const oracle2 = loadOracle(stub2);
-    const result = await oracle2.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    // Restore normal behaviour and run AGAIN ON THE SAME ORACLE, in the SAME room. This is the
+    // whole assertion: proxyquire hands out a fresh module — and therefore a fresh runProvenance
+    // singleton — per load, so a second `loadOracle` would start with an empty map and pass no
+    // matter what finish() did. Reusing the instance is what makes the stranded run detectable:
+    // two live runs in one room make soleRunIn() ambiguous, attribution is dropped, and the
+    // title degrades to "Step 1".
+    stub.ElizaOS.prototype.handleMessage = realHandleMessage;
+    stub.setThoughts([{ thought: "after", action: "GET_ASSET_SENTIMENT" }]);
+
+    const result = await oracle.queryElizaOS(history("hi2"), ROOM_ID, "entity-1");
     expect(result.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
+  });
+
+  it("re-registers provenance handlers when the runtime is replaced", async () => {
+    // A one-way boolean guard survives the runtime it describes. If the agents are re-initialised
+    // — a supervisor restart, a retried start() — the NEW runtime gets no ACTION_STARTED handler,
+    // every reasoning step silently degrades to "Step N", and nothing throws. In a long-lived TEE
+    // process that is permanent and invisible.
+    //
+    // So the guard is keyed on the runtime INSTANCE, not on "have we ever registered".
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [{ thought: "t", action: "GET_ASSET_SENTIMENT" }],
+    });
+    const oracle = loadOracle(stub);
+
+    await oracle.queryElizaOS(history("first"), ROOM_ID, "entity-1");
+    const first = stub.captured.runtimes[0];
+    expect(first.ownHandlers.ACTION_STARTED, "first runtime must be wired").to.be.a("function");
+
+    stub.replaceRuntime();
+    const second = await oracle.queryElizaOS(history("second"), ROOM_ID, "entity-1");
+
+    const replaced = stub.captured.runtimes[1];
+    expect(replaced, "the stub must have handed out a new runtime").to.not.equal(first);
+    expect(
+      replaced.ownHandlers.ACTION_STARTED,
+      "a replaced runtime must be wired too, or attribution dies silently",
+    ).to.be.a("function");
+    expect(second.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
+  });
+
+  it("does not re-register on the same runtime across prompts", async () => {
+    // The other half of the invariant: handlers live on the SHARED runtime, so registering per
+    // prompt would leak one per prompt and multiply exactly the cross-talk the run-correlation
+    // exists to prevent.
+    const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
+    const oracle = loadOracle(stub);
+
+    let registrations = 0;
+    const runtime = stub.captured.runtimes[0];
+    const realRegister = runtime.registerEvent;
+    runtime.registerEvent = (event, handler) => {
+      registrations += 1;
+      realRegister(event, handler);
+    };
+
+    await oracle.queryElizaOS(history("a"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("b"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("c"), ROOM_ID, "entity-1");
+
+    expect(registrations, "one runtime, one registration pass").to.equal(2);
   });
 
   it("still answers when composition yields no context", async () => {
