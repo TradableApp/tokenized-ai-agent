@@ -83,7 +83,18 @@ describe("oracle Brain providers", () => {
     it("returns the Brain's formatted macro block, not its own formatting", async () => {
       // Byte-identical context across both bodies is the whole point of the shared Brain: the
       // oracle must render via the Brain's formatter, never reimplement the block.
-      const macroState = { fearGreedClassification: "Greed", btcDominance: 54.2 };
+      // Realistic GlobalMacroData: the Brain's formatter reads several numeric fields and calls
+      // .toFixed() on them, so a thin fixture would render "$NaN" and still pass a non-empty
+      // assertion — proving nothing.
+      const macroState = {
+        fearGreedIndex: 72,
+        fearGreedClassification: "Greed",
+        btcDominance: 54.2,
+        ethDominance: 17.8,
+        moneySupply: 21500,
+        dailyEtfFlow: 412000000,
+        trendingWords: ["etf", "halving"],
+      };
       const result = await macro().get(
         runtimeWith({ brain: { getLatestMacro: async () => macroState } }),
         {},
@@ -134,7 +145,19 @@ describe("oracle Brain providers", () => {
       // explicitly a Social-body affordance. Telling the oracle's LLM to run an action that is
       // not registered here invites a hallucinated tool call on the on-chain answer path.
       const result = await macro().get(
-        runtimeWith({ brain: { getLatestMacro: async () => ({ fearGreedClassification: "Fear" }) } }),
+        runtimeWith({
+          brain: {
+            getLatestMacro: async () => ({
+              fearGreedIndex: 20,
+              fearGreedClassification: "Fear",
+              btcDominance: 51,
+              ethDominance: 16,
+              moneySupply: 21000,
+              dailyEtfFlow: 0,
+              trendingWords: [],
+            }),
+          },
+        }),
         {},
         {},
       );

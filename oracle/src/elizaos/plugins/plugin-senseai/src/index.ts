@@ -1,5 +1,9 @@
 import type { Plugin } from "@elizaos/core";
 
+import { macroSentimentProvider } from "./providers/macroSentiment";
+import { marketIntelligenceProvider } from "./providers/marketIntelligence";
+import { BrainService } from "./services/brain";
+
 /**
  * SenseAI — the ORACLE body's ElizaOS plugin.
  *
@@ -39,8 +43,13 @@ const senseaiPlugin: Plugin = {
     "SenseAI oracle body: a thin ElizaOS wrapper over the shared @tradableapp/sense-ai-brain analytical engine.",
 
   actions: [],
-  providers: [],
-  services: [],
+  // The Brain-backed pair sense-ai-core injects, from the same shared Brain so both bodies
+  // see identical context. Oracle-only capabilities go here later; anything shared with the
+  // Social body belongs in the Brain instead, so both get it.
+  providers: [macroSentimentProvider, marketIntelligenceProvider],
+  // Owns this body's read access to the shared warm cache — see services/brain.ts for why it
+  // cannot derive a BrainContext from the runtime the way core does.
+  services: [BrainService],
   evaluators: [],
 };
 
