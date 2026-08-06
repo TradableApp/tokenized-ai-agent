@@ -162,6 +162,35 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(result.reasoning[1].description).to.equal("Weighing the macro backdrop");
   });
 
+  it("releases the run when handleMessage throws synchronously", async () => {
+    // The leak review caught: this path rejects before onError ever runs, so the run was
+    // stranded until cap eviction. Every other fixture here resolves, which is precisely why the
+    // suite missed it.
+    const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
+    stub.ElizaOS.prototype.handleMessage = async () => {
+      throw new Error("boom");
+    };
+    const oracle = loadOracle(stub);
+
+    let threw = false;
+    try {
+      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    } catch {
+      threw = true;
+    }
+    expect(threw, "the rejection must still propagate").to.equal(true);
+
+    // A second run in the same room must attribute normally, which only holds if the first was
+    // released — a stranded run would leave the room ambiguous forever.
+    const stub2 = makeElizaStub({
+      providerData,
+      thoughts: [{ thought: "after", action: "GET_ASSET_SENTIMENT" }],
+    });
+    const oracle2 = loadOracle(stub2);
+    const result = await oracle2.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    expect(result.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
+  });
+
   it("still answers when composition yields no context", async () => {
     // Localnet e2e has no Cloud SQL; an unconfigured Brain must cost the context, not the answer.
     const stub = makeElizaStub({ providerData: {}, thoughts: [{ thought: "t" }] });

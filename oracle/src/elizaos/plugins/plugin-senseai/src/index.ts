@@ -4,6 +4,11 @@ import { macroSentimentProvider } from "./providers/macroSentiment";
 import { marketIntelligenceProvider } from "./providers/marketIntelligence";
 import { BrainService } from "./services/brain";
 
+// Host injection seam: the oracle owns the Brain connection (mTLS certs, drizzle, timeouts)
+// and hands this plugin a getter for the handles. See services/brain.ts for why.
+export { setBrainAccessor } from "./services/brain";
+export type { BrainAccessor } from "./services/brain";
+
 /**
  * SenseAI — the ORACLE body's ElizaOS plugin.
  *

@@ -1,123 +1,107 @@
 import { elizaLogger, type IAgentRuntime, Service } from "@elizaos/core";
 
 /**
- * Owns this body's access to the shared analytical Brain.
+ * The oracle's adapter onto the shared Brain.
  *
- * WHY A SERVICE, and why it does not use `createBrainContext(runtime)` the way sense-ai-core
- * does. Core's `plugin-sql` is wired to the SHARED `senseai` database, so its providers can
- * build a BrainContext straight off the runtime. This oracle deliberately runs an ISOLATED
- * agent database (`oracle_agent` — see wireAgentDb), so a runtime-derived context would query
- * the wrong database and return no warm-cache rows *while looking perfectly healthy*. The
- * connection to the shared cache therefore lives here, and providers reach it the ElizaOS way
- * via `runtime.getService("brain")`.
+ * IT OWNS NO CONNECTION, DELIBERATELY. An earlier version built its own `pg.Pool` here, and that
+ * was wrong three ways at once — no TLS, no timeouts, and a raw Pool handed to the Brain as
+ * `ctx.db` where `BrainDatabase = NodePgDatabase` requires a drizzle instance, which is a
+ * runtime failure rather than a style difference.
  *
- * READ-ONLY BY DESIGN. The Social body keeps the cache warm on a schedule; the oracle only
- * reads it, per prompt. No periodic collection runs here — that stays core's job, so the two
- * bodies never double-spend on provider APIs and nothing slow blocks the on-chain answer path.
+ * The Brain's connection is a HOST concern. `oracle/src/brainContext.js` already builds it
+ * correctly: `bootstrapPostgresFromEnv({ writeEnv: false })` produces a URL carrying the mTLS
+ * cert parameters Cloud SQL requires under TRUSTED_CLIENT_CERTIFICATE_REQUIRED, wraps the pool
+ * in drizzle, and sets connection/query/statement timeouts so a hung query cannot stall an
+ * on-chain answer. `writeEnv: false` matters too: plugin-sql owns `process.env.POSTGRES_URL`
+ * pointed at the ISOLATED `oracle_agent` database, so writing it would repoint the agent runtime
+ * at the cache.
  *
- * DEGRADES, NEVER THROWS. Localnet e2e has no Cloud SQL at all, and a provider that throws
- * fails `composeState` for the whole turn. Every read returns null/[] when the Brain is
- * unconfigured or the database blips, so the oracle answers without context rather than not at
- * all.
+ * The plugin cannot reuse that helper without pulling `oracle/src` internals into its bundle,
+ * and duplicating it is what produced the bug. So the host injects an accessor via
+ * `setBrainAccessor` and this service simply delegates — which also keeps sense-ai-core's
+ * arrangement intact, where the runtime's own database IS the shared cache.
+ *
+ * Providers still resolve it the ElizaOS way, `runtime.getService("brain")`; only the plumbing
+ * behind it differs between bodies.
+ *
+ * Every read degrades to null/[] rather than throwing: localnet e2e runs with no Cloud SQL at
+ * all, and a provider that throws fails composeState for the entire turn.
  */
+
+/** Returns the host's live Brain handles, or null when the Brain is unavailable. */
+export type BrainAccessor = () => Promise<{
+  brain: any;
+  ctx: any;
+  sentimentEngine: any;
+} | null>;
+
+let accessor: BrainAccessor | null = null;
+
+/**
+ * Host injection point. Called once at oracle start-up with a getter for the Brain handles;
+ * pass `null` to clear (tests).
+ */
+export function setBrainAccessor(next: BrainAccessor | null): void {
+  accessor = next;
+}
+
+/** Resolves the handles, absorbing any failure — never throws into a provider. */
+async function handles() {
+  if (!accessor) return null;
+  try {
+    return await accessor();
+  } catch (error) {
+    elizaLogger.error(
+      `[Brain] Handles unavailable, answering without market context: ${String(
+        (error as any)?.message ?? error,
+      )}`,
+    );
+    return null;
+  }
+}
+
 export class BrainService extends Service {
   static serviceType = "brain";
 
   override capabilityDescription =
     "Read access to the shared SenseAI Brain warm cache (macro + enriched news).";
 
-  /** Brain module namespace, loaded lazily — it ships ESM and this bundle is consumed by CJS. */
-  private brain: any = null;
-  private ctx: any = null;
-  private sentimentEngine: any = null;
-  private pool: any = null;
-
   static async start(runtime: IAgentRuntime): Promise<BrainService> {
-    const service = new BrainService(runtime);
-    await service.init(runtime);
-    return service;
+    return new BrainService(runtime);
   }
 
-  /** Config presence check — mirrors brainContext.js's isConfigured(). */
-  private static isConfigured(get: (k: string) => string | undefined): boolean {
-    return Boolean(get("POSTGRES_HOST") && get("POSTGRES_DATABASE") && get("POSTGRES_USER"));
-  }
-
-  private async init(runtime: IAgentRuntime): Promise<void> {
-    const get = (k: string) => (runtime.getSetting(k) as string | undefined) ?? process.env[k];
-
-    if (!BrainService.isConfigured(get)) {
-      // Not an error: localnet e2e runs without Cloud SQL. Stay registered and inert so the
-      // providers resolve a service and return empty context rather than blowing up the turn.
-      elizaLogger.info("[Brain] Postgres config absent — warm-cache reads disabled.");
-      return;
-    }
-
-    try {
-      const { Pool } = await import("pg");
-      const brain = await import("@tradableapp/sense-ai-brain");
-
-      this.pool = new Pool({
-        host: get("POSTGRES_HOST"),
-        port: Number(get("POSTGRES_PORT") ?? 5432),
-        database: get("POSTGRES_DATABASE"),
-        user: get("POSTGRES_USER"),
-        password: get("POSTGRES_PASSWORD"),
-        max: 2,
-      });
-
-      // The framework-agnostic seam the Brain expects. `settings` resolves through the runtime
-      // first so ROFL-injected secrets are honoured, falling back to the process env.
-      this.ctx = {
-        db: this.pool,
-        settings: { get },
-        logger: elizaLogger,
-      };
-      this.brain = brain;
-      this.sentimentEngine = new brain.SentimentEngine(this.ctx);
-      elizaLogger.info("[Brain] Warm-cache reads enabled.");
-    } catch (error) {
-      // Deliberately swallowed: a Brain that fails to load must not stop the oracle answering.
-      elizaLogger.error(
-        `[Brain] Initialisation failed — continuing without market context: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      this.brain = null;
-      this.sentimentEngine = null;
-    }
-  }
-
-  /** True when warm-cache reads are available. */
-  isReady(): boolean {
-    return Boolean(this.brain && this.sentimentEngine);
+  /** True when the host has a live Brain to read from. */
+  async isReady(): Promise<boolean> {
+    return (await handles()) !== null;
   }
 
   /** Latest global macro row, or null when unavailable. */
   async getLatestMacro(): Promise<unknown | null> {
-    if (!this.isReady()) return null;
-    return this.sentimentEngine.getLatestMacro();
+    const h = await handles();
+    if (!h?.sentimentEngine?.getLatestMacro) return null;
+    try {
+      return await h.sentimentEngine.getLatestMacro();
+    } catch (error) {
+      elizaLogger.error(`[Brain] Macro read failed: ${String((error as any)?.message ?? error)}`);
+      return null;
+    }
   }
 
   /** Latest enriched news rows, newest first. [] when unavailable. */
   async getLatestNews(limit = 10): Promise<unknown[]> {
-    if (!this.isReady()) return [];
-    return this.brain.getLatestEnrichedNews(this.ctx, limit);
-  }
-
-  /** The Brain's own formatters, so both bodies render byte-identical context blocks. */
-  formatMacro(macroState: unknown): string {
-    return this.brain.formatMacroEnvironment(macroState);
-  }
-
-  formatNews(rows: unknown[]): string {
-    return this.brain.formatNewsTicker(rows);
+    const h = await handles();
+    if (!h?.brain?.getLatestEnrichedNews) return [];
+    try {
+      // ctx comes from the host so the drizzle instance — and its TLS and timeout settings —
+      // is the one brainContext built, not something reinvented here.
+      return await h.brain.getLatestEnrichedNews(h.ctx, limit);
+    } catch (error) {
+      elizaLogger.error(`[Brain] News read failed: ${String((error as any)?.message ?? error)}`);
+      return [];
+    }
   }
 
   override async stop(): Promise<void> {
-    if (this.pool) {
-      await this.pool.end().catch(() => {});
-      this.pool = null;
-    }
+    // Nothing to release: the pool belongs to the host, which owns its lifecycle.
   }
 }

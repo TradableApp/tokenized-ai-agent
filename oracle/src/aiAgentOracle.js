@@ -18,7 +18,8 @@ const {
   EventType,
 } = require("@elizaos/core");
 
-const senseaiPlugin = require("./elizaos/plugins/plugin-senseai/dist/index.js").default;
+const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
+const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
 const {
@@ -59,6 +60,7 @@ const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
+const { getHandles: getBrainHandles } = require("./brainContext");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
@@ -321,6 +323,15 @@ async function initializeEliza() {
     console.log("senseAiAgentId", senseAiAgentId);
 
     // Start the agent lifecycle
+    // The Brain's connection stays HERE, in the host: brainContext builds it with the mTLS
+    // cert params Cloud SQL requires, wraps it in drizzle (the Brain's ctx.db is a
+    // NodePgDatabase, not a raw Pool) and sets query timeouts. The plugin's BrainService is a
+    // thin adapter over these handles — it cannot reuse bootstrapPostgresFromEnv without
+    // dragging oracle/src into its bundle, and duplicating it silently dropped all three.
+    if (typeof senseaiPluginModule.setBrainAccessor === "function") {
+      senseaiPluginModule.setBrainAccessor(getBrainHandles);
+    }
+
     await elizaOS.startAgents();
     console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
   } catch (error) {
@@ -706,7 +717,9 @@ function registerProvenanceHandlers(runtime) {
     provenanceHandlersRegistered = true;
   } catch (err) {
     // Attribution is a nicety; never let it cost an answer.
-    console.error(`[ElizaOS] Could not subscribe provenance handlers: ${err.message}`);
+    console.error(
+      `[ElizaOS] Could not subscribe provenance handlers: ${String(err?.message ?? err)}`,
+    );
   }
 }
 
@@ -804,10 +817,14 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
     );
     composedSources = sourcesFromState(composed);
   } catch (err) {
-    console.error(`[ElizaOS] Context composition failed, answering without it: ${err.message}`);
+    console.error(
+      `[ElizaOS] Context composition failed, answering without it: ${String(err?.message ?? err)}`,
+    );
   }
 
-  runProvenance.begin(roomId, { sources: composedSources });
+  // Handle, not roomId: two prompts for the SAME conversation can be in flight together
+  // under the p-queue, and a room-keyed run would let the second clobber the first.
+  const runId = runProvenance.begin(roomId, { sources: composedSources });
   const reasoningStart = Date.now();
 
   // We use handleMessage which runs the full processing pipeline:
@@ -840,7 +857,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             // Correlated by roomId so concurrent prompts cannot bleed into each other. The
             // action in flight (from ACTION_STARTED) titles the step; see runProvenance.
             if (content.thought) {
-              runProvenance.recordThought(roomId, content.thought);
+              runProvenance.recordThought(runId, content.thought);
             }
 
             finalResponseText = content.text;
@@ -848,7 +865,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
             console.error("[ElizaOS] Runtime Error during handleMessage:", error);
-            runProvenance.finish(roomId); // release the run; a rejected answer still frees it
+            runProvenance.finish(runId); // release the run; a rejected answer still frees it
             reject(error);
           },
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
@@ -857,7 +874,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             if (finalResponseText) {
               // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
               // thought steps from the runtime + the warm-cache sources injected above.
-              const { reasoning, sources } = runProvenance.finish(roomId);
+              const { reasoning, sources } = runProvenance.finish(runId);
               resolve({
                 text: finalResponseText.trim(),
                 reasoning,
@@ -865,13 +882,17 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
                 reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
               });
             } else {
-              runProvenance.finish(roomId);
+              runProvenance.finish(runId);
               reject(new Error("ElizaOS completed but generated no text."));
             }
           },
         },
       );
     } catch (err) {
+      // handleMessage can throw SYNCHRONOUSLY, before onError ever runs — the two other exits
+      // release the run, and this one silently did not, stranding it until cap eviction weeks
+      // later inside a long-lived TEE process. Caught in review; a stub that throws now covers it.
+      runProvenance.finish(runId);
       reject(err);
     }
   });
