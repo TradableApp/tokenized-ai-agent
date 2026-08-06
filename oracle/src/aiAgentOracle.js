@@ -60,7 +60,7 @@ const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
-const { getHandles: getBrainHandles } = require("./brainContext");
+const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
@@ -335,12 +335,28 @@ async function initializeEliza() {
     // dragging oracle/src into its bundle, and duplicating it silently dropped all three.
     if (typeof senseaiPluginModule.setBrainAccessor === "function") {
       senseaiPluginModule.setBrainAccessor(getBrainHandles);
+    } else if (isBrainConfigured()) {
+      // FATAL WHEN THE BRAIN IS CONFIGURED. A missing export is a broken/stale plugin build, not
+      // a runtime blip — and because providers degrade so gracefully, the result is
+      // indistinguishable from a Cloud SQL outage: mainnet answering without market context,
+      // indefinitely, with one log line as the only signal. An operator who configured Cloud SQL
+      // has stated the intent; failing to honour it must stop the process, not whisper.
+      //
+      // Thrown at STARTUP rather than per prompt on purpose. This runs inside initializeEliza,
+      // so a broken build never serves traffic and the supervisor restarts with a clear cause,
+      // instead of each prompt paying for a degraded answer. Per-prompt failure would be worse
+      // than useless: queryElizaOS would fail over to another model, hiding the build error
+      // behind a plausible answer.
+      throw new Error(
+        "setBrainAccessor missing from the plugin build, but the Brain IS configured — the " +
+          "market-context path is inoperative. Rebuild plugin-senseai (bun run build) before starting.",
+      );
     } else {
-      // Loud on purpose: without the seam the ENTIRE market-context path is inoperative, and
-      // providers degrade so gracefully that the result is indistinguishable from a Cloud SQL
-      // outage. Silence here would mean mainnet answering without context and nothing alerting.
-      console.error(
-        "[ElizaOS] setBrainAccessor missing from the plugin build — market context will NOT be injected. Check the plugin build/export.",
+      // No Brain configured (localnet e2e has no Cloud SQL): absence is expected, so this is
+      // information, not a fault. Gating on isBrainConfigured is what keeps the check precise —
+      // refusing to boot here would break the environments the graceful degradation exists for.
+      console.warn(
+        "[ElizaOS] setBrainAccessor absent and no Brain configured — answering without market context.",
       );
     }
 

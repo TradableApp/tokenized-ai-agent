@@ -76,12 +76,20 @@ function makeElizaStub({ providerData, thoughts }) {
     }
     async handleMessage(_target, message, options) {
       captured.text = message.content.text;
-      // Drive the runtime's own signals in the order ElizaOS emits them.
+      // Drive the runtime's own signals in the order ElizaOS emits them — including
+      // ACTION_COMPLETED, which is what CLEARS the action label. Emitting only ACTION_STARTED
+      // made this stub a half-model of the runtime: `currentAction` was never cleared, so an
+      // un-actioned thought inherited the previous action's title and the test still passed
+      // because it asserted only the description. A stub that cannot produce the clearing signal
+      // cannot detect a regression in the clearing logic.
       for (const t of script.thoughts) {
         if (t.action && captured.eventHandlers.ACTION_STARTED) {
           await captured.eventHandlers.ACTION_STARTED({ roomId: ROOM_ID, content: {} , actionName: t.action });
         }
         await options.onResponse({ text: t.text ?? "partial", thought: t.thought });
+        if (t.action && captured.eventHandlers.ACTION_COMPLETED) {
+          await captured.eventHandlers.ACTION_COMPLETED({ roomId: ROOM_ID, content: {}, actionName: t.action });
+        }
       }
       await options.onComplete();
       return { messageId: "m1", userMessage: {} };
@@ -118,6 +126,33 @@ function loadOracle(elizaStub) {
     },
     "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
     "./elizaos/character.js": {},
+  });
+}
+
+
+/**
+ * Loads the oracle with a plugin build that has NO `setBrainAccessor` export, while controlling
+ * whether the host believes a Brain is configured. That pairing is the whole point: the same
+ * missing export means "expected" on localnet and "broken build" on mainnet.
+ */
+function loadOracleWithBrainConfigured(elizaStub, configured) {
+  process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
+  return proxyquire("../src/aiAgentOracle", {
+    "@elizaos/core": {
+      ElizaOS: elizaStub.ElizaOS,
+      elizaLogger: { info() {}, log() {}, error() {}, warn() {}, debug() {} },
+      stringToUuid: s => s,
+      createUniqueUuid: (_ns, s) => s,
+      ChannelType: { DM: "DM", WORLD: "WORLD" },
+      EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
+    },
+    // No setBrainAccessor on the module — the stale-build scenario.
+    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    "./elizaos/character.js": {},
+    "./brainContext": {
+      getHandles: async () => null,
+      isConfigured: () => configured,
+    },
   });
 }
 
@@ -197,7 +232,14 @@ describe("queryElizaOS — provider-composed context", () => {
       title: "GET_ASSET_SENTIMENT",
       description: "Cache miss — fetching fresh metrics",
     });
-    expect(result.reasoning[1].description).to.equal("Weighing the macro backdrop");
+    // Asserts the TITLE too, not just the description. Only checking the description let this
+    // test pass while the title was silently wrong: the stub fired ACTION_STARTED but never
+    // ACTION_COMPLETED, so `currentAction` was never cleared and the un-actioned second thought
+    // inherited the first thought's action.
+    expect(result.reasoning[1]).to.deep.equal({
+      title: "Step 2",
+      description: "Weighing the macro backdrop",
+    });
   });
 
   it("releases the run when handleMessage throws synchronously", async () => {
@@ -298,6 +340,38 @@ describe("queryElizaOS — provider-composed context", () => {
         `step ${i + 1} must not carry an action label that can never be cleared`,
       ).to.match(/^Step \d+$/);
     }
+  });
+
+  it("refuses to start when the plugin seam is missing but the Brain IS configured", async () => {
+    // A missing setBrainAccessor export is a broken/stale plugin build, not a runtime blip. The
+    // providers degrade so gracefully that the result is indistinguishable from a Cloud SQL
+    // outage — mainnet answering without market context indefinitely, with a log line as the
+    // only signal. An operator who configured Cloud SQL has stated the intent; failing to honour
+    // it must stop the process at startup, before a single prompt is served.
+    const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
+    const oracle = loadOracleWithBrainConfigured(stub, true);
+
+    let message = "";
+    try {
+      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    } catch (err) {
+      message = String(err?.message ?? err);
+    }
+
+    expect(message, "a broken build must not serve traffic").to.match(/setBrainAccessor missing/);
+    expect(message, "the message must name the fix, not just the symptom").to.match(/[Rr]ebuild/);
+  });
+
+  it("starts and answers without context when no Brain is configured", async () => {
+    // The other side of the same predicate: localnet e2e has no Cloud SQL at all, so absence is
+    // expected. Refusing to boot here would break precisely the environments the graceful
+    // degradation exists for — which is why the check is gated rather than absolute.
+    const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
+    const oracle = loadOracleWithBrainConfigured(stub, false);
+
+    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+
+    expect(result.text).to.be.a("string");
   });
 
   it("does not re-register on the same runtime across prompts", async () => {

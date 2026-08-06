@@ -170,4 +170,8 @@ async function getHandles() {
   }
 }
 
-module.exports = { getMarketContext, getHandles, _setTestOverrides, _resetForTests };
+// isConfigured is exported so the host can tell "no Brain here" (localnet e2e) apart from
+// "a Brain was configured but the plugin seam is missing" (a broken build). Those need opposite
+// responses — degrade quietly vs refuse to start — and the distinction must come from ONE
+// predicate so the two cannot drift.
+module.exports = { getMarketContext, getHandles, isConfigured, _setTestOverrides, _resetForTests };
