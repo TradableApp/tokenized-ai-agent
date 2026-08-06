@@ -14,6 +14,16 @@ const EMPTY: ProviderResult = { text: "", values: {}, data: {} };
 const NEWS_LIMIT = 10;
 
 /**
+ * The news block's heading, byte-identical to sense-ai-core's marketIntelligenceProvider.
+ *
+ * Exported so a test can assert it rather than trusting a comment. Both bodies read the SAME
+ * shared Postgres table through the SAME Brain formatter; the heading is the only part composed
+ * locally, which made it the only part free to drift — and it had, to "(Warm Cache)" here
+ * against "(Local Ledger)" in core.
+ */
+export const NEWS_BLOCK_HEADER = "### SOVEREIGN MARKET INTELLIGENCE (Local Ledger)";
+
+/**
  * Injects the enriched-news ticker into the agent's context — the oracle's half of the pair
  * sense-ai-core injects, rendered by the shared Brain's own `formatNewsTicker`.
  *
@@ -47,9 +57,22 @@ export const marketIntelligenceProvider: Provider = {
       const latestNews = await brain.getLatestNews(NEWS_LIMIT);
       if (!latestNews || latestNews.length === 0) return EMPTY;
 
+      // Byte-identical to sense-ai-core's marketIntelligenceProvider, heading and leading
+      // newline included — the two bodies must put the SAME news block in front of the model.
+      // It read "(Warm Cache)" here and "(Local Ledger)" in core: same shared Postgres table,
+      // two names, and a silent divergence in the LLM-facing text. Core's wording wins because
+      // it is the one already deployed; NEWS_BLOCK_HEADER is asserted in brainProviders.test.js
+      // so the next edit has to be deliberate.
+      //
+      // The heading belongs in the Brain's formatNewsTicker so drift is impossible rather than
+      // merely tested — tracked as a follow-up, since it is a cross-repo change.
+      //
+      // What deliberately does NOT match: core appends a GET_NEWS_DETAILS instruction. That
+      // action is a Social-body affordance the oracle does not register, and telling a model to
+      // invoke an action that does not exist invites a hallucinated tool call.
       return {
         text: `
-### SOVEREIGN MARKET INTELLIGENCE (Warm Cache)
+${NEWS_BLOCK_HEADER}
 ${formatNewsTicker(latestNews as any)}
 `,
         values: { MARKET_INTELLIGENCE_INJECTED: true },

@@ -10,8 +10,14 @@ const { reasoningFromThoughts } = require("./answerProvenance");
  * appended would interleave thoughts from different users' prompts into each other's answers,
  * then write that into an immutable, already-paid-for MessageFile on decentralised storage.
  *
- * So every signal is correlated by a run key — the oracle's per-conversation roomId — and
- * handlers are registered ONCE at startup. Registering per prompt would leak a handler per
+ * So thoughts are correlated by a per-run HANDLE, not by roomId. roomId is derived from
+ * conversationId and is therefore stable per conversation, so two prompts in the same
+ * conversation can be in flight together and a room-keyed run would let the second clobber the
+ * first. roomId survives only as a secondary index, because ACTION_STARTED/COMPLETED carry
+ * nothing else — and when a room holds more than one live run those events are dropped rather
+ * than guessed (see soleRunIn).
+ *
+ * Handlers are registered ONCE PER RUNTIME. Registering per prompt would leak a handler per
  * prompt, and each leaked handler multiplies the cross-talk.
  *
  * WHY THIS SHAPE NOW, while output is still buffered. ElizaOS already exposes everything

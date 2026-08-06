@@ -157,7 +157,12 @@ let elizaOS = null;
 // registerProvenanceHandlers): per-prompt registration would leak a handler per prompt and
 // multiply the cross-talk.
 const runProvenance = createRunProvenance();
-let provenanceHandlersRegistered = false;
+// Keyed on the runtime INSTANCE rather than a "have we ever registered" boolean. A boolean
+// outlives the object it describes: re-initialise the agents (a retried start(), a supervisor
+// restart) and the new runtime carries no handlers, so every reasoning step silently degrades to
+// "Step N" — permanent and invisible in a long-lived TEE process. Identity makes the guard mean
+// what it says: this runtime is wired, any other one is not.
+let provenanceHandlersRuntime = null;
 let senseAiAgentId = null;
 
 /**
@@ -708,13 +713,14 @@ async function queryTradableAssistant(conversationHistory, userWallet) {
  * entered once per prompt.
  */
 function registerProvenanceHandlers(runtime) {
-  if (provenanceHandlersRegistered) return;
+  if (provenanceHandlersRuntime === runtime) return;
   if (typeof runtime.registerEvent !== "function") return;
 
   // Marked BEFORE registering, not after: if the first registerEvent succeeds and the second
   // throws, a retry on the next prompt would add a SECOND ACTION_STARTED handler to a
-  // long-lived runtime, and keep doing so every prompt. One attempt, then leave it alone.
-  provenanceHandlersRegistered = true;
+  // long-lived runtime, and keep doing so every prompt. One attempt per runtime, then leave it
+  // alone — a replaced runtime is a different identity and gets its own single attempt.
+  provenanceHandlersRuntime = runtime;
 
   const nameOf = (payload) =>
     payload?.actionName ?? payload?.action ?? payload?.content?.action ?? "";
@@ -817,6 +823,27 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   //
   // Never fails the answer: an unconfigured Brain (localnet e2e has no Cloud SQL) or a DB blip
   // costs the context, not the response.
+  //
+  // THIS PRE-CALL IS A DELIBERATE SECOND READ — do not "optimise" it away. Verified against
+  // @elizaos/core 1.7.2 (dist/node/index.node.js):
+  //
+  //   • bootstrap's messageReceivedHandler composes with onlyInclude=TRUE over
+  //     ["ANXIETY","ENTITIES","CHARACTER","RECENT_MESSAGES","ACTIONS"] — our two providers do NOT
+  //     run there;
+  //   • runSingleShotCore then calls `composeState(message, ["ACTIONS"])` with onlyInclude
+  //     OMITTED (→ false), which runs every non-private, non-dynamic provider. THAT is where the
+  //     market context actually reaches the answer prompt;
+  //   • so each provider runs once inside handleMessage, plus once here = two warm-cache reads.
+  //     (Three if the model requests providers back: messageReceivedHandler re-composes again.)
+  //
+  // The message built below carries no `id`, and composeState only writes its cache
+  // `if (message.id)` — so this pre-call neither pollutes nor is reused by handleMessage's state.
+  // That independence is the cost: MARKET_INTELLIGENCE_INJECTED dedups within a composition, not
+  // across two, and MACRO_SENTIMENT has no dedup at all.
+  //
+  // Paid for knowingly. Provenance must describe what was composed even when handleMessage throws
+  // before returning, and sources-before-inference is the ordering the future dApp stream wants.
+  // Collapsing the reads belongs in a short-TTL memo inside BrainService, not in deleting this.
   registerProvenanceHandlers(runtime);
 
   let composedSources = [];

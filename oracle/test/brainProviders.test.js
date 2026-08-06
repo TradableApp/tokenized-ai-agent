@@ -182,6 +182,28 @@ describe("oracle Brain providers", () => {
       expect(result.data.latestNews).to.deep.equal(rows);
     });
 
+    it("heads the block with the exact wording sense-ai-core uses", async () => {
+      // The heading is the ONLY part of this block composed locally — the rows come from the
+      // Brain's own formatNewsTicker — so it was the only part free to drift, and it had:
+      // "(Warm Cache)" here against "(Local Ledger)" in core, for the same shared Postgres table.
+      // Two bodies claiming a shared Brain must put the same text in front of the model.
+      //
+      // Hard-coded rather than derived: this test's job is to fail when someone edits the
+      // constant, so reading the constant to check itself would prove nothing. The value is
+      // copied from sense-ai-core/src/plugins/plugin-senseai/src/providers/marketIntelligence.ts.
+      const CORE_HEADER = "### SOVEREIGN MARKET INTELLIGENCE (Local Ledger)";
+
+      const result = await news().get(
+        runtimeWith({ brain: { getLatestNews: async () => rows } }),
+        {},
+        {},
+      );
+
+      // Leading newline included: core's template literal opens the same way, so trimming here
+      // would be a divergence dressed up as tidiness.
+      expect(result.text.startsWith(`\n${CORE_HEADER}\n`), result.text.slice(0, 80)).to.equal(true);
+    });
+
     it("omits the Social-body GET_NEWS_DETAILS instruction", async () => {
       // core's version appends "execute the GET_NEWS_DETAILS action" — an affordance that only
       // exists in the Social body. Instructing the oracle's LLM to call an action that is not
