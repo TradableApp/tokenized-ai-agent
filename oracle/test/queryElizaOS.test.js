@@ -22,13 +22,23 @@ const sinon = require("sinon");
 // text reaches the model, and what provenance reaches the MessageFile.
 
 const FAKE_AGENT_ID = "fake-agent-id";
+
+/** conversationHistory is an array whose LAST entry is the new prompt (see queryElizaOS). */
+const history = content => [{ role: "user", content }];
 const ROOM_ID = "room-1";
 
 /** Builds an ElizaOS stub that records what it was asked to do. */
 function makeElizaStub({ providerData, thoughts }) {
   const captured = { text: null, composeArgs: null, eventHandlers: {} };
 
+  // Mirrors the real runtime surface queryElizaOS touches — agentId, ensureConnection,
+  // createMemory, getMemoryById — plus the two used by the new behaviour. A stub thinner than
+  // the real dependency would make these tests pass against code that cannot run.
   const runtime = {
+    agentId: "agent-uuid",
+    ensureConnection: sinon.stub().resolves(),
+    createMemory: sinon.stub().resolves(),
+    getMemoryById: sinon.stub().resolves(null),
     composeState: sinon.stub().callsFake(async (_message, includeList, onlyInclude) => {
       captured.composeArgs = { includeList, onlyInclude };
       return { values: {}, text: "", data: { providers: providerData } };
@@ -98,7 +108,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "thinking" }] });
     const oracle = loadOracle(stub);
 
-    await oracle.queryElizaOS({ content: "What is the sentiment on SOL?" }, ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("What is the sentiment on SOL?"), ROOM_ID, "entity-1");
 
     expect(stub.captured.text).to.equal("What is the sentiment on SOL?");
     expect(stub.captured.text).to.not.match(/MARKET CONTEXT/);
@@ -107,10 +117,12 @@ describe("queryElizaOS — provider-composed context", () => {
   it("composes only the Brain providers, not the whole set", async () => {
     // onlyInclude keeps the pre-inference read to the two providers whose data becomes
     // provenance, rather than running every provider twice per prompt.
-    const stub = makeElizaStub({ providerData, thoughts: [] });
+    // Needs at least one response: with none, the oracle correctly rejects with
+    // "completed but generated no text", which is real behaviour, not a fixture detail.
+    const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
     const oracle = loadOracle(stub);
 
-    await oracle.queryElizaOS({ content: "hi" }, ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
 
     expect(stub.captured.composeArgs.includeList).to.have.members([
       "MACRO_SENTIMENT",
@@ -123,7 +135,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
     const oracle = loadOracle(stub);
 
-    const result = await oracle.queryElizaOS({ content: "hi" }, ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
 
     expect(result.sources).to.deep.equal([
       { title: "BTC ETF inflows accelerate", url: "https://example.test/a" },
@@ -141,7 +153,7 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    const result = await oracle.queryElizaOS({ content: "hi" }, ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
 
     expect(result.reasoning[0]).to.deep.equal({
       title: "GET_ASSET_SENTIMENT",
@@ -155,7 +167,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData: {}, thoughts: [{ thought: "t" }] });
     const oracle = loadOracle(stub);
 
-    const result = await oracle.queryElizaOS({ content: "hi" }, ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
 
     expect(result.sources).to.deep.equal([]);
     expect(result.text).to.be.a("string");

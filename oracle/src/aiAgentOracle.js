@@ -15,6 +15,7 @@ const {
   createUniqueUuid,
   elizaLogger,
   ChannelType,
+  EventType,
 } = require("@elizaos/core");
 
 const senseaiPlugin = require("./elizaos/plugins/plugin-senseai/dist/index.js").default;
@@ -58,7 +59,8 @@ const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
-const { getMarketContext } = require("./brainContext");
+const { sourcesFromState } = require("./answerProvenance");
+const { createRunProvenance } = require("./runProvenance");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
@@ -145,6 +147,15 @@ console.log(
 );
 
 let elizaOS = null;
+
+// Provenance is correlated by RUN (roomId), not by closure: ElizaOS event handlers register
+// on the SHARED runtime while prompts drain through a p-queue with concurrency 5, so an
+// appending handler would interleave one user's thoughts into another's answer — and that
+// answer is written to immutable, already-paid-for storage. Registered ONCE (see
+// registerProvenanceHandlers): per-prompt registration would leak a handler per prompt and
+// multiply the cross-talk.
+const runProvenance = createRunProvenance();
+let provenanceHandlersRegistered = false;
 let senseAiAgentId = null;
 
 /**
@@ -667,6 +678,38 @@ async function queryTradableAssistant(conversationHistory, userWallet) {
  * @param {string} userWallet - The user's wallet address for entity/room isolation.
  * @returns {Promise<string>} The content of the AI's response.
  */
+/**
+ * Subscribes the provenance collector to the runtime's action lifecycle — ONCE.
+ *
+ * ACTION_STARTED says which action is running; onResponse delivers the thought without that
+ * attribution. Pairing them is what turns "Step 1" into the action that actually ran.
+ *
+ * Registered once rather than per prompt on purpose: handlers live on the shared runtime, so
+ * one registered per call would leak a handler per prompt and multiply the cross-talk the
+ * run-correlation exists to prevent. Guarded rather than assumed, because queryElizaOS is
+ * entered once per prompt.
+ */
+function registerProvenanceHandlers(runtime) {
+  if (provenanceHandlersRegistered) return;
+  if (typeof runtime.registerEvent !== "function") return;
+
+  const nameOf = (payload) =>
+    payload?.actionName ?? payload?.action ?? payload?.content?.action ?? "";
+
+  try {
+    runtime.registerEvent(EventType.ACTION_STARTED, async (payload) => {
+      runProvenance.actionStarted(payload?.roomId, nameOf(payload));
+    });
+    runtime.registerEvent(EventType.ACTION_COMPLETED, async (payload) => {
+      runProvenance.actionCompleted(payload?.roomId, nameOf(payload));
+    });
+    provenanceHandlersRegistered = true;
+  } catch (err) {
+    // Attribution is a nicety; never let it cost an answer.
+    console.error(`[ElizaOS] Could not subscribe provenance handlers: ${err.message}`);
+  }
+}
+
 async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   console.log("[Routing] Path (i): Initializing ElizaOS structured I/O loop...");
 
@@ -741,18 +784,36 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   // --- PROCESS NEW MESSAGE ---
   console.log("[ElizaOS] Processing new message via runtime handleMessage logic...");
 
-  // Phase 2 (CU-86d3dwme6): read the Brain's warm cache (kept warm by the
-  // Social body) and inject the same macro + news context blocks it uses.
-  // Null when unconfigured (localnet e2e) or on a DB blip — never blocks.
-  const marketContext = await getMarketContext();
-  const brainSources = marketContext ? marketContext.sources : [];
+  // CU-86d3ud1va: market context now reaches the model through the MACRO_SENTIMENT and
+  // MARKET_INTELLIGENCE providers — ElizaOS's own composition seam — rather than being
+  // concatenated onto the user's prompt by hand. Composing them here as well, scoped with
+  // onlyInclude, is what yields the provenance: StateData.providers is ElizaOS's provider-results
+  // cache, so `sources` describes what the run actually composed instead of a list fetched
+  // alongside it. handleMessage returns no state, which is why this is read explicitly.
+  //
+  // Never fails the answer: an unconfigured Brain (localnet e2e has no Cloud SQL) or a DB blip
+  // costs the context, not the response.
+  registerProvenanceHandlers(runtime);
+
+  let composedSources = [];
+  try {
+    const composed = await runtime.composeState(
+      { entityId, roomId, content: { text: currentMessage.content, source: "onchain" } },
+      ["MACRO_SENTIMENT", "MARKET_INTELLIGENCE"],
+      true,
+    );
+    composedSources = sourcesFromState(composed);
+  } catch (err) {
+    console.error(`[ElizaOS] Context composition failed, answering without it: ${err.message}`);
+  }
+
+  runProvenance.begin(roomId, { sources: composedSources });
   const reasoningStart = Date.now();
 
   // We use handleMessage which runs the full processing pipeline:
   // Context -> Action Selection -> Evaluation -> Response
   return new Promise(async (resolve, reject) => {
     let finalResponseText = "";
-    let reasoningSteps = [];
 
     try {
       await elizaOS.handleMessage(
@@ -761,9 +822,10 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           entityId,
           roomId,
           content: {
-            text: marketContext
-              ? `${currentMessage.content}\n\n[MARKET CONTEXT — verified warm-cache data]\n${marketContext.contextText}`
-              : currentMessage.content,
+            // ONLY the user's prompt. Market context arrives via providers during
+            // composition — hand-building it here bypassed the framework and made the two
+            // bodies structurally different.
+            text: currentMessage.content,
             source: "onchain",
           },
         },
@@ -775,8 +837,10 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             );
 
             // If the agent provides 'thought' metadata, add it to reasoning
+            // Correlated by roomId so concurrent prompts cannot bleed into each other. The
+            // action in flight (from ACTION_STARTED) titles the step; see runProvenance.
             if (content.thought) {
-              reasoningSteps.push(content.thought);
+              runProvenance.recordThought(roomId, content.thought);
             }
 
             finalResponseText = content.text;
@@ -784,6 +848,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
             console.error("[ElizaOS] Runtime Error during handleMessage:", error);
+            runProvenance.finish(roomId); // release the run; a rejected answer still frees it
             reject(error);
           },
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
@@ -792,16 +857,15 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             if (finalResponseText) {
               // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
               // thought steps from the runtime + the warm-cache sources injected above.
+              const { reasoning, sources } = runProvenance.finish(roomId);
               resolve({
                 text: finalResponseText.trim(),
-                reasoning: reasoningSteps.map((thought, index) => ({
-                  title: `Step ${index + 1}`,
-                  description: thought,
-                })),
-                sources: brainSources,
+                reasoning,
+                sources,
                 reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
               });
             } else {
+              runProvenance.finish(roomId);
               reject(new Error("ElizaOS completed but generated no text."));
             }
           },
@@ -2318,6 +2382,7 @@ async function start() {
 
 module.exports = {
   start,
+  queryElizaOS,
   initForTest,
   // Expose internal functions for testing purposes
   handlePrompt,
