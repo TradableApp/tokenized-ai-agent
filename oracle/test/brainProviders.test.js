@@ -68,9 +68,12 @@ describe("oracle Brain providers", () => {
       ).to.include("brain");
     });
 
-    it("registers the macro provider", () => {
+    it("registers the same Brain-backed provider pair as sense-ai-core", () => {
+      // Parity is the goal: core injects MACRO_SENTIMENT + MARKET_INTELLIGENCE, and the oracle
+      // must inject the same pair from the same Brain so both bodies see identical context.
       const names = (plugin.providers ?? []).map(p => p.name);
       expect(names).to.include("MACRO_SENTIMENT");
+      expect(names).to.include("MARKET_INTELLIGENCE");
     });
   });
 
@@ -136,6 +139,75 @@ describe("oracle Brain providers", () => {
         {},
       );
       expect(result.text).to.not.match(/GET_NEWS_DETAILS|Telegram|launch the app/i);
+    });
+  });
+
+  describe("MARKET_INTELLIGENCE provider", () => {
+    const news = () => plugin.providers.find(p => p.name === "MARKET_INTELLIGENCE");
+    const rows = [
+      { title: "BTC ETF inflows accelerate", url: "https://example.test/a", source: "CoinDesk" },
+      { title: "ETH staking yield dips", url: "https://example.test/b", source: "CryptoPanic" },
+    ];
+
+    it("returns the Brain's formatted news ticker", async () => {
+      const result = await news().get(
+        runtimeWith({ brain: { getLatestNews: async () => rows } }),
+        {},
+        {},
+      );
+      expect(result.text).to.be.a("string").and.not.equal("");
+      expect(result.data.latestNews).to.deep.equal(rows);
+    });
+
+    it("omits the Social-body GET_NEWS_DETAILS instruction", async () => {
+      // core's version appends "execute the GET_NEWS_DETAILS action" — an affordance that only
+      // exists in the Social body. Instructing the oracle's LLM to call an action that is not
+      // registered here invites a hallucinated tool call on the ON-CHAIN answer path, where the
+      // failure surfaces to a paying user rather than in a chat window.
+      const result = await news().get(
+        runtimeWith({ brain: { getLatestNews: async () => rows } }),
+        {},
+        {},
+      );
+      expect(result.text).to.not.match(/GET_NEWS_DETAILS/i);
+    });
+
+    it("does not re-inject when the turn already has it", async () => {
+      // Mirrors core's turn-state dedup: composeState may call providers more than once per
+      // turn, and duplicating the ticker wastes context window on the oracle's answer path.
+      const result = await news().get(
+        runtimeWith({ brain: { getLatestNews: async () => rows } }),
+        {},
+        { values: { MARKET_INTELLIGENCE_INJECTED: true } },
+      );
+      expect(result).to.deep.equal({ text: "", values: {}, data: {} });
+    });
+
+    it("returns empty context when the service is absent, the cache is empty, or the read throws", async () => {
+      const absent = await news().get(runtimeWith({}), {}, {});
+      const empty = await news().get(
+        runtimeWith({ brain: { getLatestNews: async () => [] } }),
+        {},
+        {},
+      );
+      const threw = await news().get(
+        runtimeWith({
+          brain: {
+            getLatestNews: async () => {
+              throw new Error("connection reset");
+            },
+          },
+        }),
+        {},
+        {},
+      );
+      for (const [label, r] of [["absent", absent], ["empty", empty], ["threw", threw]]) {
+        expect(r, `${label} must degrade to empty context, never fail the turn`).to.deep.equal({
+          text: "",
+          values: {},
+          data: {},
+        });
+      }
     });
   });
 });
