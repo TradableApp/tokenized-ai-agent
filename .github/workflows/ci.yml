@@ -94,5 +94,17 @@ jobs:
       - name: Install oracle dependencies
         run: cd oracle && bun install --frozen-lockfile
 
+      # aiAgentOracle.js loads the plugin from its BUILT dist
+      # (require("./elizaos/plugins/plugin-senseai/dist/index.js")), and dist/ is gitignored, so
+      # a fresh checkout has none. Until now nothing here built it: the oracle's unit tests get
+      # by because aiAgentOracle.test.js stubs that require via proxyquire, which meant a broken
+      # plugin build could not fail CI — and any test that loads the real dist could not run at
+      # all. Building it makes the plugin's own code genuinely covered (CU-86d3ud1va).
+      - name: Install plugin-senseai dependencies
+        run: cd oracle/src/elizaos/plugins/plugin-senseai && bun install --frozen-lockfile
+
+      - name: Build plugin-senseai
+        run: cd oracle/src/elizaos/plugins/plugin-senseai && bun run build
+
       - name: Test (oracle)
         run: cd oracle && bun run test

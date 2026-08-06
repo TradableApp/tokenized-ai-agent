@@ -104,6 +104,37 @@ describe("oracle ElizaOS plugins stay oracle-scoped", () => {
     ).to.deep.equal([]);
   });
 
+  it("consumes the shared Brain", () => {
+    // Held back from the deletion PR on purpose — it would have landed knowingly-red on main,
+    // since that change removed the fork without yet adding the replacement. It joins the file
+    // now that the plugin imports @tradableapp/sense-ai-brain for real.
+    //
+    // This is the positive half of the architecture the other assertions police negatively:
+    // "no Telegram/X code" only says what the oracle is NOT. Without this, a plugin that had
+    // been gutted and never rewired would pass every other check while doing nothing at all —
+    // which was exactly the state main was in between the two PRs.
+    // Must match an actual IMPORT, not a mention. A bare /@tradableapp\/sense-ai-brain/ was
+    // satisfied by index.ts's own `description` string, which name-drops the package — so the
+    // guard passed with every real import stripped out. Caught by mutation-testing it, and it
+    // is the exact failure it exists to prevent: a plugin advertising the Brain in prose while
+    // importing nothing.
+    //
+    // Comment lines are dropped first for the same reason: this file's own rationale, and the
+    // notes in types/shared-schema.d.ts explaining the packaging, are documentation.
+    const BRAIN_IMPORT = /(?:from|import|require)\s*\(?\s*["']@tradableapp\/sense-ai-brain["']/;
+    const importers = scanTargets().filter(f =>
+      BRAIN_IMPORT.test(stripCommentLines(fs.readFileSync(f, "utf8"))),
+    );
+
+    expect(
+      importers.map(rel),
+      `No file in the oracle's plugins imports @tradableapp/sense-ai-brain. The oracle is meant ` +
+        `to leverage the shared Brain exactly as sense-ai-core does — analysis lives in the ` +
+        `Brain so BOTH bodies get it. Without that import the plugin is either dead weight or a ` +
+        `second implementation, which is the fork this task exists to end (CU-86d3ud1va).`,
+    ).to.not.be.empty;
+  });
+
   it("carries no unreferenced quick-starter scaffolding", () => {
     // `src/plugin.ts` is the `elizaos create` template (config schema + sample action /
     // provider / service). Nothing imports it, and template code sitting next to real code

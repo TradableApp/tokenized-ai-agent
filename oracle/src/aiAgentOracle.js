@@ -15,9 +15,11 @@ const {
   createUniqueUuid,
   elizaLogger,
   ChannelType,
+  EventType,
 } = require("@elizaos/core");
 
-const senseaiPlugin = require("./elizaos/plugins/plugin-senseai/dist/index.js").default;
+const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
+const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
 const {
@@ -58,7 +60,9 @@ const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
-const { getMarketContext } = require("./brainContext");
+const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
+const { sourcesFromState } = require("./answerProvenance");
+const { createRunProvenance } = require("./runProvenance");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
@@ -145,6 +149,20 @@ console.log(
 );
 
 let elizaOS = null;
+
+// Provenance is correlated by RUN (roomId), not by closure: ElizaOS event handlers register
+// on the SHARED runtime while prompts drain through a p-queue with concurrency 5, so an
+// appending handler would interleave one user's thoughts into another's answer — and that
+// answer is written to immutable, already-paid-for storage. Registered ONCE (see
+// registerProvenanceHandlers): per-prompt registration would leak a handler per prompt and
+// multiply the cross-talk.
+const runProvenance = createRunProvenance();
+// Keyed on the runtime INSTANCE rather than a "have we ever registered" boolean. A boolean
+// outlives the object it describes: re-initialise the agents (a retried start(), a supervisor
+// restart) and the new runtime carries no handlers, so every reasoning step silently degrades to
+// "Step N" — permanent and invisible in a long-lived TEE process. Identity makes the guard mean
+// what it says: this runtime is wired, any other one is not.
+let provenanceHandlersRuntime = null;
 let senseAiAgentId = null;
 
 /**
@@ -310,6 +328,38 @@ async function initializeEliza() {
     console.log("senseAiAgentId", senseAiAgentId);
 
     // Start the agent lifecycle
+    // The Brain's connection stays HERE, in the host: brainContext builds it with the mTLS
+    // cert params Cloud SQL requires, wraps it in drizzle (the Brain's ctx.db is a
+    // NodePgDatabase, not a raw Pool) and sets query timeouts. The plugin's BrainService is a
+    // thin adapter over these handles — it cannot reuse bootstrapPostgresFromEnv without
+    // dragging oracle/src into its bundle, and duplicating it silently dropped all three.
+    if (typeof senseaiPluginModule.setBrainAccessor === "function") {
+      senseaiPluginModule.setBrainAccessor(getBrainHandles);
+    } else if (isBrainConfigured()) {
+      // FATAL WHEN THE BRAIN IS CONFIGURED. A missing export is a broken/stale plugin build, not
+      // a runtime blip — and because providers degrade so gracefully, the result is
+      // indistinguishable from a Cloud SQL outage: mainnet answering without market context,
+      // indefinitely, with one log line as the only signal. An operator who configured Cloud SQL
+      // has stated the intent; failing to honour it must stop the process, not whisper.
+      //
+      // Thrown at STARTUP rather than per prompt on purpose. This runs inside initializeEliza,
+      // so a broken build never serves traffic and the supervisor restarts with a clear cause,
+      // instead of each prompt paying for a degraded answer. Per-prompt failure would be worse
+      // than useless: queryElizaOS would fail over to another model, hiding the build error
+      // behind a plausible answer.
+      throw new Error(
+        "setBrainAccessor missing from the plugin build, but the Brain IS configured — the " +
+          "market-context path is inoperative. Rebuild plugin-senseai (bun run build) before starting.",
+      );
+    } else {
+      // No Brain configured (localnet e2e has no Cloud SQL): absence is expected, so this is
+      // information, not a fault. Gating on isBrainConfigured is what keeps the check precise —
+      // refusing to boot here would break the environments the graceful degradation exists for.
+      console.warn(
+        "[ElizaOS] setBrainAccessor absent and no Brain configured — answering without market context.",
+      );
+    }
+
     await elizaOS.startAgents();
     console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
   } catch (error) {
@@ -660,6 +710,59 @@ async function queryTradableAssistant(conversationHistory, userWallet) {
 }
 
 /**
+ * Subscribes the provenance collector to the runtime's action lifecycle — ONCE.
+ *
+ * ACTION_STARTED says which action is running; onResponse delivers the thought without that
+ * attribution. Pairing them is what turns "Step 1" into the action that actually ran.
+ *
+ * Registered once rather than per prompt on purpose: handlers live on the shared runtime, so
+ * one registered per call would leak a handler per prompt and multiply the cross-talk the
+ * run-correlation exists to prevent. Guarded rather than assumed, because queryElizaOS is
+ * entered once per prompt.
+ */
+function registerProvenanceHandlers(runtime) {
+  if (provenanceHandlersRuntime === runtime) return;
+  if (typeof runtime.registerEvent !== "function") return;
+
+  // Marked BEFORE registering, not after: if the first registerEvent succeeds and the second
+  // throws, a retry on the next prompt would add a SECOND ACTION_STARTED handler to a
+  // long-lived runtime, and keep doing so every prompt. One attempt per runtime, then leave it
+  // alone — a replaced runtime is a different identity and gets its own single attempt.
+  provenanceHandlersRuntime = runtime;
+
+  const nameOf = (payload) =>
+    payload?.actionName ?? payload?.action ?? payload?.content?.action ?? "";
+
+  try {
+    // ORDER IS LOAD-BEARING: the CLEARING handler is registered first.
+    //
+    // Partial registration is the one case where the obvious designs trade off. Stamping the
+    // guard before registering means a half-wired runtime never retries — but if ACTION_STARTED
+    // landed and ACTION_COMPLETED did not, `currentAction` is set with nothing able to clear it,
+    // so every later thought inherits a finished action, permanently, in paid-for storage.
+    // Stamping after instead re-registers ACTION_STARTED on every prompt, growing handlers
+    // without bound on a long-lived TEE runtime.
+    //
+    // Registering ACTION_COMPLETED first makes every partial state safe and removes the trade:
+    // if it throws, ACTION_STARTED is never reached, so nothing can set a label in the first
+    // place. Attribution degrades to "Step N" — the honest degradation — with no retry and no
+    // leak. Covered by "attributes nothing rather than wrongly when only half the handlers
+    // register".
+    runtime.registerEvent(EventType.ACTION_COMPLETED, async (payload) => {
+      runProvenance.actionCompleted(payload?.roomId, nameOf(payload));
+    });
+    runtime.registerEvent(EventType.ACTION_STARTED, async (payload) => {
+      runProvenance.actionStarted(payload?.roomId, nameOf(payload));
+    });
+  } catch (err) {
+    // Attribution is a nicety; never let it cost an answer.
+    console.error(
+      `[ElizaOS] Could not subscribe provenance handlers: ${String(err?.message ?? err)}`,
+    );
+  }
+}
+
+/**
  * Query the ElizaOS third-party service with structured I/O.
  * Uses the internal ElizaOS runtime initialized in the TEE.
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
@@ -741,18 +844,61 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   // --- PROCESS NEW MESSAGE ---
   console.log("[ElizaOS] Processing new message via runtime handleMessage logic...");
 
-  // Phase 2 (CU-86d3dwme6): read the Brain's warm cache (kept warm by the
-  // Social body) and inject the same macro + news context blocks it uses.
-  // Null when unconfigured (localnet e2e) or on a DB blip — never blocks.
-  const marketContext = await getMarketContext();
-  const brainSources = marketContext ? marketContext.sources : [];
+  // CU-86d3ud1va: market context now reaches the model through the MACRO_SENTIMENT and
+  // MARKET_INTELLIGENCE providers — ElizaOS's own composition seam — rather than being
+  // concatenated onto the user's prompt by hand. Composing them here as well, scoped with
+  // onlyInclude, is what yields the provenance: StateData.providers is ElizaOS's provider-results
+  // cache, so `sources` describes what the run actually composed instead of a list fetched
+  // alongside it. handleMessage returns no state, which is why this is read explicitly.
+  //
+  // Never fails the answer: an unconfigured Brain (localnet e2e has no Cloud SQL) or a DB blip
+  // costs the context, not the response.
+  //
+  // THIS PRE-CALL IS A DELIBERATE SECOND READ — do not "optimise" it away. Verified against
+  // @elizaos/core 1.7.2 (dist/node/index.node.js):
+  //
+  //   • bootstrap's messageReceivedHandler composes with onlyInclude=TRUE over
+  //     ["ANXIETY","ENTITIES","CHARACTER","RECENT_MESSAGES","ACTIONS"] — our two providers do NOT
+  //     run there;
+  //   • runSingleShotCore then calls `composeState(message, ["ACTIONS"])` with onlyInclude
+  //     OMITTED (→ false), which runs every non-private, non-dynamic provider. THAT is where the
+  //     market context actually reaches the answer prompt;
+  //   • so each provider runs once inside handleMessage, plus once here = two warm-cache reads.
+  //     (Three if the model requests providers back: messageReceivedHandler re-composes again.)
+  //
+  // The message built below carries no `id`, and composeState only writes its cache
+  // `if (message.id)` — so this pre-call neither pollutes nor is reused by handleMessage's state.
+  // That independence is the cost: MARKET_INTELLIGENCE_INJECTED dedups within a composition, not
+  // across two, and MACRO_SENTIMENT has no dedup at all.
+  //
+  // Paid for knowingly. Provenance must describe what was composed even when handleMessage throws
+  // before returning, and sources-before-inference is the ordering the future dApp stream wants.
+  // Collapsing the reads belongs in a short-TTL memo inside BrainService, not in deleting this.
+  registerProvenanceHandlers(runtime);
+
+  let composedSources = [];
+  try {
+    const composed = await runtime.composeState(
+      { entityId, roomId, content: { text: currentMessage.content, source: "onchain" } },
+      ["MACRO_SENTIMENT", "MARKET_INTELLIGENCE"],
+      true,
+    );
+    composedSources = sourcesFromState(composed);
+  } catch (err) {
+    console.error(
+      `[ElizaOS] Context composition failed, answering without it: ${String(err?.message ?? err)}`,
+    );
+  }
+
+  // Handle, not roomId: two prompts for the SAME conversation can be in flight together
+  // under the p-queue, and a room-keyed run would let the second clobber the first.
+  const runId = runProvenance.begin(roomId, { sources: composedSources });
   const reasoningStart = Date.now();
 
   // We use handleMessage which runs the full processing pipeline:
   // Context -> Action Selection -> Evaluation -> Response
   return new Promise(async (resolve, reject) => {
     let finalResponseText = "";
-    let reasoningSteps = [];
 
     try {
       await elizaOS.handleMessage(
@@ -761,9 +907,10 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           entityId,
           roomId,
           content: {
-            text: marketContext
-              ? `${currentMessage.content}\n\n[MARKET CONTEXT — verified warm-cache data]\n${marketContext.contextText}`
-              : currentMessage.content,
+            // ONLY the user's prompt. Market context arrives via providers during
+            // composition — hand-building it here bypassed the framework and made the two
+            // bodies structurally different.
+            text: currentMessage.content,
             source: "onchain",
           },
         },
@@ -775,8 +922,11 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             );
 
             // If the agent provides 'thought' metadata, add it to reasoning
+            // Correlated by this run's HANDLE, not by roomId: roomId is stable per
+            // conversation, so two prompts in one conversation would collide under it. The
+            // action in flight (from ACTION_STARTED) titles the step; see runProvenance.
             if (content.thought) {
-              reasoningSteps.push(content.thought);
+              runProvenance.recordThought(runId, content.thought);
             }
 
             finalResponseText = content.text;
@@ -784,6 +934,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
             console.error("[ElizaOS] Runtime Error during handleMessage:", error);
+            runProvenance.finish(runId); // release the run; a rejected answer still frees it
             reject(error);
           },
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
@@ -792,22 +943,25 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             if (finalResponseText) {
               // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
               // thought steps from the runtime + the warm-cache sources injected above.
+              const { reasoning, sources } = runProvenance.finish(runId);
               resolve({
                 text: finalResponseText.trim(),
-                reasoning: reasoningSteps.map((thought, index) => ({
-                  title: `Step ${index + 1}`,
-                  description: thought,
-                })),
-                sources: brainSources,
+                reasoning,
+                sources,
                 reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
               });
             } else {
+              runProvenance.finish(runId);
               reject(new Error("ElizaOS completed but generated no text."));
             }
           },
         },
       );
     } catch (err) {
+      // handleMessage can throw SYNCHRONOUSLY, before onError ever runs — the two other exits
+      // release the run, and this one silently did not, stranding it until cap eviction weeks
+      // later inside a long-lived TEE process. Caught in review; a stub that throws now covers it.
+      runProvenance.finish(runId);
       reject(err);
     }
   });
@@ -2318,6 +2472,7 @@ async function start() {
 
 module.exports = {
   start,
+  queryElizaOS,
   initForTest,
   // Expose internal functions for testing purposes
   handlePrompt,

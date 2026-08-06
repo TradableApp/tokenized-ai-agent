@@ -152,4 +152,26 @@ async function getMarketContext() {
   }
 }
 
-module.exports = { getMarketContext, _setTestOverrides, _resetForTests };
+/**
+ * The initialised Brain handles, or null when the Brain is unavailable.
+ *
+ * This module remains the sole owner of the Brain's connection — it is built here with the mTLS
+ * cert params, drizzle wrapper and query timeouts that the shared Cloud SQL cache requires. The
+ * plugin's BrainService is a thin adapter over this, injected at start-up, because duplicating
+ * the construction inside the plugin produced exactly those omissions.
+ */
+async function getHandles() {
+  try {
+    const state = await init();
+    return state === "disabled" ? null : state;
+  } catch (error) {
+    console.error(`[BrainContext] Handles unavailable: ${String(error?.message ?? error)}`);
+    return null;
+  }
+}
+
+// isConfigured is exported so the host can tell "no Brain here" (localnet e2e) apart from
+// "a Brain was configured but the plugin seam is missing" (a broken build). Those need opposite
+// responses — degrade quietly vs refuse to start — and the distinction must come from ONE
+// predicate so the two cannot drift.
+module.exports = { getMarketContext, getHandles, isConfigured, _setTestOverrides, _resetForTests };

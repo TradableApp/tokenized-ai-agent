@@ -5,8 +5,23 @@
     "sourceMap": true,
     "inlineSources": true,
     "declaration": true,
-    "noEmit": false
+    "noEmit": false,
+    "skipLibCheck": true,
+    "paths": {
+      "@tradableapp/sense-ai-shared-schema": [
+        "./types/shared-schema.d.ts"
+      ]
+    }
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts", "src/__tests__/**/*"]
+  "include": [
+    "src/**/*.ts",
+    "types/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "src/__tests__/**/*"
+  ]
 }
