@@ -30,7 +30,25 @@ const NEWS_PROVIDER = "MARKET_INTELLIGENCE";
  * @returns {Array<{title: string, url: string}>}
  */
 function sourcesFromState(state) {
-  const rows = state?.data?.providers?.[NEWS_PROVIDER]?.latestNews;
+  // NOTE THE `.data`. ElizaOS stores each provider's ENTIRE result under
+  // `state.data.providers[name]`, not just its data field:
+  //
+  //     const providerData = await Promise.all(providersToGet.map(async (provider) => {
+  //       const result = await provider.get(this, message, cachedState);
+  //       return { ...result, providerName: provider.name };
+  //     }));
+  //     …
+  //     data: { ...cachedState.data, providers: currentProviderResults }
+  //
+  // (@elizaos/core 1.7.2, dist/node/index.node.js — AgentRuntime.composeState.)
+  //
+  // So the entry is `{ text, values, data, providerName }` and the payload is one level deeper.
+  // An earlier version read `.latestNews` directly, which is always undefined — sources would
+  // have been [] on every live answer, a silent regression from the list the dApp already
+  // rendered. Unit tests did not catch it because the stub was authored to match the wrong
+  // assumption; this comment exists so the next ElizaOS upgrade can re-verify against a cited
+  // location rather than a belief.
+  const rows = state?.data?.providers?.[NEWS_PROVIDER]?.data?.latestNews;
   if (!Array.isArray(rows)) return [];
 
   const seen = new Set();

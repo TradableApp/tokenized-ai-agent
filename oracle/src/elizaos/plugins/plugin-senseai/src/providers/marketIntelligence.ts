@@ -29,6 +29,13 @@ const NEWS_LIMIT = 10;
  */
 export const marketIntelligenceProvider: Provider = {
   name: "MARKET_INTELLIGENCE",
+  // Explicit, and it changes behaviour rather than merely documenting it: composeState sorts by
+  // `(a.position || 0) - (b.position || 0)`, so a provider WITHOUT a position sorts to 0 — ahead
+  // of MACRO_SENTIMENT (50). The news ticker was therefore rendering BEFORE the macro framing it
+  // is meant to sit under. sense-ai-core leaves this unset and has the same inversion; that is
+  // tracked as a follow-up, since the two bodies must order identically to compose identical
+  // context.
+  position: 51,
 
   get: async (runtime: IAgentRuntime, _message: Memory, state?: State): Promise<ProviderResult> => {
     if (state?.values?.MARKET_INTELLIGENCE_INJECTED) return EMPTY;

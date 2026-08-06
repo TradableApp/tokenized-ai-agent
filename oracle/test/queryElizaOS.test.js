@@ -93,12 +93,21 @@ function loadOracle(elizaStub) {
 }
 
 describe("queryElizaOS — provider-composed context", () => {
+  // The shape ElizaOS ACTUALLY composes: each provider's whole result — `{ ...result,
+  // providerName }` — under state.data.providers[name], so the payload sits under `.data`.
+  // The first version of this stub matched the parser's assumption instead, which made the test
+  // circular and concealed a parser that would have returned [] on every live answer.
   const providerData = {
     MARKET_INTELLIGENCE: {
-      latestNews: [
-        { title: "BTC ETF inflows accelerate", url: "https://example.test/a" },
-        { title: "ETH staking yield dips", url: "https://example.test/b" },
-      ],
+      text: "### SOVEREIGN MARKET INTELLIGENCE …",
+      values: { MARKET_INTELLIGENCE_INJECTED: true },
+      data: {
+        latestNews: [
+          { title: "BTC ETF inflows accelerate", url: "https://example.test/a" },
+          { title: "ETH staking yield dips", url: "https://example.test/b" },
+        ],
+      },
+      providerName: "MARKET_INTELLIGENCE",
     },
   };
 

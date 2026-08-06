@@ -330,6 +330,13 @@ async function initializeEliza() {
     // dragging oracle/src into its bundle, and duplicating it silently dropped all three.
     if (typeof senseaiPluginModule.setBrainAccessor === "function") {
       senseaiPluginModule.setBrainAccessor(getBrainHandles);
+    } else {
+      // Loud on purpose: without the seam the ENTIRE market-context path is inoperative, and
+      // providers degrade so gracefully that the result is indistinguishable from a Cloud SQL
+      // outage. Silence here would mean mainnet answering without context and nothing alerting.
+      console.error(
+        "[ElizaOS] setBrainAccessor missing from the plugin build — market context will NOT be injected. Check the plugin build/export.",
+      );
     }
 
     await elizaOS.startAgents();
@@ -704,6 +711,11 @@ function registerProvenanceHandlers(runtime) {
   if (provenanceHandlersRegistered) return;
   if (typeof runtime.registerEvent !== "function") return;
 
+  // Marked BEFORE registering, not after: if the first registerEvent succeeds and the second
+  // throws, a retry on the next prompt would add a SECOND ACTION_STARTED handler to a
+  // long-lived runtime, and keep doing so every prompt. One attempt, then leave it alone.
+  provenanceHandlersRegistered = true;
+
   const nameOf = (payload) =>
     payload?.actionName ?? payload?.action ?? payload?.content?.action ?? "";
 
@@ -714,7 +726,6 @@ function registerProvenanceHandlers(runtime) {
     runtime.registerEvent(EventType.ACTION_COMPLETED, async (payload) => {
       runProvenance.actionCompleted(payload?.roomId, nameOf(payload));
     });
-    provenanceHandlersRegistered = true;
   } catch (err) {
     // Attribution is a nicety; never let it cost an answer.
     console.error(

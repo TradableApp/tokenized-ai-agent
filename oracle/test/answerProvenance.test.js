@@ -30,9 +30,23 @@ const { sourcesFromState, reasoningFromThoughts } = require("../src/answerProven
 
 describe("answer provenance", () => {
   describe("sourcesFromState", () => {
+    // Mirrors what ElizaOS ACTUALLY produces, not what is convenient to parse. composeState
+    // stores each provider's whole result — `{ ...result, providerName }` — under
+    // state.data.providers[name], so the payload sits under `.data`. Writing the stub from the
+    // real shape is the point: the previous version matched the parser's assumption instead,
+    // which made the tests circular and hid a parser that returned [] on every live answer.
     const stateWith = news => ({
       values: {},
-      data: { providers: { MARKET_INTELLIGENCE: { latestNews: news } } },
+      data: {
+        providers: {
+          MARKET_INTELLIGENCE: {
+            text: "### SOVEREIGN MARKET INTELLIGENCE …",
+            values: { MARKET_INTELLIGENCE_INJECTED: true },
+            data: { latestNews: news },
+            providerName: "MARKET_INTELLIGENCE",
+          },
+        },
+      },
       text: "",
     });
 
@@ -84,7 +98,8 @@ describe("answer provenance", () => {
         ["no providers", { values: {}, data: {} }],
         ["provider absent", { values: {}, data: { providers: {} } }],
         ["latestNews not an array", stateWith("nope")],
-        ["latestNews missing", { values: {}, data: { providers: { MARKET_INTELLIGENCE: {} } } }],
+        ["payload not nested under .data", { values: {}, data: { providers: { MARKET_INTELLIGENCE: { latestNews: [{ title: "t", url: "u" }] } } } }],
+        ["latestNews missing", { values: {}, data: { providers: { MARKET_INTELLIGENCE: { data: {} } } } }],
       ]) {
         expect(sourcesFromState(input), `${label} should yield []`).to.deep.equal([]);
       }
