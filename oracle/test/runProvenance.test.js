@@ -80,6 +80,38 @@ describe("run provenance collector", () => {
       p.finish(runB);
     });
 
+    it("drops the action already in flight when a room becomes ambiguous", () => {
+      // The gap the soleRunIn guard does NOT close. soleRunIn stops a NEW action from being
+      // attributed while a room holds two runs — but an action attributed while the room was
+      // still solo stays pinned to that run, and its ACTION_COMPLETED is dropped by the very
+      // same guard. So the label is never cleared, and every later thought inherits an action
+      // that has already finished.
+      //
+      // That is a worse failure than the one the guard prevents: not "no attribution" but
+      // "wrong attribution that looks right", written into an immutable, already-paid-for
+      // MessageFile. Ambiguity must therefore invalidate attribution already in flight, not
+      // merely block new attribution.
+      const rp = createRunProvenance();
+
+      const runA = rp.begin("room-shared", { sources: [] });
+      rp.actionStarted("room-shared", "GET_ASSET_SENTIMENT");
+
+      // Second prompt for the SAME conversation — the room is now ambiguous.
+      const runB = rp.begin("room-shared", { sources: [] });
+
+      // ACTION_COMPLETED for A's action lands, but soleRunIn drops it: nothing clears the label.
+      rp.actionCompleted("room-shared", "GET_ASSET_SENTIMENT");
+      rp.recordThought(runA, "Now weighing the macro backdrop");
+
+      const a = rp.finish(runA);
+      rp.finish(runB);
+
+      expect(
+        a.reasoning[0].title,
+        "a completed action must not keep titling later thoughts",
+      ).to.equal("Step 1");
+    });
+
     it("attributes normally once the room is unambiguous again", () => {
       const p = createRunProvenance();
       const runA = p.begin("room-1", { sources: [] });

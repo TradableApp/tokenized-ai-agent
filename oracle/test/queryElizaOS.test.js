@@ -261,6 +261,45 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(second.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
   });
 
+  it("attributes nothing rather than wrongly when only half the handlers register", async () => {
+    // Partial registration is the one case where the two obvious designs trade off against each
+    // other. Stamp the guard BEFORE registering and a half-wired runtime never retries — but if
+    // ACTION_STARTED landed and ACTION_COMPLETED did not, `currentAction` is set and never
+    // cleared, so every later thought inherits a finished action, permanently, in paid storage.
+    // Stamp AFTER and the retry re-registers ACTION_STARTED on every prompt, growing handlers
+    // without bound on a long-lived TEE runtime.
+    //
+    // Neither trade is necessary: registering the CLEARING handler first makes every partial
+    // state safe. If ACTION_COMPLETED throws, ACTION_STARTED is never reached, so nothing can
+    // set an action label in the first place — attribution degrades to "Step N", which is the
+    // honest degradation, with no retry and no leak.
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        { thought: "Checking the cache", action: "GET_ASSET_SENTIMENT" },
+        { thought: "Now weighing the macro backdrop" },
+      ],
+    });
+
+    // Only ACTION_COMPLETED fails to register.
+    const runtime = stub.captured.runtimes[0];
+    const realRegister = runtime.registerEvent;
+    runtime.registerEvent = (event, handler) => {
+      if (event === "ACTION_COMPLETED") throw new Error("registration rejected");
+      realRegister(event, handler);
+    };
+
+    const oracle = loadOracle(stub);
+    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+
+    for (const [i, step] of result.reasoning.entries()) {
+      expect(
+        step.title,
+        `step ${i + 1} must not carry an action label that can never be cleared`,
+      ).to.match(/^Step \d+$/);
+    }
+  });
+
   it("does not re-register on the same runtime across prompts", async () => {
     // The other half of the invariant: handlers live on the SHARED runtime, so registering per
     // prompt would leak one per prompt and multiply exactly the cross-talk the run-correlation
