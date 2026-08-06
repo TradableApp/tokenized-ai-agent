@@ -694,14 +694,6 @@ async function queryTradableAssistant(conversationHistory, userWallet) {
 }
 
 /**
- * Query the ElizaOS third-party service with structured I/O.
- * Uses the internal ElizaOS runtime initialized in the TEE.
- * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
- * @param {string} conversationId - The on-chain conversation ID, used as the room ID.
- * @param {string} userWallet - The user's wallet address for entity/room isolation.
- * @returns {Promise<string>} The content of the AI's response.
- */
-/**
  * Subscribes the provenance collector to the runtime's action lifecycle — ONCE.
  *
  * ACTION_STARTED says which action is running; onResponse delivers the thought without that
@@ -726,11 +718,25 @@ function registerProvenanceHandlers(runtime) {
     payload?.actionName ?? payload?.action ?? payload?.content?.action ?? "";
 
   try {
-    runtime.registerEvent(EventType.ACTION_STARTED, async (payload) => {
-      runProvenance.actionStarted(payload?.roomId, nameOf(payload));
-    });
+    // ORDER IS LOAD-BEARING: the CLEARING handler is registered first.
+    //
+    // Partial registration is the one case where the obvious designs trade off. Stamping the
+    // guard before registering means a half-wired runtime never retries — but if ACTION_STARTED
+    // landed and ACTION_COMPLETED did not, `currentAction` is set with nothing able to clear it,
+    // so every later thought inherits a finished action, permanently, in paid-for storage.
+    // Stamping after instead re-registers ACTION_STARTED on every prompt, growing handlers
+    // without bound on a long-lived TEE runtime.
+    //
+    // Registering ACTION_COMPLETED first makes every partial state safe and removes the trade:
+    // if it throws, ACTION_STARTED is never reached, so nothing can set a label in the first
+    // place. Attribution degrades to "Step N" — the honest degradation — with no retry and no
+    // leak. Covered by "attributes nothing rather than wrongly when only half the handlers
+    // register".
     runtime.registerEvent(EventType.ACTION_COMPLETED, async (payload) => {
       runProvenance.actionCompleted(payload?.roomId, nameOf(payload));
+    });
+    runtime.registerEvent(EventType.ACTION_STARTED, async (payload) => {
+      runProvenance.actionStarted(payload?.roomId, nameOf(payload));
     });
   } catch (err) {
     // Attribution is a nicety; never let it cost an answer.
@@ -740,6 +746,14 @@ function registerProvenanceHandlers(runtime) {
   }
 }
 
+/**
+ * Query the ElizaOS third-party service with structured I/O.
+ * Uses the internal ElizaOS runtime initialized in the TEE.
+ * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
+ * @param {string} conversationId - The on-chain conversation ID, used as the room ID.
+ * @param {string} userWallet - The user's wallet address for entity/room isolation.
+ * @returns {Promise<string>} The content of the AI's response.
+ */
 async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   console.log("[Routing] Path (i): Initializing ElizaOS structured I/O loop...");
 
@@ -892,7 +906,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             );
 
             // If the agent provides 'thought' metadata, add it to reasoning
-            // Correlated by roomId so concurrent prompts cannot bleed into each other. The
+            // Correlated by this run's HANDLE, not by roomId: roomId is stable per
+            // conversation, so two prompts in one conversation would collide under it. The
             // action in flight (from ACTION_STARTED) titles the step; see runProvenance.
             if (content.thought) {
               runProvenance.recordThought(runId, content.thought);

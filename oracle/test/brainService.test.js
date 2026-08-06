@@ -119,5 +119,20 @@ describe("BrainService (host-injected adapter)", () => {
     expect(src, "importing pg here means a second, unconfigured connection").to.not.match(
       /from "pg"|require\("pg"\)/,
     );
+
+    // The source guard alone left the loop open: `pg` stayed DECLARED in the plugin's
+    // package.json long after the last import went away, which reads to the next maintainer as
+    // permission to build a pool here again — the exact bug this file exists to prevent. A
+    // dependency nothing imports is also weight shipped into the TEE image for nothing.
+    const pkg = JSON.parse(
+      require("node:fs").readFileSync(
+        path.resolve(__dirname, "../src/elizaos/plugins/plugin-senseai/package.json"),
+        "utf8",
+      ),
+    );
+    expect(
+      pkg.dependencies?.pg,
+      "the plugin must not declare pg — the host owns the connection",
+    ).to.equal(undefined);
   });
 });

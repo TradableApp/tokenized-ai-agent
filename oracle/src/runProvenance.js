@@ -76,7 +76,21 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     });
 
     if (!byRoom.has(roomKey)) byRoom.set(roomKey, new Set());
-    byRoom.get(roomKey).add(runId);
+    const siblings = byRoom.get(roomKey);
+    siblings.add(runId);
+
+    // Ambiguity must INVALIDATE attribution already in flight, not merely block new attribution.
+    // soleRunIn stops the next ACTION_STARTED from landing — but it also drops the matching
+    // ACTION_COMPLETED, so an action attributed while this room was still solo would never be
+    // cleared, and every later thought would inherit an action that had already finished.
+    // Dropping the label is the correct trade: a missing title is a blemish, a confidently wrong
+    // one is a permanent lie in storage the user has already paid for.
+    if (siblings.size > 1) {
+      for (const sibling of siblings) {
+        const run = runs.get(sibling);
+        if (run) run.currentAction = "";
+      }
+    }
 
     return runId;
   }
