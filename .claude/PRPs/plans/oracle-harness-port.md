@@ -47,10 +47,10 @@ There is nothing between the model and storage.
 `selectAnswer` chooses the last **substantive** emission, so a `CALL_MCP_TOOL` payload can no
 longer be stored. Mutation-checked against the exact production payload. 299 tests passing.
 
-### 1.2 Synthesis pass (`actionChainHelper`) — MODULE DONE (`22554fa`), WIRING ABANDONED
+### 1.2 Synthesis pass (`actionChainHelper`) — RE-SCOPED TO A FAITHFUL PORT
 
-`synthesizeAnswer` is implemented and green (7 tests): action results in, prose out,
-deadline-bounded, degrades to null, zero module-level state.
+First cut (`22554fa`) was green on 7 tests but was a reimplementation on both counts — wiring
+**and** module. Both corrections below.
 
 **CORRECTION — the wiring I originally planned was solving a problem core does not have.**
 
@@ -79,15 +79,64 @@ wasted — it is the function the ported actions will call, from inside their ha
 core does. It is simply not wired to a third-party action through an event channel that was
 never designed to carry results.
 
-**Revised order:** 1.3 next (it is the actual fix for raw MCP text), then Phase 2 brings the
-actions, and synthesis attaches to them the way core does.
+**SECOND CORRECTION — the module itself was also a reimplementation, not a port.**
 
-### 1.3 `messageHandlerTemplate` override
-Constrain the action-selection pass so the model emits a brief acknowledgement, never
-user-facing tool text. Cheap, and it reduces how often 1.1/1.2 have to catch anything.
+Reading `actionChainHelper.ts` properly, `synthesizeAnswer` as first written diverged on six
+counts, none of them forced:
 
-### 1.4 Brain `sanitizeOutboundText` on the final answer
-Already exported by the Brain and already used by core. Pure addition.
+| core `handleChainSynthesis` | my first `synthesizeAnswer` |
+| --- | --- |
+| `composePromptFromState` + `chainSynthesisTemplate`, so `{{providers}}` is in the prompt | hand-rolled string; **no providers at all** |
+| `generateSanitized(..., 2)` — retry on leak with `XML_RETRY_NUDGE` | single attempt |
+| `sanitizeOutboundText` gates the text | nothing |
+| `parseKeyValueXml` | hand-rolled `/<text>([\s\S]*?)<\/text>/` |
+| safe fallback message on total failure | returns `null` |
+| `isLastStep` gate via `options.actionPlan` | absent |
+
+Dropping `{{providers}}` is the serious one: it synthesises without the market-intelligence and
+Brain context the providers exist to supply, which is most of why the answer is worth paying for.
+
+**1.2 is therefore re-scoped to a faithful port of `handleChainSynthesis`**, carrying the template,
+`generateSanitized` + `sanitizeOutboundText`, `parseKeyValueXml`, the fallback string, and the
+`isLastStep` gate. Only two additions survive, both traceable to a real difference:
+
+- **deadline** — the paid path cannot hang; core's chat user can simply ask again. (Offer this back
+  to core at 2.7; it would likely benefit too.)
+- **per-call state only** — p-queue concurrency 5 vs core's one turn in flight.
+
+`generateSanitized` and `sanitizeOutboundText` are already exported by the Brain the oracle
+depends on (verified against the installed package), so this is a port, not new code.
+
+**Revised order:** 1.2 (re-scoped) next, then Phase 2 brings the actions, and synthesis attaches to
+them the way core does. 1.3 is deleted; 1.4 ships inside 1.2.
+
+### 1.3 `messageHandlerTemplate` override — ❌ REMOVED, IT WAS A FABRICATION
+
+I wrote 1.3 as "port core's `messageHandlerTemplate` override". **Core has no such override.**
+`character.ts` has no `templates` key at all; the only template overrides anywhere in core are
+Twitter-specific (`postTweetTemplate`, `quoteTweetTemplate`, `replyTweetTemplate`,
+`twitterActionTemplate`), read as `runtime.character.templates?.X || default` — i.e. defaults that
+core never sets. Nor does core's `system` prompt say anything about tool output.
+
+Building 1.3 would have created a divergence and labelled it a port. This is the second time the
+same mistake nearly landed (see 1.2), which is why the audit moved to 2.7.
+
+**What core actually relies on** — two things, neither of them a template:
+1. `@elizaos/plugin-mcp` already synthesises. Its `handleToolResponse` runs a reasoning prompt over
+   the raw tool output and emits **prose**; raw output is never passed to the callback.
+2. Core is a chat body. Every callback is its own message, so there is no "which emission is THE
+   answer" decision to get wrong.
+
+Only (2) fails for the oracle — it must collapse N emissions into ONE immutable, pre-paid stored
+answer. That is the "immutable pre-paid answers" difference, and `selectAnswer` (1.1) is the
+oracle's forced response to it. It has no core counterpart because core has no such problem.
+**Record it as a forced divergence at 2.7, do not look for something to port.**
+
+### 1.4 `sanitizeOutboundText` — folded into 1.2, not a separate step
+Core does **not** sanitize "the final answer" as a discrete pass. `sanitizeOutboundText` is called
+from *inside* `handleChainSynthesis` (and `broadcastService`), wrapped in `generateSanitized` so a
+leak triggers a **retry with a nudge** rather than a rejection. Bolting it on as a standalone
+post-filter would be yet another invented difference. It ships as part of 1.2's port.
 
 ### 1.5 Startup guard validating required config **by name**
 Today a bad address surfaces as `contract runner does not support name resolution`, which never
@@ -143,7 +192,8 @@ with the reason — not in a plan document nobody reads at the call site.
 | --- | --- | --- |
 | `marketIntelligence` omits core's `GET_NEWS_DETAILS` instruction | #63 justified it as avoiding a hallucinated tool call, but the real reason is **the action does not exist** in the oracle | should disappear in Phase 2; if it does not, say why honestly |
 | `BrainService` host-injected accessor vs core's `createBrainContext(runtime)` | the oracle's plugin-sql points at the isolated `oracle_agent` DB, so a runtime-derived context reads the wrong database while looking healthy | likely genuinely forced — confirm and record at the seam |
-| `synthesizeAnswer` deadline + null-degrade | paid on-chain path; core's chat user can simply ask again | forced; consider whether core would benefit from it too |
+| `synthesizeAnswer` deadline | paid on-chain path; core's chat user can simply ask again | forced; offer it back to core, which would likely benefit |
+| `selectAnswer` has no core counterpart | core is a chat body — each callback is its own message, so there is no single stored answer to choose | forced by the immutable pre-paid answer; **do not** hunt for something to port (see 1.3) |
 | `runProvenance` run-correlation | core has one turn in flight, the oracle five | forced by concurrency |
 | provider `position` set in the oracle, unset in core | core is wrong (news renders before macro) | fix core, do not fork the oracle |
 | oracle omits rate limiting | paid per prompt via escrow | forced; owner-confirmed |
@@ -172,8 +222,9 @@ whichever body happens to be ported first.
 
 ## Sequencing and PR shape
 
-1. **PR A (current branch):** 1.1 + 1.2 (module) + **1.3** + 1.4 — the answer path. 1.3 is the
-   real fix for raw MCP text reaching the user, so it leads rather than trails.
+1. **PR A (current branch):** 1.1 + 1.2 re-scoped as a faithful `handleChainSynthesis` port
+   (sanitize + retry-on-leak included, so old 1.4 ships here). 1.3 is deleted, with the reason
+   recorded above rather than silently dropped.
 2. **PR B:** 1.5 + 1.6 — startup guard + smoke hardening; independently reviewable.
 3. **PR C:** Phase 2 analytical actions — these call `synthesizeAnswer` from inside their
    handlers, the way core does, which is what finally makes a tool-using prompt useful.
