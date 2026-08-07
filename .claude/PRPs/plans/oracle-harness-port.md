@@ -243,6 +243,16 @@ unreviewable change.
 3. **Redeploy to base-testnet and re-run the smoke — after PR B, before PR C.** Only the hardened
    smoke can judge whether an answer is *real* rather than merely well-shaped; running it before
    1.6 is what let an apology and a code block both pass. This is a gate, not a trailing step.
+
+   **But it cannot close the substance ACs, and a green run here must not be read as if it did.**
+   `handleChainSynthesis` is not exported from `plugin-senseai/src/index.ts`, so it is not in the
+   built bundle (`grep -c handleChainSynthesis dist/index.js` → 0) — by design, since Phase 2's
+   actions are what call it. The TEE at this point is running `selectAnswer` with no synthesis
+   wired, so this deploy proves **"no payload is ever stored"** and nothing more. AC 1
+   ("returns synthesised prose") and AC 2 ("the acknowledgement is never the final answer") stay
+   open until a **second deploy after PR C**.
+6. **Second base-testnet deploy + smoke, after PR C** — the one that actually closes AC 1, AC 2
+   and AC 6.
 4. **PR C:** Phase 2 analytical actions — these call `handleChainSynthesis` from inside their
    handlers, the way core does, which is what finally makes a tool-using prompt useful.
 5. **PR D:** 2.7 parity audit — findings, the at-the-call-site documentation, the guard test, plus
