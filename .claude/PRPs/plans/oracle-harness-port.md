@@ -47,10 +47,20 @@ There is nothing between the model and storage.
 `selectAnswer` chooses the last **substantive** emission, so a `CALL_MCP_TOOL` payload can no
 longer be stored. Mutation-checked against the exact production payload. 299 tests passing.
 
-### 1.2 Synthesis pass (`actionChainHelper`) — RE-SCOPED TO A FAITHFUL PORT
+### 1.2 Synthesis pass (`actionChainHelper`) — ✅ DONE as a faithful port (`8d6adfe`)
 
 First cut (`22554fa`) was green on 7 tests but was a reimplementation on both counts — wiring
-**and** module. Both corrections below.
+**and** module. Both corrections below. Shipped instead:
+
+- `utils/actionChainHelper.ts` — core's template, `generateSanitized` retry-on-leak,
+  `sanitizeOutboundText`, `parseKeyValueXml`, safe fallback, `isLastStep` gate.
+- `utils/withTimeout.ts`, `utils/retryNudges.ts` — byte-identical copies of core's, so the Phase 3
+  extraction has nothing to reconcile.
+- `answerSynthesis.js` + its 7 tests deleted; they were never wired to anything.
+- **CI gap closed:** the plugin had no tests and CI ran none, so its providers and utils shipped
+  uncovered and Phase 2's actions would have too. `Test (plugin-senseai)` now gates them.
+
+17 plugin tests (100% funcs / 98.96% lines on the helper) + 299 oracle mocha tests.
 
 **CORRECTION — the wiring I originally planned was solving a problem core does not have.**
 
