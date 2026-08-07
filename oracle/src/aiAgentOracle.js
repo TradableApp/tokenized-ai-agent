@@ -64,6 +64,7 @@ const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { selectAnswer } = require("./answerSelection");
+const { validateConfig } = require("./startupConfig");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
@@ -2434,6 +2435,12 @@ async function pollEvents(startBlock) {
  */
 async function start() {
   console.log("--- INITIALIZING ORACLE SERVICE ---");
+
+  // BEFORE ANYTHING ELSE. Every check in here is knowable without touching the network, and
+  // each one otherwise surfaces far downstream wearing someone else's name: a placeholder
+  // contract address as an ethers ENS error, a missing storage credential as an upload failure
+  // AFTER the user has been charged. Fail here, naming the variable, or not at all.
+  validateConfig();
 
   // Initialize the connection to the decentralised storage provider.
   await initializeStorage();

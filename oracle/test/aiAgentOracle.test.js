@@ -40,6 +40,12 @@ describe("aiAgentOracle", function () {
     const randomWallet = ethers.Wallet.createRandom();
     // Override the placeholder environment variable with a valid key.
     process.env.PRIVATE_KEY = randomWallet.privateKey;
+    // Likewise the contract address: .env.oracle.example ships "0xYourAIAgentAddressHere", and
+    // start()'s config guard now rejects exactly that — deliberately, since ethers would accept
+    // it and fail later as an unrelated-looking ENS error. Keeping the placeholder in the
+    // example file is what makes the guard useful to a new developer, so the fixture patches it
+    // here rather than the example being weakened to a valid-but-wrong address.
+    process.env.AI_AGENT_CONTRACT_ADDRESS = randomWallet.address;
     process.env.OLLAMA_URL = "http://fake-ollama";
 
     // Define mocked oracle components once for easy reference across tests.

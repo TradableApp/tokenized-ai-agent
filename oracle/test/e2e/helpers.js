@@ -134,9 +134,18 @@ function createStubs(sessionKey) {
   };
 }
 
+/** Captured so cleanup can restore rather than delete — see cleanupOracleTestEnv. */
+let originalAgentAddress;
+
 function setupOracleTestEnv(sessionKey) {
   const randomWallet = ethers.Wallet.createRandom();
   process.env.PRIVATE_KEY = randomWallet.privateKey;
+  // .env.oracle.example ships "0xYourAIAgentAddressHere" and start()'s config guard rejects it
+  // deliberately — ethers accepts a placeholder and fails much later as an unrelated-looking
+  // ENS error. The example keeps the placeholder so the guard is useful to a new developer; the
+  // fixture supplies a well-formed address instead.
+  originalAgentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
+  process.env.AI_AGENT_CONTRACT_ADDRESS = randomWallet.address;
   process.env.OLLAMA_URL = "http://fake-ollama";
 
   const mockedOracleComponents = createMockedOracleComponents();
@@ -157,6 +166,11 @@ function cleanupOracleTestEnv() {
   sinon.restore();
   delete process.env.AI_PROVIDER;
   delete process.env.PRIVATE_KEY;
+  // RESTORED, not deleted. contractUtility.initializeOracle reads this at MODULE LOAD, so
+  // clearing it starves any later suite that requires aiAgentOracle fresh (proxyquire does,
+  // per file) with "Missing required env variable" — a failure in a completely unrelated test.
+  if (originalAgentAddress === undefined) delete process.env.AI_AGENT_CONTRACT_ADDRESS;
+  else process.env.AI_AGENT_CONTRACT_ADDRESS = originalAgentAddress;
   delete process.env.OLLAMA_URL;
   delete process.env.CHAIN_GPT_API_KEY;
   delete process.env.EVENT_BATCH_SIZE;

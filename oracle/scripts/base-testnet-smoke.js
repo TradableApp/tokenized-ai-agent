@@ -33,6 +33,7 @@
 const crypto = require("node:crypto");
 const { ethers } = require("ethers");
 const { eciesEncrypt } = require("../src/ecies");
+const { assessAnswer } = require("../src/answerQuality");
 
 // ── Config ────────────────────────────────────────────────────────────────
 const RPC_URL = process.env.SMOKE_RPC_URL || "https://sepolia.base.org";
@@ -45,6 +46,18 @@ const AGENT_ADDRESS =
 const TOKEN_ADDRESS =
   process.env.SMOKE_TOKEN_ADDRESS || "0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80";
 const PROMPT = process.env.SMOKE_PROMPT || "What is the latest news on Bitcoin?";
+
+/**
+ * The asset the answer must actually be about — the check that catches a fluent, well-sourced
+ * answer on the wrong subject, which structure alone never can.
+ *
+ * Defaults to Bitcoin ONLY when the default prompt is in use. If someone overrides SMOKE_PROMPT
+ * and we kept asserting "Bitcoin", the smoke would fail on a correct answer to the question that
+ * was actually asked — and a smoke that cries wolf is one that gets muted. Override SMOKE_ASSET
+ * alongside SMOKE_PROMPT to keep the check; leave it unset to skip it.
+ */
+const SMOKE_ASSET =
+  process.env.SMOKE_ASSET || (process.env.SMOKE_PROMPT ? undefined : "Bitcoin");
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 300_000);
 const POLL_MS = Number(process.env.SMOKE_POLL_MS || 6_000);
 const FETCH_TIMEOUT_MS = Number(process.env.SMOKE_FETCH_TIMEOUT_MS || 30_000);
@@ -306,14 +319,14 @@ async function main() {
   // Split oracle-health from cache-warmth so a scheduled canary can alert
   // differently: exit 1 = oracle broken (page), exit 2 = oracle healthy but the
   // Brain warm cache is cold (seed it — not an oracle failure), exit 0 = full pass.
-  const fatal = [];
-  const brain = [];
-  if (answer.role !== "assistant") fatal.push(`role is '${answer.role}', expected 'assistant'`);
-  if (!answer.content || answer.content.length < 20) fatal.push("content missing/too short");
-  if (!reasoning.length)
-    brain.push("reasoning[] is EMPTY — Brain context not injected (or warm cache is cold)");
-  if (!sources.length)
-    brain.push("sources[] is EMPTY — no news citations from the Brain warm cache");
+  //
+  // THE JUDGEMENT LIVES IN answerQuality.js, not here. This block used to assert structure only
+  // — role, length, reasoning/sources non-empty — and every one of those was TRUE for both
+  // recorded production failures, because the Brain populates reasoning and sources regardless
+  // of what the model actually said. The smoke reported PASS on a fenced TypeScript snippet and
+  // on an apology. A module can be tested against those fixtures; this script, which needs a
+  // funded wallet and a live TEE, cannot.
+  const { fatal, brain } = assessAnswer(answer, { asset: SMOKE_ASSET });
 
   if (fatal.length) {
     log(`\n❌ SMOKE FAIL (oracle broken):\n - ${fatal.join("\n - ")}`);
