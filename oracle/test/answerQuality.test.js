@@ -103,6 +103,22 @@ describe("answer quality assessment", () => {
     expect(result.fatal, JSON.stringify(result.fatal)).to.deep.equal([]);
   });
 
+  it("FAILS an apology that merely happens to contain a digit", () => {
+    // The "carries a figure" rule has to apply to what SURVIVES the apology, not to the raw
+    // text. Checked against the original, a stray number anywhere exempted the whole response —
+    // so this passed the smoke on the strength of the "3".
+    const result = assessAnswer(
+      {
+        ...ENRICHED,
+        content:
+          "I'm sorry, my 3rd attempt failed — I am unable to retrieve that information at the " +
+          "moment. Please try again later.",
+      },
+      ASKED,
+    );
+    expect(result.fatal.join(" ")).to.match(/apolog|non-answer|no substance/i);
+  });
+
   it("FAILS when the answer never mentions the asset asked about", () => {
     // A fluent answer about the wrong subject is the failure structure alone can never catch.
     const result = assessAnswer(

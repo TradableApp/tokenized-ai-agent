@@ -46,6 +46,14 @@ const PLACEHOLDER = /^0x(your|example|replace|todo)/i;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 /**
+ * A 32-byte hex private key. Checked for the same reason as the address: a mnemonic, a UUID or a
+ * truncated key otherwise reaches `new ethers.Wallet(...)` and fails there — and that happens at
+ * MODULE LOAD in aiAgentOracle.js, so without validating here the caller sees an ethers stack
+ * trace instead of a named variable. See the note on where this guard must be invoked.
+ */
+const PRIVATE_KEY_HEX = /^0x[0-9a-fA-F]{64}$/;
+
+/**
  * Which credentials a given STORAGE_PROVIDER actually needs.
  *
  * DERIVED FROM `storage/storage.js::initializeStorage`, not from a plausible-sounding taxonomy.
@@ -87,6 +95,16 @@ function validateConfig(env = process.env) {
 
   for (const name of ALWAYS_REQUIRED) {
     if (isBlank(env[name])) problems.push(`${name} is missing or empty`);
+  }
+
+  // Shape-check the key for the same reason as the address, and with the same "only if present"
+  // rule so one mistake never produces two problems.
+  const privateKey = env.PRIVATE_KEY;
+  if (!isBlank(privateKey) && !PRIVATE_KEY_HEX.test(privateKey.trim())) {
+    problems.push(
+      "PRIVATE_KEY is not a 32-byte hex key (0x + 64 hex characters) — ethers rejects it at " +
+        "Wallet construction, which happens at module load and so cannot name the variable",
+    );
   }
 
   // Only shape-check the address once we know something is there — otherwise a missing value

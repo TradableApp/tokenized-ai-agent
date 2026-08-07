@@ -74,6 +74,20 @@ describe("startup config validation", () => {
     }
   });
 
+  it("rejects a malformed private key", () => {
+    // Same class as the address check, and the reason the guard is invoked from index.js BEFORE
+    // aiAgentOracle is required: that module constructs an ethers Wallet at module scope, so a
+    // bad key throws during `require` — earlier than any guard inside start() could name it.
+    for (const bad of ["0xabc", "not-a-key", "0x" + "z".repeat(64)]) {
+      try {
+        validateConfig(baseEnv({ PRIVATE_KEY: bad }));
+        expect.fail(`expected a ConfigError for ${bad}`);
+      } catch (err) {
+        expect(err.message).to.include("PRIVATE_KEY");
+      }
+    }
+  });
+
   it("rejects a malformed contract address", () => {
     try {
       validateConfig(baseEnv({ AI_AGENT_CONTRACT_ADDRESS: "0x1234" }));

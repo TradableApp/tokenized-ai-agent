@@ -29,6 +29,16 @@ const MIN_ANSWER_CHARS = 20;
 const APOLOGY_OPENERS =
   /^\s*(?:i(?:'m| am)\s+sorry|sorry|i\s+apolog|unfortunately|i(?:'m| am)\s+unable|i\s+can(?:not|'t)\b)/i;
 
+/**
+ * A market figure — a price, a percentage, or an abbreviated level. Deliberately NOT "any digit":
+ * "my 3rd attempt" is a digit and says nothing, while "$61k" or "12%" is the thing that makes a
+ * terse hedged sentence an actual answer.
+ *
+ * Matched against the apology/filler-stripped text WITH punctuation intact, so a figure buried in
+ * boilerplate does not count but "$61k" is still recognisable as one.
+ */
+const MARKET_FIGURE = /[$€£]\s?[\d,.]+|\b\d+(?:[.,]\d+)?\s?%|\b\d+(?:[.,]\d+)?\s?[kmb]\b/i;
+
 /** Hedges that carry no analysis. Used only to measure how much of a refusal is filler. */
 const FILLER =
   /\b(?:at the moment|right now|please try again(?: later)?|i (?:do not|don't) have access|as an ai(?: language model)?|currently unavailable|try again later)\b/gi;
@@ -48,10 +58,11 @@ const FILLER =
 function isNonAnswer(text) {
   if (!APOLOGY_OPENERS.test(text)) return false;
 
-  const remainder = text
-    .replace(APOLOGY_OPENERS, " ")
-    .replace(FILLER, " ")
-    .replace(/[^\p{L}\p{N}]+/gu, "");
+  // Two forms, for two different questions. `stripped` keeps punctuation, because that is what
+  // makes "$61k" and "12%" recognisable as figures at all — the alphanumeric-only form runs them
+  // into the surrounding words and no figure pattern can see them. `remainder` is for length.
+  const stripped = text.replace(APOLOGY_OPENERS, " ").replace(FILLER, " ");
+  const remainder = stripped.replace(/[^\p{L}\p{N}]+/gu, "");
 
   // A refusal that still carries this much prose is an answer that happens to decline.
   //
@@ -61,12 +72,20 @@ function isNonAnswer(text) {
   // smoke muted. The recorded apology strips to 37, which is why the number cannot simply be
   // lowered to clear the example: the two are only three characters apart on length alone.
   //
-  // Length is therefore not the discriminator. What actually separates them is that the real
-  // answer carries CONTENT — a figure, a level, an asset — and the apology carries none. So the
-  // rule is: a refusal is a non-answer only when nothing concrete survives it.
-  if (/\d/.test(text)) return false;
+  // Length is therefore not the discriminator. What separates them is that the real answer
+  // carries MARKET CONTENT — a price, a percentage, a level — and the refusal carries none.
+  //
+  // "ANY DIGIT" IS TOO WEAK, in both directions. Tested against the raw text, a number anywhere
+  // exempted the whole response. Tested against the remainder it is still too weak: "I'm sorry,
+  // my 3rd attempt failed — I am unable to retrieve that information" keeps its "3" through
+  // stripping, so a plainly content-free refusal reads as substantive. A market figure is the
+  // signal that actually means "this answered something".
+  if (MARKET_FIGURE.test(stripped)) return false;
 
-  return remainder.length < 40;
+  // With figures handled above, this only has to separate a bare refusal from an answer that
+  // declines in prose. The recorded apology strips to 37 and the "3rd attempt" refusal to ~53,
+  // while a genuine "the data isn't there, but here is what is" runs well past 60.
+  return remainder.length < 60;
 }
 
 /**
