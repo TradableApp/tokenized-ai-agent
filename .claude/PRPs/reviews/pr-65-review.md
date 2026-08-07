@@ -2,9 +2,23 @@
 
 **Reviewed**: 2026-08-07 · **Author**: GarrickBrown · **Branch**: `feat/oracle-answer-synthesis_CU-86d3z0r81` → `main`
 **Decision**: APPROVE (fixes applied) · **Task**: [CU-86d3z0r81](https://app.clickup.com/t/86d3z0r81)
-**Bot round**: run `31144285017`, "Claude Code Review", conclusion `success` — 4 inline comments + 1 summary
+**Bot rounds**: 6 completed (`31144285017`, `31145323134`, `31146031084`, `31146663456`, `31147278160`, `31147891087`), all `success` — 19 findings total
 
-## Bot-comment triage
+## Convergence
+
+| round | findings | production changes | note |
+|---|---|---|---|
+| 1 | 4 | 3 | latent fence conflict vs `chainSynthesisTemplate` (real, verified) |
+| 2 | 3 | 3 | budget re-anchor, `/g` regex state, misleading log |
+| 3 | 3 | 3 | unguarded `.substring()` in `onResponse`, widened pattern, incident comment |
+| 4 | 3 | 2 | uppercase-object gap; `console.error` detector — 1 declined (parity) |
+| 5 | 3 | 1 | raw-JSON payloads — 2 declined/observation |
+| 6 | 3 | **0** | 1 already mitigated, 1 premise false (test added), 1 declined (parity) |
+
+Called converged at round 6: zero production changes, and the remaining findings were the same
+class already declined twice (core-parity cosmetics). Severity and novelty fell monotonically.
+
+## Bot-comment triage (round 1)
 
 | # | Bot | Verdict | Reply summary | Propagation |
 |---|-----|---------|---------------|-------------|
