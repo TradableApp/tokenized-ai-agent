@@ -113,20 +113,13 @@ rejection; add "answer references the asset asked about".
   Brain; Service wrapper and scheduling per body.
 - `analyzeFinancialImage` — vision prompt + parsing to the Brain; action unhooked.
 
-## Phase 3 — Brain split + shared plugin (separate task)
-
-Move the framework-agnostic halves into `sense-ai-brain`, then extract the shared
-`plugin-senseai`. Also carries [CU-86d3yg0z9](https://app.clickup.com/t/86d3yg0z9): headings and
-provider `position` into the Brain, core's provider ordering fix, the short-TTL read memo, and the
-`MARKET_INTELLIGENCE_INJECTED` overwrite hazard.
-
----
-
-## Phase 4 — parity audit (final step, before calling the port done)
+### 2.7 Parity audit — the FINAL step of Phase 2, and the gate on Phase 3
 
 Phase 3 extracts a **shared** `plugin-senseai` consumed by both bodies, so every divergence left
-behind becomes either a merge conflict or a permanent fork. Parity is therefore not a nicety —
-it is the precondition for the packaging step that follows.
+behind at that point becomes either a merge conflict or a permanent fork — and an unreconciled
+divergence extracted into the shared package is worse than one left in a body, because it becomes
+the shared contract. Parity is therefore not a follow-up to the extraction; it is its
+**precondition**, and it belongs here, before Phase 3 begins.
 
 Go back over **everything** produced by Phases 1–2 and compare it, file by file, against how
 `sense-ai-core` does the same thing. For each difference, three questions in order:
@@ -155,12 +148,27 @@ with the reason — not in a plan document nobody reads at the call site.
 | provider `position` set in the oracle, unset in core | core is wrong (news renders before macro) | fix core, do not fork the oracle |
 | oracle omits rate limiting | paid per prompt via escrow | forced; owner-confirmed |
 
-### Acceptance for Phase 4
+### Acceptance for 2.7 (and the entry gate for Phase 3)
 - [ ] Every Phase 1–2 file compared against its core counterpart, with the comparison recorded
 - [ ] Each surviving divergence traces to boot model, concurrency, or the pre-paid path — or is removed
 - [ ] Each surviving divergence is documented at the call site, not only in this plan
 - [ ] A guard test asserts the two bodies compose byte-identical LLM-facing context, enumerating every deliberate exception
 - [ ] Anything that should change in **core** rather than the oracle is raised as its own PR (e.g. provider ordering) rather than silently forked
+- [ ] **Phase 3 does not start until the above are all true** — extraction from two reconciled copies, never from two drifting ones
+
+---
+
+## Phase 3 — Brain split + shared plugin (separate task, gated on 2.7)
+
+Move the framework-agnostic halves into `sense-ai-brain`, then extract the shared
+`plugin-senseai`. Also carries [CU-86d3yg0z9](https://app.clickup.com/t/86d3yg0z9): headings and
+provider `position` into the Brain, core's provider ordering fix, the short-TTL read memo, and the
+`MARKET_INTELLIGENCE_INJECTED` overwrite hazard.
+
+Entry condition: the 2.7 acceptance list above is complete. Every divergence 2.7 confirmed as
+**forced** must be carried into the extraction deliberately — as a parameter, an injected
+dependency, or a peer-provided hook — rather than discovered mid-extraction and resolved by
+whichever body happens to be ported first.
 
 ## Sequencing and PR shape
 
@@ -169,8 +177,9 @@ with the reason — not in a plan document nobody reads at the call site.
 2. **PR B:** 1.5 + 1.6 — startup guard + smoke hardening; independently reviewable.
 3. **PR C:** Phase 2 analytical actions — these call `synthesizeAnswer` from inside their
    handlers, the way core does, which is what finally makes a tool-using prompt useful.
-4. **PR D:** Phase 4 parity audit — findings, plus any core-side PRs it surfaces.
-4. Redeploy to base-testnet and re-run the smoke **after PR B**, since only then can the smoke
+4. **PR D:** 2.7 parity audit — findings, the at-the-call-site documentation, the guard test, plus
+   any core-side PRs it surfaces. Merging this is what unblocks Phase 3.
+5. Redeploy to base-testnet and re-run the smoke **after PR B**, since only then can the smoke
    judge whether the answer is real.
 
 ## Risks
