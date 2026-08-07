@@ -80,7 +80,8 @@ Division of labour: **me** (no wallet) = trust-root refresh, image build, `rofl:
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
 - [ ] **A.5 Sync secrets (me; gcloud for any SM keys):** `bun run rofl:set:base-testnet`.
 - [ ] **A.6 Build the ORC (me):** `bun run rofl:build:base-testnet`. Re-verify the trust root survived (re-apply A.1 values if the build rewrote it).
-- [ ] **A.7 Commit `rofl.yaml` only (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6` (NOT `compose.yaml`, NOT the `.orc`).
+- [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6`. NOT the `.orc` (gitignored build artifact).
+  `compose.yaml` is tracked ON PURPOSE: `rofl:build` copies the per-deployment variant over it, so the committed copy is the last-deployed reference and doubles as the worked example. Its per-env siblings (`compose.base-*.yaml`, `compose.{testnet,mainnet}.yaml`) stay gitignored.
 - [ ] **A.8 Push on-chain (you; passphrase):** `! bun run rofl:update:base-testnet`.
 - [ ] **A.9 Deploy (you; passphrase):** `! bun run rofl:deploy:base-testnet`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
 
@@ -160,7 +161,7 @@ stays open: prove it against the live oracle first.
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.
 - Cert name `rofl-oracle-base-testnet` — never reuse the social `rofl-<env>` on the shared instance.
-- Commit only `rofl.yaml`; `.orc` is gitignored; don't commit `compose.yaml`.
+- Commit `rofl.yaml` + `compose.yaml`; the `.orc` is gitignored. `compose.yaml` is the last-deployed reference (see A.7) — the per-env compose files are the ones that stay out of git.
 - ROFL deploy = `build → update → deploy`, never `restart`/`release`. **Never `oasis rofl machine release`.**
 - The oracle wallet (`0x0DEC…9a12`) needs Base Sepolia ETH for **every answer** — if it runs dry, prompts submit but never get answered (smoke times out → exit 1).
 - Testnet TEE lives ~1 h (`playground_short`) — run the smoke promptly after boot.
