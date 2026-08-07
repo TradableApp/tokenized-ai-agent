@@ -46,11 +46,17 @@ const FENCED_BLOCK_SOURCE = `${FENCED}[\\s\\S]*?${FENCED}`;
  * called a payload when almost nothing survives stripping the code out, so matching a call
  * mentioned inside a real answer costs nothing.
  *
+ * THE LEADING CLASS IS `[a-zA-Z_$]`, NOT `[a-z_$]`. Lower-case-only missed an unfenced
+ * `SDK.fetchNews({…})` entirely — `\b` cannot re-anchor inside `SDK`, and `fetchNews(` has no
+ * dot before its parenthesis — so a capitalised client object was invisible. Confirmed against
+ * the module before widening. `SDK.news.get(…)` matched only by luck, on the `news.get(…)`
+ * sub-match. A single dot is still required, so a bare `CONSTANT` can never match.
+ *
  * The argument body is lazy (`[\s\S]*?`). Greedy would run to the last `)` in the whole text,
  * so one call early in an answer would swallow every sentence after it — and the prose test
  * would then see nothing left and condemn the answer.
  */
-const BARE_INVOCATION_SOURCE = String.raw`\b(?:await\s+)?[a-z_$][\w$]*\.[\w$.]+\([\s\S]*?\)`;
+const BARE_INVOCATION_SOURCE = String.raw`\b(?:await\s+)?[a-zA-Z_$][\w$]*\.[\w$.]+\([\s\S]*?\)`;
 
 const HAS_FENCE = new RegExp(FENCED);
 const HAS_INVOCATION = new RegExp(BARE_INVOCATION_SOURCE);
@@ -129,6 +135,15 @@ function selectAnswer(emitted) {
   // synthesised prose of their own, so the answer no longer depends on a third-party
   // plugin's courtesy message. Until then, treat a hit here as an incident, not a
   // degradation.
+  //
+  // Logged at ERROR because that is the only level that survives to where anyone will see it:
+  // `oasis rofl machine logs` surfaces warn and error, so an INFO line inside the TEE is
+  // invisible in practice. Until PR B hardens the smoke, this log is the ONLY detector.
+  console.error(
+    "[answerSelection] INCIDENT: every emission looked like a tool payload, so one is being " +
+      "stored as the answer. The acknowledgement emission is missing — check " +
+      "@elizaos/plugin-mcp sendInitialResponse.",
+  );
   return candidates[candidates.length - 1];
 }
 

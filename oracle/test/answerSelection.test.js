@@ -98,6 +98,15 @@ describe("answer selection", () => {
       expect(looksLikeToolPayload("client.news.get('bitcoin')")).to.equal(true);
     });
 
+    it("recognises a call on a capitalised client object", () => {
+      // `\b` cannot re-anchor inside `SDK`, and `fetchNews(` has no dot before its parenthesis,
+      // so a lower-case-only leading class made this shape invisible. `SDK.news.get(…)` matched
+      // only by luck, via the `news.get(…)` sub-match — which is why the gap survived the first
+      // widening.
+      expect(looksLikeToolPayload("SDK.fetchNews({ coin_id: 'bitcoin' })")).to.equal(true);
+      expect(looksLikeToolPayload("await SDK.fetchNews({ coin_id: 'bitcoin' })")).to.equal(true);
+    });
+
     it("does not flag prose that happens to contain parentheses", () => {
       // The widened pattern still requires the parenthesis to follow a dotted identifier
       // immediately, and the prose floor backs it up.
