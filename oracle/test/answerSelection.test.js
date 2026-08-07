@@ -74,6 +74,15 @@ describe("answer selection", () => {
       expect(looksLikeToolPayload(answer)).to.equal(false);
     });
 
+    it("does not flag a short but real answer that names a method call", () => {
+      // The prose floor's calibration, pinned from the side that matters. Stripping the call
+      // leaves 20 alphanumeric characters here — a terse answer, but an answer. Condemning it
+      // stores the acknowledgement instead, which is silent and reads as the model regressing:
+      // the precise failure MIN_PROSE_CHARS' asymmetry exists to avoid. Phase 2 makes this more
+      // likely, since handlers synthesise from shorter chains than chainSynthesisTemplate does.
+      expect(looksLikeToolPayload("Call client.news.get() for the latest feed.")).to.equal(false);
+    });
+
     it("still flags a payload padded with a token amount of prose", () => {
       // "Here you go:" is not an answer. Stripping the code has to leave something substantive.
       const padded = "Here you go:\n```typescript\nawait client.news.get({ coin_id: 'btc' });\n```";

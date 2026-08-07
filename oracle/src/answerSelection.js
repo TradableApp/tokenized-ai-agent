@@ -70,8 +70,15 @@ const ALL_INVOCATIONS = new RegExp(BARE_INVOCATION_SOURCE, "g");
  * is silent and reads as the model regressing; missing a payload stores something obviously
  * wrong that the smoke test can catch. So the bar is deliberately low — and it can afford
  * to be, because the payload this exists for has *zero* prose around it.
+ *
+ * CALIBRATION. 24 was too high: "Call client.news.get() for the latest feed." leaves 20
+ * alphanumeric characters once the call is stripped, so a terse but perfectly real answer was
+ * being condemned. That is the exact failure this constant's asymmetry is supposed to avoid, and
+ * it gets more likely in Phase 2, where handlers synthesise from shorter action chains than the
+ * prose-heavy `chainSynthesisTemplate` produces today. 16 keeps clear water on both sides:
+ * padding like "Here you go:" is 9, and the recorded payload is 0. Both boundaries are tested.
  */
-const MIN_PROSE_CHARS = 24;
+const MIN_PROSE_CHARS = 16;
 
 /**
  * True when the whole text is a JSON object or array — i.e. a tool's raw return value.
