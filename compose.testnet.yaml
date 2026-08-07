@@ -1,6 +1,6 @@
 services:
   ollama:
-    image: "docker.io/ollama/ollama"
+    image: "docker.io/ollama/ollama:0.9.6"
     ports:
       - "11434:11434"
     volumes:
