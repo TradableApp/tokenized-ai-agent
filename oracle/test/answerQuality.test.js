@@ -189,6 +189,31 @@ describe("answer quality assessment", () => {
     expect(tooShort.fatal.join(" ")).to.match(/short|missing/i);
   });
 
+  it("KNOWN LIMIT: a verbose refusal padded with prose passes", () => {
+    // Documented on purpose, as a limit rather than a bug. Once an apology carries enough words
+    // it clears the length floor without ever saying anything, and the smoke lets it through.
+    //
+    // Tightening this is the wrong trade at this layer: separating "verbose refusal" from
+    // "thorough answer that declines on one point" needs to judge MEANING, and every cheap proxy
+    // for it (more filler phrases, a higher floor) fails real answers too. A false smoke failure
+    // is the expensive error here — it gets the smoke muted, and then nothing is caught at all.
+    //
+    // The real fix is upstream: Phase 2's analytical actions answer from action results, so a
+    // content-free refusal stops being a plausible output rather than being filtered after the
+    // fact. This test exists so the gap is visible and this reasoning is not rediscovered.
+    const verbose = assessAnswer(
+      {
+        ...ENRICHED,
+        content:
+          "I'm sorry, but the data isn't available. The sources typically covered include " +
+          "various technical indicators, analyst forecasts, regulatory developments, and " +
+          "market sentiment from trading platforms worldwide.",
+      },
+      {},
+    );
+    expect(verbose.fatal, "known limit — see comment").to.deep.equal([]);
+  });
+
   it("does not require an asset when the caller does not name one", () => {
     // Not every smoke prompt is asset-specific; the check must be opt-in rather than a trap.
     const result = assessAnswer(

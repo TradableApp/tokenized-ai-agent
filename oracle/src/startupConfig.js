@@ -20,6 +20,8 @@
  * build, an on-chain update and a restart.
  */
 
+const { SUPPORTED_NETWORKS } = require("./contractUtility");
+
 /** Thrown when the process must not continue. Typed so callers can distinguish it from bugs. */
 class ConfigError extends Error {
   constructor(problems) {
@@ -113,6 +115,18 @@ function validateConfig(env = process.env) {
     if (isBlank(env[name])) problems.push(`${name} is missing or empty`);
   }
 
+  // A typo'd network name is the same class of bug as the placeholder address: accepted here,
+  // rejected somewhere downstream. contractUtility does already throw a readable error for it,
+  // but one at a time and at module load — so it costs a restart per typo instead of joining the
+  // single report. The list is IMPORTED rather than restated so the two cannot drift.
+  const network = env.NETWORK_NAME;
+  if (!isBlank(network) && !SUPPORTED_NETWORKS.includes(network.trim())) {
+    problems.push(
+      `NETWORK_NAME "${network.trim()}" is not a supported network — expected one of: ` +
+        SUPPORTED_NETWORKS.join(", "),
+    );
+  }
+
   // Shape-check the key for the same reason as the address, and with the same "only if present"
   // rule so one mistake never produces two problems.
   //
@@ -123,12 +137,23 @@ function validateConfig(env = process.env) {
   // and hand ethers a value it rejects, producing exactly the opaque error this guard exists to
   // replace. The guard must validate the bytes the consumer actually receives.
   const privateKey = env.PRIVATE_KEY;
-  if (!isBlank(privateKey) && !PRIVATE_KEY_HEX.test(privateKey)) {
-    problems.push(
-      "PRIVATE_KEY is not a 32-byte hex key (0x + 64 hex characters, no surrounding " +
-        "whitespace) — ethers rejects it at Wallet construction, which happens at module load " +
-        "and so cannot name the variable",
-    );
+  if (!isBlank(privateKey)) {
+    // Placeholder FIRST, same as the address. Both are "you forgot to fill this in", and telling
+    // an operator their copied example value "is not a 32-byte hex key" describes the symptom
+    // while hiding the cause — they read it as a formatting problem and go looking for the wrong
+    // thing.
+    if (PLAIN_PLACEHOLDER.test(privateKey.trim())) {
+      problems.push(
+        `PRIVATE_KEY is still the example-file placeholder "${privateKey.trim()}" — replace it ` +
+          `with a real 32-byte hex private key`,
+      );
+    } else if (!PRIVATE_KEY_HEX.test(privateKey)) {
+      problems.push(
+        "PRIVATE_KEY is not a 32-byte hex key (0x + 64 hex characters, no surrounding " +
+          "whitespace) — ethers rejects it at Wallet construction, which happens at module load " +
+          "and so cannot name the variable",
+      );
+    }
   }
 
   // Only shape-check the address once we know something is there — otherwise a missing value

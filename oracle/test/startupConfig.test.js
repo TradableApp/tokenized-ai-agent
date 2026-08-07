@@ -22,7 +22,11 @@ const { validateConfig, ConfigError } = require("../src/startupConfig");
 /** Minimum env for a valid Base testnet oracle with mock storage. */
 function baseEnv(overrides = {}) {
   return {
-    NETWORK_NAME: "base-testnet",
+    // "baseSepolia", not "base-testnet" — the latter is the ENV FILE naming convention
+    // (.env.oracle.base-testnet), while NETWORK_NAME carries the RPC_URL_MAP key. The deployed
+    // compose files use NETWORK_NAME=baseSepolia and NETWORK_NAME=base. This fixture had the
+    // wrong one until the allowlist check caught it.
+    NETWORK_NAME: "baseSepolia",
     PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
     AI_AGENT_CONTRACT_ADDRESS: "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
     USE_MOCK_STORAGE: "true",
@@ -85,6 +89,42 @@ describe("startup config validation", () => {
       } catch (err) {
         expect(err.message).to.include("PRIVATE_KEY");
       }
+    }
+  });
+
+  it("says PLACEHOLDER, not 'bad format', for a copied example key", () => {
+    // The actual value in .env.oracle.example. "is not a 32-byte hex key" describes the symptom
+    // and hides the cause — an operator reads it as a formatting problem and goes looking for
+    // the wrong thing. Same treatment the address placeholder already got.
+    try {
+      validateConfig(baseEnv({ PRIVATE_KEY: "your_funding_wallet_private_key_here" }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.include("PRIVATE_KEY");
+      expect(err.message).to.match(/placeholder/i);
+      expect(err.message).to.not.match(/not a 32-byte hex/i);
+    }
+  });
+
+  it("rejects an unsupported NETWORK_NAME rather than failing downstream", () => {
+    // Same class as the placeholder address: accepted here, rejected somewhere else.
+    // contractUtility does throw a readable error for it, but one at a time and at module load,
+    // so it costs a restart per typo instead of joining the single report.
+    try {
+      validateConfig(baseEnv({ NETWORK_NAME: "base-mainnett" }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.include("NETWORK_NAME");
+      expect(err.message).to.include("baseSepolia");
+    }
+  });
+
+  it("accepts every network contractUtility can actually run against", () => {
+    // Imported, not restated — if a network is added to RPC_URL_MAP this follows automatically
+    // instead of the guard rejecting a network the oracle supports.
+    const { SUPPORTED_NETWORKS } = require("../src/contractUtility");
+    for (const name of SUPPORTED_NETWORKS) {
+      expect(() => validateConfig(baseEnv({ NETWORK_NAME: name })), name).to.not.throw();
     }
   });
 
