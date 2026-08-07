@@ -923,8 +923,14 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
         {
           // This triggers every time the agent generates a message (even intermediate ones)
           onResponse: async (content) => {
+            // Optional-chained deliberately. An emission with no text is normal (an action can
+            // report a thought and nothing else), and an unguarded .substring() would throw
+            // TypeError inside this async callback — before the push below, and before
+            // onComplete. On a prompt already paid for on-chain that either drops the emission
+            // or strands the promise entirely, depending on how ElizaOS handles a throwing
+            // onResponse. The guard on the push made this inconsistency visible.
             console.log(
-              `[ElizaOS] Intermediate response received: "${content.text.substring(0, 30)}..."`,
+              `[ElizaOS] Intermediate response received: "${content.text?.substring(0, 30) ?? "(no text)"}..."`,
             );
 
             // If the agent provides 'thought' metadata, add it to reasoning

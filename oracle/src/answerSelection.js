@@ -35,15 +35,22 @@ const FENCED = String.raw`\x60\x60\x60`;
 const FENCED_BLOCK_SOURCE = `${FENCED}[\\s\\S]*?${FENCED}`;
 
 /**
- * A bare tool invocation — `await client.foo.bar({…})` / `client.foo({…})`. Deliberately
- * narrow: it wants a client-ish call WITH an argument object, which is what the MCP
- * payloads look like, rather than any sentence containing a dot or a bracket.
+ * A bare tool invocation — `await client.foo.bar(…)`. Requires the parenthesis to follow the
+ * dotted identifier immediately, so ordinary prose ("activity (per Glassnode) rose") cannot
+ * match; but the argument list itself is unconstrained.
  *
- * The argument body is lazy (`[\s\S]*?`). Greedy would run from the first `{` to the last
- * `}` in the whole text, so one call early in an answer would swallow every sentence
- * between it and the last brace — and the prose test below would then see nothing left.
+ * IT USED TO REQUIRE AN OBJECT LITERAL (`({…})`), which matched the live payload exactly and
+ * nothing else. `client.news.list()` and `client.news.get("bitcoin")` were invisible, so a
+ * differently-shaped payload from a future MCP tool would have passed straight through as
+ * prose. Widening is safe here precisely BECAUSE of the prose floor below: a text is only
+ * called a payload when almost nothing survives stripping the code out, so matching a call
+ * mentioned inside a real answer costs nothing.
+ *
+ * The argument body is lazy (`[\s\S]*?`). Greedy would run to the last `)` in the whole text,
+ * so one call early in an answer would swallow every sentence after it — and the prose test
+ * would then see nothing left and condemn the answer.
  */
-const BARE_INVOCATION_SOURCE = String.raw`\b(?:await\s+)?[a-z_$][\w$]*\.[\w$.]+\(\s*\{[\s\S]*?\}\s*\)`;
+const BARE_INVOCATION_SOURCE = String.raw`\b(?:await\s+)?[a-z_$][\w$]*\.[\w$.]+\([\s\S]*?\)`;
 
 const HAS_FENCE = new RegExp(FENCED);
 const HAS_INVOCATION = new RegExp(BARE_INVOCATION_SOURCE);
@@ -110,6 +117,18 @@ function selectAnswer(emitted) {
   // Everything emitted looked like a payload. Return it rather than nothing: the user
   // has already paid, and an empty answer fails the contract outright. A bad answer is
   // visible and can be flagged by the smoke test; silence cannot.
+  //
+  // THIS PATH IS THE ORIGINAL DEFECT, and reaching it means the fix has been bypassed.
+  // Today it is unreachable in practice only because the agent emits an acknowledgement
+  // BEFORE the tool payload — that acknowledgement is prose, so it wins and the payload
+  // never does. The acknowledgement is therefore load-bearing: if `@elizaos/plugin-mcp`
+  // ever stops emitting one (it is that plugin's `sendInitialResponse`, not ours), every
+  // emission becomes a payload and the incident returns silently.
+  //
+  // Phase 2 closes this properly — `handleChainSynthesis` makes the ported actions emit
+  // synthesised prose of their own, so the answer no longer depends on a third-party
+  // plugin's courtesy message. Until then, treat a hit here as an incident, not a
+  // degradation.
   return candidates[candidates.length - 1];
 }
 

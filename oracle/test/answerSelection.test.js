@@ -90,6 +90,23 @@ describe("answer selection", () => {
       expect(looksLikeToolPayload(answer)).to.equal(false);
     });
 
+    it("recognises payloads whose calls are not shaped like the live incident", () => {
+      // The pattern originally demanded an object-literal argument, which matched the recorded
+      // payload exactly and nothing else — a no-arg or positional-arg call from some future MCP
+      // tool would have sailed through as prose. The live payload is one shape, not the shape.
+      expect(looksLikeToolPayload("await client.news.list()")).to.equal(true);
+      expect(looksLikeToolPayload("client.news.get('bitcoin')")).to.equal(true);
+    });
+
+    it("does not flag prose that happens to contain parentheses", () => {
+      // The widened pattern still requires the parenthesis to follow a dotted identifier
+      // immediately, and the prose floor backs it up.
+      const prose =
+        "Bitcoin's on-chain activity (per Glassnode) rose 12% this week, and exchange " +
+        "balances fell to a multi-year low.";
+      expect(looksLikeToolPayload(prose)).to.equal(false);
+    });
+
     it("gives the same verdict when called repeatedly on the same text", () => {
       // Regression guard on regex state. `/g` regexes are stateful: `.test()` advances lastIndex
       // and the next call resumes from there, so the SECOND call on identical input can return
