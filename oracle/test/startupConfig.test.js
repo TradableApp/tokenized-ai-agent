@@ -88,6 +88,19 @@ describe("startup config validation", () => {
     }
   });
 
+  it("rejects a key or address padded with whitespace", () => {
+    // contractUtility passes process.env STRAIGHT into new ethers.Wallet(...) and
+    // new ethers.Contract(...) with no trim of its own, so validating a trimmed COPY would
+    // approve bytes the consumer then rejects — reproducing the opaque ethers error this guard
+    // exists to replace. A leading space from a compose-file quoting mistake is the usual shape.
+    for (const env of [
+      baseEnv({ PRIVATE_KEY: ` 0x${"1".repeat(64)}` }),
+      baseEnv({ AI_AGENT_CONTRACT_ADDRESS: " 0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D" }),
+    ]) {
+      expect(() => validateConfig(env)).to.throw(ConfigError);
+    }
+  });
+
   it("rejects a malformed contract address", () => {
     try {
       validateConfig(baseEnv({ AI_AGENT_CONTRACT_ADDRESS: "0x1234" }));

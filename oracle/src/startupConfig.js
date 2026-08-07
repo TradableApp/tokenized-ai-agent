@@ -99,28 +99,39 @@ function validateConfig(env = process.env) {
 
   // Shape-check the key for the same reason as the address, and with the same "only if present"
   // rule so one mistake never produces two problems.
+  //
+  // TESTED RAW, NOT TRIMMED — deliberately, and this is the whole point of the check.
+  // `contractUtility.initializeOracle` passes `process.env.PRIVATE_KEY` straight into
+  // `new ethers.Wallet(privateKey, provider)` with no trim of its own. Validating a trimmed copy
+  // would therefore approve " 0x59c6…" — a leading space from a compose-file quoting mistake —
+  // and hand ethers a value it rejects, producing exactly the opaque error this guard exists to
+  // replace. The guard must validate the bytes the consumer actually receives.
   const privateKey = env.PRIVATE_KEY;
-  if (!isBlank(privateKey) && !PRIVATE_KEY_HEX.test(privateKey.trim())) {
+  if (!isBlank(privateKey) && !PRIVATE_KEY_HEX.test(privateKey)) {
     problems.push(
-      "PRIVATE_KEY is not a 32-byte hex key (0x + 64 hex characters) — ethers rejects it at " +
-        "Wallet construction, which happens at module load and so cannot name the variable",
+      "PRIVATE_KEY is not a 32-byte hex key (0x + 64 hex characters, no surrounding " +
+        "whitespace) — ethers rejects it at Wallet construction, which happens at module load " +
+        "and so cannot name the variable",
     );
   }
 
   // Only shape-check the address once we know something is there — otherwise a missing value
   // would produce two problems for one mistake, which makes the report harder to act on.
+  // Raw, for the same reason as the key above: `new ethers.Contract(contractAddress, …)` receives
+  // process.env verbatim, so a padded value must fail HERE rather than downstream. The
+  // placeholder check trims only to keep its message readable, never to decide validity.
   const address = env.AI_AGENT_CONTRACT_ADDRESS;
   if (!isBlank(address)) {
-    const trimmed = address.trim();
-    if (PLACEHOLDER.test(trimmed)) {
+    if (PLACEHOLDER.test(address.trim())) {
       problems.push(
-        `AI_AGENT_CONTRACT_ADDRESS is still the placeholder "${trimmed}" — ethers would accept ` +
-          `this and fail later with "contract runner does not support name resolution"`,
+        `AI_AGENT_CONTRACT_ADDRESS is still the placeholder "${address.trim()}" — ethers would ` +
+          `accept this and fail later with "contract runner does not support name resolution"`,
       );
-    } else if (!ADDRESS.test(trimmed)) {
+    } else if (!ADDRESS.test(address)) {
       problems.push(
-        `AI_AGENT_CONTRACT_ADDRESS "${trimmed}" is not a valid address — ethers treats a ` +
-          `non-address as an ENS name and fails asynchronously on first call`,
+        `AI_AGENT_CONTRACT_ADDRESS "${address}" is not a valid address (0x + 40 hex characters, ` +
+          `no surrounding whitespace) — ethers treats a non-address as an ENS name and fails ` +
+          `asynchronously on first call`,
       );
     }
   }

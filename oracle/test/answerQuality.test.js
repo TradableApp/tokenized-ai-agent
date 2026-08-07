@@ -119,6 +119,22 @@ describe("answer quality assessment", () => {
     expect(result.fatal.join(" ")).to.match(/apolog|non-answer|no substance/i);
   });
 
+  it("FAILS an apology written with a typographic apostrophe", () => {
+    // Models emit U+2019 ("I’m") at least as often as the ASCII apostrophe. Matching only
+    // U+0027 let a curly-quoted apology past the filter entirely, and it would then have failed
+    // the smoke only if it also omitted the asset — which a polite apology about Bitcoin does not.
+    const result = assessAnswer(
+      {
+        ...ENRICHED,
+        content:
+          "I\u2019m sorry, but I am unable to retrieve Bitcoin data at the moment. " +
+          "Please try again later.",
+      },
+      ASKED,
+    );
+    expect(result.fatal.join(" ")).to.match(/apolog|non-answer|no substance/i);
+  });
+
   it("FAILS when the answer never mentions the asset asked about", () => {
     // A fluent answer about the wrong subject is the failure structure alone can never catch.
     const result = assessAnswer(

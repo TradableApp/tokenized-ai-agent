@@ -25,9 +25,18 @@ const MIN_ANSWER_CHARS = 20;
 /**
  * Phrases that open a refusal. Matched only at the START of the answer, and only when nothing
  * substantive follows — see `isNonAnswer`.
+ *
+ * BOTH APOSTROPHES. Models emit the typographic U+2019 ("I’m") at least as often as the ASCII
+ * U+0027, and matching only the latter let a curly-quoted apology through the filter entirely.
+ * It would then have failed the smoke only if it also omitted the asset — which a polite apology
+ * about Bitcoin generally does not.
  */
-const APOLOGY_OPENERS =
-  /^\s*(?:i(?:'m| am)\s+sorry|sorry|i\s+apolog|unfortunately|i(?:'m| am)\s+unable|i\s+can(?:not|'t)\b)/i;
+const APOSTROPHE = "['’]";
+const APOLOGY_OPENERS = new RegExp(
+  `^\\s*(?:i(?:${APOSTROPHE}m| am)\\s+sorry|sorry|i\\s+apolog|unfortunately|` +
+    `i(?:${APOSTROPHE}m| am)\\s+unable|i\\s+can(?:not|${APOSTROPHE}t)\\b)`,
+  "i",
+);
 
 /**
  * A market figure — a price, a percentage, or an abbreviated level. Deliberately NOT "any digit":
