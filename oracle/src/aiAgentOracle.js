@@ -63,6 +63,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
+const { selectAnswer } = require("./answerSelection");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
@@ -898,7 +899,12 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   // We use handleMessage which runs the full processing pipeline:
   // Context -> Action Selection -> Evaluation -> Response
   return new Promise(async (resolve, reject) => {
-    let finalResponseText = "";
+    // EVERY emission is kept, and the answer is chosen at the end — see answerSelection.
+    // Assigning on each onResponse meant the last emission won, so a CALL_MCP_TOOL
+    // payload became the user's answer (base-testnet stored a TypeScript snippet; an
+    // earlier run stored an apology). Callback ordering must not decide what a user is
+    // charged for.
+    const emittedTexts = [];
 
     try {
       await elizaOS.handleMessage(
@@ -929,7 +935,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               runProvenance.recordThought(runId, content.thought);
             }
 
-            finalResponseText = content.text;
+            if (typeof content.text === "string") emittedTexts.push(content.text);
           },
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
@@ -940,6 +946,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
           onComplete: async () => {
             console.log("[ElizaOS] Processing complete signal received.");
+            const finalResponseText = selectAnswer(emittedTexts);
             if (finalResponseText) {
               // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
               // thought steps from the runtime + the warm-cache sources injected above.

@@ -396,6 +396,27 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(registrations, "one runtime, one registration pass").to.equal(2);
   });
 
+  it("never stores a tool payload as the answer, whatever order it arrives in", async () => {
+    // The live base-testnet failure, end to end. The agent emits an acknowledgement and
+    // then a CALL_MCP_TOOL payload; last-writer-wins stored the payload, so a paying user
+    // received 164 characters of TypeScript instead of an answer. Asserting at this level
+    // (not just on selectAnswer) is the point: the defect was in how queryElizaOS consumed
+    // the callbacks, so a unit test of the chooser alone would not have caught it.
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        { thought: "Acknowledging, then querying CoinGecko", text: "Analysing current market intelligence for Bitcoin. Stand by." },
+        { thought: "Invoking the tool", text: "```typescript\nawait client.news.get({ coin_id: 'bitcoin' });\n```" },
+      ],
+    });
+    const oracle = loadOracle(stub);
+
+    const result = await oracle.queryElizaOS(history("What is the latest news on Bitcoin?"), ROOM_ID, "entity-1");
+
+    expect(result.text, "a code payload must never be the stored answer").to.not.match(/```/);
+    expect(result.text).to.equal("Analysing current market intelligence for Bitcoin. Stand by.");
+  });
+
   it("still answers when composition yields no context", async () => {
     // Localnet e2e has no Cloud SQL; an unconfigured Brain must cost the context, not the answer.
     const stub = makeElizaStub({ providerData: {}, thoughts: [{ thought: "t" }] });
