@@ -31,11 +31,19 @@ set -euo pipefail
 COMPOSE_FILE="${1:?usage: rofl-preflight.sh <compose-file>}"
 [ -f "$COMPOSE_FILE" ] || { echo "❌ Preflight: '$COMPOSE_FILE' not found."; exit 1; }
 
-PLACEHOLDER_RE='0x[Yy]our|your_.*_here|YourAddressHere|ChangeMe|CHANGEME|<[a-z_]*>'
+. "$(dirname "$0")/rofl-config-patterns.sh"
 failures=""
+
+# Scan ONLY the plaintext config block, not the whole YAML. The `- ` prefix alone also
+# matches ports:, volumes: and any future service list, so a volume like
+# `- /data/store?x=1:/container` would be parsed as a key/value pair and could trip the
+# placeholder check or mask a real one. Bounding the scan removes that whole class.
+in_config_block=false
 
 while IFS= read -r line; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
+  case "$trimmed" in *"ORC BUNDLE CONFIGURATION"*) in_config_block=true; continue ;; esac
+  $in_config_block || continue
   [[ "$trimmed" != "- "* ]] && continue
 
   key="${trimmed#- }"; key="${key%%=*}"
@@ -45,21 +53,21 @@ while IFS= read -r line; do
   [ -z "$val" ] && continue
   [[ "$val" == '${'* ]] && continue        # runtime-injected secret
 
-  if printf '%s' "$val" | grep -qE "$PLACEHOLDER_RE"; then
+  if printf '%s' "$val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then
     failures+="  ✗ ${key}=${val}\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
   fi
-  case "$val" in
-    '"'*'"'|"'"*"'")
-      failures+="  ✗ ${key}=${val}\n      quoted — docker-compose keeps the quotes, so the container sees them in the value\n"
-      ;;
-  esac
+  if rofl_is_quoted "$val"; then
+    failures+="  ✗ ${key}=${val}\n      quoted — docker-compose keeps the quotes, so the container sees them in the value\n"
+  fi
 done < "$COMPOSE_FILE"
 
 if [ -n "$failures" ]; then
   echo ""
   echo "❌ Preflight failed for '$COMPOSE_FILE' — refusing to build an ORC bundle."
   printf '%b' "$failures"
-  echo "   Fix the source env file and re-run \`bun run rofl:set:<env>\`. No bundle was built."
+  env_name="$(basename "$COMPOSE_FILE" .yaml)"; env_name="${env_name#compose.}"
+  echo "   These come from oracle/.env.oracle.${env_name} (NOT this file — it is regenerated)."
+  echo "   Fix them there, then \`bun run rofl:set:${env_name}\`. No bundle was built."
   exit 1
 fi
 echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder or quoted values."

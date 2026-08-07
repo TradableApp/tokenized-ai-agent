@@ -158,6 +158,20 @@ stays open: prove it against the live oracle first.
 - [ ] Annotate/close **CU-86d3dwme6** (oracle body Brain migration verified on Base-testnet).
 - [ ] Update memory `project_oracle-brain-migration`.
 
+## Mainnet is not deployed yet — builds are blocked on purpose
+
+`oracle/.env.oracle.base-mainnet` still carries placeholder contract addresses and
+`PUBLIC_KEY`, so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
+bundle**. That is the intended state, not a broken checkout: `ethers` accepts a
+non-address string as an ENS name and defers resolution, so a bundle built from
+placeholders would boot healthy, accept prompts, and fail every answer while the wallet
+paid gas.
+
+To unblock it when Base mainnet contracts exist: fill the real values into
+`oracle/.env.oracle.base-mainnet` (NOT `compose.base-mainnet.yaml` — that file is
+regenerated), then `bun run rofl:set:base-mainnet`. The preflight failure message names
+both the file and the command.
+
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.
 - Cert name `rofl-oracle-base-testnet` — never reuse the social `rofl-<env>` on the shared instance.

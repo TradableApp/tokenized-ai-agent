@@ -203,7 +203,7 @@ ENV_YAML+="$CONFIG_YAML"
 # Secrets are NOT checked: they are opaque bytes by design (a credential may legitimately
 # contain quotes or the substring "your"), and they are injected at runtime rather than
 # baked in, so a bad one fails closed.
-PLACEHOLDER_RE='0x[Yy]our|your_.*_here|YourAddressHere|ChangeMe|CHANGEME|<[a-z_]*>'
+. "$(dirname "$0")/rofl-config-patterns.sh"
 preflight_failures=""
 
 while IFS= read -r cfg_line; do
@@ -216,7 +216,7 @@ while IFS= read -r cfg_line; do
   [ "$cfg_key" = "mcp" ] && continue
   [ -z "$cfg_val" ] && continue
 
-  if printf '%s' "$cfg_val" | grep -qE "$PLACEHOLDER_RE"; then
+  if printf '%s' "$cfg_val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then
     preflight_failures+="  ✗ ${cfg_key}=${cfg_val}\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
   fi
   case "$cfg_val" in
