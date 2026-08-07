@@ -106,5 +106,12 @@ jobs:
       - name: Build plugin-senseai
         run: cd oracle/src/elizaos/plugins/plugin-senseai && bun run build
 
+      # The plugin's own suite. Until CU-86d3z0r81 the plugin had no tests at all and none ran
+      # here, so its providers, utils, and (from Phase 2) its actions were shipping uncovered —
+      # the oracle's mocha suite only exercises the CJS host, and stubs the plugin dist entirely.
+      # Phase 2 lands the analytical actions in this package, so it needs a gate now.
+      - name: Test (plugin-senseai)
+        run: cd oracle/src/elizaos/plugins/plugin-senseai && bun test
+
       - name: Test (oracle)
         run: cd oracle && bun run test
