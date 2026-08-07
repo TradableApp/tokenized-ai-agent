@@ -250,6 +250,40 @@ describe("startup config validation", () => {
     ).to.not.throw();
   });
 
+  it("skips storage credentials in LOCAL_IPFS mode", () => {
+    // storage.js has TWO early returns before any credential is touched — USE_MOCK_STORAGE and
+    // USE_LOCAL_IPFS (`const USE_LOCAL_IPFS = !!LOCAL_IPFS_API_URL`). Demanding an Irys key here
+    // would make the guard refuse a configuration storage.js handles perfectly well, which is
+    // the failure mode that gets guards deleted.
+    expect(() =>
+      validateConfig(
+        baseEnv({
+          USE_MOCK_STORAGE: undefined,
+          LOCAL_IPFS_API_URL: "http://127.0.0.1:5001",
+        }),
+      ),
+    ).to.not.throw();
+  });
+
+  it("rejects a bare placeholder credential with no separator", () => {
+    // The pattern required [_-] after the keyword, so `changeme` and `xxx` — plausible values in
+    // a future example file — read as real credentials.
+    for (const value of ["changeme", "xxx", "TODO"]) {
+      try {
+        validateConfig(
+          baseEnv({
+            USE_MOCK_STORAGE: undefined,
+            STORAGE_PROVIDER: "irys",
+            IRYS_PAYMENT_PRIVATE_KEY: value,
+          }),
+        );
+        expect.fail(`expected a ConfigError for ${value}`);
+      } catch (err) {
+        expect(err.message).to.match(/placeholder/i);
+      }
+    }
+  });
+
   it("skips storage credentials entirely under mock storage", () => {
     // Localnet e2e runs with USE_MOCK_STORAGE=true and no credentials at all.
     expect(() =>

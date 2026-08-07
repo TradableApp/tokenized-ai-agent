@@ -54,7 +54,7 @@ const PLACEHOLDER = /^0x(your|example|replace|todo)/i;
  * these are read at upload time, that lands as an auth failure AFTER the user has paid, which is
  * this module's whole reason for existing.
  */
-const PLAIN_PLACEHOLDER = /^(your|example|replace|todo|changeme|xxx)[_-]/i;
+const PLAIN_PLACEHOLDER = /^(your|example|replace|todo|changeme|xxx)(?:[_-]|$)/i;
 
 /** True when the value is absent, empty, or still an example-file placeholder. */
 function isMissingOrPlaceholder(value) {
@@ -74,8 +74,13 @@ const PRIVATE_KEY_HEX = /^0x[0-9a-fA-F]{64}$/;
 /**
  * Which credentials a given STORAGE_PROVIDER actually needs.
  *
- * DERIVED FROM `storage/storage.js::initializeStorage`, not from a plausible-sounding taxonomy.
- * The real branch there is exactly two-way:
+ * MIRRORS `storage/storage.js::initializeStorage`. **If that function gains a provider path,
+ * change this to match** — the coupling is by hand, unlike SUPPORTED_NETWORKS which is imported.
+ * It cannot be imported without refactoring storage.js, whose branches are side effects rather
+ * than data.
+ *
+ * That function has two early returns before any credential is touched — `USE_MOCK_STORAGE` and
+ * `USE_LOCAL_IPFS` — handled by the caller, then a two-way branch:
  *
  *   STORAGE_PROVIDER === "irys"  → Irys ONLY               → IRYS_PAYMENT_PRIVATE_KEY
  *   anything else, INCLUDING unset → Irys AND Autonomys     → both credentials
@@ -177,8 +182,13 @@ function validateConfig(env = process.env) {
     }
   }
 
-  // Mock storage never touches a credential; localnet e2e runs with none configured at all.
-  if (env.USE_MOCK_STORAGE !== "true") {
+  // Both of storage.js's early returns, mirrored. Mock storage never touches a credential
+  // (localnet e2e runs with none configured), and LOCAL_IPFS mode returns before Irys or
+  // Autonomys is initialised — so demanding credentials there would make the guard refuse a
+  // configuration storage.js handles perfectly well. Missing that second branch is what made the
+  // "derived from the real branch" claim above overstated.
+  const usesRemoteStorage = env.USE_MOCK_STORAGE !== "true" && isBlank(env.LOCAL_IPFS_API_URL);
+  if (usesRemoteStorage) {
     const provider = (env.STORAGE_PROVIDER || "").trim().toLowerCase();
     const describe = provider ? `STORAGE_PROVIDER is "${provider}"` : "STORAGE_PROVIDER is unset";
     for (const credential of requiredStorageCredentials(provider)) {
