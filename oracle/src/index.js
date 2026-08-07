@@ -25,8 +25,22 @@ process.on("uncaughtException", (error) => {
 // below — before start(), and therefore before any guard living inside start() could name it.
 // Validating there would have promised named variables and quietly not delivered for exactly the
 // failures that crash earliest.
-const { validateConfig } = require("./startupConfig");
-validateConfig();
+const { validateConfig, ConfigError } = require("./startupConfig");
+
+try {
+  validateConfig();
+} catch (err) {
+  // A ConfigError is actionable operator error, not a crash. Letting it reach uncaughtException
+  // would file a Sentry incident on every bad-config boot — and bad-config boots are the EXPECTED
+  // case this guard was written for, since each TEE deploy iteration is an image build, an
+  // on-chain update and a restart. Filling the incident feed with them is how a real crash gets
+  // missed. The message already names every problem, so a stack trace adds nothing.
+  if (err instanceof ConfigError) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  throw err; // genuine bugs still reach uncaughtException → Sentry
+}
 
 const { start } = require("./aiAgentOracle");
 

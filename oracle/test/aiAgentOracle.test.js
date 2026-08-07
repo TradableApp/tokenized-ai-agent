@@ -35,6 +35,8 @@ describe("aiAgentOracle", function () {
     return JSON.parse(decrypted.toString("utf-8"));
   };
 
+  let originalAgentAddress;
+
   beforeEach(() => {
     // Create a real, valid wallet for testing
     const randomWallet = ethers.Wallet.createRandom();
@@ -45,6 +47,7 @@ describe("aiAgentOracle", function () {
     // it and fail later as an unrelated-looking ENS error. Keeping the placeholder in the
     // example file is what makes the guard useful to a new developer, so the fixture patches it
     // here rather than the example being weakened to a valid-but-wrong address.
+    originalAgentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
     process.env.AI_AGENT_CONTRACT_ADDRESS = randomWallet.address;
     process.env.OLLAMA_URL = "http://fake-ollama";
 
@@ -178,6 +181,10 @@ describe("aiAgentOracle", function () {
     delete process.env.PRIVATE_KEY;
     delete process.env.OLLAMA_URL;
     delete process.env.CHAIN_GPT_API_KEY;
+    // RESTORED, not deleted — contractUtility reads this at MODULE LOAD, so clearing it starves
+    // any later file that requires aiAgentOracle fresh. Same pattern as e2e/helpers.js.
+    if (originalAgentAddress === undefined) delete process.env.AI_AGENT_CONTRACT_ADDRESS;
+    else process.env.AI_AGENT_CONTRACT_ADDRESS = originalAgentAddress;
   });
 
   describe("start", () => {

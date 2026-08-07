@@ -48,9 +48,20 @@ const APOLOGY_OPENERS = new RegExp(
  */
 const MARKET_FIGURE = /[$€£]\s?[\d,.]+|\b\d+(?:[.,]\d+)?\s?%|\b\d+(?:[.,]\d+)?\s?[kmb]\b/i;
 
-/** Hedges that carry no analysis. Used only to measure how much of a refusal is filler. */
-const FILLER =
-  /\b(?:at the moment|right now|please try again(?: later)?|i (?:do not|don't) have access|as an ai(?: language model)?|currently unavailable|try again later)\b/gi;
+/**
+ * Hedges that carry no analysis. Used only to measure how much of a refusal is filler.
+ *
+ * Uses the same APOSTROPHE class as the openers above. Hard-coding U+0027 here while the openers
+ * accepted both meant a curly "I don’t have access" was matched as an apology but not stripped as
+ * filler, so it counted toward the length that decides substance — the two patterns have to agree
+ * about what an apostrophe is.
+ */
+const FILLER = new RegExp(
+  `\\b(?:at the moment|right now|please try again(?: later)?|` +
+    `i (?:do not|don${APOSTROPHE}t) have access|as an ai(?: language model)?|` +
+    `currently unavailable|try again later)\\b`,
+  "gi",
+);
 
 /**
  * True when the answer is a refusal and nothing else.
