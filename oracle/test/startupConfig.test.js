@@ -161,6 +161,27 @@ describe("startup config validation", () => {
     }
   });
 
+  it("rejects storage credentials left at their example-file placeholder", () => {
+    // isBlank alone waved these through: .env.oracle.example ships
+    // IRYS_PAYMENT_PRIVATE_KEY=your_funding_wallet_private_key_here and
+    // AUTONOMYS_API_KEY=your_actual_api_key_from_ai3_storage, both non-empty. Copying the example
+    // without filling it in is the likeliest route to a bad credential in production, and since
+    // these are read at upload time it lands as an auth failure AFTER the user has paid.
+    try {
+      validateConfig(
+        baseEnv({
+          USE_MOCK_STORAGE: undefined,
+          STORAGE_PROVIDER: "irys",
+          IRYS_PAYMENT_PRIVATE_KEY: "your_funding_wallet_private_key_here",
+        }),
+      );
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.include("IRYS_PAYMENT_PRIVATE_KEY");
+      expect(err.message).to.match(/placeholder/i);
+    }
+  });
+
   it("requires IRYS_PAYMENT_PRIVATE_KEY when Irys is the storage provider", () => {
     try {
       validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined, STORAGE_PROVIDER: "irys" }));

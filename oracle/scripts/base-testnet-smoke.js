@@ -56,8 +56,16 @@ const PROMPT = process.env.SMOKE_PROMPT || "What is the latest news on Bitcoin?"
  * was actually asked — and a smoke that cries wolf is one that gets muted. Override SMOKE_ASSET
  * alongside SMOKE_PROMPT to keep the check; leave it unset to skip it.
  */
+// ABSENT AND EMPTY MEAN DIFFERENT THINGS, because in a compose file they are different things:
+// `SMOKE_ASSET=` is an empty string in process.env, not an absent key, while `# SMOKE_ASSET=` is
+// absent. An operator adding the former to switch the check off would, under a plain `||`, get
+// "Bitcoin" back — the variable would look set and do nothing.
 const SMOKE_ASSET =
-  process.env.SMOKE_ASSET || (process.env.SMOKE_PROMPT ? undefined : "Bitcoin");
+  "SMOKE_ASSET" in process.env
+    ? process.env.SMOKE_ASSET.trim() || undefined // set-but-empty = deliberately disabled
+    : process.env.SMOKE_PROMPT
+      ? undefined // custom prompt, no asset stated — cannot know what to assert
+      : "Bitcoin"; // default prompt asks about Bitcoin
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 300_000);
 const POLL_MS = Number(process.env.SMOKE_POLL_MS || 6_000);
 const FETCH_TIMEOUT_MS = Number(process.env.SMOKE_FETCH_TIMEOUT_MS || 30_000);

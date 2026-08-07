@@ -64,7 +64,6 @@ const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { selectAnswer } = require("./answerSelection");
-const { validateConfig } = require("./startupConfig");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
@@ -2436,11 +2435,15 @@ async function pollEvents(startBlock) {
 async function start() {
   console.log("--- INITIALIZING ORACLE SERVICE ---");
 
-  // BEFORE ANYTHING ELSE. Every check in here is knowable without touching the network, and
-  // each one otherwise surfaces far downstream wearing someone else's name: a placeholder
-  // contract address as an ethers ENS error, a missing storage credential as an upload failure
-  // AFTER the user has been charged. Fail here, naming the variable, or not at all.
-  validateConfig();
+  // NO validateConfig() HERE — deliberately. index.js is the enforced entry point and validates
+  // BEFORE requiring this module, which it must: initializeOracle() runs at module scope below,
+  // so a bad key throws during that require, earlier than any guard in this function could reach.
+  //
+  // A second call here would also be actively wrong. start() is async, so a ConfigError thrown
+  // in it becomes a rejected promise, lands in index.js's unhandledRejection handler, and files
+  // a Sentry incident — exactly what index.js's ConfigError-specific catch exists to prevent.
+  // Unreachable in production (index.js has already exited), but reachable from tests and from
+  // any wrapper importing start() directly.
 
   // Initialize the connection to the decentralised storage provider.
   await initializeStorage();

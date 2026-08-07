@@ -43,6 +43,22 @@ function isBlank(value) {
  */
 const PLACEHOLDER = /^0x(your|example|replace|todo)/i;
 
+/**
+ * The non-hex placeholder style `.env.oracle.example` uses for credentials, e.g.
+ * `your_funding_wallet_private_key_here`, `your_actual_api_key_from_ai3_storage`.
+ *
+ * These are non-empty, so a blank check waves them through — and copying the example without
+ * filling it in is the single most likely way to reach production with a bad credential. Since
+ * these are read at upload time, that lands as an auth failure AFTER the user has paid, which is
+ * this module's whole reason for existing.
+ */
+const PLAIN_PLACEHOLDER = /^(your|example|replace|todo|changeme|xxx)[_-]/i;
+
+/** True when the value is absent, empty, or still an example-file placeholder. */
+function isMissingOrPlaceholder(value) {
+  return isBlank(value) || PLAIN_PLACEHOLDER.test(value.trim());
+}
+
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 /**
@@ -141,10 +157,13 @@ function validateConfig(env = process.env) {
     const provider = (env.STORAGE_PROVIDER || "").trim().toLowerCase();
     const describe = provider ? `STORAGE_PROVIDER is "${provider}"` : "STORAGE_PROVIDER is unset";
     for (const credential of requiredStorageCredentials(provider)) {
-      if (isBlank(env[credential])) {
+      if (isMissingOrPlaceholder(env[credential])) {
+        const state = isBlank(env[credential])
+          ? "is missing or empty"
+          : `is still the example-file placeholder "${env[credential].trim()}"`;
         problems.push(
-          `${credential} is missing or empty, but ${describe} — this is read at upload time, ` +
-            `so it would fail AFTER the user has paid for the answer`,
+          `${credential} ${state}, but ${describe} — this is read at upload time, so it would ` +
+            `fail AFTER the user has paid for the answer`,
         );
       }
     }
