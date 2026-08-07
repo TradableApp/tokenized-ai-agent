@@ -417,6 +417,27 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(result.text).to.equal("Analysing current market intelligence for Bitcoin. Stand by.");
   });
 
+  it("stores the synthesis, not the acknowledgement, when the tool call succeeds", async () => {
+    // The companion to the test above, and the one that pins the ORDERING rule. That test
+    // proves a payload never wins; this proves the acknowledgement does not win either when a
+    // real answer follows it. Without this, flipping selectAnswer from "last prose" to "first
+    // prose" would keep the incident test green while silently dropping every synthesised
+    // answer — the failure would look identical to the bug being fixed.
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        { thought: "Acknowledging, then querying CoinGecko", text: "Analysing current market intelligence for Bitcoin. Stand by." },
+        { thought: "Invoking the tool", text: "```typescript\nawait client.news.get({ coin_id: 'bitcoin' });\n```" },
+        { thought: "Synthesising", text: "Bitcoin is consolidating near $61k with declining volume; momentum is neutral." },
+      ],
+    });
+    const oracle = loadOracle(stub);
+
+    const result = await oracle.queryElizaOS(history("What is the latest news on Bitcoin?"), ROOM_ID, "entity-1");
+
+    expect(result.text).to.equal("Bitcoin is consolidating near $61k with declining volume; momentum is neutral.");
+  });
+
   it("still answers when composition yields no context", async () => {
     // Localnet e2e has no Cloud SQL; an unconfigured Brain must cost the context, not the answer.
     const stub = makeElizaStub({ providerData: {}, thoughts: [{ thought: "t" }] });

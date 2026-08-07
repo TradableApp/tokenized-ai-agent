@@ -18,30 +18,57 @@
  *   - first, and the acknowledgement wins, which is just a different wrong answer.
  */
 
-/** Fenced code block, anywhere in the text. */
-const FENCED_CODE = /```/;
+/** A fenced code block. Non-greedy so consecutive blocks are matched separately. */
+const FENCED_BLOCK = /```[\s\S]*?```/g;
 
 /**
  * A bare tool invocation — `await client.foo.bar({…})` / `client.foo({…})`. Deliberately
  * narrow: it wants a client-ish call WITH an argument object, which is what the MCP
  * payloads look like, rather than any sentence containing a dot or a bracket.
+ *
+ * The argument body is lazy (`[\s\S]*?`). Greedy would run from the first `{` to the last
+ * `}` in the whole text, so one call early in an answer would swallow every sentence
+ * between it and the last brace — and the prose test below would then see nothing left.
  */
-const BARE_INVOCATION = /\b(?:await\s+)?[a-z_$][\w$]*\.[\w$.]+\(\s*\{[\s\S]*\}\s*\)/;
+const BARE_INVOCATION = /\b(?:await\s+)?[a-z_$][\w$]*\.[\w$.]+\(\s*\{[\s\S]*?\}\s*\)/g;
 
 /**
- * True when the text looks like a tool call rather than an answer.
+ * How much prose has to survive code-stripping for the text to count as an answer.
  *
- * Kept conservative on purpose. The oracle answers questions ABOUT crypto tooling, so
- * flagging any text that mentions an API or a function would drop legitimate analysis —
- * a worse failure than the one being fixed, because it would present as the model being
- * bad rather than as a harness bug. Prose that merely *mentions* code is not a payload.
+ * The asymmetry matters. Flagging a real answer stores the acknowledgement instead, which
+ * is silent and reads as the model regressing; missing a payload stores something obviously
+ * wrong that the smoke test can catch. So the bar is deliberately low — and it can afford
+ * to be, because the payload this exists for has *zero* prose around it.
+ */
+const MIN_PROSE_CHARS = 24;
+
+/**
+ * True when the text IS a tool call rather than an answer that happens to contain one.
+ *
+ * "Contains code" is not the test, and must not be. `chainSynthesisTemplate` — core's, ported
+ * verbatim in this same change — instructs the model to wrap any code it includes in fenced
+ * blocks. Rejecting every text containing a fence would therefore drop a legitimate synthesised
+ * answer the moment it quoted an API call, falling back to "Analysing… stand by." That failure
+ * is invisible and looks like the model regressing rather than like a harness bug.
+ *
+ * So: strip the code out, and ask whether an answer remains. Nothing left means the text was the
+ * payload. Prose either side of a snippet means it was an answer.
  *
  * @param {string} [text]
  * @returns {boolean}
  */
 function looksLikeToolPayload(text) {
   if (typeof text !== "string" || !text.trim()) return false;
-  return FENCED_CODE.test(text) || BARE_INVOCATION.test(text);
+
+  const hasCode = /```/.test(text) || new RegExp(BARE_INVOCATION.source).test(text);
+  if (!hasCode) return false;
+
+  const withoutCode = text.replace(FENCED_BLOCK, " ").replace(BARE_INVOCATION, " ");
+
+  // Count letters and digits only: punctuation, backticks and stray fence markers left behind
+  // by an unterminated block are not prose.
+  const prose = withoutCode.replace(/[^\p{L}\p{N}]+/gu, "");
+  return prose.length < MIN_PROSE_CHARS;
 }
 
 /**

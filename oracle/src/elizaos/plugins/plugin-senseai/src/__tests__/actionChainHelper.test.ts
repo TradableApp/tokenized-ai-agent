@@ -208,38 +208,32 @@ describe("handleChainSynthesis (ported from sense-ai-core)", () => {
     expect(String(sent[0].text).length).toBeGreaterThan(10);
   });
 
-  it("bounds the model call so a TEE hang cannot strand a paid prompt", async () => {
+  it("keeps the synthesis deadline within the caller's budget", async () => {
     // A hang never REJECTS, so try/catch cannot save it — the turn simply stops, on a prompt
     // already charged for on-chain. `withTimeout` converts the hang into a bounded rejection,
-    // which the fallback path above then turns into a delivered answer.
+    // which the fallback path then turns into a delivered answer. Those two links are covered
+    // behaviourally elsewhere:
+    //   hang → rejection    withTimeout.test.ts (ported from core, 100% covered)
+    //   rejection → answer  "falls back rather than throwing when the model errors", above
     //
-    // WHY THIS IS A STRUCTURAL ASSERTION rather than a hanging-model test. Driving a real 45s
-    // deadline means either waiting it out or mocking `../utils/withTimeout` — and bun's module
-    // mocks are process-global and do NOT rebind after the module under test has loaded, so the
-    // stub leaks into every sibling assertion here (verified: it collapses six of them to the
-    // fallback). The three links in the chain are covered separately instead:
-    //   hang → rejection   ../utils/withTimeout + withTimeout.test.ts (ported from core, 100%)
-    //   rejection → answer "falls back rather than throwing when the model errors", above
-    //   guard is applied  this test
+    // What this pins is the BUDGET, which neither of those covers and which is easy to break by
+    // accident: generateSanitized retries once, so the worst case is TWO full deadlines. If the
+    // constant grows past half the caller's budget, a leaking first attempt turns into a
+    // stranded prompt — the exact failure the deadline exists to prevent.
+    //
+    // (Wiring — that this constant is the one actually passed to withTimeout — is deliberately
+    // NOT asserted here. Reading the source off disk to check it, as an earlier revision did, is
+    // an implementation-shape test that breaks on a rename or an extracted helper without any
+    // behaviour changing. Driving it properly needs mock.module, and bun's module mocks are
+    // process-global and do not rebind after load, so the stub leaks into every sibling
+    // assertion in this file — verified: it collapsed six of them to the fallback.)
+    const MAX_ATTEMPTS = 2;
     expect(Number.isFinite(SYNTHESIS_TIMEOUT_MS)).toBe(true);
     expect(SYNTHESIS_TIMEOUT_MS).toBeGreaterThan(0);
-
-    const source = await Bun.file(
-      new URL("../utils/actionChainHelper.ts", import.meta.url)
-    ).text();
-    // Anchor on the real call, not the prose above it that also names runtime.useModel.
-    const callSite = source.indexOf("runtime.useModel(ModelType");
-    expect(callSite, "the model call site must exist").toBeGreaterThan(-1);
-
-    // The wrapper opens before the call and the deadline is passed straight after it.
-    const window = source.slice(callSite - 200, callSite + 200);
     expect(
-      window,
-      "runtime.useModel must be wrapped in withTimeout, or a TEE hang strands a paid prompt"
-    ).toContain("withTimeout(");
-    expect(window, "the deadline constant must be the one applied").toContain(
-      "SYNTHESIS_TIMEOUT_MS"
-    );
+      SYNTHESIS_TIMEOUT_MS * MAX_ATTEMPTS,
+      "two attempts must still fit inside ElizaOS's 90s pipeline guard"
+    ).toBeLessThanOrEqual(90_000);
   });
 
   it("holds no cross-call state — concurrent syntheses do not mix", async () => {
