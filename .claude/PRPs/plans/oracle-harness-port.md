@@ -208,6 +208,23 @@ with the reason — not in a plan document nobody reads at the call site.
 | provider `position` set in the oracle, unset in core | core is wrong (news renders before macro) | fix core, do not fork the oracle |
 | oracle omits rate limiting | paid per prompt via escrow | forced; owner-confirmed |
 
+### Core-side PR list (raise in `sense-ai-core`, then inherit — do NOT fix in the fork first)
+
+Accumulated during PR #65's review rounds. Each is a case where the oracle's copy is *correct
+because it matches core*, and the improvement belongs upstream so both bodies move together.
+
+| item | file | why upstream |
+| --- | --- | --- |
+| apply `withTimeout` to synthesis | `utils/actionChainHelper.ts` | core already ships the util for this exact ROFL hang and simply has not used it here |
+| move `actionResultsData` into `state.values` | `utils/actionChainHelper.ts` | top-level assignment relies on `composePromptFromState` interpolating off `state`; undocumented in `@elizaos/core` types |
+| drop `?? []` on `allProviders` | `utils/actionChainHelper.ts` | `const … = []`, only pushed into — can never be nullish |
+| drop `&& text` from the callback guard | `utils/actionChainHelper.ts` | `text` is always `FALLBACK_TEXT` or a non-empty sanitised string |
+| fix the else-branch log message | `utils/actionChainHelper.ts` | **already diverged in the oracle** — core's "failed to parse XML or text was empty" describes an impossible state and would mislead a debugger; the only one of these worth forking ahead of core |
+| correct the "ElizaOS 90s guard" claim | `utils/withTimeout.ts` | not verifiable in the installed `@elizaos/core`; the only `90000` is LangSmith's tracing client timeout |
+
+The first four are inert-but-untidy: fixing them in the oracle first is exactly how two copies drift,
+which is what 2.7 exists to prevent.
+
 ### Acceptance for 2.7 (and the entry gate for Phase 3)
 - [ ] Every Phase 1–2 file compared against its core counterpart, with the comparison recorded
 - [ ] Each surviving divergence traces to boot model, concurrency, or the pre-paid path — or is removed
