@@ -232,16 +232,22 @@ whichever body happens to be ported first.
 
 ## Sequencing and PR shape
 
-1. **PR A (current branch):** 1.1 + 1.2 re-scoped as a faithful `handleChainSynthesis` port
-   (sanitize + retry-on-leak included, so old 1.4 ships here). 1.3 is deleted, with the reason
-   recorded above rather than silently dropped.
+**Each PR gets its own branch off `main`. Do not carry the next phase onto the open branch** — I
+started Phase 2 on PR A's branch before catching it, which would have merged A and C as one
+unreviewable change.
+
+1. **PR A — [#65](https://github.com/TradableApp/tokenized-ai-agent/pull/65), OPEN.** 1.1 + 1.2 as
+   a faithful `handleChainSynthesis` port (sanitize + retry-on-leak included, so old 1.4 ships
+   here) + the plugin CI gate. 1.3 deleted, reason recorded above rather than silently dropped.
 2. **PR B:** 1.5 + 1.6 — startup guard + smoke hardening; independently reviewable.
-3. **PR C:** Phase 2 analytical actions — these call `synthesizeAnswer` from inside their
+3. **Redeploy to base-testnet and re-run the smoke — after PR B, before PR C.** Only the hardened
+   smoke can judge whether an answer is *real* rather than merely well-shaped; running it before
+   1.6 is what let an apology and a code block both pass. This is a gate, not a trailing step.
+4. **PR C:** Phase 2 analytical actions — these call `handleChainSynthesis` from inside their
    handlers, the way core does, which is what finally makes a tool-using prompt useful.
-4. **PR D:** 2.7 parity audit — findings, the at-the-call-site documentation, the guard test, plus
-   any core-side PRs it surfaces. Merging this is what unblocks Phase 3.
-5. Redeploy to base-testnet and re-run the smoke **after PR B**, since only then can the smoke
-   judge whether the answer is real.
+5. **PR D:** 2.7 parity audit — findings, the at-the-call-site documentation, the guard test, plus
+   any core-side PRs it surfaces (starting with applying `withTimeout` to core's own synthesis).
+   Merging this is what unblocks Phase 3.
 
 ## Risks
 
