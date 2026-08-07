@@ -66,8 +66,21 @@ IMPORTANT: Your response must ONLY contain the <response></response> XML block a
  * on-chain and the answer is immutable — a stranded turn is money spent for nothing.
  *
  * This is an improvement to offer BACK to core at the 2.7 parity audit, not a fork to keep.
+ *
+ * ON THE VALUE. Core's withTimeout doc says a hung call "sat until ElizaOS's 90s guard swallowed
+ * it". That 90s is NOT verifiable in the installed @elizaos/core — the only 90000 in the bundle
+ * is LangSmith's tracing client timeout. Do not size this against that number.
+ *
+ * The bound that is real, and contractual, is REFUND_TIMEOUT = 1 hour in both
+ * SapphireAIAgentEscrow and EVMAIAgentEscrow: past it the user can reclaim the payment, so an
+ * answer arriving later is worthless. Two attempts at 45s is 90s against an hour — roughly a 40x
+ * margin, even with five prompts draining the queue concurrently. The value is chosen for how
+ * long a paying user should wait, not to squeeze under a ceiling.
  */
 export const SYNTHESIS_TIMEOUT_MS = 45_000;
+
+/** `generateSanitized` retries once on a leak, so the worst case is two full deadlines. */
+export const SYNTHESIS_MAX_ATTEMPTS = 2;
 
 /** Shown when every attempt leaked, errored, or timed out. Silence is the worse failure. */
 const FALLBACK_TEXT = "Still gathering my readings on this. Try again in a few minutes.";
@@ -170,7 +183,7 @@ export async function handleChainSynthesis(
         }
         return result;
       },
-      2
+      SYNTHESIS_MAX_ATTEMPTS
     );
   } catch (error) {
     elizaLogger.error(
@@ -200,6 +213,12 @@ export async function handleChainSynthesis(
       actions: [actionResult.data?.actionName || "UNKNOWN_ACTION"] as string[],
     });
   } else {
-    elizaLogger.warn(`[ChainHelper] Failed to parse XML response or text was empty.`);
+    // DIVERGENCE FROM CORE (message only). Core logs "Failed to parse XML response or text was
+    // empty" here, which cannot be true: `text` is either FALLBACK_TEXT (a non-empty constant) or
+    // `sanitizedText`, which sanitizeOutboundText only returns when non-empty. So this branch is
+    // reachable only when no callback was supplied, and core's message would send a future
+    // debugger hunting a parse failure that never happened. Fixing the message rather than
+    // copying a wrong one; queued as a core-side PR for the 2.7 parity audit.
+    elizaLogger.warn(`[ChainHelper] No callback supplied — synthesised response dropped.`);
   }
 }

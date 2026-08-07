@@ -18,8 +18,21 @@
  *   - first, and the acknowledgement wins, which is just a different wrong answer.
  */
 
-/** A fenced code block. Non-greedy so consecutive blocks are matched separately. */
-const FENCED_BLOCK = /```[\s\S]*?```/g;
+/**
+ * Each pattern is defined ONCE and compiled twice: a plain form for `.test()` and a `/g` form
+ * for `.replace()`. They are never interchanged.
+ *
+ * WHY THE PAIR, rather than one `/g` regex used for both. A `/g` regex is stateful: `.test()`
+ * advances `lastIndex` and the next call resumes from there, so consecutive tests on the same
+ * object return alternating results. `.replace()` is unaffected (it always scans from the
+ * start), which is what makes the bug so easy to introduce and so hard to see — the natural
+ * spelling `BARE_INVOCATION.test(text)` would work in the first test of a run and fail in the
+ * second, presenting as a flaky classifier rather than as a regex-state bug.
+ */
+const FENCED = String.raw`\x60\x60\x60`;
+
+/** A fenced code block. Lazy, so consecutive blocks are matched separately rather than as one. */
+const FENCED_BLOCK_SOURCE = `${FENCED}[\\s\\S]*?${FENCED}`;
 
 /**
  * A bare tool invocation — `await client.foo.bar({…})` / `client.foo({…})`. Deliberately
@@ -30,7 +43,12 @@ const FENCED_BLOCK = /```[\s\S]*?```/g;
  * `}` in the whole text, so one call early in an answer would swallow every sentence
  * between it and the last brace — and the prose test below would then see nothing left.
  */
-const BARE_INVOCATION = /\b(?:await\s+)?[a-z_$][\w$]*\.[\w$.]+\(\s*\{[\s\S]*?\}\s*\)/g;
+const BARE_INVOCATION_SOURCE = String.raw`\b(?:await\s+)?[a-z_$][\w$]*\.[\w$.]+\(\s*\{[\s\S]*?\}\s*\)`;
+
+const HAS_FENCE = new RegExp(FENCED);
+const HAS_INVOCATION = new RegExp(BARE_INVOCATION_SOURCE);
+const ALL_FENCED_BLOCKS = new RegExp(FENCED_BLOCK_SOURCE, "g");
+const ALL_INVOCATIONS = new RegExp(BARE_INVOCATION_SOURCE, "g");
 
 /**
  * How much prose has to survive code-stripping for the text to count as an answer.
@@ -60,10 +78,10 @@ const MIN_PROSE_CHARS = 24;
 function looksLikeToolPayload(text) {
   if (typeof text !== "string" || !text.trim()) return false;
 
-  const hasCode = /```/.test(text) || new RegExp(BARE_INVOCATION.source).test(text);
+  const hasCode = HAS_FENCE.test(text) || HAS_INVOCATION.test(text);
   if (!hasCode) return false;
 
-  const withoutCode = text.replace(FENCED_BLOCK, " ").replace(BARE_INVOCATION, " ");
+  const withoutCode = text.replace(ALL_FENCED_BLOCKS, " ").replace(ALL_INVOCATIONS, " ");
 
   // Count letters and digits only: punctuation, backticks and stray fence markers left behind
   // by an unterminated block are not prose.

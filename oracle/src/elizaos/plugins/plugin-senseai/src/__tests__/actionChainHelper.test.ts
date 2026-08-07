@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
-import { handleChainSynthesis, SYNTHESIS_TIMEOUT_MS } from "../utils/actionChainHelper";
+import {
+  handleChainSynthesis,
+  SYNTHESIS_MAX_ATTEMPTS,
+  SYNTHESIS_TIMEOUT_MS,
+} from "../utils/actionChainHelper";
 
 // Action-chain synthesis — CU-86d3z0r81, harness port Phase 1.2 (re-scoped).
 //
@@ -216,25 +220,36 @@ describe("handleChainSynthesis (ported from sense-ai-core)", () => {
     //   hang → rejection    withTimeout.test.ts (ported from core, 100% covered)
     //   rejection → answer  "falls back rather than throwing when the model errors", above
     //
-    // What this pins is the BUDGET, which neither of those covers and which is easy to break by
-    // accident: generateSanitized retries once, so the worst case is TWO full deadlines. If the
-    // constant grows past half the caller's budget, a leaking first attempt turns into a
-    // stranded prompt — the exact failure the deadline exists to prevent.
+    // What this pins is the BUDGET: generateSanitized retries once, so the worst case is
+    // SYNTHESIS_MAX_ATTEMPTS full deadlines, and raising either constant alone silently doubles
+    // the wait a paying user absorbs.
     //
-    // (Wiring — that this constant is the one actually passed to withTimeout — is deliberately
-    // NOT asserted here. Reading the source off disk to check it, as an earlier revision did, is
-    // an implementation-shape test that breaks on a rename or an extracted helper without any
-    // behaviour changing. Driving it properly needs mock.module, and bun's module mocks are
-    // process-global and do not rebind after load, so the stub leaks into every sibling
-    // assertion in this file — verified: it collapsed six of them to the fallback.)
-    const MAX_ATTEMPTS = 2;
+    // ANCHORED ON THE CONTRACT, NOT ON FOLKLORE. An earlier revision asserted this against
+    // "ElizaOS's 90s pipeline guard", a number inherited from core's withTimeout doc comment.
+    // That guard is not verifiable in the installed @elizaos/core — the only 90000 in the bundle
+    // is LangSmith's tracing client timeout. Sizing a budget against a constant nobody can point
+    // at is worse than not asserting it, because it reads as evidence.
+    //
+    // The real bound is REFUND_TIMEOUT in SapphireAIAgentEscrow / EVMAIAgentEscrow: past it the
+    // user reclaims the payment, so a later answer is worthless. Kept as a named local rather
+    // than imported, so that if the contracts ever shorten it this test fails loudly instead of
+    // tracking the change silently.
+    const REFUND_TIMEOUT_MS = 60 * 60 * 1000; // SapphireAIAgentEscrow.sol:20 — 1 hours
     expect(Number.isFinite(SYNTHESIS_TIMEOUT_MS)).toBe(true);
     expect(SYNTHESIS_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(SYNTHESIS_MAX_ATTEMPTS).toBeGreaterThanOrEqual(1);
     expect(
-      SYNTHESIS_TIMEOUT_MS * MAX_ATTEMPTS,
-      "two attempts must still fit inside ElizaOS's 90s pipeline guard"
-    ).toBeLessThanOrEqual(90_000);
+      SYNTHESIS_TIMEOUT_MS * SYNTHESIS_MAX_ATTEMPTS,
+      "every attempt must finish well inside the escrow refund window"
+    ).toBeLessThan(REFUND_TIMEOUT_MS / 10);
   });
+
+  // Wiring — that SYNTHESIS_TIMEOUT_MS is the value actually passed to withTimeout — is
+  // deliberately not asserted. An earlier revision read the source off disk to check it, which
+  // breaks on a rename or an extracted helper without any behaviour changing. Driving it
+  // properly needs mock.module, and bun's module mocks are process-global and do not rebind
+  // after load, so the stub leaks into every sibling assertion here (verified: it collapsed six
+  // of them to the fallback).
 
   it("holds no cross-call state — concurrent syntheses do not mix", async () => {
     // The oracle drains prompts through a p-queue at concurrency 5; core's helper was written for

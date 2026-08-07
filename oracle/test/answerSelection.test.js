@@ -90,6 +90,23 @@ describe("answer selection", () => {
       expect(looksLikeToolPayload(answer)).to.equal(false);
     });
 
+    it("gives the same verdict when called repeatedly on the same text", () => {
+      // Regression guard on regex state. `/g` regexes are stateful: `.test()` advances lastIndex
+      // and the next call resumes from there, so the SECOND call on identical input can return
+      // the opposite answer. `.replace()` is immune, which is what makes it easy to introduce and
+      // hard to see — it would present as a flaky classifier, not as a regex bug. Selection runs
+      // this over every emission of every prompt, so a stateful pattern would mis-classify
+      // roughly every other one.
+      const payload = "```typescript\nawait client.news.get({ coin_id: 'bitcoin' });\n```";
+      const answer =
+        "Bitcoin ETF inflows accelerated 18% this week while spot volume thinned noticeably.";
+
+      for (let i = 0; i < 3; i += 1) {
+        expect(looksLikeToolPayload(payload), `payload, call ${i + 1}`).to.equal(true);
+        expect(looksLikeToolPayload(answer), `answer, call ${i + 1}`).to.equal(false);
+      }
+    });
+
     it("does not flag an empty or missing value", () => {
       expect(looksLikeToolPayload("")).to.equal(false);
       expect(looksLikeToolPayload(undefined)).to.equal(false);
