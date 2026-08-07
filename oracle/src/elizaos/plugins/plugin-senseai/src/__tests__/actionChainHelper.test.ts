@@ -201,7 +201,7 @@ describe("handleChainSynthesis (ported from sense-ai-core)", () => {
     expect(sent[0].text).not.toContain("<");
   });
 
-  it("falls back rather than throwing when the model errors", async () => {
+  it("falls back rather than throwing when the model errors, without retrying", async () => {
     // Never throw into the answer path — the caller has already charged the user.
     const runtime = buildRuntime([new Error("model unavailable")]);
     const { sent, callback } = collector();
@@ -210,6 +210,15 @@ describe("handleChainSynthesis (ported from sense-ai-core)", () => {
 
     expect(sent.length).toBe(1);
     expect(String(sent[0].text).length).toBeGreaterThan(10);
+
+    // A THROW IS NOT A LEAK, and must not be retried. generateSanitized has no try/catch, so an
+    // exception from the generator propagates straight out of the retry loop — only a sanitize
+    // null-return costs a second attempt. Asserted rather than assumed because the difference
+    // matters twice over: it halves the worst-case wait on a paid prompt (a hung model would
+    // otherwise burn two full deadlines instead of one), and it keeps XML_RETRY_NUDGE — which
+    // tells the model its <text> field "contained stray tags" — away from a timeout, where that
+    // reason is simply false and would mislead anyone reading the prompt trail afterwards.
+    expect(runtime.callCount, "an exception must not consume a retry").toBe(1);
   });
 
   it("keeps the synthesis deadline within the caller's budget", async () => {
