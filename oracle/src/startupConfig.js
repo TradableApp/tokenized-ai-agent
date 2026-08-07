@@ -46,15 +46,32 @@ const PLACEHOLDER = /^0x(your|example|replace|todo)/i;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 /**
- * Storage credentials, keyed by provider. Only the selected provider's credential is demanded —
- * asking an Autonomys deployment for an Irys key would make the guard itself the thing blocking
- * a correct configuration, which is how guards earn their removal.
+ * Which credentials a given STORAGE_PROVIDER actually needs.
+ *
+ * DERIVED FROM `storage/storage.js::initializeStorage`, not from a plausible-sounding taxonomy.
+ * The real branch there is exactly two-way:
+ *
+ *   STORAGE_PROVIDER === "irys"  → Irys ONLY               → IRYS_PAYMENT_PRIVATE_KEY
+ *   anything else, INCLUDING unset → Irys AND Autonomys     → both credentials
+ *
+ * The second branch is the normal case, not an error: `.env.oracle.example` ships
+ * `STORAGE_PROVIDER=` empty, and the comment there explains why — both are initialised so old
+ * Arweave data stays readable while new writes go to Autonomys. So an unrecognised or missing
+ * value must NOT be rejected; it must be validated as "both", which is the stricter requirement.
+ *
+ * A first version of this guard invented a three-key provider map and demanded only the matching
+ * credential. It let a deployment with NO storage credentials at all start cleanly — the exact
+ * failure this module exists to prevent, since the credentials are read at upload time and would
+ * therefore have failed after the user had paid.
+ *
+ * @param {string} provider lower-cased STORAGE_PROVIDER, possibly ""
+ * @returns {string[]} env var names that must be present
  */
-const STORAGE_CREDENTIALS = {
-  autonomys: "AUTONOMYS_API_KEY",
-  irys: "IRYS_PAYMENT_PRIVATE_KEY",
-  arweave: "IRYS_PAYMENT_PRIVATE_KEY",
-};
+function requiredStorageCredentials(provider) {
+  return provider === "irys"
+    ? ["IRYS_PAYMENT_PRIVATE_KEY"]
+    : ["IRYS_PAYMENT_PRIVATE_KEY", "AUTONOMYS_API_KEY"];
+}
 
 /** Required regardless of network, storage provider, or mode. */
 const ALWAYS_REQUIRED = ["NETWORK_NAME", "PRIVATE_KEY", "AI_AGENT_CONTRACT_ADDRESS"];
@@ -93,12 +110,14 @@ function validateConfig(env = process.env) {
   // Mock storage never touches a credential; localnet e2e runs with none configured at all.
   if (env.USE_MOCK_STORAGE !== "true") {
     const provider = (env.STORAGE_PROVIDER || "").trim().toLowerCase();
-    const credential = STORAGE_CREDENTIALS[provider];
-    if (credential && isBlank(env[credential])) {
-      problems.push(
-        `${credential} is missing or empty, but STORAGE_PROVIDER is "${provider}" — this is ` +
-          `read at upload time, so it would fail AFTER the user has paid for the answer`,
-      );
+    const describe = provider ? `STORAGE_PROVIDER is "${provider}"` : "STORAGE_PROVIDER is unset";
+    for (const credential of requiredStorageCredentials(provider)) {
+      if (isBlank(env[credential])) {
+        problems.push(
+          `${credential} is missing or empty, but ${describe} — this is read at upload time, ` +
+            `so it would fail AFTER the user has paid for the answer`,
+        );
+      }
     }
   }
 

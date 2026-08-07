@@ -90,6 +90,19 @@ describe("answer quality assessment", () => {
     expect(result.fatal, JSON.stringify(result.fatal)).to.deep.equal([]);
   });
 
+  it("does NOT fail a terse answer that merely opens with a hedge", () => {
+    // THE BOUNDARY, and the reason length alone cannot decide this. Stripped of its opener this
+    // is 34 characters; the recorded apology is 37. Three characters apart, opposite verdicts —
+    // so any pure length threshold either fails this real answer or passes that apology.
+    // What separates them is that this one carries a figure and an asset, and the apology
+    // carries nothing concrete at all.
+    const result = assessAnswer(
+      { ...ENRICHED, content: "Unfortunately, Bitcoin is flat at $61k with thin volume." },
+      ASKED,
+    );
+    expect(result.fatal, JSON.stringify(result.fatal)).to.deep.equal([]);
+  });
+
   it("FAILS when the answer never mentions the asset asked about", () => {
     // A fluent answer about the wrong subject is the failure structure alone can never catch.
     const result = assessAnswer(

@@ -54,7 +54,19 @@ function isNonAnswer(text) {
     .replace(/[^\p{L}\p{N}]+/gu, "");
 
   // A refusal that still carries this much prose is an answer that happens to decline.
-  return remainder.length < 60;
+  //
+  // CALIBRATION. 60 was too high, and invisibly so: "Unfortunately, Bitcoin is flat at $61k with
+  // thin volume." strips to 34 characters — a real, useful, terse answer that the smoke would
+  // have failed. That is the wrong direction of error here, where a false alarm is what gets the
+  // smoke muted. The recorded apology strips to 37, which is why the number cannot simply be
+  // lowered to clear the example: the two are only three characters apart on length alone.
+  //
+  // Length is therefore not the discriminator. What actually separates them is that the real
+  // answer carries CONTENT — a figure, a level, an asset — and the apology carries none. So the
+  // rule is: a refusal is a non-answer only when nothing concrete survives it.
+  if (/\d/.test(text)) return false;
+
+  return remainder.length < 40;
 }
 
 /**

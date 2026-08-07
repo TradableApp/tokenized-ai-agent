@@ -83,16 +83,54 @@ describe("startup config validation", () => {
     }
   });
 
-  it("requires AUTONOMYS_API_KEY when Autonomys is the storage provider", () => {
+  it("requires BOTH credentials when STORAGE_PROVIDER is unset", () => {
+    // storage.js branches exactly two ways: "irys" means Irys only, and ANYTHING ELSE —
+    // including unset — initialises Irys AND Autonomys, so both credentials are needed. Unset is
+    // the NORMAL case: .env.oracle.example ships STORAGE_PROVIDER= empty, because both are
+    // initialised so old Arweave data stays readable while new writes go to Autonomys.
+    //
+    // The first version of this guard invented a provider→credential map and demanded only the
+    // matching one, so a deployment with NO storage credentials at all started cleanly — the
+    // exact failure this module exists to prevent.
+    try {
+      validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.include("IRYS_PAYMENT_PRIVATE_KEY");
+      expect(err.message).to.include("AUTONOMYS_API_KEY");
+    }
+  });
+
+  it("requires both credentials for an unrecognised provider rather than rejecting it", () => {
+    // A typo'd or future provider falls into storage.js's else branch and gets BOTH providers,
+    // so the safe reading is "needs both" — not "reject the value". Rejecting would make the
+    // guard fail a deployment that storage.js would have handled.
+    try {
+      validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined, STORAGE_PROVIDER: "autonmyos" }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.include("IRYS_PAYMENT_PRIVATE_KEY");
+      expect(err.message).to.include("AUTONOMYS_API_KEY");
+      expect(err.message).to.not.match(/not a recognised value/i);
+    }
+  });
+
+  it("names AUTONOMYS_API_KEY specifically when it is the one missing", () => {
     // Read lazily at upload time today, so its absence currently surfaces only AFTER the user
-    // has paid and the answer has been generated.
+    // has paid and the answer has been generated. The Irys key is supplied here so the report
+    // isolates the genuinely missing one.
     try {
       validateConfig(
-        baseEnv({ USE_MOCK_STORAGE: undefined, STORAGE_PROVIDER: "autonomys" }),
+        baseEnv({
+          USE_MOCK_STORAGE: undefined,
+          STORAGE_PROVIDER: "",
+          IRYS_PAYMENT_PRIVATE_KEY: "0xabc",
+        }),
       );
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.message).to.include("AUTONOMYS_API_KEY");
+      expect(err.message).to.not.include("IRYS_PAYMENT_PRIVATE_KEY");
     }
   });
 
@@ -105,15 +143,20 @@ describe("startup config validation", () => {
     }
   });
 
-  it("does not demand storage credentials that the chosen provider never uses", () => {
-    // Demanding an Irys key from an Autonomys deployment would make the guard the thing that
-    // blocks a correct config — the failure mode that gets guards deleted.
+  it("does not demand the Autonomys key from an Irys-only deployment", () => {
+    // The one narrowing storage.js actually makes. Demanding a credential the deployment will
+    // never use would make the guard the thing blocking a correct config — the failure mode
+    // that gets guards deleted.
+    //
+    // This test previously asserted the mirror image — that STORAGE_PROVIDER=autonomys needs
+    // only AUTONOMYS_API_KEY — which encoded the invented taxonomy rather than storage.js. There
+    // is no "autonomys" branch: that value falls through to Irys AND Autonomys, so it needs both.
     expect(() =>
       validateConfig(
         baseEnv({
           USE_MOCK_STORAGE: undefined,
-          STORAGE_PROVIDER: "autonomys",
-          AUTONOMYS_API_KEY: "key-123",
+          STORAGE_PROVIDER: "irys",
+          IRYS_PAYMENT_PRIVATE_KEY: "0xabc",
         }),
       ),
     ).to.not.throw();
