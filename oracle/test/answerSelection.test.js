@@ -98,6 +98,26 @@ describe("answer selection", () => {
       expect(looksLikeToolPayload("client.news.get('bitcoin')")).to.equal(true);
     });
 
+    it("recognises a raw JSON tool RESULT, not just a tool CALL", () => {
+      // The classifier was built around the recorded incident, which was a tool *invocation*. A
+      // tool's raw *return value* has no fence and no call in it, so it slipped through as prose
+      // and would have been stored as the paid answer.
+      expect(looksLikeToolPayload('{"news": [{"title": "BTC ETF inflows"}]}')).to.equal(true);
+      expect(looksLikeToolPayload('[{"symbol":"BTC","price":61000}]')).to.equal(true);
+    });
+
+    it("does not treat prose or a bare number as a JSON payload", () => {
+      // JSON.parse accepts primitives, so the check requires an object or array. A one-word
+      // answer is a poor answer, not a payload — and dropping it would be the worse error.
+      expect(looksLikeToolPayload("61000")).to.equal(false);
+      expect(looksLikeToolPayload("true")).to.equal(false);
+      expect(
+        looksLikeToolPayload(
+          "Bitcoin is consolidating near $61k, and exchange balances keep falling.",
+        ),
+      ).to.equal(false);
+    });
+
     it("recognises a call on a capitalised client object", () => {
       // `\b` cannot re-anchor inside `SDK`, and `fetchNews(` has no dot before its parenthesis,
       // so a lower-case-only leading class made this shape invisible. `SDK.news.get(…)` matched

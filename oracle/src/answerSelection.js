@@ -74,6 +74,25 @@ const ALL_INVOCATIONS = new RegExp(BARE_INVOCATION_SOURCE, "g");
 const MIN_PROSE_CHARS = 24;
 
 /**
+ * True when the whole text is a JSON object or array — i.e. a tool's raw return value.
+ *
+ * Primitives are excluded deliberately: `JSON.parse` accepts `"61000"` and `"true"`, and a
+ * one-word answer, while poor, is still an answer rather than a payload.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isJsonDocument(text) {
+  const trimmed = text.trim();
+  if (!/^[[{]/.test(trimmed)) return false; // cheap reject before parsing
+  try {
+    return typeof JSON.parse(trimmed) === "object";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * True when the text IS a tool call rather than an answer that happens to contain one.
  *
  * "Contains code" is not the test, and must not be. `chainSynthesisTemplate` — core's, ported
@@ -90,6 +109,12 @@ const MIN_PROSE_CHARS = 24;
  */
 function looksLikeToolPayload(text) {
   if (typeof text !== "string" || !text.trim()) return false;
+
+  // A raw tool RESULT rather than a tool CALL: no fences, no invocation, just the JSON the tool
+  // returned. Neither pattern below sees it, so without this it would be stored as the answer.
+  // Parsing is the test rather than a regex, because it cannot produce a false positive: an
+  // answer written for a human is never itself a well-formed JSON object or array.
+  if (isJsonDocument(text)) return true;
 
   const hasCode = HAS_FENCE.test(text) || HAS_INVOCATION.test(text);
   if (!hasCode) return false;
