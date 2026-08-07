@@ -180,6 +180,61 @@ ENV_YAML+="      # $SPLIT_DELIMITER\n"
 ENV_YAML+="      # =============================================================================\n"
 ENV_YAML+="$CONFIG_YAML"
 
+# --- PART 0.5: PREFLIGHT — refuse to generate a bundle from unusable config ---
+#
+# Everything below the delimiter is written into the ORC bundle as a LITERAL value, so a
+# bad one is not caught by any startup guard — it reaches the TEE and fails at use time.
+# Both failure modes below were found on real deploys, not hypothetically.
+#
+#   PLACEHOLDERS. `ethers` does NOT reject a non-address string when the Contract is
+#   constructed — it treats it as an ENS name and defers resolution:
+#       new ethers.Contract("0xYourAIAgentAddressHere", abi, provider)
+#         -> OK, target="0xYourAIAgentAddressHere"
+#   so the oracle BOOTS, looks healthy, accepts prompts, and then fails asynchronously
+#   on every answer while the wallet pays gas. Failing here — before an ORC exists —
+#   is the only place this can be stopped cheaply.
+#
+#   QUOTED VALUES. docker-compose does not strip surrounding quotes, so `KEY="MAX"`
+#   reaches the container as the 5-character string "MAX", quotes included, and an exact
+#   comparison silently takes the wrong branch. This is the same footgun documented for
+#   `mcp` in sense-ai-core's CLAUDE.md, where it cost several releases. `mcp` is the one
+#   legitimate exception: the script deliberately emits it bare.
+#
+# Secrets are NOT checked: they are opaque bytes by design (a credential may legitimately
+# contain quotes or the substring "your"), and they are injected at runtime rather than
+# baked in, so a bad one fails closed.
+. "$(dirname "$0")/rofl-config-patterns.sh"
+preflight_failures=""
+
+while IFS= read -r cfg_line; do
+  [ -z "$cfg_line" ] && continue
+  cfg_key="${cfg_line%%=*}"
+  cfg_key="${cfg_key#      - }"
+  cfg_val="${cfg_line#*=}"
+
+  # `mcp` is intentionally emitted bare-empty — see the plugin-mcp null-deref workaround.
+  [ "$cfg_key" = "mcp" ] && continue
+  [ -z "$cfg_val" ] && continue
+
+  if printf '%s' "$cfg_val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then
+    preflight_failures+="  ✗ ${cfg_key}=${cfg_val}\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
+  fi
+  case "$cfg_val" in
+    '"'*'"'|"'"*"'")
+      preflight_failures+="  ✗ ${cfg_key}=${cfg_val}\n      quoted — docker-compose keeps the quotes, so the container sees them as part of the value\n"
+      ;;
+  esac
+done <<< "$(printf '%b' "$CONFIG_YAML")"
+
+if [ -n "$preflight_failures" ]; then
+  echo ""
+  echo "❌ Preflight failed for '$ENV' — refusing to generate the compose block."
+  printf '%b' "$preflight_failures"
+  echo "   Fix these in oracle/.env.oracle{,.$ENV} and re-run. Nothing has been written or pushed."
+  exit 1
+fi
+echo "✅ Preflight: no placeholder or quoted values in the plaintext config."
+
 # --- PART 1: REGENERATE THE COMPOSE environment: BLOCK ---
 echo "📄 Updating '${COMPOSE_TEMPLATE}' environment block..."
 # The rewrite below targets the FIRST `environment:` key in the file, which is only

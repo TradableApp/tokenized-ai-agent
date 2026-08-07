@@ -80,7 +80,8 @@ Division of labour: **me** (no wallet) = trust-root refresh, image build, `rofl:
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
 - [ ] **A.5 Sync secrets (me; gcloud for any SM keys):** `bun run rofl:set:base-testnet`.
 - [ ] **A.6 Build the ORC (me):** `bun run rofl:build:base-testnet`. Re-verify the trust root survived (re-apply A.1 values if the build rewrote it).
-- [ ] **A.7 Commit `rofl.yaml` only (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6` (NOT `compose.yaml`, NOT the `.orc`).
+- [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6`. NOT the `.orc` (gitignored build artifact).
+  **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` remains the last-deployed snapshot; the per-env files are its sources.
 - [ ] **A.8 Push on-chain (you; passphrase):** `! bun run rofl:update:base-testnet`.
 - [ ] **A.9 Deploy (you; passphrase):** `! bun run rofl:deploy:base-testnet`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
 
@@ -157,10 +158,24 @@ stays open: prove it against the live oracle first.
 - [ ] Annotate/close **CU-86d3dwme6** (oracle body Brain migration verified on Base-testnet).
 - [ ] Update memory `project_oracle-brain-migration`.
 
+## Mainnet is not deployed yet — builds are blocked on purpose
+
+`oracle/.env.oracle.base-mainnet` still carries placeholder contract addresses and
+`PUBLIC_KEY`, so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
+bundle**. That is the intended state, not a broken checkout: `ethers` accepts a
+non-address string as an ENS name and defers resolution, so a bundle built from
+placeholders would boot healthy, accept prompts, and fail every answer while the wallet
+paid gas.
+
+To unblock it when Base mainnet contracts exist: fill the real values into
+`oracle/.env.oracle.base-mainnet` (NOT `compose.base-mainnet.yaml` — that file is
+regenerated), then `bun run rofl:set:base-mainnet`. The preflight failure message names
+both the file and the command.
+
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.
 - Cert name `rofl-oracle-base-testnet` — never reuse the social `rofl-<env>` on the shared instance.
-- Commit only `rofl.yaml`; `.orc` is gitignored; don't commit `compose.yaml`.
+- Commit `rofl.yaml` + ALL compose files (`compose.yaml` and the per-env ones). Only the `.orc` is gitignored. `rofl:build:<env>` now runs `scripts/rofl-preflight.sh` first, so a compose carrying placeholder or quoted values cannot be bundled.
 - ROFL deploy = `build → update → deploy`, never `restart`/`release`. **Never `oasis rofl machine release`.**
 - The oracle wallet (`0x0DEC…9a12`) needs Base Sepolia ETH for **every answer** — if it runs dry, prompts submit but never get answered (smoke times out → exit 1).
 - Testnet TEE lives ~1 h (`playground_short`) — run the smoke promptly after boot.

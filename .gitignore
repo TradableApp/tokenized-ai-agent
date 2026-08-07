@@ -159,11 +159,14 @@ node_modules
 /artifacts
 /.openzeppelin
 
-# Environment specific compose.*.yaml files
-compose.testnet.yaml
-compose.mainnet.yaml
-compose.base-testnet.yaml
-compose.base-mainnet.yaml
+# Environment-specific compose files are TRACKED, deliberately.
+# They hold no secrets — every credential is a `${VAR:-}` placeholder injected by
+# ROFL at runtime; the values live in the gitignored oracle/.env.oracle.* files.
+# Ignoring them broke a fresh clone: `rofl:build:<env>` does
+# `cp compose.<env>.yaml compose.yaml`, so with no committed source there is
+# nothing to copy and no deployment can be built. It also made per-env config
+# changes unreviewable — the base-mainnet Postgres realignment could not ship.
+# compose.yaml stays tracked too, as the last-deployed snapshot.
 
 # TypeChain files
 /typechain
