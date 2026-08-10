@@ -279,6 +279,56 @@ unreviewable change.
    any core-side PRs it surfaces (starting with applying `withTimeout` to core's own synthesis).
    Merging this is what unblocks Phase 3.
 
+## Base-testnet deploy result — 2026-08-10 (after PR A + B + #67)
+
+Deployed to the Sapphire-testnet TEE, oracle listening on Base Sepolia. **Smoke exited 0.**
+
+**Confirmed working in production:**
+- The startup guard passed inside the TEE — `--- INITIALIZING ORACLE SERVICE ---` is reached
+  only after `index.js` validates, so this is live proof of #67.
+- **No tool payload was stored.** The original defect is fixed on the real path.
+- Provenance intact: `reasoning=2`, `sources=10`.
+- Brain connected and contributed: the answer opens with real macro data (BTC dominance 58.49%,
+  Fear & Greed 30/100), so the warm cache read works end to end.
+- `Storage providers initialized (Arweave + Autonomys)` — confirms the review's finding that an
+  unset `STORAGE_PROVIDER` means BOTH providers, which is what the boot guard now encodes.
+
+**What the answer actually was, in full:**
+> Current macro data shows Bitcoin dominance holding at 58.49%, with global market sentiment
+> sitting in Fear at 30/100. 📉
+>
+> I am retrieving the latest verifiable on-chain metrics and network updates to analyse the
+> signal behind current price action. 🔍
+
+Half of that is substantive macro. The other half is **the acknowledgement** — it promises the
+news rather than delivering it, while ten news sources sit unused in `sources[]`. The prompt asked
+for the latest news on Bitcoin. So **AC 1 and AC 2 are demonstrably NOT met**, exactly as
+predicted: `handleChainSynthesis` is not exported from the plugin index, no analytical action
+runs, and nothing synthesises those sources into the answer. **PR C is what closes this.**
+
+### The smoke did not catch it — a real gap in 1.6
+
+Fed the stored answer back through `assessAnswer`: `{"fatal":[],"brain":[]}`. It passes because it
+mentions Bitcoin, carries a figure, is not code, and is not an apology.
+
+AC 5 only asked the smoke to reject code-fenced and apology-shaped answers, and it does. But
+**AC 2 — "the acknowledgement text is never the final stored answer" — has no detector at all**,
+and this run is precisely that violation passing as green. A smoke that reports PASS on an
+unmet acceptance criterion is the same class of defect 1.6 was written to fix.
+
+**Add to PR C:** an acknowledgement/stand-by detector — text that *promises* analysis ("I am
+retrieving…", "stand by", "analysing current…") rather than delivering it. It belongs with PR C
+rather than as a hotfix, because PR C is what makes the acknowledgement stop being the final
+answer; adding the assertion first would just turn a passing smoke red without changing the
+product. Land them together and the assertion has something to prove.
+
+### Separately: the warm cache is stale, not cold
+
+`sources[]` populated (hence exit 0, not 2), but the items are ~2 weeks old — Zcash's 28 July
+upgrade, an Injective npm compromise. Consistent with the standing note that the cache has had no
+writes since 2026-07-10. Even once synthesis lands, "latest news" would be answered from stale
+news. **Operational issue, tracked separately — do not read it as a port failure.**
+
 ## Risks
 
 | risk | mitigation |
