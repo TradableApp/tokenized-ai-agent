@@ -283,6 +283,30 @@ unreviewable change.
 
 Deployed to the Sapphire-testnet TEE, oracle listening on Base Sepolia. **Smoke exited 0.**
 
+**THE DECISIVE EVIDENCE — the payload was emitted and rejected, in the same run.** Log timeline
+for convId 15:
+
+```
+23:05:18  Intermediate response: "Current macro data shows Bitco…"     ← emission 1, prose
+23:05:27  MCP tool selection: query="news", language="python"
+23:05:28  Intermediate response: "```typescript\nasync function r…"    ← emission 2, THE PAYLOAD
+23:05:29  Processing complete signal received                           ← chain finished normally
+23:05:34  ✅ Answer submitted
+```
+
+Last-writer-wins would have stored the TypeScript block — the exact original defect, reproduced
+live. `selectAnswer` chose the prose instead. This is not an inference from the absence of a bug;
+the bug's input occurred and was rejected. **1.1 is proven in production.**
+
+**It was not cut short.** `onComplete` fired one second after the payload; the whole run took 47s.
+There was no news still coming, because the MCP call never sought news: the model asked CoinGecko's
+SDK *documentation* for `query:"news", language:"python"` and got TypeScript back. Waiting longer
+would have changed nothing.
+
+**And the news was already in hand.** The 10 items in `sources[]` came from the Brain's
+marketIntelligence provider, not from MCP. So the oracle HAD the news in its provider context and
+answered without using it — which is precisely the missing synthesis step, not a data gap.
+
 **Confirmed working in production:**
 - The startup guard passed inside the TEE — `--- INITIALIZING ORACLE SERVICE ---` is reached
   only after `index.js` validates, so this is live proof of #67.
@@ -328,6 +352,17 @@ product. Land them together and the assertion has something to prove.
 upgrade, an Injective npm compromise. Consistent with the standing note that the cache has had no
 writes since 2026-07-10. Even once synthesis lands, "latest news" would be answered from stale
 news. **Operational issue, tracked separately — do not read it as a port failure.**
+
+### Storage: no change needed, Autonomys is already the write path
+
+`Data uploaded to Autonomys ==> CID: bafkr6i…` — every write in this run went to Autonomys,
+including the answer MessageFile. Setting `STORAGE_PROVIDER=autonomys` would NOT select Autonomys:
+there is no such branch in `storage.js`, so the value falls into the same else-branch as unset. It
+would be a no-op that reads like a selection, which is worse than leaving it empty.
+
+The variable is really a badly-named boolean — "Irys-only, yes or no?" — where empty means
+"both initialised, write to Autonomys, keep Irys/Arweave readable for legacy data". Worth renaming
+one day; not worth touching before a deploy.
 
 ## Risks
 
