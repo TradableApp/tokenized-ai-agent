@@ -27,8 +27,8 @@ deployments:
     admin: oasis_testnet
     oci_repository: rofl.sh/e0295f90-67af-4065-aefa-d7de8f3a1fe4:1753991321
     trust_root:
-      height: 33342559
-      hash: e24c94fdc1d649f7b59af547df73fc5f47fb3b3e2b95b418866518289ab24796
+      height: 33414454
+      hash: 6bccd3b78e692b4b8bc1696cec09df9c7835f2390f60bb102270ea2c4968f8cd
     policy:
       quotes:
         pcs:
