@@ -102,6 +102,12 @@ function initializeOracle(networkName, privateKey, contractAddress) {
 
 module.exports = {
   initializeOracle,
+  /**
+   * The network names this oracle can actually run against — the keys of RPC_URL_MAP, exported
+   * so startupConfig can reject a typo at boot rather than duplicating the list and letting the
+   * two drift apart.
+   */
+  SUPPORTED_NETWORKS: Object.keys(RPC_URL_MAP),
   // Export internal functions for testing purposes
   loadContractArtifact,
 };

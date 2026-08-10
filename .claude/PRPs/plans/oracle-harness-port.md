@@ -148,13 +148,13 @@ from *inside* `handleChainSynthesis` (and `broadcastService`), wrapped in `gener
 leak triggers a **retry with a nudge** rather than a rejection. Bolting it on as a standalone
 post-filter would be yet another invented difference. It ships as part of 1.2's port.
 
-### 1.5 Startup guard validating required config **by name**
+### 1.5 Startup guard validating required config **by name** — ✅ DONE (PR B)
 Today a bad address surfaces as `contract runner does not support name resolution`, which never
 says which variable. Fail at boot, naming the variable — the same shape as the `setBrainAccessor`
 gate in #63. Covers `AUTONOMYS_API_KEY` / `IRYS_PAYMENT_PRIVATE_KEY`, which currently fail only
 *after* a user has paid.
 
-### 1.6 Harden the smoke
+### 1.6 Harden the smoke — ✅ DONE (PR B)
 It has now passed on an **apology** and on a **code block**, because non-empty
 `reasoning[]`/`sources[]` satisfies it. Feed both recorded failures in as fixtures and require
 rejection; add "answer references the asset asked about".
@@ -253,10 +253,13 @@ whichever body happens to be ported first.
 started Phase 2 on PR A's branch before catching it, which would have merged A and C as one
 unreviewable change.
 
-1. **PR A — [#65](https://github.com/TradableApp/tokenized-ai-agent/pull/65), OPEN.** 1.1 + 1.2 as
+1. **PR A — [#65](https://github.com/TradableApp/tokenized-ai-agent/pull/65), MERGED `30f8a61`.** 1.1 + 1.2 as
    a faithful `handleChainSynthesis` port (sanitize + retry-on-leak included, so old 1.4 ships
    here) + the plugin CI gate. 1.3 deleted, reason recorded above rather than silently dropped.
-2. **PR B:** 1.5 + 1.6 — startup guard + smoke hardening; independently reviewable.
+2. **PR B — OPEN.** 1.5 + 1.6. `startupConfig.js` refuses to boot on a config that cannot work,
+   naming every problem at once; `answerQuality.js` moves the smoke's judgement out of the
+   network script so it can be tested against the recorded failures. Verified: the code block,
+   the apology and a wrong-asset answer all PASSED the old smoke and all FAIL the new one.
 3. **Redeploy to base-testnet and re-run the smoke — after PR B, before PR C.** Only the hardened
    smoke can judge whether an answer is *real* rather than merely well-shaped; running it before
    1.6 is what let an apology and a code block both pass. This is a gate, not a trailing step.
