@@ -237,6 +237,34 @@ which is what 2.7 exists to prevent.
 
 ## PR C — detailed plan (written 2026-08-10, after the base-testnet run)
 
+### Owner decisions — settled, do not re-litigate
+
+1. **NEVER block a response.** Whatever the answer's quality, it gets stored and shown. An apology
+   is a valid answer to store.
+2. **Charge for it anyway, for now.** "Store but don't charge" is the better UX and is NOT
+   currently possible: `EVMAIAgent.submitAnswer` calls `aiAgentEscrow.finalizePayment` in the same
+   transaction, so storing IS charging. Separating them is a contract change with dApp and
+   subgraph consumers — a future improvement, explicitly out of scope here.
+3. **Prefer shared-package solutions over oracle-local forks** — One Brain, Two Bodies is the
+   direction, so when a fix could live in `plugin-senseai` or in the oracle body, it goes in the
+   plugin unless something forces otherwise.
+
+**Verified against the merged code — nothing blocks a response today:**
+
+| emitted | stored |
+| --- | --- |
+| ack + code payload | the ack |
+| ONLY a code payload | the payload, with an incident log |
+| ONLY raw JSON | the JSON |
+| ONLY an apology | **the apology** |
+| nothing at all | null → "generated no text" (pre-existing) |
+
+Every quality check added so far is either a *selection* between emissions or a *test-time*
+assertion. `assessAnswer` is smoke-only and cannot affect production. **This invariant is now a
+constraint on all remaining work: no check may turn an answer into no-answer.**
+
+
+
 ### Why the oracle ignored its own news — diagnosed, not guessed
 
 Both bodies put the SAME news in front of the model: same `getLatestEnrichedNews` from the Brain,
@@ -373,9 +401,10 @@ before committing:
 Verified for A: evaluators receive `callback` and `responses`, and `alwaysRun: true` runs them even
 when `didRespond` is false — so an evaluator CAN emit the final answer.
 
-**Preference is A**, because core has this bug too and a shared fix is worth more than an oracle
-patch — but only if the state-recompose wrinkle resolves cleanly. Spike both in C.0; if A proves
-awkward, take B and raise A with core at 2.7 rather than leaving core silently broken.
+**Take A** — it is the One Brain, Two Bodies answer, and core has this bug too. Resolve the
+state-recompose wrinkle while implementing C.1 rather than as a separate spike; if it proves
+genuinely awkward, ship C.1 without it and raise it as its own piece of work. Do NOT let this
+block the action ports, which are the substance of PR C.
 
 Two consequences worth deciding in PR C rather than discovering in Phase 3:
 
