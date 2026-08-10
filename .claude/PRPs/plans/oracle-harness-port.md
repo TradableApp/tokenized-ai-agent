@@ -348,19 +348,34 @@ synthesis. In chat that is merely an extra message; here it silently replaces th
 2. else the last substantive prose (today's rule),
 3. else the last emission (today's fallback, which stays an incident).
 
-#### Known hole: our action can be forced silent mid-chain
+#### The real hole: nothing synthesises when a third-party action ends the chain
 
 `handleChainSynthesis` only synthesises at `isLastStep`. If the model orders
-`GET_NEWS_DETAILS, CALL_MCP_TOOL`, our action passes its data forward and **emits nothing**, and
-MCP — which never calls our helper — becomes the last step. The accumulated action results are then
-never synthesised at all, so preference rule (1) has nothing to select.
+`GET_NEWS_DETAILS, CALL_MCP_TOOL`, our action correctly passes its data forward and emits nothing —
+and MCP, which never calls our helper, ends the chain. The accumulated results are never
+synthesised, so preference rule (1) has nothing to select.
 
-Core has the same hole and survives it because the user can just ask again. The oracle cannot.
-Mitigations in priority order: **C.2**'s instruction routes news to `GET_NEWS_DETAILS` so the mixed
-chain is rare; **C.8** decides whether MCP should be reachable for news at all. A body-level
-fallback — synthesise at `onComplete` when action results exist but no synthesis was emitted — is
-the robust fix but a real divergence from core, so it is a **follow-up to evaluate at 2.7**, not
-PR C scope.
+**This is not an argument for keeping MCP away from news.** We do not choose the actions — ElizaOS
+does, from the prompt — and a news answer is genuinely *better* with a live price alongside it.
+Mixed chains are the desirable case, not the failure case. Which makes this the common path for
+exactly the richest answers, not an edge case, and means the earlier "scope MCP away from news"
+framing was wrong and is dropped.
+
+The requirement is therefore: **whatever ends the chain, the accumulated results of every action
+must be synthesised into one answer.** Two candidate mechanisms, both needing a spike in C.0
+before committing:
+
+| | where | pro | wrinkle |
+| --- | --- | --- | --- |
+| **A. `FINAL_SYNTHESIS` evaluator** | shared plugin | benefits BOTH bodies; survives the Phase 3 extraction; core has the same hole and would gain the fix | `runtime.evaluate` re-composes state as `["RECENT_MESSAGES","EVALUATORS"]`, so accumulated `actionResults` are NOT in the state it hands over — the handler must re-read them via `ACTION_STATE`, and "has anything synthesised yet?" needs a marker that survives that recompose without module-level state (p-queue concurrency 5) |
+| **B. body-level at `onComplete`** | oracle only | simplest; C.0 already captures emissions and their action tags, so "nothing synthesised" is known for free | a real fork; leaves core broken; the body would still need the action results, which it does not currently hold |
+
+Verified for A: evaluators receive `callback` and `responses`, and `alwaysRun: true` runs them even
+when `didRespond` is false — so an evaluator CAN emit the final answer.
+
+**Preference is A**, because core has this bug too and a shared fix is worth more than an oracle
+patch — but only if the state-recompose wrinkle resolves cleanly. Spike both in C.0; if A proves
+awkward, take B and raise A with core at 2.7 rather than leaving core silently broken.
 
 Two consequences worth deciding in PR C rather than discovering in Phase 3:
 
@@ -406,12 +421,16 @@ source-overlap only as a secondary warning, never as a fatal.
 **Lands with C.1–C.3, not before.** Adding it first turns the smoke red without changing the
 product; landed together, it has something to prove.
 
-### C.8 — Decide whether `CALL_MCP_TOOL` should be reachable for news
+### C.8 — DROPPED: do not gate MCP
 
-It is legitimately useful for live price/market data. For news it is actively harmful: the Brain
-already has the news, and the MCP path burned a paid prompt searching SDK docs. Options: leave it
-and rely on C.2 routing news to `GET_NEWS_DETAILS`; or scope the MCP tool description away from
-news. Prefer the former — it is what core does, and C.2 is the mechanism.
+Originally "decide whether `CALL_MCP_TOOL` should be reachable for news". That was wrong on both
+counts. We do not select actions — ElizaOS does, from the prompt — so "reachable" is not ours to
+decide. And a news answer is *better* with a live price beside it, so suppressing the combination
+would degrade the product to work around a synthesis bug.
+
+The live run's SDK-doc search was a symptom of C.2's missing instruction (no sanctioned news path,
+so the model reached for the only tool it had), not evidence that MCP is harmful. Fixing C.2 and
+the multi-action synthesis in C.0 addresses the cause; the MCP tool stays exactly as it is.
 
 ### Acceptance for PR C
 - [ ] A news prompt returns synthesised prose citing the ticker items, not an acknowledgement
