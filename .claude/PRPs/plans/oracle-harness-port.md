@@ -235,6 +235,110 @@ which is what 2.7 exists to prevent.
 
 ---
 
+## PR C — detailed plan (written 2026-08-10, after the base-testnet run)
+
+### Why the oracle ignored its own news — diagnosed, not guessed
+
+Both bodies put the SAME news in front of the model: same `getLatestEnrichedNews` from the Brain,
+same `formatNewsTicker`, same 10 rows, same heading. The blocks are byte-identical. **The only
+difference is the instruction that follows the block.**
+
+| | core | oracle |
+| --- | --- | --- |
+| news rows | `getLatestEnrichedNews(ctx, 10)` | same fn, via `BrainService` |
+| rendering | `formatNewsTicker` | same |
+| heading | `### SOVEREIGN MARKET INTELLIGENCE (Local Ledger)` | identical (asserted by test) |
+| **trailing instruction** | **`INSTRUCTIONS: - This is a news article summary ticker. - …execute "GET_NEWS_DETAILS"`** | **nothing** |
+
+The omission was deliberate (#63): pointing a model at an action the oracle does not register
+invites a hallucinated tool call on a paid path. That reasoning was sound — but it removed **both**
+lines, including *"This is a news article summary ticker"*, which is the line that frames the block
+as usable at all.
+
+**The control case proves it.** The same run DID use the macro block — the answer opens with
+dominance 58.49% and Fear & Greed 30/100. Why? Because macro's instruction ships **inside the
+Brain's formatter**:
+
+```
+### MACRO MARKET ENVIRONMENT
+- Global Fear & Greed: …
+INSTRUCTION: Use this macro context to shape your tone.     ← inside formatMacroEnvironment
+```
+
+So the oracle inherited macro's instruction for free, and lost news's instruction because that one
+lives in the *provider* — body-local, and omitted here. The model used the block that told it what
+to do and ignored the block that did not.
+
+Deprived of framing, and asked for news, it reached for the only tool-shaped affordance it had:
+`CALL_MCP_TOOL`. That searched CoinGecko's **SDK documentation** (`query:"news",
+language:"python"`) and returned TypeScript. `selectAnswer` then correctly refused the code and
+stored the acknowledgement.
+
+**So the answer to "how do we get it to use its 10 sources" is not prompt-tuning.** It is: give it
+a sanctioned action for the deep dive, re-instate the instruction now that the action exists, and
+let that action synthesise the answer from the results — which is exactly what core does.
+
+### C.1 — Port `getNewsDetails` (the load-bearing change)
+
+Core's action: semantic search over the same warm cache, then `handleChainSynthesis` from inside
+its own handler. Port it with the two divergences already established for the oracle
+(`withTimeout` on model calls, degrade-never-throw), reusing the ported helper from PR A.
+
+- Reuse `BrainService` rather than `createBrainContext(runtime)` — the oracle's plugin-sql points
+  at the isolated `oracle_agent` DB, so a runtime-derived context reads the wrong database while
+  looking healthy. (Already recorded as a forced divergence for 2.7.)
+- Core's `getNewsDetails` uses `withTimeoutOrNull` around the intent classify and the embedding —
+  both already ported.
+
+### C.2 — Re-instate the INSTRUCTIONS block
+
+Only after C.1, so the instruction points at a registered action. Byte-identical to core's,
+because Phase 3 extracts this provider into the shared package and any wording delta becomes a
+merge conflict.
+
+**Follow-up for 2.7/Phase 3:** move the news instruction INTO `formatNewsTicker`, the way macro's
+already is. That is the structural fix — it makes this class of drift impossible rather than merely
+tested, and it is the same asymmetry that caused the bug.
+
+### C.3 — Port `analyzeAssetSentiment`
+
+The oracle's mock was deleted in #62 and never replaced. Same synthesis pattern.
+
+### C.4 — Port `recordActivity` telemetry
+Shared `daily_activity` table → Brain-side query, ElizaOS wrapper local.
+
+### C.5 — `healthCheckService` / `dailySummaryService`
+DB queries + Slack payload building to the Brain; Service wrapper and scheduling per body.
+
+### C.6 — `analyzeFinancialImage`, unhooked
+Vision prompt + parsing to the Brain; action registered but no intake.
+
+### C.7 — Acknowledgement detector for the smoke (justified by the live run)
+
+AC 2 says *"the acknowledgement text is never the final stored answer"*. There is no detector for
+it, and the base-testnet run passed green while violating it. `assessAnswer` returned
+`{"fatal":[],"brain":[]}` on an answer that promised analysis instead of delivering it.
+
+Detect text that *promises* rather than delivers — "I am retrieving…", "stand by",
+"analysing current…", "fetching real-time data" — with the same asymmetry discipline as the
+apology check: it must not fire on an answer that happens to mention retrieving something.
+
+**Lands with C.1–C.3, not before.** Adding it first turns the smoke red without changing the
+product; landed together, it has something to prove.
+
+### C.8 — Decide whether `CALL_MCP_TOOL` should be reachable for news
+
+It is legitimately useful for live price/market data. For news it is actively harmful: the Brain
+already has the news, and the MCP path burned a paid prompt searching SDK docs. Options: leave it
+and rely on C.2 routing news to `GET_NEWS_DETAILS`; or scope the MCP tool description away from
+news. Prefer the former — it is what core does, and C.2 is the mechanism.
+
+### Acceptance for PR C
+- [ ] A news prompt returns synthesised prose citing the ticker items, not an acknowledgement
+- [ ] AC 1 and AC 2 close on the SECOND base-testnet deploy
+- [ ] The smoke FAILS on the recorded acknowledgement from the 2026-08-10 run, added as a fixture
+- [ ] Provider text stays byte-identical to core's, asserted by test
+
 ## Phase 3 — Brain split + shared plugin (separate task, gated on 2.7)
 
 Move the framework-agnostic halves into `sense-ai-brain`, then extract the shared
