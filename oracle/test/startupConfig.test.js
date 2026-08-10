@@ -78,6 +78,27 @@ describe("startup config validation", () => {
     }
   });
 
+  it("accepts every key shape ethers itself accepts", () => {
+    // CAUGHT ONE STEP BEFORE A TEE OUTAGE. The deployed .env.oracle.base-testnet carries the key
+    // WITHOUT a 0x prefix, and ethers accepts that form — but the first version of this guard
+    // demanded the prefix, so it would have refused to boot a configuration that works.
+    //
+    // Asserted against ethers directly rather than against an assumption about ethers, because
+    // the assumption is what failed. The rule is "validate exactly what the consumer accepts",
+    // and here that means looser, not stricter — a guard that blocks a valid config is an outage
+    // of its own making.
+    const { ethers } = require("ethers");
+    const bare = "65de179c59e589cd6238" + "0".repeat(36) + "d28bf6ee";
+
+    for (const key of [bare, `0x${bare}`]) {
+      expect(() => new ethers.Wallet(key), `ethers should accept ${key.slice(0, 6)}…`).to.not.throw();
+      expect(
+        () => validateConfig(baseEnv({ PRIVATE_KEY: key })),
+        `guard must accept what ethers accepts: ${key.slice(0, 6)}…`,
+      ).to.not.throw();
+    }
+  });
+
   it("rejects a malformed private key", () => {
     // Same class as the address check, and the reason the guard is invoked from index.js BEFORE
     // aiAgentOracle is required: that module constructs an ethers Wallet at module scope, so a

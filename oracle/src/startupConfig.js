@@ -68,8 +68,18 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
  * truncated key otherwise reaches `new ethers.Wallet(...)` and fails there — and that happens at
  * MODULE LOAD in aiAgentOracle.js, so without validating here the caller sees an ethers stack
  * trace instead of a named variable. See the note on where this guard must be invoked.
+ *
+ * THE `0x` PREFIX IS OPTIONAL, because ethers accepts a bare 64-hex key and the deployed
+ * base-testnet env uses exactly that form. Requiring the prefix made this guard reject a
+ * configuration that works — caught during pre-deploy checks, one step before it would have
+ * refused to boot the TEE. A guard that blocks a valid config is worse than no guard: it is an
+ * outage of its own making, and it is how guards get deleted rather than fixed.
+ *
+ * The rule stays "validate exactly what the consumer accepts" — the same rule that made this
+ * check test the RAW value rather than a trimmed copy. Here it cuts the other way: looser, not
+ * stricter. Verified against ethers directly, not assumed.
  */
-const PRIVATE_KEY_HEX = /^0x[0-9a-fA-F]{64}$/;
+const PRIVATE_KEY_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
 
 /**
  * Which credentials a given STORAGE_PROVIDER actually needs.
