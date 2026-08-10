@@ -313,29 +313,54 @@ DB queries + Slack payload building to the Brain; Service wrapper and scheduling
 ### C.6 — `analyzeFinancialImage`, unhooked
 Vision prompt + parsing to the Brain; action registered but no intake.
 
-### C.0 — The two-callback contract (the seam the shared package must preserve)
+### C.0 — The N-callback contract, and reducing N to one stored answer
 
-A production `sense-ai-core` Telegram exchange (2026-08-10) shows the shape exactly. Asked about
-Ethereum upgrades, core sent **two messages**:
-
-1. *"Accessing the ledger to parse the news and developments surrounding upcoming Ethereum
-   upgrades…"* — the acknowledgement, from the REPLY in the action-selection pass.
-2. The synthesis: three cited items with links, an `Implication:` per item, and a closing
-   engagement question — from `GET_NEWS_DETAILS` → `handleChainSynthesis` → `callback`.
-
-**This validates the current architecture rather than changing it.** The shared plugin emits the
-same two callbacks in both bodies and must not know the difference. The BODY decides delivery:
+A production `sense-ai-core` Telegram exchange (2026-08-10) showed an acknowledgement followed by
+a cited synthesis. **That is one shape, not the contract.** ElizaOS picks the actions at runtime
+from the prompt; each action may emit a callback or stay silent, and third-party actions emit on
+their own terms. The real contract is **0..N callbacks in a runtime-determined order**:
 
 | | core (chat) | oracle (on-chain) |
 | --- | --- | --- |
-| callback 1 (ack) | rendered as its own message | must NOT be the stored answer |
-| callback 2 (synthesis) | rendered as its own message | IS the stored answer |
-| mechanism | none needed — each callback is a message | `selectAnswer` picks the last substantive |
+| N callbacks | N messages — all shown, order is the conversation | must reduce to exactly ONE immutable answer |
+| ack-only (no action) | one message | that IS the answer |
+| IGNORE (no callback) | nothing sent | `selectAnswer` → null → "generated no text" |
+| mechanism | none needed | body-local reduction policy |
 
-So `selectAnswer` stays in the oracle BODY, never in the shared package, and its lack of a core
-counterpart is correct rather than a gap. When `plugin-senseai` is extracted, **this contract is
-the thing to write down**: the plugin promises (ack, synthesis) as separate callbacks; consumers
-choose how to deliver them.
+Core never has to choose, so it has no reduction rule and needs none. The oracle must choose on
+every prompt, which is why `selectAnswer` lives in the BODY and has no core counterpart. **That is
+the thing to write down when `plugin-senseai` is extracted**: the plugin promises tagged callbacks;
+consumers decide delivery. A shared package that assumed "two messages" would be wrong for both.
+
+#### The reduction rule needs the action tags, which are currently thrown away
+
+Every emitter tags its callback with its origin — `handleChainSynthesis` uses
+`actions: [actionResult.data.actionName]`, plugin-mcp uses `["CALL_MCP_TOOL"]`, and so on. But
+`aiAgentOracle`'s `onResponse` pushes only `content.text`, discarding the attribution.
+
+That makes "last substantive prose" the only available rule, and it is wrong for a mixed chain.
+Concretely: `REPLY, GET_NEWS_DETAILS, CALL_MCP_TOOL` — plugin-mcp's `handleToolResponse` runs a
+reasoning prompt and emits **prose**, so MCP's summary arrives last and wins, discarding our
+synthesis. In chat that is merely an extra message; here it silently replaces the paid answer.
+
+**C.0 work:** capture `content.actions` alongside the text, and prefer, in order:
+1. an emission attributed to one of OUR analytical actions (the synthesis),
+2. else the last substantive prose (today's rule),
+3. else the last emission (today's fallback, which stays an incident).
+
+#### Known hole: our action can be forced silent mid-chain
+
+`handleChainSynthesis` only synthesises at `isLastStep`. If the model orders
+`GET_NEWS_DETAILS, CALL_MCP_TOOL`, our action passes its data forward and **emits nothing**, and
+MCP — which never calls our helper — becomes the last step. The accumulated action results are then
+never synthesised at all, so preference rule (1) has nothing to select.
+
+Core has the same hole and survives it because the user can just ask again. The oracle cannot.
+Mitigations in priority order: **C.2**'s instruction routes news to `GET_NEWS_DETAILS` so the mixed
+chain is rare; **C.8** decides whether MCP should be reachable for news at all. A body-level
+fallback — synthesise at `onComplete` when action results exist but no synthesis was emitted — is
+the robust fix but a real divergence from core, so it is a **follow-up to evaluate at 2.7**, not
+PR C scope.
 
 Two consequences worth deciding in PR C rather than discovering in Phase 3:
 
