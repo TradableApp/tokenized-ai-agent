@@ -313,15 +313,70 @@ DB queries + Slack payload building to the Brain; Service wrapper and scheduling
 ### C.6 — `analyzeFinancialImage`, unhooked
 Vision prompt + parsing to the Brain; action registered but no intake.
 
-### C.7 — Acknowledgement detector for the smoke (justified by the live run)
+### C.0 — The two-callback contract (the seam the shared package must preserve)
 
-AC 2 says *"the acknowledgement text is never the final stored answer"*. There is no detector for
-it, and the base-testnet run passed green while violating it. `assessAnswer` returned
-`{"fatal":[],"brain":[]}` on an answer that promised analysis instead of delivering it.
+A production `sense-ai-core` Telegram exchange (2026-08-10) shows the shape exactly. Asked about
+Ethereum upgrades, core sent **two messages**:
 
-Detect text that *promises* rather than delivers — "I am retrieving…", "stand by",
-"analysing current…", "fetching real-time data" — with the same asymmetry discipline as the
-apology check: it must not fire on an answer that happens to mention retrieving something.
+1. *"Accessing the ledger to parse the news and developments surrounding upcoming Ethereum
+   upgrades…"* — the acknowledgement, from the REPLY in the action-selection pass.
+2. The synthesis: three cited items with links, an `Implication:` per item, and a closing
+   engagement question — from `GET_NEWS_DETAILS` → `handleChainSynthesis` → `callback`.
+
+**This validates the current architecture rather than changing it.** The shared plugin emits the
+same two callbacks in both bodies and must not know the difference. The BODY decides delivery:
+
+| | core (chat) | oracle (on-chain) |
+| --- | --- | --- |
+| callback 1 (ack) | rendered as its own message | must NOT be the stored answer |
+| callback 2 (synthesis) | rendered as its own message | IS the stored answer |
+| mechanism | none needed — each callback is a message | `selectAnswer` picks the last substantive |
+
+So `selectAnswer` stays in the oracle BODY, never in the shared package, and its lack of a core
+counterpart is correct rather than a gap. When `plugin-senseai` is extracted, **this contract is
+the thing to write down**: the plugin promises (ack, synthesis) as separate callbacks; consumers
+choose how to deliver them.
+
+Two consequences worth deciding in PR C rather than discovering in Phase 3:
+
+- **Links.** Core's TG answer carries markdown links to each source. Core already parameterises
+  this per body — the X path has `stripUrls` for its link-free policy. The oracle needs an explicit
+  choice; default to KEEPING links, since citations are the point on a paid answer and the dApp
+  renders markdown.
+- **The closing question** ("are you tracking node efficiency…") is core's Proactive Guidance rule.
+  Harmless and arguably good for the oracle: conversations support follow-ups via `parentCID`, and
+  a follow-up is another prompt. No change.
+
+### C.7 — Prove a synthesis actually happened (redesigned — phrase-matching does not work)
+
+AC 2 says *"the acknowledgement text is never the final stored answer"*. There is no detector, and
+the base-testnet run passed green while violating it.
+
+**The obvious detector fails, and the TG transcript is what proves it.** A phrase list built from
+the oracle's own acknowledgement — "I am retrieving", "stand by", "analysing current" — was tested
+against core's REAL acknowledgement and **misses it entirely**:
+
+```
+proposed phrase detector:
+   oracle ack caught?  true
+   CORE ack caught?    false    <-- would MISS it
+```
+
+Acknowledgements are model-generated and phrased freely. Fitting a matcher to the one sample in
+hand is the same mistake as the 60-char apology threshold and the "any digit" substance proxy —
+both of which had to be redone. A "does the answer mention its sources" heuristic is closer to the
+real property but still needs a threshold, and core's ack already scores one incidental hit
+("Ethereum", "upgrades"), so that threshold would be fitted to three examples too.
+
+**Use the structural signal instead.** `runProvenance.recordThought` attributes each reasoning step
+to the action in flight; steps produced with no action carry no attribution. In the failing run
+`reasoning[0].title` was the generic `"Step 1"` — no analytical action ran, which is *exactly* what
+made the answer an acknowledgement.
+
+So the assertion is: **for an analytical prompt, at least one `reasoning[]` entry must be attributed
+to an analytical action** (`GET_NEWS_DETAILS`, `ANALYZE_ASSET_SENTIMENT`). That tests the cause
+rather than the prose, cannot be defeated by rephrasing, and needs no threshold. Keep
+source-overlap only as a secondary warning, never as a fatal.
 
 **Lands with C.1–C.3, not before.** Adding it first turns the smoke red without changing the
 product; landed together, it has something to prove.
