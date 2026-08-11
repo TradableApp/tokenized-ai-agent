@@ -246,22 +246,50 @@ describe("oracle Brain providers", () => {
       // was a proxy for this one and stopped being a good proxy the moment the action landed;
       // this checks the property that actually matters, so it keeps holding as more actions are
       // ported instead of having to be inverted again.
+      // EVERY provider, not just this one. Scoping it to MARKET_INTELLIGENCE would have left the
+      // hole half-open: MACRO_SENTIMENT's text comes from the Brain's formatMacroEnvironment,
+      // which is shared with core, so a future core-driven change there could name a Social-body
+      // action and land here silently — the same failure this test exists to prevent, arriving
+      // by a route the narrow version could not see.
       const registered = new Set((plugin.actions || []).map(a => a.name));
-      const result = await news().get(
-        runtimeWith({ brain: { getLatestNews: async () => rows } }),
-        {},
-        {},
-      );
+      const macroRow = {
+        fearGreedIndex: 20,
+        fearGreedClassification: "Fear",
+        btcDominance: 51,
+        ethDominance: 16,
+        moneySupply: 21000,
+        dailyEtfFlow: 0,
+        trendingWords: [],
+      };
+      const runtime = runtimeWith({
+        brain: { getLatestNews: async () => rows, getLatestMacro: async () => macroRow },
+      });
 
-      const named = result.text.match(/"([A-Z][A-Z0-9_]{3,})"/g) || [];
-      for (const quoted of named) {
-        const name = quoted.replace(/"/g, "");
+      let inspected = 0;
+      for (const provider of plugin.providers || []) {
+        // Fresh empty state per provider so turn-dedup does not blank the second one.
+        const result = await provider.get(runtime, {}, {});
+
+        // A scan over empty text passes trivially and proves nothing — the loop would report
+        // green while inspecting no context at all. Assert there was something to inspect.
         expect(
-          registered.has(name),
-          `context names "${name}" but this body registers no such action — a model told to run ` +
-            "it can only hallucinate a tool call, on the paid on-chain path",
-        ).to.equal(true);
+          (result.text || "").trim(),
+          `${provider.name} produced no context, so this guard scanned nothing — fix the stub`,
+        ).to.not.equal("");
+        inspected += 1;
+
+        const named = (result.text || "").match(/"([A-Z][A-Z0-9_]{3,})"/g) || [];
+        for (const quoted of named) {
+          const name = quoted.replace(/"/g, "");
+          expect(
+            registered.has(name),
+            `${provider.name} names "${name}" but this body registers no such action — a model ` +
+              "told to run it can only hallucinate a tool call, on the paid on-chain path",
+          ).to.equal(true);
+        }
       }
+
+      expect(inspected, "both Brain-backed providers must be covered").to.equal(2);
     });
 
     it("does not re-inject when the turn already has it", async () => {
