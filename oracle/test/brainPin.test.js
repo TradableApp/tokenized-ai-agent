@@ -30,7 +30,9 @@ const { expect } = require("chai");
 // identical, but locally the index is what is about to BE committed — so a staged bump is
 // validated before it lands, instead of the guard reporting the previous commit's pin.
 
-const EXPECTED_BRAIN_SHA = "11a9718d1e1aa589c07f2ddfe267c3f8d64eba43";
+// Brain #11 — searchNewsDetails, the data half of GET_NEWS_DETAILS. Bumped in lockstep with
+// sense-ai-core#87, which carries the identical SHA in src/__tests__/brain-pin.test.ts.
+const EXPECTED_BRAIN_SHA = "606b05590fabdba05e100afdb686e89df0b3139c";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
