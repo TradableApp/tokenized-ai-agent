@@ -134,7 +134,14 @@ export class BrainService extends Service {
    */
   async searchNewsDetails(opts: NewsSearchOptions): Promise<NewsSearchHit[]> {
     const h = await handles();
-    if (!h?.brain?.searchNewsDetails) {
+    // `ctx` is checked alongside the function, not just the function. A host accessor that
+    // returned a usable `brain` with a half-built `ctx` — brainContext failing partway through
+    // its Postgres bootstrap — would otherwise sail past this guard and fail deeper in, as a
+    // driver error about an undefined connection. The billing contract holds either way (the
+    // action's catch still marks it non-billable), so this is purely about which message an
+    // operator reads at 3am: "Brain unavailable" names the subsystem, a drizzle stack trace does
+    // not.
+    if (!h?.ctx || !h?.brain?.searchNewsDetails) {
       throw new Error(
         "Brain unavailable — cannot search the news ledger. Refusing to report an empty result " +
           "for a search that never ran.",

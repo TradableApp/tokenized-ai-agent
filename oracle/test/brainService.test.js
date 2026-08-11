@@ -173,6 +173,39 @@ describe("BrainService (host-injected adapter)", () => {
     expect(threw.message).to.contain("connection refused");
   });
 
+  it("throws the named error when the host supplies a brain but no ctx", async () => {
+    // A half-built handle set — brainContext failing partway through its Postgres bootstrap —
+    // used to sail past the guard, because only `brain.searchNewsDetails` was checked. The call
+    // then failed deeper in as a driver error about an undefined connection.
+    //
+    // The billing contract held either way (the action's catch marks it non-billable), so this
+    // is purely about which message an operator reads: "Brain unavailable" names the subsystem,
+    // a drizzle stack trace does not.
+    setBrainAccessor(async () => ({
+      sentimentEngine: {},
+      ctx: undefined,
+      brain: {
+        searchNewsDetails: async () => {
+          throw new Error("should never be reached — ctx was undefined");
+        },
+      },
+    }));
+
+    const svc = await BrainService.start({ getSetting: () => undefined });
+
+    let threw = null;
+    try {
+      await svc.searchNewsDetails({ query: "etf" });
+    } catch (error) {
+      threw = error;
+    }
+
+    expect(threw, "a missing ctx must be caught by the guard").to.be.an("error");
+    expect(threw.message, "and must name the subsystem, not leak a driver error").to.contain(
+      "Brain unavailable",
+    );
+  });
+
   it("throws rather than reporting 'no news' when the Brain is unavailable", async () => {
     // Same contract at the other end: no Brain is not evidence that no articles exist. Returning
     // [] here would answer "no significant records found" — a billable non-answer — when the
