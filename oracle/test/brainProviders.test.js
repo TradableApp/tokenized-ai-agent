@@ -278,13 +278,28 @@ describe("oracle Brain providers", () => {
         ).to.not.equal("");
         inspected += 1;
 
-        const named = (result.text || "").match(/"([A-Z][A-Z0-9_]{3,})"/g) || [];
-        for (const quoted of named) {
-          const name = quoted.replace(/"/g, "");
+        // ANCHORED ON THE IMPERATIVE, not on "any quoted ALLCAPS token".
+        //
+        // The first version matched /"([A-Z][A-Z0-9_]{3,})"/, which is any 4+ character quoted
+        // all-caps string anywhere in the context. Two of the three blocks scanned here are
+        // rendered by Brain formatters living in ANOTHER REPO, so the day one of them quotes a
+        // sentiment label or classification — "BULLISH", "FEAR" — this guard fails claiming a
+        // non-existent action, and the failure blames the wrong thing entirely.
+        //
+        // Matching `execute the "X" action` instead keys on the construct that actually creates
+        // the hazard: an instruction telling the model to RUN something. A quoted noun elsewhere
+        // in the context is not a tool call and was never this test's business.
+        //
+        // Relying on that phrasing is safe because it cannot drift silently: the instruction
+        // block is pinned byte-for-byte by `carries the GET_NEWS_DETAILS instruction, exactly as
+        // sense-ai-core does` above. Reword the instruction and that test fails first, which is
+        // the signal to update this pattern too.
+        const IMPERATIVE = /execute the "([A-Z][A-Z0-9_]{3,})" action/g;
+        for (const [, name] of (result.text || "").matchAll(IMPERATIVE)) {
           expect(
             registered.has(name),
-            `${provider.name} names "${name}" but this body registers no such action — a model ` +
-              "told to run it can only hallucinate a tool call, on the paid on-chain path",
+            `${provider.name} tells the model to execute "${name}", but this body registers no ` +
+              "such action — it can only hallucinate a tool call, on the paid on-chain path",
           ).to.equal(true);
         }
       }
