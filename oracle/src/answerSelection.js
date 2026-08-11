@@ -135,16 +135,61 @@ function looksLikeToolPayload(text) {
 }
 
 /**
+ * Actions of OURS whose emission is the synthesised answer rather than a step toward it.
+ *
+ * `handleChainSynthesis` tags its callback with the action that produced it, so an emission
+ * carrying one of these names is the thing we actually want stored.
+ */
+const SYNTHESIS_ACTIONS = new Set([
+  "GET_NEWS_DETAILS",
+  "ANALYZE_ASSET_SENTIMENT",
+  "ANALYZE_FINANCIAL_IMAGE",
+]);
+
+/**
+ * Normalises an emission to `{ text, actions }`.
+ *
+ * Accepts a bare string so callers without attribution — and every test written before it
+ * existed — keep working. Attribution is additive, never required.
+ */
+function normalise(entry) {
+  if (typeof entry === "string") return { text: entry, actions: [] };
+  if (entry && typeof entry.text === "string") {
+    return { text: entry.text, actions: Array.isArray(entry.actions) ? entry.actions : [] };
+  }
+  return { text: "", actions: [] };
+}
+
+/**
  * Picks the answer from everything the run emitted, in emission order.
  *
- * @param {Array<string>} [emitted]
+ * WHY ATTRIBUTION BEATS RECENCY. ElizaOS chooses the actions at runtime from the prompt, so a
+ * turn is 0..N callbacks in an order we do not control. "Last substantive" is wrong for a mixed
+ * chain: `plugin-mcp`'s `handleToolResponse` runs a reasoning prompt and emits PROSE, so on
+ * `GET_NEWS_DETAILS, CALL_MCP_TOOL` the MCP summary arrives last and would silently replace our
+ * synthesis. Core never hits this because every callback is its own chat message; the oracle
+ * must choose exactly one, so the choice has to be informed by WHO emitted.
+ *
+ * Mixed chains are desirable — a news answer is better with a live price beside it — so the fix
+ * is to prefer our synthesis, never to keep other actions away from the chain.
+ *
+ * @param {Array<string | {text: string, actions?: string[]}>} [emitted]
  * @returns {string|null} the answer, or null when nothing usable was emitted
  */
 function selectAnswer(emitted) {
   if (!Array.isArray(emitted)) return null;
 
-  const candidates = emitted.filter((t) => typeof t === "string" && t.trim());
-  if (candidates.length === 0) return null;
+  const entries = emitted.map(normalise).filter((e) => e.text.trim());
+  if (entries.length === 0) return null;
+
+  // Attribution outranks recency, but never substance: a payload is not an answer whoever
+  // emitted it, so a synthesis that somehow emitted code falls through to the rules below.
+  const synthesised = entries.filter(
+    (e) => e.actions.some((a) => SYNTHESIS_ACTIONS.has(a)) && !looksLikeToolPayload(e.text),
+  );
+  if (synthesised.length > 0) return synthesised[synthesised.length - 1].text;
+
+  const candidates = entries.map((e) => e.text);
 
   // Last substantive emission: later text supersedes earlier text (an actual answer
   // beats the acknowledgement that preceded it), but a tool payload is not an answer

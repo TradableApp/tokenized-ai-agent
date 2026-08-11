@@ -899,7 +899,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   // We use handleMessage which runs the full processing pipeline:
   // Context -> Action Selection -> Evaluation -> Response
   return new Promise(async (resolve, reject) => {
-    // EVERY emission is kept, and the answer is chosen at the end — see answerSelection.
+    // EVERY emission is kept WITH ITS ATTRIBUTION, and the answer is chosen at the end — see
+    // answerSelection.
     // Assigning on each onResponse meant the last emission won, so a CALL_MCP_TOOL
     // payload became the user's answer (base-testnet stored a TypeScript snippet; an
     // earlier run stored an apology). Callback ordering must not decide what a user is
@@ -941,7 +942,16 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               runProvenance.recordThought(runId, content.thought);
             }
 
-            if (typeof content.text === "string") emittedTexts.push(content.text);
+            // Keep the ATTRIBUTION, not just the text. Every emitter tags its callback with the
+            // action that produced it, and discarding that tag left "last substantive" as the
+            // only selection rule — which picks a third-party action's prose over our own
+            // synthesis whenever the model happens to order it last. See answerSelection.
+            if (typeof content.text === "string") {
+              emittedTexts.push({
+                text: content.text,
+                actions: Array.isArray(content.actions) ? content.actions : [],
+              });
+            }
           },
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
