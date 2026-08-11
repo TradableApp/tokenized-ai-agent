@@ -1,4 +1,9 @@
 import { elizaLogger, type IAgentRuntime, Service } from "@elizaos/core";
+// The Brain's OWN types for the search boundary. Typing them here rather than in the action is
+// what lets `actions/getNewsDetails.ts` stay a literal copy of core's — core reaches the Brain
+// directly and gets these types for free, so the oracle's adapter has to supply the same shape
+// or the copied call sites would need casts core does not have.
+import type { NewsSearchHit, NewsSearchOptions } from "@tradableapp/sense-ai-brain";
 
 /**
  * The oracle's adapter onto the shared Brain.
@@ -127,7 +132,7 @@ export class BrainService extends Service {
    *
    * @param opts forwarded to the Brain verbatim: { query?, tickers?, embedding?, targetTitles? }
    */
-  async searchNewsDetails(opts: unknown): Promise<unknown[]> {
+  async searchNewsDetails(opts: NewsSearchOptions): Promise<NewsSearchHit[]> {
     const h = await handles();
     if (!h?.brain?.searchNewsDetails) {
       throw new Error(
