@@ -255,6 +255,97 @@ describe("GET_NEWS_DETAILS (oracle port)", () => {
     expect(result.text).to.contain("Error accessing market ledger");
   });
 
+  it("does NOT bill when the TITLE-LOOKUP query fails", async () => {
+    // MIRRORS sense-ai-core's test of the same name, added there after a review round found the
+    // billing contract covered only the hybrid path. The oracle has the identical exposure:
+    // Strategy A issues its own query against the same Cloud SQL instance, so "tell me more about
+    // that BlackRock article" could be charged during an outage while the same failure on a broad
+    // query was not.
+    //
+    // Not safe to assume symmetry with the test above either — the two strategies take different
+    // paths through the Brain (bare `.select()` vs a projection, different filters), so "the
+    // hybrid path propagates" is not evidence that the title lookup does.
+    //
+    // It matters MORE here than in core: storing an answer on this body IS charging for it, since
+    // submitAnswer and finalizePayment share a transaction.
+    const runtime = buildRuntime({
+      intent: { type: "specific", targetTitles: ["BTC ETF inflows accelerate"], query: null },
+      search: async () => {
+        throw new Error("connection refused");
+      },
+    });
+
+    const result = await action.handler(
+      runtime,
+      { roomId: "room-1", content: { text: "tell me more about that ETF article" } },
+      undefined,
+      MID_CHAIN,
+      async () => {},
+      [],
+    );
+
+    expect(result.success).to.equal(false);
+    expect(result.data.isBillable, "a failed title lookup must never be billed either").to.equal(
+      false,
+    );
+    expect(result.error).to.contain("connection refused");
+    expect(result.text).to.contain("Error accessing market ledger");
+  });
+
+  it("renders similarity as a percentage, or 'Exact' when the strategy did not rank", async () => {
+    // MIRRORS sense-ai-core's guard for the same expression. Copied because the rendering is
+    // core's and must stay identical — it lands in the LLM-facing observation, so a divergence
+    // here changes what the two bodies put in front of the model.
+    //
+    // The `"Exact"` case is not hypothetical: the title-lookup strategy returns no `similarity`
+    // at all, so every title lookup renders "Exact".
+    const ranked = await action.handler(
+      buildRuntime({ intent: { type: "broad", query: "etf" }, search: async () => ROWS }),
+      { roomId: "room-1", content: { text: "any etf news?" } },
+      undefined,
+      MID_CHAIN,
+      async () => {},
+      [],
+    );
+    expect(ranked.data.articles, "the ranked query must produce one article").to.have.lengthOf(1);
+    expect(ranked.data.articles[0].similarity, "0.82 must render as 82").to.equal(82);
+
+    // A row with no `similarity` key — what Strategy A actually returns.
+    const { similarity: _dropped, ...rowWithoutSimilarity } = ROWS[0];
+    const unranked = await action.handler(
+      buildRuntime({
+        intent: { type: "specific", targetTitles: ["BTC ETF inflows accelerate"], query: null },
+        search: async () => [rowWithoutSimilarity],
+      }),
+      { roomId: "room-1", content: { text: "tell me more about that ETF article" } },
+      undefined,
+      MID_CHAIN,
+      async () => {},
+      [],
+    );
+    expect(unranked.data.articles).to.have.lengthOf(1);
+    expect(unranked.data.articles[0].similarity, "an unranked hit renders 'Exact'").to.equal(
+      "Exact",
+    );
+
+    // A similarity of exactly 0 is RANKED, not unranked. core switched this from a truthiness
+    // gate to `!= null` in its #88 precisely because the truthy form rendered 0 as "Exact" — the
+    // opposite of the truth. Pinned here so the two bodies cannot drift back apart.
+    const zero = await action.handler(
+      buildRuntime({
+        intent: { type: "broad", query: "etf" },
+        search: async () => [{ ...ROWS[0], similarity: 0 }],
+      }),
+      { roomId: "room-1", content: { text: "any etf news?" } },
+      undefined,
+      MID_CHAIN,
+      async () => {},
+      [],
+    );
+    expect(zero.data.articles).to.have.lengthOf(1);
+    expect(zero.data.articles[0].similarity, "similarity 0 is ranked, not 'Exact'").to.equal(0);
+  });
+
   it("does NOT bill when the Brain service is unregistered", async () => {
     // Same contract at the other end: "we never looked" is not evidence that no articles exist.
     const runtime = buildRuntime({ noBrain: true, intent: { type: "broad", query: "etf" } });
