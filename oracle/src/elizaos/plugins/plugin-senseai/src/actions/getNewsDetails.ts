@@ -298,7 +298,8 @@ export const getNewsDetailsAction: Action = {
           // The assertions change ZERO runtime behaviour — same Date, same truthiness check,
           // same arithmetic. Fixing the underlying types belongs in core, where the errors
           // actually originate; doing it here would fork the file for a defect it did not
-          // introduce. Tracked as a core Bug Tracking task.
+          // introduce. Tracked as CU-86d403h5a — when core lands the fix, DELETE these two
+          // assertions so this file goes back to being a pure copy.
           publishedAt: new Date(item.publishedAt as string).toISOString().split("T")[0],
           // Normalized similarity score for debugging
           similarity: item.similarity ? Math.round((item.similarity as number) * 100) : "Exact",
