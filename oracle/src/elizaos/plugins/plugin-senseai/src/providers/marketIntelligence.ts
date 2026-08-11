@@ -24,15 +24,35 @@ const NEWS_LIMIT = 10;
 export const NEWS_BLOCK_HEADER = "### SOVEREIGN MARKET INTELLIGENCE (Local Ledger)";
 
 /**
+ * The instruction block that tells the model what it may DO with the ticker. Byte-identical to
+ * sense-ai-core's, and exported for the same reason as the heading: so a test asserts it rather
+ * than a comment claiming it.
+ */
+export const NEWS_BLOCK_INSTRUCTIONS = `INSTRUCTIONS:
+- This is a news article summary ticker.
+- If the user asks for a deep dive, or asks about a specific topic/coin, execute the "GET_NEWS_DETAILS" action.`;
+
+/**
  * Injects the enriched-news ticker into the agent's context — the oracle's half of the pair
  * sense-ai-core injects, rendered by the shared Brain's own `formatNewsTicker`.
  *
- * ONE DELIBERATE DIVERGENCE FROM CORE. Core's version appends an instruction telling the model
- * to execute `GET_NEWS_DETAILS` for a deep dive. That action exists only in the Social body, and
- * it is explicitly a Social-body affordance. Repeating it here would instruct the oracle's LLM
- * to call an action that is not registered, inviting a hallucinated tool call on the ON-CHAIN
- * answer path — where the failure reaches a user who has already paid for the prompt, rather
- * than a chat window where they can simply ask again. The ticker is injected as context only.
+ * THIS FILE USED TO OMIT CORE'S INSTRUCTION BLOCK, and that omission was the bug.
+ *
+ * The reasoning behind it was sound at the time and is now void: `GET_NEWS_DETAILS` did not
+ * exist on this body, so naming it would have invited a hallucinated tool call on the paid
+ * on-chain path. It is registered now (see `../actions/getNewsDetails`), so the instruction
+ * names a real action and the divergence has to go.
+ *
+ * WHAT THE OMISSION ACTUALLY COST, because it is not obvious. Both bodies inject byte-identical
+ * news; core simply appended an `INSTRUCTIONS:` block naming the action and this one appended
+ * nothing. The model therefore had ten fresh articles in front of it and no sanctioned way to
+ * reach past the headlines — so it reached for `CALL_MCP_TOOL` instead, searched the CoinGecko
+ * SDK documentation, and answered a news question with a TypeScript snippet.
+ *
+ * The control case is what makes this conclusive rather than plausible: the SAME run used the
+ * macro block correctly, because macro's instruction ships INSIDE the Brain's
+ * `formatMacroEnvironment` and so could not be dropped by a body. Injected context alone does
+ * not get used; context plus a named action does.
  *
  * Turn-state dedup mirrors core: composeState may invoke providers more than once per turn, and
  * repeating the ticker burns context window that the oracle's answer needs.
@@ -57,23 +77,21 @@ export const marketIntelligenceProvider: Provider = {
       const latestNews = await brain.getLatestNews(NEWS_LIMIT);
       if (!latestNews || latestNews.length === 0) return EMPTY;
 
-      // Byte-identical to sense-ai-core's marketIntelligenceProvider, heading and leading
-      // newline included — the two bodies must put the SAME news block in front of the model.
-      // It read "(Warm Cache)" here and "(Local Ledger)" in core: same shared Postgres table,
-      // two names, and a silent divergence in the LLM-facing text. Core's wording wins because
-      // it is the one already deployed; NEWS_BLOCK_HEADER is asserted in brainProviders.test.js
-      // so the next edit has to be deliberate.
+      // Byte-identical to sense-ai-core's marketIntelligenceProvider — heading, instruction
+      // block, and leading newline included. The two bodies must put the SAME news block in
+      // front of the model, and every part of this string that was composed locally has already
+      // drifted once: the heading read "(Warm Cache)" here against "(Local Ledger)" in core, and
+      // the instruction block was missing entirely. Both are now exported constants asserted in
+      // brainProviders.test.js, so the next edit has to be deliberate.
       //
-      // The heading belongs in the Brain's formatNewsTicker so drift is impossible rather than
-      // merely tested — tracked as a follow-up, since it is a cross-repo change.
-      //
-      // What deliberately does NOT match: core appends a GET_NEWS_DETAILS instruction. That
-      // action is a Social-body affordance the oracle does not register, and telling a model to
-      // invoke an action that does not exist invites a hallucinated tool call.
+      // The whole block belongs in the Brain's formatNewsTicker so drift is impossible rather
+      // than merely tested — tracked as a follow-up, since it is a cross-repo change.
       return {
         text: `
 ${NEWS_BLOCK_HEADER}
 ${formatNewsTicker(latestNews as any)}
+
+${NEWS_BLOCK_INSTRUCTIONS}
 `,
         values: { MARKET_INTELLIGENCE_INJECTED: true },
         data: { latestNews },

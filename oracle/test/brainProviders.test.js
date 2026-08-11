@@ -204,17 +204,64 @@ describe("oracle Brain providers", () => {
       expect(result.text.startsWith(`\n${CORE_HEADER}\n`), result.text.slice(0, 80)).to.equal(true);
     });
 
-    it("omits the Social-body GET_NEWS_DETAILS instruction", async () => {
-      // core's version appends "execute the GET_NEWS_DETAILS action" — an affordance that only
-      // exists in the Social body. Instructing the oracle's LLM to call an action that is not
-      // registered here invites a hallucinated tool call on the ON-CHAIN answer path, where the
-      // failure surfaces to a paying user rather than in a chat window.
+    it("carries the GET_NEWS_DETAILS instruction, exactly as sense-ai-core does", async () => {
+      // THIS TEST USED TO ASSERT THE OPPOSITE, and the inversion is the fix.
+      //
+      // The old rule ("omit it — that action is Social-body only") was correct while
+      // GET_NEWS_DETAILS was unregistered here: naming a non-existent action would invite a
+      // hallucinated tool call on the paid on-chain path. The action is registered now, so the
+      // premise is gone and the omission became the bug.
+      //
+      // What it cost: both bodies inject byte-identical news, but only core named a way to act
+      // on it. Given ten fresh articles and no sanctioned path past the headlines, this body's
+      // model reached for CALL_MCP_TOOL, searched the CoinGecko SDK docs, and answered a news
+      // question with a TypeScript snippet. The control case is that the same run used the macro
+      // block correctly — macro's instruction ships INSIDE the Brain's formatMacroEnvironment,
+      // so no body could drop it.
+      //
+      // Hard-coded rather than imported from the provider, for the same reason as the heading
+      // above: a test that reads the constant it is checking proves nothing. Copied from
+      // sense-ai-core/src/plugins/plugin-senseai/src/providers/marketIntelligence.ts.
+      const CORE_INSTRUCTIONS =
+        "INSTRUCTIONS:\n" +
+        "- This is a news article summary ticker.\n" +
+        "- If the user asks for a deep dive, or asks about a specific topic/coin, execute the " +
+        '"GET_NEWS_DETAILS" action.';
+
       const result = await news().get(
         runtimeWith({ brain: { getLatestNews: async () => rows } }),
         {},
         {},
       );
-      expect(result.text).to.not.match(/GET_NEWS_DETAILS/i);
+
+      expect(result.text).to.contain(CORE_INSTRUCTIONS);
+      // Trailing newline included: core's template literal closes the same way.
+      expect(result.text.endsWith(`${CORE_INSTRUCTIONS}\n`), result.text.slice(-120)).to.equal(
+        true,
+      );
+    });
+
+    it("names only actions this body actually registers", async () => {
+      // The generalised form of the rule the inverted test above used to enforce. The old rule
+      // was a proxy for this one and stopped being a good proxy the moment the action landed;
+      // this checks the property that actually matters, so it keeps holding as more actions are
+      // ported instead of having to be inverted again.
+      const registered = new Set((plugin.actions || []).map(a => a.name));
+      const result = await news().get(
+        runtimeWith({ brain: { getLatestNews: async () => rows } }),
+        {},
+        {},
+      );
+
+      const named = result.text.match(/"([A-Z][A-Z0-9_]{3,})"/g) || [];
+      for (const quoted of named) {
+        const name = quoted.replace(/"/g, "");
+        expect(
+          registered.has(name),
+          `context names "${name}" but this body registers no such action — a model told to run ` +
+            "it can only hallucinate a tool call, on the paid on-chain path",
+        ).to.equal(true);
+      }
     });
 
     it("does not re-inject when the turn already has it", async () => {

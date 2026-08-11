@@ -1,0 +1,368 @@
+import {
+  type Action,
+  type ActionResult,
+  elizaLogger,
+  type HandlerCallback,
+  type HandlerOptions,
+  type IAgentRuntime,
+  type Memory,
+  ModelType,
+  type State,
+} from "@elizaos/core";
+
+import type { BrainService } from "../services/brain";
+import { handleChainSynthesis } from "../utils/actionChainHelper";
+import { withTimeoutOrNull } from "../utils/withTimeout";
+
+/**
+ * PORTED FROM sense-ai-core, deliberately as a near-verbatim copy.
+ *
+ * The two bodies must answer a news question the SAME way — same intent extraction, same search
+ * strategies, same formatting, same synthesis — so this file is core's
+ * `actions/getNewsDetails.ts` with the smallest possible set of changes. Everything analytical
+ * already lives in the shared Brain; what remains here is ElizaOS wiring, and wiring is exactly
+ * where the two bodies legitimately differ.
+ *
+ * There are exactly TWO deviations, both forced, both marked `ORACLE DIVERGENCE` at their site:
+ *
+ *   1. HOW THE LEDGER IS REACHED. core calls `searchNewsDetails(createBrainContext(runtime), …)`
+ *      because in the Social body `runtime.db` IS the shared `senseai` cache. Here it is not:
+ *      plugin-sql owns `POSTGRES_URL` pointed at the ISOLATED `oracle_agent` database, which has
+ *      no news table at all. core's line would compile, run, and query the wrong database. The
+ *      host injects the real cache handle instead and this file goes through BrainService.
+ *
+ *   2. NO BROADCASTS_LIVE KILL SWITCH. core opens its handler by refusing to answer when
+ *      `BROADCASTS_LIVE=false`, a launch-day switch that keeps the Telegram bot silent while
+ *      data syncs. Porting it here would mean accepting a paid on-chain prompt and then
+ *      declining to answer it — the escrow has already moved, so silence is not free the way it
+ *      is in a chat window. The oracle's gate is on-chain ($ABLE/escrow), enforced before a
+ *      prompt is ever emitted.
+ *
+ * Everything else — the extraction prompt, the two strategies, the fallback chain, the
+ * observation block, the examples — is copied. Resist "improving" it here: a fix that belongs to
+ * both bodies belongs in the Brain, and a fix that belongs to core belongs in core.
+ */
+
+// The model deadline is NOT an oracle divergence — it is core's own value, copied. In the ROFL
+// TEE the outbound proxy can hang a connection indefinitely (#64); without a bound the whole
+// news query stalls until ElizaOS's 90s guard swallows it with no reply.
+const MODEL_TIMEOUT_MS = 15_000;
+
+// SIMILARITY_THRESHOLD and MAX_RESULTS are intentionally absent, matching core: both moved into
+// the Brain's searchNewsDetails alongside the query they parameterise, so neither body carries a
+// copy that no longer has any effect.
+
+/**
+ * Structured output from the Intent Extraction LLM step.
+ * Allows the handler to switch between "Lookup Mode" (SQL) and "Discovery Mode" (Vector).
+ */
+interface SearchIntent {
+  type: "specific" | "broad";
+  query?: string; // General topic keywords (e.g. "ETF regulation")
+  tickers?: string[]; // Array of specific assets (e.g. ["BTC", "ETH"])
+  targetTitles?: string[]; // Array of specific article titles found in context
+}
+
+/** The row shape the Brain returns and this action formats. */
+interface NewsHit {
+  similarity: number;
+  title: string;
+  url: string;
+  fullContent?: string;
+  summary?: string;
+  source?: string;
+  publishedAt?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Retrieves full article content, metadata, and analysis for market news.
+ *
+ * MECHANISM:
+ * 1. Inspects recent conversation history (including Agent's internal thoughts).
+ * 2. Extracts search intent: Is this a direct lookup of a cited link, or a new search?
+ * 3. Executes Strategy:
+ *    - Strategy A: Batch Title Lookup (SQL ILIKE query).
+ *    - Strategy B: Hybrid Search (Vector Similarity + Ticker string matching).
+ * 4. Orchestration: Ensures a 'REPLY' action follows to present findings to the user.
+ */
+export const getNewsDetailsAction: Action = {
+  name: "GET_NEWS_DETAILS",
+  similes: [
+    "search news",
+    "find crypto news",
+    "read article",
+    "check market news",
+    "investigate ticker",
+    "analyze source",
+    "compare articles",
+  ],
+  description:
+    "Searches the sovereign ledger. Capable of retrieving specific articles by Title (from context) or performing semantic discovery on topics/tickers.",
+
+  validate: async () => true,
+
+  handler: async (
+    runtime: IAgentRuntime,
+    message: Memory,
+    state?: State,
+    options: HandlerOptions = {},
+    callback?: HandlerCallback,
+    responses?: Memory[],
+  ): Promise<ActionResult> => {
+    elizaLogger.info("Executing GET_NEWS_DETAILS action.");
+
+    // ORACLE DIVERGENCE 2 — core's BROADCASTS_LIVE guard sits here and is deliberately absent.
+    // See the file header: refusing to answer a prompt the escrow has already charged for is a
+    // worse failure than a chat window going quiet.
+
+    try {
+      // ORACLE DIVERGENCE 1 — the ledger handle.
+      // Resolved inside the try so an unavailable Brain lands in the SAME catch as a failed
+      // query, producing the non-billable error result rather than an empty "no records found"
+      // that reads as a successful, billable answer.
+      const brain = runtime.getService<BrainService>("brain");
+      if (!brain) {
+        throw new Error(
+          "Brain service unregistered — cannot search the news ledger. Refusing to report an " +
+            "empty ledger for a search that never ran.",
+        );
+      }
+
+      // =================================================================
+      // 1. CONTEXT PREPARATION
+      // =================================================================
+      // We need to see the Agent's *internal thoughts* to resolve references like
+      // "tell me about that article". We fetch memories specifically from the 'messages' table.
+      const recentMemories = await runtime.getMemories({
+        roomId: message.roomId,
+        count: 10,
+        unique: false, // We want the exact sequential conversation flow
+        tableName: "messages",
+      });
+
+      // Construct a rich history string exposing hidden context to the LLM
+      const contextHistory = recentMemories
+        .reverse() // Oldest to newest
+        .map((m) => {
+          const sender = m.entityId === runtime.agentId ? "Agent" : "User";
+          // Expose the internal thought process where citations usually live
+          const thought = m.content.thought ? `\n(Internal Thought: ${m.content.thought})` : "";
+          // Expose structured metadata if available
+          const metadataUrl = m.content.url ? `\n(Metadata URL: ${m.content.url})` : "";
+          return `${sender}: ${m.content.text}${thought}${metadataUrl}`;
+        })
+        .join("\n---\n");
+
+      // =================================================================
+      // 2. INTENT EXTRACTION
+      // =================================================================
+      const extractionPrompt = `
+        TASK: Analyze the user's request and the recent conversation history to determine the search intent.
+
+        CONVERSATION HISTORY:
+        ${contextHistory}
+
+        CURRENT MESSAGE: "${message.content.text}"
+
+        INSTRUCTIONS:
+        1. CITATION LOOKUP: Is the user EXPLICITLY asking to retrieve or follow up on a specific article title previously mentioned or thought internally by the Agent? (e.g., "tell me more about the blackrock article").
+           - If YES, extract the relevant titles. Look for exact article titles in the recent conversation context. Set type="specific" and populate "targetTitles".
+           - If NO, leave targetTitles null. DO NOT extract titles simply because they exist in the history.
+
+        2. TICKER SEARCH: Is the user asking about specific assets (e.g. "Solana", "BTC vs ETH")?
+           - Extract ALL tickers mentioned. Set tickers=["SOL", "BTC", "ETH"].
+
+        3. TOPIC SEARCH: Otherwise, extract specific keywords for a semantic search.
+
+        OUTPUT JSON:
+        {
+          "type": "specific" | "broad",
+          "tickers": string[] | null,
+          "query": string | null,
+          "targetTitles": string[] | null
+        }
+      `;
+
+      // Intent extraction is guarded: if the model hangs/fails, fall back to a
+      // broad search over the raw message text rather than stalling the query.
+      const intent = ((await withTimeoutOrNull(
+        runtime.useModel(ModelType.OBJECT_SMALL, {
+          prompt: extractionPrompt,
+          schema: {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["specific", "broad"] },
+              tickers: { type: "array", items: { type: "string" } },
+              query: { type: "string" },
+              targetTitles: { type: "array", items: { type: "string" } },
+            },
+          },
+        }),
+        MODEL_TIMEOUT_MS,
+        "getNewsDetails.intent",
+      )) as unknown as SearchIntent | null) ?? {
+        type: "broad",
+        query: message.content.text ?? "",
+      };
+
+      elizaLogger.info(`[GetNewsDetails] Extracted Intent: ${JSON.stringify(intent)}`);
+
+      let results: NewsHit[] = [];
+
+      // =================================================================
+      // 3. EXECUTE SEARCH STRATEGY
+      // =================================================================
+
+      // --- STRATEGY A: Batch Title Lookup (High Precision, Low Cost) ---
+      // Used when we know exactly which records the user is referring to.
+      if (intent.type === "specific" && intent.targetTitles && intent.targetTitles.length > 0) {
+        elizaLogger.info(` Strategy: Batch Title Lookup -> ${intent.targetTitles.length} Titles`);
+
+        // targetTitles is passed ONLY on this branch. The Brain selects the title-lookup strategy
+        // purely on its presence, while the gate here is core's `type === "specific"` check — so
+        // the strategy decision stays with the caller, which owns the extracted intent.
+        results = (await brain.searchNewsDetails({
+          targetTitles: intent.targetTitles,
+        })) as NewsHit[];
+      }
+      // --- STRATEGY B: Hybrid Semantic / Ticker Search ---
+      // Triggered for general queries or specific ticker investigations.
+      else {
+        elizaLogger.info(`[GetNewsDetails] Strategy: Hybrid Discovery`);
+
+        // Fallback to raw text if no structured query found
+        const searchText = intent.query || intent.tickers?.join(" ") || message.content.text || "";
+
+        // Generate embedding for vector similarity — guarded against a hanging
+        // model endpoint (#64). On timeout/failure queryEmbedding is null and we
+        // fall back to a text-only SQL search so news still returns a result
+        // instead of stalling silently until the 90s runtime guard.
+        const queryEmbedding = await withTimeoutOrNull(
+          runtime.useModel(ModelType.TEXT_EMBEDDING, { text: searchText }),
+          MODEL_TIMEOUT_MS,
+          "getNewsDetails.embedding",
+        );
+        if (queryEmbedding == null) {
+          elizaLogger.warn(
+            "[GetNewsDetails] Embedding unavailable (timeout/failure) — falling back to text-only search.",
+          );
+        }
+
+        // The query, the ticker/keyword filters, the vector-vs-recency ranking and the
+        // similarity floors all live in the Brain now, so BOTH bodies run one implementation.
+        results = (await brain.searchNewsDetails({
+          query: intent.query,
+          tickers: intent.tickers,
+          embedding: queryEmbedding as number[] | null,
+        })) as NewsHit[];
+      }
+
+      // =================================================================
+      // 4. FORMAT RESULTS & OBSERVATION
+      // =================================================================
+      const formattedData = results.map((item: NewsHit) => ({
+        title: item.title,
+        url: item.url,
+        // Content Fallback Chain: Full Content -> Summary -> "Pending"
+        content: item.fullContent || item.summary || "Content extraction pending.",
+        source: item.source || "Unknown",
+        sentiment: item.sentiment || "Neutral",
+        metadata: item.metadata,
+        publishedAt: new Date(item.publishedAt as string).toISOString().split("T")[0],
+        // Normalized similarity score for debugging
+        similarity: item.similarity ? Math.round(item.similarity * 100) : "Exact",
+      }));
+
+      const observation =
+        formattedData.length > 0
+          ? `### INTERNAL LEDGER OBSERVATION
+I have retrieved ${formattedData.length} relevant articles.
+
+${formattedData
+  .map(
+    (a) =>
+      `---\nTITLE: ${a.title}\nSOURCE: ${a.source} (${a.publishedAt})\nSENTIMENT: ${a.sentiment}\nCONTENT: ${a.content}`,
+  )
+  .join("\n\n")}
+
+INSTRUCTION: Synthesize these findings into a stoic report. You must attribute data using [title](url).`
+          : `### INTERNAL LEDGER OBSERVATION
+No significant records found for query "${intent.query || intent.tickers?.join(", ")}".
+
+**Important:** *The absence of current high-alpha articles is itself a signal.*`;
+
+      const actionResult: ActionResult = {
+        success: formattedData.length > 0,
+        text: observation,
+        data: {
+          actionName: "GET_NEWS_DETAILS",
+          intent,
+          articles: formattedData,
+          isBillable: true,
+        },
+      };
+
+      // Call the helper to synthesize if this is the last step
+      await handleChainSynthesis(
+        runtime,
+        message,
+        actionResult,
+        state,
+        options,
+        callback,
+        responses,
+      );
+
+      return actionResult;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      elizaLogger.error("[GetNewsDetails] Critical Failure:", errorMessage);
+
+      return {
+        success: false,
+        text: "Error accessing market ledger. Please try a broader search.",
+        error: errorMessage,
+        data: {
+          actionName: "GET_NEWS_DETAILS",
+          isBillable: false,
+        },
+      };
+    }
+  },
+
+  examples: [
+    [
+      {
+        name: "{{user}}",
+        content: { text: "Compare the news for Bitcoin and Ethereum." },
+      },
+      {
+        name: "SenseAI",
+        content: {
+          thought:
+            "User wants a multi-ticker comparison. I will search the ledger for both BTC and ETH.",
+          text: "Running comparison query for BTC and ETH...",
+          action: "GET_NEWS_DETAILS",
+        },
+      },
+    ],
+    [
+      {
+        name: "{{user}}",
+        content: {
+          text: "Tell me more about that BlackRock article you mentioned earlier.",
+        },
+      },
+      {
+        name: "SenseAI",
+        content: {
+          thought:
+            "I previously cited [BlackRock ETF](https://...). I need to fetch details for that specific URL.",
+          text: "Pulling the full file on the ETF approval...",
+          action: "GET_NEWS_DETAILS",
+        },
+      },
+    ],
+  ],
+};

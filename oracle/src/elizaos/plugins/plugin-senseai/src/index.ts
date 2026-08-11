@@ -1,5 +1,6 @@
 import type { Plugin } from "@elizaos/core";
 
+import { getNewsDetailsAction } from "./actions/getNewsDetails";
 import { macroSentimentProvider } from "./providers/macroSentiment";
 import { marketIntelligenceProvider } from "./providers/marketIntelligence";
 import { BrainService } from "./services/brain";
@@ -35,11 +36,18 @@ export type { BrainAccessor } from "./services/brain";
  *   replacement must be registered here as a FIRST-CLASS action, not behind a menu.
  *
  * The arrays below stay explicit rather than omitted: they are the seam where the Brain-backed
- * providers and analytical action land next, and where genuinely oracle-only capabilities go
- * later (on-chain answer shaping, TEE attestation surfaces, escrow-aware behaviour). Oracle-only
+ * providers and analytical actions land, and where genuinely oracle-only capabilities go later
+ * (on-chain answer shaping, TEE attestation surfaces, escrow-aware behaviour). Oracle-only
  * work that is NOT SenseAI analysis should be its own plugin alongside this one;
  * `oracle/test/pluginSenseaiScope.test.js` guards every plugin directory in the tree, so a new
  * plugin inherits the same rules instead of being exempt from the day it is created.
+ *
+ * GET_NEWS_DETAILS is the first entry in `actions`, and registering it is what makes the news
+ * ticker actionable. Both bodies inject byte-identical news context, but only core named a way
+ * to act on it; deprived of a sanctioned path, this body's model reached for CALL_MCP_TOOL and
+ * answered a news question with TypeScript from the CoinGecko SDK docs. The action and the
+ * provider instruction that points at it are one change, not two — see
+ * `providers/marketIntelligence.ts`.
  */
 const senseaiPlugin: Plugin = {
   name: "senseai",
@@ -47,7 +55,9 @@ const senseaiPlugin: Plugin = {
   description:
     "SenseAI oracle body: a thin ElizaOS wrapper over the shared @tradableapp/sense-ai-brain analytical engine.",
 
-  actions: [],
+  // The analytical action sense-ai-core registers, ported near-verbatim so a news question is
+  // answered the same way on both bodies. Anything Telegram/X-shaped stays in core.
+  actions: [getNewsDetailsAction],
   // The Brain-backed pair sense-ai-core injects, from the same shared Brain so both bodies
   // see identical context. Oracle-only capabilities go here later; anything shared with the
   // Social body belongs in the Brain instead, so both get it.
