@@ -202,3 +202,4 @@ oracle/oracle-state.json
 
 # Stray compiled-contract exports (use hardhat artifacts/ instead)
 /bin/contracts/
+.claude/PRPs/
