@@ -163,10 +163,13 @@ function selectAnswer(emitted) {
   // ever stops emitting one (it is that plugin's `sendInitialResponse`, not ours), every
   // emission becomes a payload and the incident returns silently.
   //
-  // Phase 2 closes this properly — `handleChainSynthesis` makes the ported actions emit
-  // synthesised prose of their own, so the answer no longer depends on a third-party
-  // plugin's courtesy message. Until then, treat a hit here as an incident, not a
-  // degradation.
+  // PARTIALLY CLOSED as of CU-86d3z0r81. `GET_NEWS_DETAILS` is now registered and runs
+  // `handleChainSynthesis`, so a NEWS answer emits synthesised prose of our own and no longer
+  // depends on a third-party plugin's courtesy message. Every other query shape still does —
+  // the dependency is narrowed, not removed, and closing it fully means porting the remaining
+  // analytical actions (ANALYZE_ASSET_SENTIMENT, ANALYZE_FINANCIAL_IMAGE).
+  //
+  // Until then, treat a hit here as an incident, not a degradation.
   //
   // Logged at ERROR because that is the only level that survives to where anyone will see it:
   // `oasis rofl machine logs` surfaces warn and error, so an INFO line inside the TEE is
