@@ -48,7 +48,7 @@ import { handleChainSynthesis } from "../utils/actionChainHelper";
  * read error and falls through to adapters — for "we could not reach the data". core treats both
  * as an observation and still bills when at least one ticker resolved. On this body that means a
  * partial outage can be charged for on-chain. It is core's contract, not a porting artefact, so
- * it is copied here and raised upstream as CU-86d40ny48 rather than forked. Diverging would put
+ * it is copied here and raised upstream as CU-86d40mckm rather than forked. Diverging would put
  * the two bodies on different billing rules, which is worse than sharing a known one.
  */
 export const analyzeAssetSentimentAction: Action = {

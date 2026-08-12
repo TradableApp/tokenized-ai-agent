@@ -133,7 +133,7 @@ export class BrainService extends Service {
    *
    * The engine returns null for an unrecognised symbol too, so "unsupported" and "unavailable"
    * arrive here as the same value. That conflation is core's (`SentimentEngine` swallows its
-   * cache-read error and falls through to adapters) and is tracked upstream as CU-86d40ny48
+   * cache-read error and falls through to adapters) and is tracked upstream as CU-86d40mckm
    * rather than fixed in the copy.
    *
    * @param symbol ticker, e.g. "BTC" — the engine upper-cases and strips `$`
