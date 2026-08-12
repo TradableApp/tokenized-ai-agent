@@ -158,6 +158,24 @@ describe("outboundSanitizer", () => {
     expect(sanitizer.callCount).to.equal(2);
   });
 
+  it("SHOUTS when the Brain loads but no longer exports the sanitiser", async () => {
+    // The one silent path that was left. A failed import hits the `.catch` and logs; a module
+    // that loads successfully but has renamed or dropped the export used to return null with no
+    // signal at all — disabling sanitisation on every paid prompt with nothing to observe. In
+    // the TEE that is invisible, since `oasis rofl machine logs` surfaces warn and error only.
+    const loader = sinon.stub().resolves({ somethingElse: () => "x" });
+    _setSanitizerForTests(null, { loader });
+    const error = sinon.stub(console, "error");
+
+    const answer = "Bitcoin is consolidating near $61k.";
+    expect(await sanitizeAnswer(answer), "the answer still ships").to.equal(answer);
+
+    const logged = error.getCalls().map((c) => c.args[0]).join("\n");
+    expect(logged, "a renamed Brain export must not fail silently").to.match(
+      /does not export sanitizeOutboundText/,
+    );
+  });
+
   it("does not retry a load that already failed", async () => {
     // A missing Brain is deterministic, not transient. Retrying per answer would add an import
     // attempt to every paid prompt for no possible gain.

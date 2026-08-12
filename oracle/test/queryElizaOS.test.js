@@ -91,7 +91,20 @@ function makeElizaStub({ providerData, thoughts }) {
           await captured.eventHandlers.ACTION_COMPLETED({ roomId: ROOM_ID, content: {}, actionName: t.action });
         }
       }
-      await options.onComplete();
+      // NOT awaited, deliberately — this mirrors @elizaos/core exactly. In async mode (the mode
+      // we are in, because we pass `onResponse`), the runtime does:
+      //
+      //     .then(() => { if (options.onComplete) options.onComplete(); })
+      //     .catch((error) => { if (options.onError) options.onError(error); })
+      //
+      // The `.then` callback CALLS onComplete without returning it, so its promise is never
+      // chained and a rejection inside it does not reach that `.catch` — it becomes an unhandled
+      // rejection while queryElizaOS's own promise stays pending forever, holding a p-queue slot.
+      //
+      // This stub used to `await` it, which made it a more forgiving model than the real runtime
+      // and hid that hazard entirely. Verified against
+      // node_modules/@elizaos/core/dist/node/index.node.js:51783-51788.
+      options.onComplete();
       return { messageId: "m1", userMessage: {} };
     }
   }

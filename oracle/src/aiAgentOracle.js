@@ -963,25 +963,41 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
           onComplete: async () => {
             console.log("[ElizaOS] Processing complete signal received.");
-            // Two passes, deliberately separate. selectAnswer decides WHICH emission is the
-            // answer; sanitizeAnswer decides what that text may contain. Only our own synthesis
-            // reaches `generateSanitized` inside handleChainSynthesis — a third-party emission or
-            // the acknowledgement never does, and this is the last point before the text is
-            // encrypted into an immutable MessageFile. See outboundSanitizer.js.
-            const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
-            if (finalResponseText) {
-              // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
-              // thought steps from the runtime + the warm-cache sources injected above.
-              const { reasoning, sources } = runProvenance.finish(runId);
-              resolve({
-                text: finalResponseText.trim(),
-                reasoning,
-                sources,
-                reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
-              });
-            } else {
+            // WHY THIS WHOLE BODY IS WRAPPED. `onComplete` is an async callback whose promise
+            // nothing awaits — the `new Promise(async (resolve, reject) => …)` executor does not
+            // chain onto it, and neither does ElizaOS. So a throw in here does not reject the
+            // outer promise; it escapes as an unhandled rejection and leaves the promise pending
+            // FOREVER, holding its p-queue slot (concurrency 5) against a prompt that has already
+            // been paid for.
+            //
+            // Nothing on this path throws today — `sanitizeAnswer` catches everything and
+            // `selectAnswer` is total. The wrap is here because the body became async in this
+            // change, which is what made the hazard reachable at all: `onError` and the outer
+            // catch already release the run, and this exit was the only one that could not.
+            try {
+              // Two passes, deliberately separate. selectAnswer decides WHICH emission is the
+              // answer; sanitizeAnswer decides what that text may contain. Only our own synthesis
+              // reaches `generateSanitized` inside handleChainSynthesis — a third-party emission or
+              // the acknowledgement never does, and this is the last point before the text is
+              // encrypted into an immutable MessageFile. See outboundSanitizer.js.
+              const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
+              if (finalResponseText) {
+                // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
+                // thought steps from the runtime + the warm-cache sources injected above.
+                const { reasoning, sources } = runProvenance.finish(runId);
+                resolve({
+                  text: finalResponseText.trim(),
+                  reasoning,
+                  sources,
+                  reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
+                });
+              } else {
+                runProvenance.finish(runId);
+                reject(new Error("ElizaOS completed but generated no text."));
+              }
+            } catch (error) {
               runProvenance.finish(runId);
-              reject(new Error("ElizaOS completed but generated no text."));
+              reject(error);
             }
           },
         },

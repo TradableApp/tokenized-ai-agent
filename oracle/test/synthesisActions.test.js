@@ -33,6 +33,14 @@ const { SYNTHESIS_ACTION_NAMES } = require("../src/answerSelection");
 //              the porting PR that adds an action and forgets the set, which is how the next
 //              analytical action would silently lose its attribution)
 
+// CI PREREQUISITE, stated because the guard depends on it: this scans the plugin's TypeScript
+// SOURCE, not its build output. That is safe here — `plugin-senseai/src/` is committed to the
+// repository and `plugin-senseai/dist/` is gitignored and rebuilt by CI, so the source is the
+// artifact that always exists. Verified with `git ls-files`, not assumed.
+//
+// If the plugin ever moves to a separate package or its source stops being committed, the
+// directory assertion in `actionFiles()` fires with the reason rather than passing vacuously.
+
 const PLUGIN_SRC = path.resolve(
   __dirname,
   "../src/elizaos/plugins/plugin-senseai/src",

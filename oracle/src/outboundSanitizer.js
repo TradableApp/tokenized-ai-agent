@@ -49,7 +49,22 @@ function loadSanitizer() {
     const load = overrideLoader ?? (() => import("@tradableapp/sense-ai-brain"));
     sanitizerPromise = Promise.resolve()
       .then(load)
-      .then((mod) => mod?.sanitizeOutboundText ?? null)
+      .then((mod) => {
+        const fn = mod?.sanitizeOutboundText ?? null;
+        // A module that LOADS but no longer exports the function is the silent case. The
+        // `.catch` below covers a failed import and logs; this branch used to return null with
+        // no signal at all, so a Brain release that renamed the export would disable outbound
+        // sanitisation on every paid prompt with nothing to observe. In the TEE that is
+        // invisible — `oasis rofl machine logs` surfaces warn and error only.
+        if (mod && !fn) {
+          console.error(
+            "[outboundSanitizer] The Brain loaded but does not export sanitizeOutboundText — " +
+              "answers will be stored UNSANITISED. Check the Brain barrel for a renamed or " +
+              "removed export.",
+          );
+        }
+        return fn;
+      })
       .catch((error) => {
         console.error(
           "[outboundSanitizer] Could not load the Brain — answers will be stored unsanitised. " +
