@@ -92,6 +92,33 @@ describe("outboundSanitizer", () => {
     expect(logged).to.match(/EMPTY string/);
   });
 
+  it("never stores a truthy NON-string, even though the contract forbids one", async () => {
+    // One step from an immutable MessageFile the user has paid for, so truthiness alone is not
+    // enough. The concrete route is the Brain making sanitizeOutboundText async: the value
+    // becomes a Promise, which is truthy, and the caller's `.trim()` throws on a paid prompt.
+    _setSanitizerForTests(() => Promise.resolve("looks fine"));
+    const error = sinon.stub(console, "error");
+
+    const answer = "Bitcoin is consolidating near $61k.";
+    expect(await sanitizeAnswer(answer), "the original ships, not the Promise").to.equal(answer);
+    expect(error.getCall(0).args[0]).to.match(/not a string/);
+  });
+
+  it("reports UNDEFINED as its own case, not as a template leak", async () => {
+    // `null` sends an operator to the emitting action hunting a template leak; `undefined` means
+    // the Brain fell off a path without returning — a different repo and a different bug. On the
+    // TEE the log line is the only visibility, so conflating them costs a wasted investigation.
+    _setSanitizerForTests(() => undefined);
+    const error = sinon.stub(console, "error");
+
+    const answer = "Bitcoin is consolidating near $61k.";
+    expect(await sanitizeAnswer(answer)).to.equal(answer);
+
+    const logged = error.getCall(0).args[0];
+    expect(logged).to.match(/UNDEFINED/);
+    expect(logged, "must not blame the emitting action").to.not.match(/REJECTED/);
+  });
+
   it("falls back to the unsanitised answer when the sanitiser THROWS", async () => {
     _setSanitizerForTests(() => {
       throw new Error("brain exploded");

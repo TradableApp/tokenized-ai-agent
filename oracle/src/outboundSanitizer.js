@@ -127,7 +127,12 @@ async function sanitizeAnswer(answer) {
     return answer;
   }
 
-  if (cleaned) return cleaned;
+  // `typeof` as well as truthiness. The Brain declares `string | null`, but this value is one
+  // step from being encrypted into an immutable MessageFile the user has paid for, and a truthy
+  // NON-string would sail through a bare truthiness check. The concrete way that happens is the
+  // Brain making `sanitizeOutboundText` async: `cleaned` becomes a Promise, which is truthy, and
+  // the caller's `.trim()` then throws on a paid prompt.
+  if (typeof cleaned === "string" && cleaned) return cleaned;
 
   // Both falsy outcomes degrade to the original — never to `cleaned` — because the standing
   // invariant is that no quality rule may turn an answer into no-answer on a prompt already
@@ -137,11 +142,27 @@ async function sanitizeAnswer(answer) {
   // leak"); `""` is not in its behaviour today (every non-null exit has passed a >= 10
   // meaningful-character floor) yet its signature permits it, and reporting a leak that never
   // happened would send whoever is tracing a suspect answer after the wrong thing.
-  if (cleaned === null || cleaned === undefined) {
+  if (cleaned === null) {
     console.error(
       "[outboundSanitizer] The sanitiser REJECTED the answer as a template/meta leak, but the " +
         "prompt has already been paid for on-chain — storing it unsanitised rather than storing " +
         "nothing. Investigate the emitting action.",
+    );
+  } else if (cleaned === undefined) {
+    // Distinct from null on purpose. `null` sends an operator to the EMITTING action looking for
+    // a template leak; `undefined` means the Brain fell off a code path without returning, which
+    // is a different repository and a different bug. Folding them together would cost whoever is
+    // reading `oasis rofl machine logs` — their only visibility — a wasted investigation.
+    console.error(
+      "[outboundSanitizer] The sanitiser returned UNDEFINED, which its contract does not allow " +
+        "at all — storing the answer unsanitised. Check sanitizeOutboundText for a code path " +
+        "that falls through without returning.",
+    );
+  } else if (typeof cleaned !== "string") {
+    console.error(
+      `[outboundSanitizer] The sanitiser returned a ${typeof cleaned}, not a string — storing ` +
+        "the answer unsanitised. If sanitizeOutboundText has become async, this module must " +
+        "await it.",
     );
   } else {
     console.error(
