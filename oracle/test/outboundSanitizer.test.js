@@ -131,6 +131,16 @@ describe("outboundSanitizer", () => {
     expect(() => _setSanitizerForTests(() => "x", { loader: async () => ({}) })).to.throw();
   });
 
+  it("refuses loader and loadFails together, even with no sanitizer", () => {
+    // The first guard keys off `sanitizer`, so a null sanitizer walks straight past it. Inside
+    // the function `loadFails` wins over `loader`, meaning a test that passed both would run
+    // against the failing-load path while its author believed it was driving their own loader —
+    // and would still pass.
+    expect(() =>
+      _setSanitizerForTests(null, { loader: async () => ({}), loadFails: true }),
+    ).to.throw(/mutually exclusive/i);
+  });
+
   it("loads the Brain once and reuses it across answers", async () => {
     // The TEE answers on a p-queue at concurrency 5. Re-importing the Brain barrel per answer
     // would pull adapters and drizzle into every one of them.

@@ -160,6 +160,19 @@ function looksLikeToolPayload(text) {
 const SYNTHESIS_ACTIONS = new Set(["GET_NEWS_DETAILS"]);
 
 /**
+ * The same names as a FROZEN ARRAY, for the guard test to read.
+ *
+ * The Set itself is deliberately NOT exported. It is module-level state in a cached module, so
+ * one test calling `.add()` or `.delete()` without cleanup would silently change how every later
+ * test in the same process selects an answer.
+ *
+ * `Object.freeze` on a Set does NOT prevent that — a Set's contents live in internal slots, not
+ * in own properties, so `Object.freeze(set).add("X")` succeeds silently. Verified rather than
+ * assumed. On an array it genuinely throws, so this is the shape that actually protects.
+ */
+const SYNTHESIS_ACTION_NAMES = Object.freeze([...SYNTHESIS_ACTIONS]);
+
+/**
  * Normalises an emission to `{ text, actions }`.
  *
  * Accepts a bare string so callers without attribution — and every test written before it
@@ -240,4 +253,4 @@ function selectAnswer(emitted) {
   return candidates[candidates.length - 1];
 }
 
-module.exports = { selectAnswer, looksLikeToolPayload, SYNTHESIS_ACTIONS };
+module.exports = { selectAnswer, looksLikeToolPayload, SYNTHESIS_ACTION_NAMES };

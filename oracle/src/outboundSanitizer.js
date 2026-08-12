@@ -123,10 +123,20 @@ async function sanitizeAnswer(answer) {
  * @param {{loader?: () => Promise<unknown>, loadFails?: boolean}} [options]
  */
 function _setSanitizerForTests(sanitizer, options = {}) {
-  // The two modes are mutually exclusive and the precedence is invisible: `loadSanitizer` returns
-  // on `overrideSanitizer` before it ever consults `overrideLoader`, so passing both would
-  // silently drop the loader. A test written that way would still pass — against the wrong path —
-  // which is worse than one that fails.
+  // TWO precedence rules, both invisible from the call site, both able to make a test pass
+  // against a path its author did not mean to exercise — which is worse than a test that fails.
+  //
+  // Checked in this order because the second guard keys off `sanitizer`, so a null sanitizer
+  // would walk straight past it and leave the loader/loadFails clash unreported.
+  //
+  // (1) `loadFails` overrides `loader` when both are set.
+  if (options.loader && options.loadFails) {
+    throw new Error(
+      "_setSanitizerForTests: loader and loadFails are mutually exclusive — loadFails would " +
+        "silently override loader, so the test would exercise the wrong path and still pass.",
+    );
+  }
+  // (2) A sanitizer short-circuits `loadSanitizer` before it ever consults the loader.
   if (sanitizer && (options.loader || options.loadFails)) {
     throw new Error(
       "_setSanitizerForTests: pass EITHER a sanitizer (bypasses loading) OR loader/loadFails " +

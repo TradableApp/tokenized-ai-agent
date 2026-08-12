@@ -3,7 +3,7 @@ const path = require("node:path");
 
 const { expect } = require("chai");
 
-const { SYNTHESIS_ACTIONS } = require("../src/answerSelection");
+const { SYNTHESIS_ACTION_NAMES } = require("../src/answerSelection");
 
 // Synthesis-attribution guard — CU-86d3z0r81.
 //
@@ -83,7 +83,28 @@ function emittedSynthesisNames() {
     // ActionResult without calling the helper never reaches selectAnswer's attribution path.
     if (!src.includes("handleChainSynthesis")) continue;
 
-    for (const [, name] of src.matchAll(ACTION_NAME_RE)) {
+    const found = [...src.matchAll(ACTION_NAME_RE)].map(([, name]) => name);
+
+    // THE VACUUM CHECK, and the reason this guard is not merely a regex.
+    //
+    // ACTION_NAME_RE only matches an INLINE literal — `actionName: "FOO"`. An action that
+    // hoisted its name into a constant (`actionName: ACTION_NAME`) would yield no match, and the
+    // backward assertion below would then pass on an empty `unlisted` while attribution was
+    // silently broken in production. A guard that reports success by seeing nothing is worse
+    // than no guard.
+    //
+    // So a file that synthesises but exposes no inline name is a FAILURE, not a skip. That turns
+    // the regex's one blind spot from silent into loud, which a comment asking the next author to
+    // remember the convention could never do.
+    expect(
+      found.length,
+      `${path.basename(file)} calls handleChainSynthesis but no inline \`actionName: "NAME"\` ` +
+        `was found in it. This guard can only read inline string literals, so a hoisted constant ` +
+        `would make it pass by finding nothing while attribution silently broke. Either inline ` +
+        `the name, or widen ACTION_NAME_RE here — do not leave it unmatched.`,
+    ).to.be.greaterThan(0);
+
+    for (const name of found) {
       names.set(name, path.basename(file));
     }
   }
@@ -94,11 +115,11 @@ function emittedSynthesisNames() {
 describe("synthesis attribution stays wired", () => {
   it("every name in SYNTHESIS_ACTIONS is emitted by a registered action", () => {
     const emitted = emittedSynthesisNames();
-    const unbacked = [...SYNTHESIS_ACTIONS].filter((name) => !emitted.has(name));
+    const unbacked = SYNTHESIS_ACTION_NAMES.filter((name) => !emitted.has(name));
 
     expect(
       unbacked,
-      `These names are in SYNTHESIS_ACTIONS but no action emits them as ` +
+      `These names are in SYNTHESIS_ACTION_NAMES but no action emits them as ` +
         `\`actionName\`, so they can never match. Either the action was renamed — in which case ` +
         `attribution is now OFF and plugin-mcp's prose will silently win on a paid answer — or ` +
         `the entry is speculative and belongs in the PR that ports the action. ` +
@@ -111,7 +132,7 @@ describe("synthesis attribution stays wired", () => {
     // producing our final prose by definition; if its name is missing here, its answer competes
     // on recency alone and loses to any third-party emission the model happens to order later.
     const emitted = emittedSynthesisNames();
-    const unlisted = [...emitted.entries()].filter(([name]) => !SYNTHESIS_ACTIONS.has(name));
+    const unlisted = [...emitted.entries()].filter(([name]) => !SYNTHESIS_ACTION_NAMES.includes(name));
 
     expect(
       unlisted.map(([name, file]) => `${name} (${file})`),
