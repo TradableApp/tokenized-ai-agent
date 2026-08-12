@@ -30,6 +30,21 @@
 /** Resolves to the Brain's `sanitizeOutboundText`, or null when the Brain cannot be loaded. */
 let sanitizerPromise = null;
 
+/**
+ * How many times a FAILED import may be retried before the failure is cached for good.
+ *
+ * The two failure shapes pull in opposite directions. A genuinely missing module is
+ * deterministic: retrying it adds an import attempt to every paid prompt forever, for nothing.
+ * But an import can also fail once while the container is still warming — the first answer can
+ * arrive before a transitive ESM dependency has finished initialising — and caching THAT
+ * permanently leaves every later answer in the process unsanitised behind a single log line.
+ *
+ * One retry separates them: a warm-up blip is absorbed, and a missing module costs exactly one
+ * extra attempt rather than one per prompt.
+ */
+const MAX_LOAD_ATTEMPTS = 2;
+let loadAttempts = 0;
+
 /** Test seam — see `_setSanitizerForTests`. */
 let overrideSanitizer = null;
 let overrideLoader = null;
@@ -46,6 +61,7 @@ let overrideLoader = null;
 function loadSanitizer() {
   if (overrideSanitizer) return Promise.resolve(overrideSanitizer);
   if (!sanitizerPromise) {
+    loadAttempts += 1;
     const load = overrideLoader ?? (() => import("@tradableapp/sense-ai-brain"));
     sanitizerPromise = Promise.resolve()
       .then(load)
@@ -66,10 +82,17 @@ function loadSanitizer() {
         return fn;
       })
       .catch((error) => {
+        const retriable = loadAttempts < MAX_LOAD_ATTEMPTS;
         console.error(
           "[outboundSanitizer] Could not load the Brain — answers will be stored unsanitised. " +
-            `Reason: ${error?.message ?? error}`,
+            `Reason: ${error?.message ?? error}. ` +
+            (retriable
+              ? "Will retry once on the next answer, in case the container was still warming."
+              : "Giving up for this process; every later answer is stored unsanitised."),
         );
+        // Clearing the cached promise is what permits the retry. Left set, a warm-up blip would
+        // silence sanitisation for the life of the process.
+        if (retriable) sanitizerPromise = null;
         return null;
       });
   }
@@ -164,12 +187,14 @@ function _setSanitizerForTests(sanitizer, options = {}) {
     ? () => Promise.reject(new Error("Cannot find module '@tradableapp/sense-ai-brain'"))
     : (options.loader ?? null);
   sanitizerPromise = null;
+  loadAttempts = 0;
 }
 
 function _resetForTests() {
   overrideSanitizer = null;
   overrideLoader = null;
   sanitizerPromise = null;
+  loadAttempts = 0;
 }
 
 module.exports = { sanitizeAnswer, _setSanitizerForTests, _resetForTests };

@@ -996,6 +996,12 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
                 reject(new Error("ElizaOS completed but generated no text."));
               }
             } catch (error) {
+              // `finish` is IDEMPOTENT, so a double-call is safe when the success branch already
+              // called it and then threw: `runProvenance.finish` returns
+              // `{ reasoning: [], sources: [] }` for an unknown runId and `forget` no-ops on a
+              // missing entry. Pinned by "finish is idempotent" in runProvenance.test.js rather
+              // than left as a claim here — the guarantee is what makes this catch correct, so
+              // it has to fail loudly if it ever stops holding.
               runProvenance.finish(runId);
               reject(error);
             }

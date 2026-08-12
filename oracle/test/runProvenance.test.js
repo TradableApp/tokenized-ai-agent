@@ -207,3 +207,26 @@ describe("run provenance collector", () => {
     });
   });
 });
+
+describe("finish is idempotent", () => {
+  // LOAD-BEARING FOR aiAgentOracle's onComplete. That callback finishes the run in its success
+  // branch and again in its catch, so if the success branch throws AFTER finishing, finish is
+  // called twice. The catch is only correct because the second call is a no-op.
+  //
+  // Pinned here rather than asserted in a comment at the call site: the guarantee lives in this
+  // module, so this is where a change that broke it would be made.
+  it("returns empty provenance and does not throw on a second call", () => {
+    const provenance = createRunProvenance();
+    const runId = provenance.begin({ roomId: "room-1" });
+    provenance.recordThought(runId, "thinking");
+
+    const first = provenance.finish(runId);
+    expect(first.reasoning.length, "the first call returns the real provenance").to.be.greaterThan(
+      0,
+    );
+
+    const second = provenance.finish(runId);
+    expect(second).to.deep.equal({ reasoning: [], sources: [] });
+    expect(provenance.size(), "and the run stays released").to.equal(0);
+  });
+});

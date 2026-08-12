@@ -128,7 +128,9 @@ describe("outboundSanitizer", () => {
     expect(() => _setSanitizerForTests(() => "x", { loadFails: true })).to.throw(
       /mutually exclusive|EITHER/i,
     );
-    expect(() => _setSanitizerForTests(() => "x", { loader: async () => ({}) })).to.throw();
+    expect(() => _setSanitizerForTests(() => "x", { loader: async () => ({}) })).to.throw(
+      /mutually exclusive|EITHER/i,
+    );
   });
 
   it("refuses loader and loadFails together, even with no sanitizer", () => {
@@ -176,16 +178,47 @@ describe("outboundSanitizer", () => {
     );
   });
 
-  it("does not retry a load that already failed", async () => {
-    // A missing Brain is deterministic, not transient. Retrying per answer would add an import
-    // attempt to every paid prompt for no possible gain.
+  it("retries a failed load ONCE, then caches the failure", async () => {
+    // The two failure shapes pull opposite ways. A missing module is deterministic — retrying it
+    // on every paid prompt costs an import attempt forever for nothing. But a first answer can
+    // arrive while the container is still warming, and caching THAT permanently leaves every
+    // later answer unsanitised behind a single log line.
+    //
+    // One retry separates them, so this asserts BOTH halves: attempt two happens, attempt three
+    // does not.
     const loader = sinon.stub().rejects(new Error("Cannot find module"));
     _setSanitizerForTests(null, { loader });
     sinon.stub(console, "error");
 
     await sanitizeAnswer("first answer, long enough to matter");
-    await sanitizeAnswer("second answer, long enough to matter");
+    expect(loader.callCount, "the first failure must not be final").to.equal(1);
 
-    expect(loader.callCount).to.equal(1);
+    await sanitizeAnswer("second answer, long enough to matter");
+    expect(loader.callCount, "one retry, for a warm-up blip").to.equal(2);
+
+    await sanitizeAnswer("third answer, long enough to matter");
+    await sanitizeAnswer("fourth answer, long enough to matter");
+    expect(loader.callCount, "then it stops — a missing module is deterministic").to.equal(2);
+  });
+
+  it("recovers when the retry succeeds", async () => {
+    // The case the retry exists for: the import fails once during warm-up and works on the
+    // second attempt. Without the retry this process would store every answer unsanitised.
+    const sanitizer = sinon.stub().callsFake((t) => `${t} [clean]`);
+    const loader = sinon.stub();
+    loader.onFirstCall().rejects(new Error("still warming"));
+    loader.onSecondCall().resolves({ sanitizeOutboundText: sanitizer });
+    _setSanitizerForTests(null, { loader });
+    sinon.stub(console, "error");
+
+    const first = await sanitizeAnswer("first answer, long enough to matter");
+    expect(first, "the first answer ships unsanitised").to.equal(
+      "first answer, long enough to matter",
+    );
+
+    const second = await sanitizeAnswer("second answer, long enough to matter");
+    expect(second, "and the second is sanitised — the process recovered").to.equal(
+      "second answer, long enough to matter [clean]",
+    );
   });
 });
