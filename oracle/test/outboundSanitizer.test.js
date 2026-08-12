@@ -102,7 +102,10 @@ describe("outboundSanitizer", () => {
     // The TEE answers on a p-queue at concurrency 5. Re-importing the Brain barrel per answer
     // would pull adapters and drizzle into every one of them.
     const sanitizer = sinon.stub().callsFake((t) => t);
-    const loader = sinon.stub().resolves(sanitizer);
+    // Resolves a MODULE, not a bare function — the loader's contract is the Brain barrel, and a
+    // stub that resolved something else would let the production code drop its `.sanitizeOutboundText`
+    // lookup while this test still passed.
+    const loader = sinon.stub().resolves({ sanitizeOutboundText: sanitizer });
     _setSanitizerForTests(null, { loader });
 
     await sanitizeAnswer("first answer, long enough to matter");

@@ -64,6 +64,7 @@ const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { selectAnswer } = require("./answerSelection");
+const { sanitizeAnswer } = require("./outboundSanitizer");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
@@ -962,7 +963,12 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
           onComplete: async () => {
             console.log("[ElizaOS] Processing complete signal received.");
-            const finalResponseText = selectAnswer(emittedTexts);
+            // Two passes, deliberately separate. selectAnswer decides WHICH emission is the
+            // answer; sanitizeAnswer decides what that text may contain. Only our own synthesis
+            // reaches `generateSanitized` inside handleChainSynthesis — a third-party emission or
+            // the acknowledgement never does, and this is the last point before the text is
+            // encrypted into an immutable MessageFile. See outboundSanitizer.js.
+            const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
             if (finalResponseText) {
               // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
               // thought steps from the runtime + the warm-cache sources injected above.
