@@ -110,7 +110,7 @@ function makeElizaStub({ providerData, thoughts }) {
   return { ElizaOS, captured, runtime, replaceRuntime, setThoughts };
 }
 
-function loadOracle(elizaStub) {
+function loadOracle(elizaStub, extraStubs = {}) {
   // The module builds a signer at load time; the committed .env.oracle.example carries a
   // placeholder key that ethers rejects. Same approach as aiAgentOracle.test.js — give it a
   // real throwaway key so the failure under test is the behaviour, not the setup.
@@ -126,6 +126,7 @@ function loadOracle(elizaStub) {
     },
     "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
     "./elizaos/character.js": {},
+    ...extraStubs,
   });
 }
 
@@ -436,6 +437,40 @@ describe("queryElizaOS — provider-composed context", () => {
     const result = await oracle.queryElizaOS(history("What is the latest news on Bitcoin?"), ROOM_ID, "entity-1");
 
     expect(result.text).to.equal("Bitcoin is consolidating near $61k with declining volume; momentum is neutral.");
+  });
+
+  it("routes the selected answer through the outbound sanitiser before resolving", async () => {
+    // selectAnswer decides WHICH emission is the answer; it deliberately does not judge the text
+    // beyond "is this a payload". When it picks an emission that never went through
+    // `generateSanitized` — a third-party action's prose, or the acknowledgement — a template
+    // leak would otherwise be encrypted into an immutable MessageFile the user has paid for.
+    //
+    // Asserted through a stub rather than the real sanitiser so this pins the WIRING. Whether
+    // any particular leak shape is caught belongs to outboundSanitizer.test.js and the Brain's
+    // own suite; duplicating it here would pass just as well against an answer path that never
+    // called the sanitiser at all.
+    const seen = [];
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [{ thought: "Synthesising", text: "<response>Bitcoin is near $61k.</response>" }],
+    });
+    const oracle = loadOracle(stub, {
+      "./outboundSanitizer": {
+        sanitizeAnswer: async (text) => {
+          seen.push(text);
+          return "Bitcoin is near $61k.";
+        },
+      },
+    });
+
+    const result = await oracle.queryElizaOS(history("How is Bitcoin doing?"), ROOM_ID, "entity-1");
+
+    expect(seen, "the selected answer must reach the sanitiser").to.deep.equal([
+      "<response>Bitcoin is near $61k.</response>",
+    ]);
+    expect(result.text, "and the sanitised text is what gets stored").to.equal(
+      "Bitcoin is near $61k.",
+    );
   });
 
   it("still answers when composition yields no context", async () => {

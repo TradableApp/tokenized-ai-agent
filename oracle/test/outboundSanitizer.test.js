@@ -1,0 +1,127 @@
+const { expect } = require("chai");
+const sinon = require("sinon");
+
+const {
+  sanitizeAnswer,
+  _setSanitizerForTests,
+  _resetForTests,
+} = require("../src/outboundSanitizer");
+
+// Outbound sanitisation at the STORAGE boundary — CU-86d3z0r81, the "route the final answer
+// through sanitizeOutboundText" action step.
+//
+// WHY A BOUNDARY PASS WHEN handleChainSynthesis ALREADY SANITISES. It sanitises OUR synthesis,
+// inside `generateSanitized`. It cannot sanitise what it never produced, and selectAnswer is
+// explicitly allowed to return text from somewhere else:
+//
+//   - a third-party action's prose (plugin-mcp's handleToolResponse emits a reasoning pass),
+//   - the acknowledgement, when nothing of ours spoke,
+//   - a tool payload, on the incident path where every emission looked like one.
+//
+// None of those went near `generateSanitized`, and all three are stored verbatim into an
+// immutable, already-paid-for MessageFile. So the sanitiser belongs where the answer LEAVES the
+// harness, not only where our own text enters it.
+//
+// WHY THIS IS AN ORACLE-ONLY ADDITION AND NOT A PORT GAP. sense-ai-core does not do this: its
+// plugin-bootstrap replies are chat messages a user can challenge, retry, or simply scroll past.
+// The divergence traces to the pre-paid immutable answer — one of the three differences §2.7
+// accepts as forced — and is recorded at the call site in aiAgentOracle.js.
+//
+// THE ASYMMETRY THAT SETS THE FALLBACK RULE. `sanitizeOutboundText` returns null for "this is a
+// template leak, drop it". Core's autonomous callers CAN drop — skipping a tweet costs nothing.
+// This body cannot: the user has paid and an empty answer fails the contract outright, which is
+// the same invariant selectAnswer's incident path already encodes. So a rejection here degrades
+// to the unsanitised text and shouts about it, rather than deleting the answer.
+
+describe("outboundSanitizer", () => {
+  afterEach(() => {
+    _resetForTests();
+    sinon.restore();
+  });
+
+  it("returns the cleaned text when the Brain sanitiser accepts it", async () => {
+    // The real leak shape: the model echoes its template wrapper around otherwise fine prose.
+    _setSanitizerForTests((text) => text.replace(/<\/?response>/g, "").trim());
+
+    const cleaned = await sanitizeAnswer("<response>Bitcoin is consolidating near $61k.</response>");
+
+    expect(cleaned).to.equal("Bitcoin is consolidating near $61k.");
+  });
+
+  it("leaves clean prose untouched", async () => {
+    _setSanitizerForTests((text) => text);
+
+    const answer = "Bitcoin ETF inflows accelerated 18% while spot volume thinned.";
+    expect(await sanitizeAnswer(answer)).to.equal(answer);
+  });
+
+  it("falls back to the unsanitised answer when the sanitiser REJECTS it", async () => {
+    // The load-bearing case. A rejection means "this looks like a leak" — but the alternative to
+    // a suspect answer is no answer on a prompt that has already been charged on-chain.
+    _setSanitizerForTests(() => null);
+    const error = sinon.stub(console, "error");
+
+    const suspect = "<post>The actual tweet content</post>";
+    expect(await sanitizeAnswer(suspect)).to.equal(suspect);
+
+    // Logged at ERROR deliberately: `oasis rofl machine logs` surfaces warn and error only, so
+    // an INFO line inside the TEE is invisible to whoever is investigating a bad answer.
+    expect(error.called, "a rejected answer must be visible in the TEE logs").to.equal(true);
+  });
+
+  it("falls back to the unsanitised answer when the sanitiser THROWS", async () => {
+    _setSanitizerForTests(() => {
+      throw new Error("brain exploded");
+    });
+    sinon.stub(console, "error");
+
+    const answer = "Bitcoin is consolidating near $61k.";
+    expect(await sanitizeAnswer(answer)).to.equal(answer);
+  });
+
+  it("falls back to the unsanitised answer when the Brain cannot be loaded", async () => {
+    // Localnet e2e runs with no Cloud SQL and, in some builds, no Brain at all. That must cost
+    // the sanitising pass, never the answer.
+    _setSanitizerForTests(null, { loadFails: true });
+    sinon.stub(console, "error");
+
+    const answer = "Bitcoin is consolidating near $61k.";
+    expect(await sanitizeAnswer(answer)).to.equal(answer);
+  });
+
+  it("passes null and empty answers straight through", async () => {
+    // selectAnswer already returns null when nothing usable was emitted; this module must not
+    // turn that into a different failure shape for the caller to handle twice.
+    _setSanitizerForTests(() => "should never be called");
+
+    expect(await sanitizeAnswer(null)).to.equal(null);
+    expect(await sanitizeAnswer("   ")).to.equal("   ");
+  });
+
+  it("loads the Brain once and reuses it across answers", async () => {
+    // The TEE answers on a p-queue at concurrency 5. Re-importing the Brain barrel per answer
+    // would pull adapters and drizzle into every one of them.
+    const sanitizer = sinon.stub().callsFake((t) => t);
+    const loader = sinon.stub().resolves(sanitizer);
+    _setSanitizerForTests(null, { loader });
+
+    await sanitizeAnswer("first answer, long enough to matter");
+    await sanitizeAnswer("second answer, long enough to matter");
+
+    expect(loader.callCount, "the Brain barrel must be imported once per process").to.equal(1);
+    expect(sanitizer.callCount).to.equal(2);
+  });
+
+  it("does not retry a load that already failed", async () => {
+    // A missing Brain is deterministic, not transient. Retrying per answer would add an import
+    // attempt to every paid prompt for no possible gain.
+    const loader = sinon.stub().rejects(new Error("Cannot find module"));
+    _setSanitizerForTests(null, { loader });
+    sinon.stub(console, "error");
+
+    await sanitizeAnswer("first answer, long enough to matter");
+    await sanitizeAnswer("second answer, long enough to matter");
+
+    expect(loader.callCount).to.equal(1);
+  });
+});
