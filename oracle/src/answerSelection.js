@@ -137,14 +137,27 @@ function looksLikeToolPayload(text) {
 /**
  * Actions of OURS whose emission is the synthesised answer rather than a step toward it.
  *
- * `handleChainSynthesis` tags its callback with the action that produced it, so an emission
+ * `handleChainSynthesis` tags its callback with `actionResult.data.actionName`, so an emission
  * carrying one of these names is the thing we actually want stored.
+ *
+ * EVERY NAME HERE MUST BE BACKED BY A REGISTERED ACTION, and `test/synthesisActions.test.js`
+ * enforces it in both directions. That guard is the reason this set is a bare list of strings
+ * rather than something imported from the plugin: this module is CommonJS and the plugin is an
+ * ESM bundle, so an import would drag the whole bundle into the one module on the answer path
+ * that is currently trivial to load and test. A source-scanning guard buys the same protection
+ * against a silent rename — which would present as attribution quietly switching off, i.e. as
+ * the exact bug this file exists to fix — without the coupling.
+ *
+ * This set started life with two speculative entries. `ANALYZE_ASSET_SENTIMENT` and
+ * `ANALYZE_FINANCIAL_IMAGE` were listed before either action existed, on the theory that the
+ * porting PR would find them ready. Both are now gone, because an unbacked name cannot match
+ * anything and the failure it produces — last-prose wins — is indistinguishable from the
+ * original defect. The name lands in the SAME commit as the action that emits it:
+ * `ANALYZE_ASSET_SENTIMENT` with the port (CU-86d3z0r81, PR C2), and `ANALYZE_FINANCIAL_IMAGE`
+ * never, unless the oracle grows an image intake it does not have — see the omission note in
+ * the plugin index.
  */
-const SYNTHESIS_ACTIONS = new Set([
-  "GET_NEWS_DETAILS",
-  "ANALYZE_ASSET_SENTIMENT",
-  "ANALYZE_FINANCIAL_IMAGE",
-]);
+const SYNTHESIS_ACTIONS = new Set(["GET_NEWS_DETAILS"]);
 
 /**
  * Normalises an emission to `{ text, actions }`.
@@ -227,4 +240,4 @@ function selectAnswer(emitted) {
   return candidates[candidates.length - 1];
 }
 
-module.exports = { selectAnswer, looksLikeToolPayload };
+module.exports = { selectAnswer, looksLikeToolPayload, SYNTHESIS_ACTIONS };

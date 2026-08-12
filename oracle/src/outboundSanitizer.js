@@ -91,11 +91,27 @@ async function sanitizeAnswer(answer) {
 
   if (cleaned) return cleaned;
 
-  console.error(
-    "[outboundSanitizer] The sanitiser REJECTED the answer as a template/meta leak, but the " +
-      "prompt has already been paid for on-chain — storing it unsanitised rather than storing " +
-      "nothing. Investigate the emitting action.",
-  );
+  // Both falsy outcomes degrade to the original — never to `cleaned` — because the standing
+  // invariant is that no quality rule may turn an answer into no-answer on a prompt already
+  // charged on-chain. Returning an empty string would do exactly that.
+  //
+  // But they are logged apart. `null` is the Brain's documented rejection ("template/meta
+  // leak"); `""` is not in its behaviour today (every non-null exit has passed a >= 10
+  // meaningful-character floor) yet its signature permits it, and reporting a leak that never
+  // happened would send whoever is tracing a suspect answer after the wrong thing.
+  if (cleaned === null || cleaned === undefined) {
+    console.error(
+      "[outboundSanitizer] The sanitiser REJECTED the answer as a template/meta leak, but the " +
+        "prompt has already been paid for on-chain — storing it unsanitised rather than storing " +
+        "nothing. Investigate the emitting action.",
+    );
+  } else {
+    console.error(
+      "[outboundSanitizer] The sanitiser returned an EMPTY string, which its contract permits " +
+        "but its implementation does not currently produce — storing the answer unsanitised. " +
+        "This means sanitizeOutboundText's behaviour has changed; check the Brain.",
+    );
+  }
   return answer;
 }
 

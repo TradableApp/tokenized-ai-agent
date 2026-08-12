@@ -69,6 +69,29 @@ describe("outboundSanitizer", () => {
     expect(error.called, "a rejected answer must be visible in the TEE logs").to.equal(true);
   });
 
+  it("distinguishes an EMPTY-string result from a rejection in the log", async () => {
+    // `sanitizeOutboundText` is typed `string | null`, and only null means "leak — reject".
+    // An empty string is not something the current implementation can produce (every non-null
+    // exit has cleared a >= 10 meaningful-character floor), but the signature permits it, and
+    // reporting a template leak that never happened sends whoever is tracing a suspect stored
+    // answer after the wrong cause.
+    //
+    // The OUTCOME is identical and deliberately so: degrade to the original either way. Storing
+    // "" would turn an answer into no-answer on a prompt already charged on-chain, which no
+    // quality rule is allowed to do.
+    _setSanitizerForTests(() => "");
+    const error = sinon.stub(console, "error");
+
+    const answer = "Bitcoin is consolidating near $61k.";
+    expect(await sanitizeAnswer(answer)).to.equal(answer);
+
+    const logged = error.getCall(0).args[0];
+    expect(logged, "an empty result is not a leak and must not be reported as one").to.not.match(
+      /REJECTED/,
+    );
+    expect(logged).to.match(/EMPTY string/);
+  });
+
   it("falls back to the unsanitised answer when the sanitiser THROWS", async () => {
     _setSanitizerForTests(() => {
       throw new Error("brain exploded");
