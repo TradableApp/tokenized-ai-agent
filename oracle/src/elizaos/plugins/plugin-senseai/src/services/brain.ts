@@ -11,6 +11,7 @@ import { elizaLogger, type IAgentRuntime, Service } from "@elizaos/core";
 // core writes all three bare. Nothing about the oracle required them; the adapter was simply
 // under-typed. Same lesson as CU-86d403h5a.
 import type {
+  AssetSentimentMetrics,
   EnrichedNewsRow,
   GlobalMacroData,
   NewsSearchHit,
@@ -112,6 +113,46 @@ export class BrainService extends Service {
       return (await h.sentimentEngine.getLatestMacro()) as GlobalMacroData | null;
     } catch (error) {
       elizaLogger.error(`[Brain] Macro read failed: ${String((error as any)?.message ?? error)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Per-asset on-chain / social metrics — the data half of ANALYZE_ASSET_SENTIMENT.
+   *
+   * DEGRADES to null, unlike `searchNewsDetails` below. The reasoning that makes the news search
+   * throw looks like it should apply here — both back actions, both on the paid path — but the
+   * difference lives in the ACTION, not in this service.
+   *
+   * `getNewsDetails` has no per-item counter, so an empty array is indistinguishable from "we
+   * searched the ledger and found nothing", which is its SUCCESS path and bills.
+   * `analyzeAssetSentiment` loops over tickers and sets `isBillable: successfulFetches > 0`, so a
+   * null for every ticker is ALREADY the non-billable outcome — by core's own rule, with no
+   * divergence required. Throwing would put the two bodies on different billing rules to reach
+   * the same result, which is the drift a shared Brain exists to prevent.
+   *
+   * The engine returns null for an unrecognised symbol too, so "unsupported" and "unavailable"
+   * arrive here as the same value. That conflation is core's (`SentimentEngine` swallows its
+   * cache-read error and falls through to adapters) and is tracked upstream as CU-86d40ny48
+   * rather than fixed in the copy.
+   *
+   * @param symbol ticker, e.g. "BTC" — the engine upper-cases and strips `$`
+   * @param forceRefresh skip the 23h cache and re-fetch from the adapters
+   */
+  async getAssetSentiment(
+    symbol: string,
+    forceRefresh = false,
+  ): Promise<AssetSentimentMetrics | null> {
+    const h = await handles();
+    if (!h?.sentimentEngine?.getAssetSentiment) return null;
+    try {
+      return await h.sentimentEngine.getAssetSentiment(symbol, forceRefresh);
+    } catch (error) {
+      elizaLogger.error(
+        `[Brain] Asset sentiment read failed for ${symbol}: ${String(
+          (error as any)?.message ?? error,
+        )}`,
+      );
       return null;
     }
   }

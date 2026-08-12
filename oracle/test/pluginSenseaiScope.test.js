@@ -81,6 +81,57 @@ function scanTargets() {
   return files;
 }
 
+/**
+ * Occurrences of "telegram"/"twitter" that are NOT coupling, listed as EXACT strings per file.
+ *
+ * WHY AN ALLOWANCE EXISTS AT ALL. The broad grep below is the right default — it is what caught
+ * the five inert Telegram actions this guard was written for — but it cannot tell a Telegram
+ * *dependency* from the word appearing in data. `analyzeAssetSentiment.ts` is a literal copy of
+ * core's, and the Brain's `AssetSentimentMetrics` genuinely carries per-platform Santiment
+ * fields: social sentiment is measured per platform, so the metric names say "telegram" and
+ * "twitter". Renaming them to satisfy a grep would change the prompt bytes sent to the model and
+ * split the two bodies' answers, which is precisely the drift a shared Brain exists to prevent.
+ *
+ * WHY EXACT STRINGS RATHER THAN EXEMPTING THE FILE. A file-level exemption would let a real
+ * `import { TelegramService }` land in the one file most likely to attract one, and the guard
+ * would report success. Subtracting only these exact substrings keeps every OTHER occurrence
+ * in the same file failing.
+ *
+ * THE ONE JUDGEMENT CALL, stated rather than buried:
+ * `message.content.source !== "twitter"` is a social conditional, and social conditionals are
+ * what this guard exists to catch. It is allowed here because of how it EVALUATES on this body,
+ * not because of how it reads. The deleted `accessProvider` tested `source !== "telegram"` and
+ * early-RETURNED, so on the oracle — where source is never "telegram" — it disabled the provider
+ * outright. This one is the mirror image: source is never "twitter" here, so the condition is
+ * always true and the interim callback always fires, which is exactly core's behaviour on its
+ * non-Twitter path. Inverting or removing it would make the oracle behave DIFFERENTLY from core,
+ * and would be a third divergence for Phase 3's extraction to undo.
+ */
+const ALLOWED_SOCIAL_MENTIONS = new Map([
+  [
+    "plugin-senseai/src/actions/analyzeAssetSentiment.ts",
+    [
+      // Interim-feedback suppression on core's Twitter path — always true here. See above.
+      'message.content.source !== "twitter"',
+      // Santiment per-platform metric fields, straight off the Brain's AssetSentimentMetrics.
+      "community_messages_count_telegram",
+      "sentiment_balance_twitter",
+      "sentiment_balance_telegram",
+      // ...and their labels in the observation block the model reads.
+      "Community Msgs (Telegram)",
+      "Sentiment Balance (Twitter)",
+      "Sentiment Balance (Telegram)",
+    ],
+  ],
+]);
+
+/** Removes this file's allowed occurrences, so only unlisted ones can trip the guard. */
+function stripAllowedMentions(relPath, content) {
+  const allowed = ALLOWED_SOCIAL_MENTIONS.get(relPath);
+  if (!allowed) return content;
+  return allowed.reduce((text, phrase) => text.split(phrase).join(""), content);
+}
+
 describe("oracle ElizaOS plugins stay oracle-scoped", () => {
   it("registers no Telegram- or X-coupled code", () => {
     // Comment LINES are dropped first (see stripCommentLines): a note explaining WHY Telegram
@@ -92,7 +143,9 @@ describe("oracle ElizaOS plugins stay oracle-scoped", () => {
     // itself is not greppable, so "twitter" is the searchable handle for it — every X module in
     // core is named plugin-twitter-senseai / twitter*.
     const offenders = scanTargets().filter(f =>
-      /telegram|twitter/i.test(stripCommentLines(fs.readFileSync(f, "utf8"))),
+      /telegram|twitter/i.test(
+        stripAllowedMentions(rel(f), stripCommentLines(fs.readFileSync(f, "utf8"))),
+      ),
     );
 
     expect(

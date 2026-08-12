@@ -1,5 +1,6 @@
 import type { Plugin } from "@elizaos/core";
 
+import { analyzeAssetSentimentAction } from "./actions/analyzeAssetSentiment";
 import { getNewsDetailsAction } from "./actions/getNewsDetails";
 import { macroSentimentProvider } from "./providers/macroSentiment";
 import { marketIntelligenceProvider } from "./providers/marketIntelligence";
@@ -55,9 +56,17 @@ const senseaiPlugin: Plugin = {
   description:
     "SenseAI oracle body: a thin ElizaOS wrapper over the shared @tradableapp/sense-ai-brain analytical engine.",
 
-  // The analytical action sense-ai-core registers, ported near-verbatim so a news question is
+  // The analytical actions sense-ai-core registers, ported near-verbatim so a question is
   // answered the same way on both bodies. Anything Telegram/X-shaped stays in core.
-  actions: [getNewsDetailsAction],
+  //
+  // ANALYZE_ASSET_SENTIMENT deliberately has NO provider instruction pointing at it, and that is
+  // not the omission GET_NEWS_DETAILS suffered from. Core has none either: the action is selected
+  // from its own `similes` and `examples` ("what is the outlook on", "is it a good time to buy"),
+  // which is how ElizaOS is meant to route. The news case was different because
+  // MARKET_INTELLIGENCE injects a ticker of headlines the model can see but was never told it
+  // could act on — context without an affordance. There is no equivalent standing sentiment
+  // block, so there is nothing to point at.
+  actions: [getNewsDetailsAction, analyzeAssetSentimentAction],
   // The Brain-backed pair sense-ai-core injects, from the same shared Brain so both bodies
   // see identical context. Oracle-only capabilities go here later; anything shared with the
   // Social body belongs in the Brain instead, so both get it.
