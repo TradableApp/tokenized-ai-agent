@@ -304,7 +304,14 @@ describe("oracle Brain providers", () => {
         }
       }
 
-      expect(inspected, "both Brain-backed providers must be covered").to.equal(2);
+      // Derived, not hardcoded. A literal `2` here fails a third provider with
+      // "expected 3 to equal 2" alongside a message insisting two is correct — which sends the
+      // reader looking for a deleted provider instead of at the loop that skipped one. The point
+      // of this assertion is "every registered provider was inspected", so say that.
+      expect(
+        inspected,
+        "every Brain-backed provider must be inspected, not just the ones the loop happened to reach",
+      ).to.equal((plugin.providers || []).length);
     });
 
     it("does not re-inject when the turn already has it", async () => {
