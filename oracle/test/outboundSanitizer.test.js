@@ -121,6 +121,16 @@ describe("outboundSanitizer", () => {
     expect(await sanitizeAnswer("   ")).to.equal("   ");
   });
 
+  it("refuses a sanitizer and loader options together", () => {
+    // The seam's own guard. `loadSanitizer` returns on `overrideSanitizer` before consulting
+    // `overrideLoader`, so a test passing both would exercise only the first — and still pass,
+    // against the path it did not mean to test. Failing loudly at setup beats that.
+    expect(() => _setSanitizerForTests(() => "x", { loadFails: true })).to.throw(
+      /mutually exclusive|EITHER/i,
+    );
+    expect(() => _setSanitizerForTests(() => "x", { loader: async () => ({}) })).to.throw();
+  });
+
   it("loads the Brain once and reuses it across answers", async () => {
     // The TEE answers on a p-queue at concurrency 5. Re-importing the Brain barrel per answer
     // would pull adapters and drizzle into every one of them.

@@ -42,19 +42,32 @@ const ACTIONS_DIR = path.join(PLUGIN_SRC, "actions");
 /** `actionName: "FOO"` — how handleChainSynthesis learns what to tag the callback with. */
 const ACTION_NAME_RE = /actionName:\s*"([A-Z0-9_]+)"/g;
 
+/**
+ * A scan that finds nothing proves nothing. If the actions directory is ever moved or renamed,
+ * both assertions below would pass vacuously and the guard would report success while protecting
+ * exactly zero call sites.
+ *
+ * The MISSING-DIRECTORY case is checked before `readdirSync` rather than after, because
+ * `readdirSync` throws `ENOENT` synchronously — so a guard placed after it never runs in the one
+ * situation it was written for, and the suite reports a raw scandir error instead of the reason.
+ */
 function actionFiles() {
+  expect(
+    fs.existsSync(ACTIONS_DIR),
+    `${ACTIONS_DIR} does not exist. The plugin layout changed or this guard is pointed at the ` +
+      `wrong directory — it cannot protect anything from here, and must not pass by finding ` +
+      `nothing.`,
+  ).to.equal(true);
+
   const files = fs
     .readdirSync(ACTIONS_DIR)
     .filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts"))
     .map((f) => path.join(ACTIONS_DIR, f));
 
-  // A scan that finds nothing proves nothing. If the actions directory is ever moved or renamed,
-  // both assertions below would pass vacuously and the guard would report success while
-  // protecting exactly zero call sites.
   expect(
     files.length,
-    `No action sources found under ${ACTIONS_DIR}. Either the plugin layout changed or this ` +
-      `guard is pointed at the wrong directory — it cannot pass by finding nothing.`,
+    `No action sources found under ${ACTIONS_DIR}. The directory exists but holds no .ts files, ` +
+      `so this guard is protecting zero call sites — it cannot pass by finding nothing.`,
   ).to.be.greaterThan(0);
 
   return files;

@@ -123,6 +123,17 @@ async function sanitizeAnswer(answer) {
  * @param {{loader?: () => Promise<unknown>, loadFails?: boolean}} [options]
  */
 function _setSanitizerForTests(sanitizer, options = {}) {
+  // The two modes are mutually exclusive and the precedence is invisible: `loadSanitizer` returns
+  // on `overrideSanitizer` before it ever consults `overrideLoader`, so passing both would
+  // silently drop the loader. A test written that way would still pass — against the wrong path —
+  // which is worse than one that fails.
+  if (sanitizer && (options.loader || options.loadFails)) {
+    throw new Error(
+      "_setSanitizerForTests: pass EITHER a sanitizer (bypasses loading) OR loader/loadFails " +
+        "(drives the load path). The sanitizer short-circuits the loader, so both together " +
+        "would silently exercise only the first.",
+    );
+  }
   overrideSanitizer = sanitizer;
   overrideLoader = options.loadFails
     ? () => Promise.reject(new Error("Cannot find module '@tradableapp/sense-ai-brain'"))

@@ -222,6 +222,27 @@ describe("answer selection", () => {
       );
     });
 
+    it("picks the LAST synthesis emission when one action emits more than once", () => {
+      // `handleChainSynthesis` tags every callback it makes with the same actionName, and an
+      // action is free to emit an interim before its synthesis — `analyzeAssetSentiment` does
+      // exactly that ("Extracting institutional-grade data for BTC..."), and its interim is
+      // PROSE, so the payload filter cannot separate the two.
+      //
+      // Last-wins is therefore load-bearing rather than incidental: first-wins would store the
+      // interim and silently discard the answer, which is a strictly worse version of the bug
+      // this file exists to fix. Left untested, a reasonable-looking change to `[0]` would keep
+      // every other case here green.
+      const emitted = [
+        { text: "Fetching the latest news on Bitcoin...", actions: ["GET_NEWS_DETAILS"] },
+        {
+          text: "Bitcoin ETF inflows accelerated 18% while spot volume thinned.",
+          actions: ["GET_NEWS_DETAILS"],
+        },
+        { text: "The current price of Bitcoin is $61,204.", actions: ["CALL_MCP_TOOL"] },
+      ];
+      expect(selectAnswer(emitted)).to.equal(emitted[1].text);
+    });
+
     it("stores an apology rather than nothing, attributed or not", () => {
       // THE STANDING INVARIANT: no quality rule may turn an answer into no-answer. An apology is
       // a poor answer; silence is a failed contract on a prompt that has already been charged.
