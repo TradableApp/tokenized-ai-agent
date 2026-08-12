@@ -30,7 +30,14 @@ const { expect } = require("chai");
 // identical, but locally the index is what is about to BE committed — so a staged bump is
 // validated before it lands, instead of the guard reporting the previous commit's pin.
 
-const EXPECTED_BRAIN_SHA = "11a9718d1e1aa589c07f2ddfe267c3f8d64eba43";
+// Brain #13 — `metadata` declared on NewsSearchHit, which is what lets BOTH bodies type the
+// search boundary instead of casting onto a locally-restated shape.
+//
+// sense-ai-core is already here: it carries the identical SHA in src/__tests__/brain-pin.test.ts
+// as of its #88 (merged). This repo was the one behind — main still pins #11's 606b055, and this
+// branch is what closes that gap. See CU-86d408nb4 for making that class of drift CI-visible
+// rather than a review step, which is the limitation the scope note above describes.
+const EXPECTED_BRAIN_SHA = "7bfebaac8a630a4b8a7af93cf967c0bdc992ed9c";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 

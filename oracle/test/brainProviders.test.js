@@ -204,17 +204,114 @@ describe("oracle Brain providers", () => {
       expect(result.text.startsWith(`\n${CORE_HEADER}\n`), result.text.slice(0, 80)).to.equal(true);
     });
 
-    it("omits the Social-body GET_NEWS_DETAILS instruction", async () => {
-      // core's version appends "execute the GET_NEWS_DETAILS action" — an affordance that only
-      // exists in the Social body. Instructing the oracle's LLM to call an action that is not
-      // registered here invites a hallucinated tool call on the ON-CHAIN answer path, where the
-      // failure surfaces to a paying user rather than in a chat window.
+    it("carries the GET_NEWS_DETAILS instruction, exactly as sense-ai-core does", async () => {
+      // THIS TEST USED TO ASSERT THE OPPOSITE, and the inversion is the fix.
+      //
+      // The old rule ("omit it — that action is Social-body only") was correct while
+      // GET_NEWS_DETAILS was unregistered here: naming a non-existent action would invite a
+      // hallucinated tool call on the paid on-chain path. The action is registered now, so the
+      // premise is gone and the omission became the bug.
+      //
+      // What it cost: both bodies inject byte-identical news, but only core named a way to act
+      // on it. Given ten fresh articles and no sanctioned path past the headlines, this body's
+      // model reached for CALL_MCP_TOOL, searched the CoinGecko SDK docs, and answered a news
+      // question with a TypeScript snippet. The control case is that the same run used the macro
+      // block correctly — macro's instruction ships INSIDE the Brain's formatMacroEnvironment,
+      // so no body could drop it.
+      //
+      // Hard-coded rather than imported from the provider, for the same reason as the heading
+      // above: a test that reads the constant it is checking proves nothing. Copied from
+      // sense-ai-core/src/plugins/plugin-senseai/src/providers/marketIntelligence.ts.
+      const CORE_INSTRUCTIONS =
+        "INSTRUCTIONS:\n" +
+        "- This is a news article summary ticker.\n" +
+        "- If the user asks for a deep dive, or asks about a specific topic/coin, execute the " +
+        '"GET_NEWS_DETAILS" action.';
+
       const result = await news().get(
         runtimeWith({ brain: { getLatestNews: async () => rows } }),
         {},
         {},
       );
-      expect(result.text).to.not.match(/GET_NEWS_DETAILS/i);
+
+      expect(result.text).to.contain(CORE_INSTRUCTIONS);
+      // Trailing newline included: core's template literal closes the same way.
+      expect(result.text.endsWith(`${CORE_INSTRUCTIONS}\n`), result.text.slice(-120)).to.equal(
+        true,
+      );
+    });
+
+    it("names only actions this body actually registers", async () => {
+      // The generalised form of the rule the inverted test above used to enforce. The old rule
+      // was a proxy for this one and stopped being a good proxy the moment the action landed;
+      // this checks the property that actually matters, so it keeps holding as more actions are
+      // ported instead of having to be inverted again.
+      // EVERY provider, not just this one. Scoping it to MARKET_INTELLIGENCE would have left the
+      // hole half-open: MACRO_SENTIMENT's text comes from the Brain's formatMacroEnvironment,
+      // which is shared with core, so a future core-driven change there could name a Social-body
+      // action and land here silently — the same failure this test exists to prevent, arriving
+      // by a route the narrow version could not see.
+      const registered = new Set((plugin.actions || []).map(a => a.name));
+      const macroRow = {
+        fearGreedIndex: 20,
+        fearGreedClassification: "Fear",
+        btcDominance: 51,
+        ethDominance: 16,
+        moneySupply: 21000,
+        dailyEtfFlow: 0,
+        trendingWords: [],
+      };
+      const runtime = runtimeWith({
+        brain: { getLatestNews: async () => rows, getLatestMacro: async () => macroRow },
+      });
+
+      let inspected = 0;
+      for (const provider of plugin.providers || []) {
+        // Fresh empty state per provider so turn-dedup does not blank the second one.
+        const result = await provider.get(runtime, {}, {});
+
+        // A scan over empty text passes trivially and proves nothing — the loop would report
+        // green while inspecting no context at all. Assert there was something to inspect.
+        expect(
+          (result.text || "").trim(),
+          `${provider.name} produced no context, so this guard scanned nothing — fix the stub`,
+        ).to.not.equal("");
+        inspected += 1;
+
+        // ANCHORED ON THE IMPERATIVE, not on "any quoted ALLCAPS token".
+        //
+        // The first version matched /"([A-Z][A-Z0-9_]{3,})"/, which is any 4+ character quoted
+        // all-caps string anywhere in the context. Two of the three blocks scanned here are
+        // rendered by Brain formatters living in ANOTHER REPO, so the day one of them quotes a
+        // sentiment label or classification — "BULLISH", "FEAR" — this guard fails claiming a
+        // non-existent action, and the failure blames the wrong thing entirely.
+        //
+        // Matching `execute the "X" action` instead keys on the construct that actually creates
+        // the hazard: an instruction telling the model to RUN something. A quoted noun elsewhere
+        // in the context is not a tool call and was never this test's business.
+        //
+        // Relying on that phrasing is safe because it cannot drift silently: the instruction
+        // block is pinned byte-for-byte by `carries the GET_NEWS_DETAILS instruction, exactly as
+        // sense-ai-core does` above. Reword the instruction and that test fails first, which is
+        // the signal to update this pattern too.
+        const IMPERATIVE = /execute the "([A-Z][A-Z0-9_]{3,})" action/g;
+        for (const [, name] of (result.text || "").matchAll(IMPERATIVE)) {
+          expect(
+            registered.has(name),
+            `${provider.name} tells the model to execute "${name}", but this body registers no ` +
+              "such action — it can only hallucinate a tool call, on the paid on-chain path",
+          ).to.equal(true);
+        }
+      }
+
+      // Derived, not hardcoded. A literal `2` here fails a third provider with
+      // "expected 3 to equal 2" alongside a message insisting two is correct — which sends the
+      // reader looking for a deleted provider instead of at the loop that skipped one. The point
+      // of this assertion is "every registered provider was inspected", so say that.
+      expect(
+        inspected,
+        "every Brain-backed provider must be inspected, not just the ones the loop happened to reach",
+      ).to.equal((plugin.providers || []).length);
     });
 
     it("does not re-inject when the turn already has it", async () => {

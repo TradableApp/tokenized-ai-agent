@@ -108,6 +108,122 @@ describe("BrainService (host-injected adapter)", () => {
     expect(await svc.getLatestNews()).to.deep.equal([]);
   });
 
+  it("delegates news SEARCH, passing the host's ctx and the caller's options", async () => {
+    const ctx = { marker: "host-ctx" };
+    let sawCtx = null;
+    let sawOpts = null;
+    setBrainAccessor(async () => ({
+      sentimentEngine: {},
+      ctx,
+      brain: {
+        searchNewsDetails: async (passedCtx, opts) => {
+          sawCtx = passedCtx;
+          sawOpts = opts;
+          return [{ title: "hit", url: "https://x.test/hit", similarity: 0.9 }];
+        },
+      },
+    }));
+
+    const svc = await BrainService.start({ getSetting: () => undefined });
+    const opts = { query: "etf", tickers: ["BTC"], embedding: [0.1, 0.2] };
+    const rows = await svc.searchNewsDetails(opts);
+
+    expect(sawCtx, "the Brain's ctx must be the host's, not one reinvented here").to.equal(ctx);
+    expect(sawOpts, "options must reach the Brain untouched").to.equal(opts);
+    expect(rows[0].title).to.equal("hit");
+  });
+
+  it("PROPAGATES a search failure instead of degrading to []", async () => {
+    // THE BILLING CONTRACT, and the reason this method breaks the pattern of every other read
+    // on this service.
+    //
+    // `getLatestMacro` / `getLatestNews` feed PROVIDERS, where a throw fails composeState for
+    // the whole turn — so degrading is right: the answer loses its market context and survives.
+    //
+    // This one feeds an ACTION, and the action already has its own try/catch that turns a
+    // rejection into the graceful "Error accessing market ledger" result carrying
+    // isBillable:false. Swallowing here would instead hand the action an EMPTY ARRAY, which is
+    // indistinguishable from "we searched and found nothing" — the SUCCESS path, isBillable:true.
+    //
+    // On this body that mistake is not recoverable: EVMAIAgent.submitAnswer calls
+    // aiAgentEscrow.finalizePayment in the SAME transaction, so storing the answer IS charging
+    // for it. A Cloud SQL blip would bill the user, on-chain, for our own outage.
+    setBrainAccessor(async () => ({
+      sentimentEngine: {},
+      ctx: {},
+      brain: {
+        searchNewsDetails: async () => {
+          throw new Error("connection refused");
+        },
+      },
+    }));
+
+    const svc = await BrainService.start({ getSetting: () => undefined });
+
+    let threw = null;
+    try {
+      await svc.searchNewsDetails({ query: "etf" });
+    } catch (error) {
+      threw = error;
+    }
+
+    expect(threw, "a failed search must reach the action, not look like an empty result").to.be.an(
+      "error",
+    );
+    expect(threw.message).to.contain("connection refused");
+  });
+
+  it("throws the named error when the host supplies a brain but no ctx", async () => {
+    // A half-built handle set — brainContext failing partway through its Postgres bootstrap —
+    // used to sail past the guard, because only `brain.searchNewsDetails` was checked. The call
+    // then failed deeper in as a driver error about an undefined connection.
+    //
+    // The billing contract held either way (the action's catch marks it non-billable), so this
+    // is purely about which message an operator reads: "Brain unavailable" names the subsystem,
+    // a drizzle stack trace does not.
+    setBrainAccessor(async () => ({
+      sentimentEngine: {},
+      ctx: undefined,
+      brain: {
+        searchNewsDetails: async () => {
+          throw new Error("should never be reached — ctx was undefined");
+        },
+      },
+    }));
+
+    const svc = await BrainService.start({ getSetting: () => undefined });
+
+    let threw = null;
+    try {
+      await svc.searchNewsDetails({ query: "etf" });
+    } catch (error) {
+      threw = error;
+    }
+
+    expect(threw, "a missing ctx must be caught by the guard").to.be.an("error");
+    expect(threw.message, "and must name the subsystem, not leak a driver error").to.contain(
+      "Brain unavailable",
+    );
+  });
+
+  it("throws rather than reporting 'no news' when the Brain is unavailable", async () => {
+    // Same contract at the other end: no Brain is not evidence that no articles exist. Returning
+    // [] here would answer "no significant records found" — a billable non-answer — when the
+    // truth is that we never looked. sense-ai-core reaches the identical outcome by a different
+    // route: its createBrainContext hands drizzle an undefined db, which throws.
+    setBrainAccessor(async () => null);
+    const svc = await BrainService.start({ getSetting: () => undefined });
+
+    let threw = null;
+    try {
+      await svc.searchNewsDetails({ query: "etf" });
+    } catch (error) {
+      threw = error;
+    }
+
+    expect(threw, "an unavailable Brain must not masquerade as an empty ledger").to.be.an("error");
+  });
+
   it("owns no database connection of its own", async () => {
     // The regression guard for the bug that prompted this file: if the service ever grows its
     // own pool again it will diverge from brainContext's TLS, drizzle and timeout handling.

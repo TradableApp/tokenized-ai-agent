@@ -1,4 +1,9 @@
 import { elizaLogger, type IAgentRuntime, Service } from "@elizaos/core";
+// The Brain's OWN types for the search boundary. Typing them here rather than in the action is
+// what lets `actions/getNewsDetails.ts` stay a literal copy of core's — core reaches the Brain
+// directly and gets these types for free, so the oracle's adapter has to supply the same shape
+// or the copied call sites would need casts core does not have.
+import type { NewsSearchHit, NewsSearchOptions } from "@tradableapp/sense-ai-brain";
 
 /**
  * The oracle's adapter onto the shared Brain.
@@ -24,8 +29,12 @@ import { elizaLogger, type IAgentRuntime, Service } from "@elizaos/core";
  * Providers still resolve it the ElizaOS way, `runtime.getService("brain")`; only the plumbing
  * behind it differs between bodies.
  *
- * Every read degrades to null/[] rather than throwing: localnet e2e runs with no Cloud SQL at
+ * PROVIDER reads degrade to null/[] rather than throwing: localnet e2e runs with no Cloud SQL at
  * all, and a provider that throws fails composeState for the entire turn.
+ *
+ * `searchNewsDetails` is the one exception, and the exception is the point — it backs an ACTION
+ * whose empty result is a BILLABLE answer, so a swallowed failure would charge the user for our
+ * outage. See the method for the full reasoning.
  */
 
 /** Returns the host's live Brain handles, or null when the Brain is unavailable. */
@@ -99,6 +108,48 @@ export class BrainService extends Service {
       elizaLogger.error(`[Brain] News read failed: ${String((error as any)?.message ?? error)}`);
       return [];
     }
+  }
+
+  /**
+   * Searches the enriched-news ledger — the data half of GET_NEWS_DETAILS.
+   *
+   * THIS ONE THROWS, and that is deliberate: it is the only read on this service that does.
+   *
+   * The methods above feed PROVIDERS, where a throw fails composeState for the entire turn, so
+   * degrading to null/[] is correct — the answer loses its market context and still ships. This
+   * one feeds an ACTION, and the action already owns a try/catch that turns a rejection into the
+   * graceful "Error accessing market ledger" result carrying `isBillable: false`.
+   *
+   * Swallowing here would hand that action an EMPTY ARRAY instead, which is indistinguishable
+   * from "we searched the ledger and found nothing" — the SUCCESS path, `isBillable: true`. On
+   * this body that mistake is not recoverable: `EVMAIAgent.submitAnswer` calls
+   * `aiAgentEscrow.finalizePayment` in the SAME transaction, so storing the answer IS charging
+   * for it. A Cloud SQL blip would bill the user, on-chain, for our own outage.
+   *
+   * An unavailable Brain throws for the same reason: "we never looked" is not evidence that no
+   * articles exist. sense-ai-core arrives at the identical behaviour by a different route — its
+   * `createBrainContext` hands drizzle an undefined `db`, which throws.
+   *
+   * @param opts forwarded to the Brain verbatim: { query?, tickers?, embedding?, targetTitles? }
+   */
+  async searchNewsDetails(opts: NewsSearchOptions): Promise<NewsSearchHit[]> {
+    const h = await handles();
+    // `ctx` is checked alongside the function, not just the function. A host accessor that
+    // returned a usable `brain` with a half-built `ctx` — brainContext failing partway through
+    // its Postgres bootstrap — would otherwise sail past this guard and fail deeper in, as a
+    // driver error about an undefined connection. The billing contract holds either way (the
+    // action's catch still marks it non-billable), so this is purely about which message an
+    // operator reads at 3am: "Brain unavailable" names the subsystem, a drizzle stack trace does
+    // not.
+    if (!h?.ctx || !h?.brain?.searchNewsDetails) {
+      throw new Error(
+        "Brain unavailable — cannot search the news ledger. Refusing to report an empty result " +
+          "for a search that never ran.",
+      );
+    }
+    // No try/catch on purpose — see above. The ctx comes from the host so the drizzle instance,
+    // its TLS and its timeouts are the ones brainContext built.
+    return await h.brain.searchNewsDetails(h.ctx, opts);
   }
 
   override async stop(): Promise<void> {
