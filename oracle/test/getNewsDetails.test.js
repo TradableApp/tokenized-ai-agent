@@ -14,6 +14,23 @@ const { expect } = require("chai");
 // are not in the copied logic — they are at the two seams where the bodies genuinely differ:
 // how the ledger is reached (BrainService, not runtime.db) and what happens to billing when
 // that reach fails.
+//
+// READ THIS BEFORE TRUSTING THE `isBillable` ASSERTIONS BELOW.
+//
+// `isBillable` is asserted in several tests here, but NOTHING ON THIS BODY READS IT YET. In
+// sense-ai-core the flag is consumed by `evaluators/usageTracker.ts` (`isBillable === false`
+// marks the turn free); the oracle has no equivalent, and `aiAgentOracle.js` does not consult it
+// before `contract.submitAnswer`. Confirmed by grep, not assumption.
+//
+// That is a DECISION, not an oversight: the oracle must always deliver an answer for a pre-paid,
+// immutable prompt, and gating the charge was explicitly deferred rather than blocking the port
+// (see CU-86d3z0r81). What actually protects the user on the error path today is that the
+// failure returns before `handleChainSynthesis`, so no answer is synthesised or stored.
+//
+// So these assertions pin the CONTRACT — the shape core consumes, and the seam an oracle-side
+// consumer will read — not a live enforcement path on this body. Wiring or permanently deciding
+// it is CU-86d40gvmx. Do not read a passing `isBillable: false` here as "the user was not
+// charged"; today it means "the action reported that it should not be".
 
 const DIST = path.resolve(__dirname, "../src/elizaos/plugins/plugin-senseai/dist/index.js");
 
