@@ -302,6 +302,12 @@ export const analyzeAssetSentimentAction: Action = {
         data: {
           actionName: "ANALYZE_ASSET_SENTIMENT",
           isBillable: successfulFetches > 0, // Only bill if at least one succeeded
+          // NOT ENFORCED ON THIS BODY YET. core consumes this in evaluators/usageTracker.ts;
+          // aiAgentOracle.js never reads it — submitAnswer (and with it the escrow's
+          // finalizePayment, same transaction) fires regardless. So a zero-fetch run reports
+          // itself non-billable and the user is still charged. Deferred rather than guarded
+          // because withholding submitAnswer does not un-charge anyone — the escrow has already
+          // moved — it only withholds the answer they paid for. Tracked as CU-86d40gvmx.
           tickers: tickers,
           rawData: { ...rawDataMap },
         },

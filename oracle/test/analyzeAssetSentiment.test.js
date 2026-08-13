@@ -25,6 +25,10 @@ const { expect } = require("chai");
 // a pre-paid, immutable prompt, so gating the charge was deferred rather than blocking the port.
 // Wiring or permanently deciding it is CU-86d40gvmx.
 //
+// Hence the "reports BILLABLE / NON-BILLABLE" naming below rather than "bills / does NOT bill":
+// a failing test shows its TITLE first, and "does NOT bill" would send whoever reads that CI line
+// hunting for a broken payment guard that does not exist yet.
+//
 // So these assertions pin the CONTRACT — the shape core consumes, and the seam an oracle-side
 // consumer will read — not a live enforcement path. Do not read a passing `isBillable: false`
 // here as "the user was not charged"; today it means "the action reported that it should not be".
@@ -127,7 +131,7 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
     expect(result.data.isBillable).to.equal(true);
   });
 
-  it("bills when at least one ticker resolves, even if the others return null", async () => {
+  it("reports BILLABLE when at least one ticker resolves, even if the others return null", async () => {
     // THE BILLING GATE, and the case the review singled out. `isBillable: successfulFetches > 0`
     // is what a future oracle-side consumer will read before finalising an on-chain payment, and
     // partial success is the only input that distinguishes `> 0` from the two mutations either
@@ -151,7 +155,7 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
 
     expect(runtime.fetched, "both tickers must be attempted").to.deep.equal(["BTC", "ETH"]);
     expect(result.success).to.equal(true);
-    expect(result.data.isBillable, "one success is enough to bill").to.equal(true);
+    expect(result.data.isBillable, "one success is enough to report billable").to.equal(true);
     expect(result.data.tickers).to.deep.equal(["BTC", "ETH"]);
 
     // The counter and the raw-data map must stay in step: a ticker that returned nothing must not
@@ -174,7 +178,7 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
     );
   });
 
-  it("does NOT bill when every ticker returns null", async () => {
+  it("reports NON-BILLABLE when every ticker returns null", async () => {
     // The other side of the gate. On this body storing an answer IS charging for it —
     // EVMAIAgent.submitAnswer calls aiAgentEscrow.finalizePayment in the same transaction — so a
     // total ledger outage must not read as a paid answer.
@@ -189,7 +193,10 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
     const result = await action.handler(runtime, MESSAGE, undefined, MID_CHAIN, async () => {}, []);
 
     expect(result.success, "a total outage is still an answered turn").to.equal(true);
-    expect(result.data.isBillable, "zero successes must never be billed").to.equal(false);
+    expect(
+      result.data.isBillable,
+      "a zero-fetch run must REPORT non-billable — pin only, the oracle does not enforce it (CU-86d40gvmx)",
+    ).to.equal(false);
     expect(Object.keys(result.data.rawData)).to.have.lengthOf(0);
 
     // The all-null branch replaces the observation wholesale rather than sending the model a
@@ -202,7 +209,7 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
     );
   });
 
-  it("does NOT bill when the Brain service is unregistered", async () => {
+  it("reports NON-BILLABLE when the Brain service is unregistered", async () => {
     // Kept in core's position, before the try, so this early return is byte-for-byte core's: an
     // unregistered service is not a failed lookup and must never read as one.
     const runtime = buildRuntime({ noBrain: true, extraction: { tickers: ["BTC"] } });
@@ -215,7 +222,7 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
     expect(runtime.fetched, "nothing may be fetched without a service").to.have.lengthOf(0);
   });
 
-  it("does NOT bill when no ticker can be extracted", async () => {
+  it("reports NON-BILLABLE when no ticker can be extracted", async () => {
     const runtime = buildRuntime({ extraction: { tickers: [] } });
 
     const result = await action.handler(
