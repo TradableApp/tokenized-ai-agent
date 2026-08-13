@@ -104,6 +104,49 @@ describe("oracle ElizaOS plugins stay oracle-scoped", () => {
     ).to.deep.equal([]);
   });
 
+  it("reads the Brain through its own types, never `as any`", () => {
+    // WHY THIS IS A PARITY RULE, not a style preference. core's providers write
+    // `formatMacroEnvironment(macroState)`, `macroState.fearGreedClassification` and
+    // `formatNewsTicker(latestNews)` bare, because core calls the Brain directly and gets the
+    // Brain's types for free. This body goes through BrainService, so whenever that adapter
+    // returns `unknown` the copied call sites need casts core does not have — and the standing
+    // rule for ported files is to change only what would not work as a straight paste. A cast is
+    // not that; it is an under-typed adapter leaking into the copy.
+    //
+    // It has already happened twice: CU-86d403h5a fixed it for the search boundary, and
+    // `getLatestMacro`/`getLatestNews` were left returning `unknown` in the same style, forcing
+    // three more casts.
+    //
+    // THE TYPE CHECKER CANNOT BE RELIED ON HERE. `bun run build` exits 0 on type errors (verified
+    // — it only warns that declarations were skipped) and CI runs no `tsc --noEmit` for this
+    // plugin, so re-weakening a Brain return to `unknown` and re-adding the casts would pass
+    // every check. Until CI gains a typecheck step (CU-86d40xr72), this scan is the enforcement.
+    //
+    // Honest about its reach: this catches the CAST, not the weakening behind it. A new call site
+    // handed `unknown` that simply propagates it untyped would slip past. That is why the CI step
+    // is the real fix and this is the stopgap.
+    //
+    // `error as any` is exempt: narrowing an unknown catch binding is unrelated to the Brain
+    // boundary, and core does the same thing.
+    const offenders = [];
+    for (const file of scanTargets()) {
+      const src = stripCommentLines(fs.readFileSync(file, "utf8"));
+      for (const line of src.split("\n")) {
+        if (!/\bas any\b/.test(line)) continue;
+        if (/\berror as any\b|\berr as any\b/.test(line)) continue;
+        offenders.push(`${rel(file)}: ${line.trim()}`);
+      }
+    }
+
+    expect(
+      offenders,
+      `These cast a Brain read with \`as any\`. core writes the same call sites bare, so the cast ` +
+        `is an under-typed BrainService leaking into a ported file rather than anything the ` +
+        `oracle requires. Type the method in services/brain.ts with the Brain's own exported ` +
+        `type (EnrichedNewsRow, GlobalMacroData, AssetSentimentMetrics, NewsSearchHit) instead.`,
+    ).to.deep.equal([]);
+  });
+
   it("consumes the shared Brain", () => {
     // Held back from the deletion PR on purpose — it would have landed knowingly-red on main,
     // since that change removed the fork without yet adding the replacement. It joins the file

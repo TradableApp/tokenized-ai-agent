@@ -64,6 +64,7 @@ const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { selectAnswer } = require("./answerSelection");
+const { sanitizeAnswer } = require("./outboundSanitizer");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
 const MOCK_AI = process.env.MOCK_AI === "true";
@@ -899,7 +900,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
   // We use handleMessage which runs the full processing pipeline:
   // Context -> Action Selection -> Evaluation -> Response
   return new Promise(async (resolve, reject) => {
-    // EVERY emission is kept, and the answer is chosen at the end — see answerSelection.
+    // EVERY emission is kept WITH ITS ATTRIBUTION, and the answer is chosen at the end — see
+    // answerSelection.
     // Assigning on each onResponse meant the last emission won, so a CALL_MCP_TOOL
     // payload became the user's answer (base-testnet stored a TypeScript snippet; an
     // earlier run stored an apology). Callback ordering must not decide what a user is
@@ -941,7 +943,16 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               runProvenance.recordThought(runId, content.thought);
             }
 
-            if (typeof content.text === "string") emittedTexts.push(content.text);
+            // Keep the ATTRIBUTION, not just the text. Every emitter tags its callback with the
+            // action that produced it, and discarding that tag left "last substantive" as the
+            // only selection rule — which picks a third-party action's prose over our own
+            // synthesis whenever the model happens to order it last. See answerSelection.
+            if (typeof content.text === "string") {
+              emittedTexts.push({
+                text: content.text,
+                actions: Array.isArray(content.actions) ? content.actions : [],
+              });
+            }
           },
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
@@ -952,20 +963,47 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
           onComplete: async () => {
             console.log("[ElizaOS] Processing complete signal received.");
-            const finalResponseText = selectAnswer(emittedTexts);
-            if (finalResponseText) {
-              // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
-              // thought steps from the runtime + the warm-cache sources injected above.
-              const { reasoning, sources } = runProvenance.finish(runId);
-              resolve({
-                text: finalResponseText.trim(),
-                reasoning,
-                sources,
-                reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
-              });
-            } else {
+            // WHY THIS WHOLE BODY IS WRAPPED. `onComplete` is an async callback whose promise
+            // nothing awaits — the `new Promise(async (resolve, reject) => …)` executor does not
+            // chain onto it, and neither does ElizaOS. So a throw in here does not reject the
+            // outer promise; it escapes as an unhandled rejection and leaves the promise pending
+            // FOREVER, holding its p-queue slot (concurrency 5) against a prompt that has already
+            // been paid for.
+            //
+            // Nothing on this path throws today — `sanitizeAnswer` catches everything and
+            // `selectAnswer` is total. The wrap is here because the body became async in this
+            // change, which is what made the hazard reachable at all: `onError` and the outer
+            // catch already release the run, and this exit was the only one that could not.
+            try {
+              // Two passes, deliberately separate. selectAnswer decides WHICH emission is the
+              // answer; sanitizeAnswer decides what that text may contain. Only our own synthesis
+              // reaches `generateSanitized` inside handleChainSynthesis — a third-party emission or
+              // the acknowledgement never does, and this is the last point before the text is
+              // encrypted into an immutable MessageFile. See outboundSanitizer.js.
+              const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
+              if (finalResponseText) {
+                // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
+                // thought steps from the runtime + the warm-cache sources injected above.
+                const { reasoning, sources } = runProvenance.finish(runId);
+                resolve({
+                  text: finalResponseText.trim(),
+                  reasoning,
+                  sources,
+                  reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
+                });
+              } else {
+                runProvenance.finish(runId);
+                reject(new Error("ElizaOS completed but generated no text."));
+              }
+            } catch (error) {
+              // `finish` is IDEMPOTENT, so a double-call is safe when the success branch already
+              // called it and then threw: `runProvenance.finish` returns
+              // `{ reasoning: [], sources: [] }` for an unknown runId and `forget` no-ops on a
+              // missing entry. Pinned by "finish is idempotent" in runProvenance.test.js rather
+              // than left as a claim here — the guarantee is what makes this catch correct, so
+              // it has to fail loudly if it ever stops holding.
               runProvenance.finish(runId);
-              reject(new Error("ElizaOS completed but generated no text."));
+              reject(error);
             }
           },
         },

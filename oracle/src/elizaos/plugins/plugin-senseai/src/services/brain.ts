@@ -1,9 +1,21 @@
 import { elizaLogger, type IAgentRuntime, Service } from "@elizaos/core";
-// The Brain's OWN types for the search boundary. Typing them here rather than in the action is
-// what lets `actions/getNewsDetails.ts` stay a literal copy of core's — core reaches the Brain
-// directly and gets these types for free, so the oracle's adapter has to supply the same shape
-// or the copied call sites would need casts core does not have.
-import type { NewsSearchHit, NewsSearchOptions } from "@tradableapp/sense-ai-brain";
+// The Brain's OWN types for every read this service exposes. Typing them here rather than at the
+// call sites is what lets the ported files stay literal copies of core's — core reaches the Brain
+// directly and gets these types for free, so the oracle's adapter has to supply the same shape or
+// the copied call sites would need casts core does not have.
+//
+// That rationale was written for the search boundary and then not applied to the other two reads:
+// `getLatestMacro` and `getLatestNews` returned `unknown`, which forced three `as any` casts into
+// the providers — `formatMacroEnvironment(macroState as any)`,
+// `(macroState as any).fearGreedClassification`, `formatNewsTicker(latestNews as any)` — where
+// core writes all three bare. Nothing about the oracle required them; the adapter was simply
+// under-typed. Same lesson as CU-86d403h5a.
+import type {
+  EnrichedNewsRow,
+  GlobalMacroData,
+  NewsSearchHit,
+  NewsSearchOptions,
+} from "@tradableapp/sense-ai-brain";
 
 /**
  * The oracle's adapter onto the shared Brain.
@@ -84,26 +96,34 @@ export class BrainService extends Service {
     return (await handles()) !== null;
   }
 
-  /** Latest global macro row, or null when unavailable. */
-  async getLatestMacro(): Promise<unknown | null> {
+  /**
+   * Latest global macro row, or null when unavailable.
+   *
+   * Typed with the Brain's OWN `GlobalMacroData`, not `unknown`. core's provider writes
+   * `formatMacroEnvironment(macroState)` and `macroState.fearGreedClassification` bare; an
+   * `unknown` return here forced this body to spell the identical lines with `as any`, which is
+   * a divergence nothing about the oracle requires — the adapter was simply under-typed. Same
+   * lesson as CU-86d403h5a, where casting onto a locally-restated shape hid the real contract.
+   */
+  async getLatestMacro(): Promise<GlobalMacroData | null> {
     const h = await handles();
     if (!h?.sentimentEngine?.getLatestMacro) return null;
     try {
-      return await h.sentimentEngine.getLatestMacro();
+      return (await h.sentimentEngine.getLatestMacro()) as GlobalMacroData | null;
     } catch (error) {
       elizaLogger.error(`[Brain] Macro read failed: ${String((error as any)?.message ?? error)}`);
       return null;
     }
   }
 
-  /** Latest enriched news rows, newest first. [] when unavailable. */
-  async getLatestNews(limit = 10): Promise<unknown[]> {
+  /** Latest enriched news rows, newest first. [] when unavailable. See getLatestMacro on typing. */
+  async getLatestNews(limit = 10): Promise<EnrichedNewsRow[]> {
     const h = await handles();
     if (!h?.brain?.getLatestEnrichedNews) return [];
     try {
       // ctx comes from the host so the drizzle instance — and its TLS and timeout settings —
       // is the one brainContext built, not something reinvented here.
-      return await h.brain.getLatestEnrichedNews(h.ctx, limit);
+      return (await h.brain.getLatestEnrichedNews(h.ctx, limit)) as EnrichedNewsRow[];
     } catch (error) {
       elizaLogger.error(`[Brain] News read failed: ${String((error as any)?.message ?? error)}`);
       return [];

@@ -168,6 +168,89 @@ describe("answer selection", () => {
     });
   });
 
+  describe("selectAnswer — attribution (C.0)", () => {
+    // WHY ATTRIBUTION IS NEEDED AT ALL. ElizaOS picks the actions at runtime from the prompt, so
+    // a turn is 0..N callbacks in an order we do not control, and each emitter tags its callback
+    // with its origin (`actions: ["GET_NEWS_DETAILS"]`, `["CALL_MCP_TOOL"]`, …).
+    //
+    // Core never has to choose — every callback becomes its own chat message. The oracle must
+    // collapse them into ONE immutable stored answer, and "last substantive prose" gets that
+    // wrong for a mixed chain: plugin-mcp's handleToolResponse runs a reasoning prompt and emits
+    // PROSE, so if the model orders GET_NEWS_DETAILS before CALL_MCP_TOOL, MCP's summary lands
+    // last and silently replaces our synthesis on an answer the user has paid for.
+    //
+    // Mixed chains are DESIRABLE — a news answer is better with a live price beside it — so the
+    // fix is to prefer our synthesis, never to keep MCP away from news.
+
+    it("prefers our synthesis over a later third-party emission", () => {
+      const emitted = [
+        { text: "Analysing current market feeds for Bitcoin.", actions: ["REPLY"] },
+        {
+          text: "Bitcoin ETF inflows accelerated 18% while spot volume thinned; the divergence rarely lasts.",
+          actions: ["GET_NEWS_DETAILS"],
+        },
+        { text: "The current price of Bitcoin is $61,204.", actions: ["CALL_MCP_TOOL"] },
+      ];
+      expect(selectAnswer(emitted)).to.equal(emitted[1].text);
+    });
+
+    it("falls back to last substantive prose when nothing of ours emitted", () => {
+      // The chain ran, but only third-party actions spoke. Their prose is still an answer, and
+      // withholding it is never an option — the user has already paid.
+      const emitted = [
+        { text: "Analysing current market feeds for Bitcoin.", actions: ["REPLY"] },
+        { text: "The current price of Bitcoin is $61,204.", actions: ["CALL_MCP_TOOL"] },
+      ];
+      expect(selectAnswer(emitted)).to.equal(emitted[1].text);
+    });
+
+    it("never prefers an attributed emission that is a tool payload", () => {
+      // Attribution outranks recency, but not substance: a payload is not an answer whoever
+      // emitted it.
+      const emitted = [
+        { text: "Analysing current market feeds for Bitcoin.", actions: ["REPLY"] },
+        { text: "```ts\nawait client.news.get({});\n```", actions: ["GET_NEWS_DETAILS"] },
+      ];
+      expect(selectAnswer(emitted)).to.equal(emitted[0].text);
+    });
+
+    it("still accepts plain strings", () => {
+      // Attribution is additive. Callers that have no tags — and every existing test — keep
+      // working on the last-substantive rule.
+      expect(selectAnswer(["ack", "Bitcoin is consolidating near $61k."])).to.equal(
+        "Bitcoin is consolidating near $61k.",
+      );
+    });
+
+    it("picks the LAST synthesis emission when one action emits more than once", () => {
+      // `handleChainSynthesis` tags every callback it makes with the same actionName, and an
+      // action is free to emit an interim before its synthesis — `analyzeAssetSentiment` does
+      // exactly that ("Extracting institutional-grade data for BTC..."), and its interim is
+      // PROSE, so the payload filter cannot separate the two.
+      //
+      // Last-wins is therefore load-bearing rather than incidental: first-wins would store the
+      // interim and silently discard the answer, which is a strictly worse version of the bug
+      // this file exists to fix. Left untested, a reasonable-looking change to `[0]` would keep
+      // every other case here green.
+      const emitted = [
+        { text: "Fetching the latest news on Bitcoin...", actions: ["GET_NEWS_DETAILS"] },
+        {
+          text: "Bitcoin ETF inflows accelerated 18% while spot volume thinned.",
+          actions: ["GET_NEWS_DETAILS"],
+        },
+        { text: "The current price of Bitcoin is $61,204.", actions: ["CALL_MCP_TOOL"] },
+      ];
+      expect(selectAnswer(emitted)).to.equal(emitted[1].text);
+    });
+
+    it("stores an apology rather than nothing, attributed or not", () => {
+      // THE STANDING INVARIANT: no quality rule may turn an answer into no-answer. An apology is
+      // a poor answer; silence is a failed contract on a prompt that has already been charged.
+      const emitted = [{ text: "I'm sorry, I cannot help with that.", actions: ["REPLY"] }];
+      expect(selectAnswer(emitted)).to.equal("I'm sorry, I cannot help with that.");
+    });
+  });
+
   describe("selectAnswer", () => {
     it("never returns a tool payload when prose was also emitted", () => {
       // THE REGRESSION TEST. Acknowledgement first, tool payload last — last-writer-wins

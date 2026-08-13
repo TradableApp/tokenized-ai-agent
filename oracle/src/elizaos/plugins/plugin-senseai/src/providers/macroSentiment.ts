@@ -39,8 +39,8 @@ export const macroSentimentProvider: Provider = {
       if (!macroState) return EMPTY;
 
       return {
-        text: formatMacroEnvironment(macroState as any),
-        values: { macroState: (macroState as any).fearGreedClassification },
+        text: formatMacroEnvironment(macroState),
+        values: { macroState: macroState.fearGreedClassification },
         data: { macroState },
       };
     } catch (error) {
