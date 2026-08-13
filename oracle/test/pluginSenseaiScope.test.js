@@ -120,7 +120,11 @@ describe("oracle ElizaOS plugins stay oracle-scoped", () => {
     // THE TYPE CHECKER CANNOT BE RELIED ON HERE. `bun run build` exits 0 on type errors (verified
     // — it only warns that declarations were skipped) and CI runs no `tsc --noEmit` for this
     // plugin, so re-weakening a Brain return to `unknown` and re-adding the casts would pass
-    // every check. Until CI gains a typecheck step, this scan is the enforcement.
+    // every check. Until CI gains a typecheck step (CU-86d40xr72), this scan is the enforcement.
+    //
+    // Honest about its reach: this catches the CAST, not the weakening behind it. A new call site
+    // handed `unknown` that simply propagates it untyped would slip past. That is why the CI step
+    // is the real fix and this is the stopgap.
     //
     // `error as any` is exempt: narrowing an unknown catch binding is unrelated to the Brain
     // boundary, and core does the same thing.
