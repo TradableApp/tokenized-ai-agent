@@ -20,8 +20,24 @@ import { withTimeout } from "./withTimeout";
  * Keep this file in step with core's copy: Phase 3 (CU-86d3z28xv) extracts both into a shared
  * `plugin-senseai` package, and every un-reconciled difference at that point becomes either a
  * merge conflict or a permanent fork. The template below and the generate/sanitize/parse/fallback
- * sequence are core's, unchanged. The two deliberate differences are marked ORACLE DIVERGENCE and
- * are the only ones that should exist.
+ * sequence are core's, unchanged.
+ *
+ * THREE deliberate differences, each marked ORACLE DIVERGENCE at its site:
+ *   1. `withTimeout` around synthesis (+ the constants it needs) — the ROFL proxy can hang a
+ *      connection forever, and this body's prompts are paid for on-chain.
+ *   2. Degrade rather than throw — core's chat user can ask again; this body's caller cannot.
+ *   3. The else-branch log message — core's describes a state that cannot occur.
+ *
+ * This header previously said "two", which was wrong: divergence 3 was documented at its site but
+ * not counted here. Corrected because Phase 3 reconciles from this list — an undercount is worse
+ * than an unreconciled difference, since it tells the extractor to stop looking.
+ *
+ * KNOWN COSMETIC DRIFT, not behavioural and not yet reconciled: core numbers four of its step
+ * comments ("3. Gather providers…", "5. Append…", "6. Compose…", "7. Use generateSanitized…") and
+ * two of those comments are absent here entirely. Executable lines were diffed against core to
+ * confirm nothing else differs. Restoring them belongs to the 2.7 parity audit (PR D), whose
+ * acceptance criteria already require exactly this file-by-file comparison; doing it here would
+ * mean editing a file this change does not otherwise touch.
  */
 
 // Mirrored exactly from core replyTemplate, with just ONE addition:
@@ -150,7 +166,7 @@ export async function handleChainSynthesis(
   // Everything below is per-call. The oracle drains prompts through a p-queue at concurrency 5
   // while core has one turn in flight, so module-level state here would interleave one user's
   // answer into another's immutable, already-paid-for MessageFile.
-  let capturedThought = "";
+  let capturedThought: string = "";
   let text: string;
   let sanitizedText: string | null = null;
 
@@ -210,10 +226,17 @@ export async function handleChainSynthesis(
       text,
       source: message.content.source,
       thought, // Log the thought process for debugging/memory
+      // Tag it for your usage/billing evaluator  <- core's comment, restored verbatim.
+      //
+      // On THIS body the tag carries a second load core does not have: `selectAnswer` uses it to
+      // prefer our synthesis over a later third-party emission (see oracle/src/answerSelection.js,
+      // CU-86d3z0r81). Renaming the action without updating SYNTHESIS_ACTIONS silently turns
+      // attribution off, which is why oracle/test/synthesisActions.test.js enforces the pairing.
       actions: [actionResult.data?.actionName || "UNKNOWN_ACTION"] as string[],
     });
   } else {
-    // DIVERGENCE FROM CORE (message only). Core logs "Failed to parse XML response or text was
+    // ORACLE DIVERGENCE 3 — the else-branch message (text only, no behaviour). Core logs
+    // "Failed to parse XML response or text was
     // empty" here, which cannot be true: `text` is either FALLBACK_TEXT (a non-empty constant) or
     // `sanitizedText`, which sanitizeOutboundText only returns when non-empty. So this branch is
     // reachable only when no callback was supplied, and core's message would send a future

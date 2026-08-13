@@ -89,7 +89,7 @@ export const marketIntelligenceProvider: Provider = {
       return {
         text: `
 ${NEWS_BLOCK_HEADER}
-${formatNewsTicker(latestNews as any)}
+${formatNewsTicker(latestNews)}
 
 ${NEWS_BLOCK_INSTRUCTIONS}
 `,
