@@ -156,8 +156,11 @@ function looksLikeToolPayload(text) {
  * `ANALYZE_ASSET_SENTIMENT` with the port (CU-86d3z0r81, PR C2), and `ANALYZE_FINANCIAL_IMAGE`
  * never, unless the oracle grows an image intake it does not have — see the omission note in
  * the plugin index.
+ *
+ * `ANALYZE_ASSET_SENTIMENT` is here as of the port that registers it, which is what
+ * `test/synthesisActions.test.js` insisted on: the rebase failed until this line existed.
  */
-const SYNTHESIS_ACTIONS = new Set(["GET_NEWS_DETAILS"]);
+const SYNTHESIS_ACTIONS = new Set(["GET_NEWS_DETAILS", "ANALYZE_ASSET_SENTIMENT"]);
 
 /**
  * The same names as a FROZEN ARRAY, for the guard test to read.
