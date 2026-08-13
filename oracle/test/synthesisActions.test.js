@@ -48,7 +48,10 @@ const PLUGIN_SRC = path.resolve(
 const ACTIONS_DIR = path.join(PLUGIN_SRC, "actions");
 
 /** `actionName: "FOO"` — how handleChainSynthesis learns what to tag the callback with. */
-const ACTION_NAME_RE = /actionName:\s*"([A-Z0-9_]+)"/g;
+// Both quote styles. The repo uses double quotes throughout, but a single-quoted name would not
+// merely be missed — it would trip the vacuum check below and report it as a HOISTED CONSTANT,
+// sending the next author to fix something that is not wrong.
+const ACTION_NAME_RE = /actionName:\s*["']([A-Z0-9_]+)["']/g;
 
 /**
  * A scan that finds nothing proves nothing. If the actions directory is ever moved or renamed,

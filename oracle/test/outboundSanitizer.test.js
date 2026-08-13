@@ -89,7 +89,7 @@ describe("outboundSanitizer", () => {
     expect(logged, "an empty result is not a leak and must not be reported as one").to.not.match(
       /REJECTED/,
     );
-    expect(logged).to.match(/EMPTY string/);
+    expect(logged).to.match(/EMPTY or whitespace-only/);
   });
 
   it("never stores a truthy NON-string, even though the contract forbids one", async () => {
@@ -117,6 +117,20 @@ describe("outboundSanitizer", () => {
     const logged = error.getCall(0).args[0];
     expect(logged).to.match(/UNDEFINED/);
     expect(logged, "must not blame the emitting action").to.not.match(/REJECTED/);
+  });
+
+  it("treats a WHITESPACE-ONLY result as empty, not as an answer", async () => {
+    // The hole the `typeof` guard left. `" "` is a string AND truthy, so a bare truthiness check
+    // returns it — and the caller does `finalResponseText.trim()`, which stores "" into an
+    // immutable MessageFile the user has already paid for. That is the one outcome no rule in
+    // this module is allowed to produce, and it is the same failure argued against in round 1;
+    // the round-6 typeof guard closed the non-string case and left this one open.
+    _setSanitizerForTests(() => "   ");
+    const error = sinon.stub(console, "error");
+
+    const answer = "Bitcoin is consolidating near $61k.";
+    expect(await sanitizeAnswer(answer), "the original ships, not the whitespace").to.equal(answer);
+    expect(error.getCall(0).args[0]).to.match(/EMPTY or whitespace-only/);
   });
 
   it("falls back to the unsanitised answer when the sanitiser THROWS", async () => {

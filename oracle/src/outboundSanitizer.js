@@ -132,7 +132,10 @@ async function sanitizeAnswer(answer) {
   // NON-string would sail through a bare truthiness check. The concrete way that happens is the
   // Brain making `sanitizeOutboundText` async: `cleaned` becomes a Promise, which is truthy, and
   // the caller's `.trim()` then throws on a paid prompt.
-  if (typeof cleaned === "string" && cleaned) return cleaned;
+  // `.trim()`, not bare truthiness. `" "` is a string AND truthy, so a bare check would return it
+  // — and the caller does `finalResponseText.trim()`, storing "" into an immutable MessageFile the
+  // user has already paid for. Whitespace-only is therefore the empty case, and degrades with it.
+  if (typeof cleaned === "string" && cleaned.trim()) return cleaned;
 
   // Both falsy outcomes degrade to the original — never to `cleaned` — because the standing
   // invariant is that no quality rule may turn an answer into no-answer on a prompt already
@@ -166,9 +169,9 @@ async function sanitizeAnswer(answer) {
     );
   } else {
     console.error(
-      "[outboundSanitizer] The sanitiser returned an EMPTY string, which its contract permits " +
-        "but its implementation does not currently produce — storing the answer unsanitised. " +
-        "This means sanitizeOutboundText's behaviour has changed; check the Brain.",
+      "[outboundSanitizer] The sanitiser returned an EMPTY or whitespace-only string, which its " +
+        "contract permits but its implementation does not currently produce — storing the answer " +
+        "unsanitised. This means sanitizeOutboundText's behaviour has changed; check the Brain.",
     );
   }
   return answer;
