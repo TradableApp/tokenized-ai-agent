@@ -1629,6 +1629,13 @@ async function handlePrompt(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
+      // AFTER the receipt, deliberately — an unconfirmed submission is not an answer. The cost is
+      // a known blind spot: if the connection drops between the tx being included on-chain and
+      // tx.wait() resolving, this throws, the catch's isJobFinalized re-check returns true (it
+      // DID land) and returns gracefully — so a settled escrow goes unrecorded. Setting the flag
+      // before the receipt would trade that for the worse error of recording answers that never
+      // confirmed. The ambiguity is inherent: at that point "landed" and "cancelled" are
+      // indistinguishable from here. Recorded rather than papered over.
       submitted = true;
       console.log(
         `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
@@ -1848,6 +1855,13 @@ async function handleRegeneration(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
+      // AFTER the receipt, deliberately — an unconfirmed submission is not an answer. The cost is
+      // a known blind spot: if the connection drops between the tx being included on-chain and
+      // tx.wait() resolving, this throws, the catch's isJobFinalized re-check returns true (it
+      // DID land) and returns gracefully — so a settled escrow goes unrecorded. Setting the flag
+      // before the receipt would trade that for the worse error of recording answers that never
+      // confirmed. The ambiguity is inherent: at that point "landed" and "cancelled" are
+      // indistinguishable from here. Recorded rather than papered over.
       submitted = true;
       console.log(
         `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
@@ -1890,8 +1904,10 @@ async function handleRegeneration(
     // not deduped away against this failure.
     if (isBadInputError(error)) {
       // Leaves a trace even though no row is written: this predicate is known to over-match (see
-      // its docstring), and without this a false positive would suppress the Sentry report AND
-      // the ledger row, leaving the failure observable nowhere at all.
+      // its docstring). It matters MORE here than in handlePrompt — that handler still reports to
+      // Sentry from its catch, whereas handleRegeneration never has, so for a regeneration this
+      // console.warn is the ONLY evidence a false positive leaves anywhere. Bringing the two to
+      // parity on Sentry is merged-behaviour surgery, not a telemetry change: CU-86d41hquj.
       console.warn(
         `  ℹ️ Not recording answer_failed for ${String(answerMessageId)} — classified as bad input: ${error?.message ?? error}`,
       );
