@@ -1634,12 +1634,20 @@ async function handlePrompt(
         return; // Exit gracefully
       }
     } catch (checkErr) {
-      console.warn("  ⚠️ Could not verify job finalization status after error.");
+      // BOTH the submit AND the verification failed, so we cannot tell a genuine oracle failure
+      // from a cancellation whose typed revert the RPC swallowed. `answer_failed` is recorded
+      // below either way, and that is the honest reading — its meaning is "no answer reached the
+      // chain", which is true in both cases. But during an RPC degradation window it will inflate
+      // the failure count with cancellations, so the two sub-paths are logged distinctly.
+      console.warn(
+        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED (a cancellation may be counted as a failure).",
+      );
     }
 
-    // A genuine failure: both graceful returns above (JobAlreadyFinalized, and the on-chain
-    // finalisation re-check) have already handled the cancelled cases, so reaching here means no
-    // answer went on chain. Recorded BEFORE the rethrow because handleAndRecord may retry — and
+    // `answer_failed` means NO ANSWER REACHED THE CHAIN — not "the oracle is broken". The two
+    // graceful returns above handle the cancellations we can PROVE; what reaches here is either a
+    // real failure or a cancellation whose evidence we could not obtain (see the checkErr warn).
+    // Recording it is still correct: the prompt went unanswered. Recorded BEFORE the rethrow because handleAndRecord may retry — and
     // the kind is part of the content seed so a later success is not deduped away against this.
     await recordAnswerActivity({
       answerMessageId,
@@ -1823,11 +1831,18 @@ async function handleRegeneration(
         return; // Exit gracefully
       }
     } catch (checkErr) {
-      console.warn("  ⚠️ Could not verify job finalization status after error.");
+      // BOTH the submit AND the verification failed, so we cannot tell a genuine oracle failure
+      // from a cancellation whose typed revert the RPC swallowed. `answer_failed` is recorded
+      // below either way, and that is the honest reading — its meaning is "no answer reached the
+      // chain", which is true in both cases. But during an RPC degradation window it will inflate
+      // the failure count with cancellations, so the two sub-paths are logged distinctly.
+      console.warn(
+        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED (a cancellation may be counted as a failure).",
+      );
     }
 
-    // Mirrors handlePrompt: both graceful returns above have handled the cancelled cases, so
-    // reaching here means no answer went on chain. Recorded before the rethrow because
+    // Mirrors handlePrompt: `answer_failed` means no answer reached the chain, which covers both
+    // a real failure and a cancellation we could not verify. Recorded before the rethrow because
     // handleAndRecord may retry, and the kind is part of the content seed so a later success is
     // not deduped away against this failure.
     await recordAnswerActivity({

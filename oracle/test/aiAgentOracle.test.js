@@ -658,6 +658,46 @@ describe("aiAgentOracle", function () {
       expect(recordAnswerActivity.callCount).to.equal(0);
     });
 
+    it("still records `answer_failed` when the cancellation re-check ALSO fails", async () => {
+      // The degraded-RPC window: submitAnswer fails with a generic error (the typed
+      // JobAlreadyFinalized revert swallowed by the node), and the catch block's fallback
+      // isJobFinalized call fails too. Both graceful returns are bypassed and execution reaches
+      // the recording with no way to tell a real failure from a cancellation.
+      //
+      // Recording is still correct — `answer_failed` means "no answer reached the chain", which
+      // holds either way — but this path was previously unexercised, so nothing pinned that it
+      // records at all rather than throwing on the way out.
+      const base = stubs["./contractUtility"].initializeOracle();
+      const finalized = sinon.stub();
+      finalized.onCall(0).resolves(false); // pre-flight
+      finalized.onCall(1).resolves(false); // post-AI
+      finalized.onCall(2).resolves(false); // inside the mutex -> submitAnswer runs
+      finalized.rejects(new Error("RPC unavailable")); // the catch's re-check
+      const failing = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: finalized,
+          submitAnswer: sinon.stub().rejects(new Error("RPC timeout")),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(failing);
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(finalized.callCount, "the catch's re-check must actually have been reached").to.be.at.least(4);
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
+    });
+
     it("records `answer_failed` when handlePrompt cannot submit", async () => {
       // Neither the success nor the cancelled case touches the catch block, so deleting the
       // recording there was invisible until this existed.
