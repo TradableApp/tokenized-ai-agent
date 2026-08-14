@@ -508,6 +508,373 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("daily_activity telemetry wiring", () => {
+    // The helper's own behaviour is covered in answerActivity.test.js. What CANNOT be proven
+    // there is that the two answer paths actually call it — and that the CANCELLED path does
+    // not. Recording a cancelled prompt as an answer would invent revenue that never happened.
+    //
+    // Both handlers matter: `submitAnswer` finalises the escrow payment in the same transaction
+    // for a regeneration exactly as for a first answer, so wiring only handlePrompt would drop
+    // every regeneration from the ledger while still charging for it.
+
+    function loadWithSpy(extraStubs = {}) {
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        ...extraStubs,
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(
+        extraStubs["./contractUtility"]
+          ? extraStubs["./contractUtility"].initializeOracle()
+          : stubs["./contractUtility"].initializeOracle(),
+      );
+      return { mod, recordAnswerActivity };
+    }
+
+    const payloadFor = (text) =>
+      ethers.toUtf8Bytes(
+        createEncryptedString(
+          {
+            promptText: text,
+            isNewConversation: true,
+            previousMessageId: null,
+            previousMessageCID: null,
+          },
+          FAKE_SESSION_KEY,
+        ),
+      );
+    const fakeEvent = () => ({
+      blockNumber: 1,
+      getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+    });
+
+    const regenPayload = () =>
+      ethers.toUtf8Bytes(
+        createEncryptedString(
+          {
+            instructions: "be more concise",
+            promptMessageCID: "cid-prompt",
+            originalAnswerMessageCID: "cid-answer",
+          },
+          FAKE_SESSION_KEY,
+        ),
+      );
+
+    /** submitAnswer rejects; isJobFinalized stays false so the catch's re-check does not
+     *  short-circuit into the graceful "already cancelled" return. */
+    function loadWithSubmitFailure() {
+      const base = stubs["./contractUtility"].initializeOracle();
+      const failing = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: sinon.stub().resolves(false),
+          submitAnswer: sinon.stub().rejects(new Error("RPC timeout")),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(failing);
+      return { mod, recordAnswerActivity };
+    }
+
+    beforeEach(() => {
+      process.env.MOCK_AI = "true";
+    });
+    afterEach(() => {
+      delete process.env.MOCK_AI;
+    });
+
+    it("records an `answer` when handlePrompt submits", async () => {
+      const { mod, recordAnswerActivity } = loadWithSpy();
+
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+
+      expect(recordAnswerActivity.callCount, "exactly one row per answer").to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer",
+        answerMessageId: 457,
+        userWallet: "0xUser",
+      });
+    });
+
+    it("records an `answer` when handleRegeneration submits", async () => {
+      // The site that a single-call-site implementation would have missed.
+      const { mod, recordAnswerActivity } = loadWithSpy();
+
+      await mod.handleRegeneration(
+        "0xUser",
+        123,
+        456,
+        457,
+        458,
+        regenPayload(),
+        "0xkey",
+        fakeEvent(),
+      );
+
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer",
+        answerMessageId: 458,
+      });
+    });
+
+    it("records NOTHING when the user cancels a REGENERATION during upload", async () => {
+      // handleRegeneration carries its own copy of the `submitted` flag and its own guard.
+      // Disabling only that one is invisible to the handlePrompt case above — and regenerations
+      // are billed identically, so the revenue-inflation bug is exactly the same there.
+      const cancelled = { ...stubs["./contractUtility"].initializeOracle() };
+      const finalizedStub = sinon.stub();
+      finalizedStub.onCall(0).resolves(false);
+      finalizedStub.onCall(1).resolves(false);
+      finalizedStub.resolves(true); // inside the mutex
+      cancelled.contract = { ...cancelled.contract, isJobFinalized: finalizedStub };
+
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(cancelled) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(cancelled);
+
+      await mod.handleRegeneration(
+        "0xUser",
+        123,
+        456,
+        457,
+        458,
+        regenPayload(),
+        "0xkey",
+        fakeEvent(),
+      );
+
+      expect(recordAnswerActivity.callCount).to.equal(0);
+    });
+
+    it("still records `answer_failed` when the cancellation re-check ALSO fails", async () => {
+      // The degraded-RPC window: submitAnswer fails with a generic error (the typed
+      // JobAlreadyFinalized revert swallowed by the node), and the catch block's fallback
+      // isJobFinalized call fails too. Both graceful returns are bypassed and execution reaches
+      // the recording with no way to tell a real failure from a cancellation.
+      //
+      // Recording is still correct — `answer_failed` means "no answer reached the chain", which
+      // holds either way — but this path was previously unexercised, so nothing pinned that it
+      // records at all rather than throwing on the way out.
+      const base = stubs["./contractUtility"].initializeOracle();
+      const finalized = sinon.stub();
+      finalized.onCall(0).resolves(false); // pre-flight
+      finalized.onCall(1).resolves(false); // post-AI
+      finalized.onCall(2).resolves(false); // inside the mutex -> submitAnswer runs
+      finalized.rejects(new Error("RPC unavailable")); // the catch's re-check
+      const failing = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: finalized,
+          submitAnswer: sinon.stub().rejects(new Error("RPC timeout")),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(failing);
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(finalized.callCount, "the catch's re-check must actually have been reached").to.be.at.least(4);
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
+    });
+
+    it("records NOTHING for a malformed payload — that is bad input, not an oracle failure", async () => {
+      // handleAndRecord drops these silently as malicious input. Recording them contradicts that
+      // decision using attacker-controlled input — anyone able to emit malformed payloads could
+      // inflate the failure count at will. The catch wraps the whole try, which begins before any
+      // chain interaction.
+      const { mod, recordAnswerActivity } = loadWithSpy();
+
+      // Not a valid encrypted string, so validatePayload rejects before the mutex is reached.
+      const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, garbage, "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(
+        recordAnswerActivity.callCount,
+        "bad input must not reach the ledger as an oracle failure",
+      ).to.equal(0);
+    });
+
+    it("records NOTHING for a malformed REGENERATION payload either", async () => {
+      // handleRegeneration carries its own gate. Disabling only that one is invisible to the
+      // handlePrompt case above — and the exposure is identical, since both catches wrap a try
+      // that begins with decrypt + validate.
+      const { mod, recordAnswerActivity } = loadWithSpy();
+      const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
+
+      await mod
+        .handleRegeneration("0xUser", 123, 456, 457, 458, garbage, "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(recordAnswerActivity.callCount).to.equal(0);
+    });
+
+    it("still records `answer_failed` for a REGENERATION when the re-check also fails", async () => {
+      // handleRegeneration has its own catch, its own isBadInputError gate and its own recording.
+      // Mirrors the handlePrompt degraded-RPC case so a mutation to either is caught by its own
+      // test rather than by the other one happening to cover it.
+      const base = stubs["./contractUtility"].initializeOracle();
+      const finalized = sinon.stub();
+      finalized.onCall(0).resolves(false);
+      finalized.onCall(1).resolves(false);
+      finalized.onCall(2).resolves(false);
+      finalized.rejects(new Error("RPC unavailable"));
+      const failing = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: finalized,
+          submitAnswer: sinon.stub().rejects(new Error("RPC timeout")),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(failing);
+
+      await mod
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(finalized.callCount, "the catch's re-check must have been reached").to.be.at.least(4);
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
+    });
+
+    it("PINS THE ACCEPTED GAP: a receipt that never arrives records nothing, not an answer", async () => {
+      // The tx lands on chain, then the connection drops before tx.wait() resolves. The catch's
+      // isJobFinalized re-check returns true (it DID land) and returns gracefully, so `submitted`
+      // is never set and the settled escrow goes unrecorded.
+      //
+      // Deliberate: recording answers that never confirmed is the worse error, and `isFinalized`
+      // being true there means either "the tx landed" or "the user cancelled".
+      //
+      // What this guards is the plausible repair — recording an `answer` on that graceful branch,
+      // which would book answers for cancelled prompts. Note hoisting `submitted = true` above
+      // tx.wait() is inert, since the graceful return exits before the recording is reached.
+      const base = stubs["./contractUtility"].initializeOracle();
+      const finalized = sinon.stub();
+      finalized.onCall(0).resolves(false); // pre-flight
+      finalized.onCall(1).resolves(false); // post-AI
+      finalized.onCall(2).resolves(false); // inside the mutex -> we submit
+      finalized.resolves(true); // the catch's re-check: the tx DID land
+      const dropped = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: finalized,
+          submitAnswer: sinon
+            .stub()
+            .resolves({ wait: sinon.stub().rejects(new Error("connection reset")) }),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(dropped) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(dropped);
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(
+        recordAnswerActivity.callCount,
+        "an unconfirmed submission must not be recorded as an answer",
+      ).to.equal(0);
+    });
+
+    it("records `answer_failed` when handlePrompt cannot submit", async () => {
+      // Neither the success nor the cancelled case touches the catch block, so deleting the
+      // recording there was invisible until this existed.
+      const { mod, recordAnswerActivity } = loadWithSubmitFailure();
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .catch(() => {}); // rethrows after recording, so handleAndRecord can retry
+
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer_failed",
+        answerMessageId: 457,
+      });
+    });
+
+    it("records `answer_failed` when handleRegeneration cannot submit", async () => {
+      const { mod, recordAnswerActivity } = loadWithSubmitFailure();
+
+      await mod
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer_failed",
+        answerMessageId: 458,
+      });
+    });
+
+    it("records NOTHING when the user cancels during upload, inside the tx mutex", async () => {
+      // handlePrompt checks isJobFinalized three times; only the one inside the mutex matters,
+      // because its `return` exits the arrow function and execution continues afterwards with no
+      // answer submitted. A stub that always resolves true exits at the FIRST check and never
+      // reaches the mutex — so false, false, true is what actually drives this path.
+      const cancelled = {
+        ...stubs["./contractUtility"].initializeOracle(),
+      };
+      const finalizedStub = sinon.stub();
+      finalizedStub.onCall(0).resolves(false); // pre-flight check
+      finalizedStub.onCall(1).resolves(false); // post-AI check
+      finalizedStub.resolves(true); // inside the mutex: cancelled while we were uploading
+      cancelled.contract = {
+        ...cancelled.contract,
+        isJobFinalized: finalizedStub,
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(cancelled) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(cancelled);
+
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+
+      expect(
+        recordAnswerActivity.callCount,
+        "a cancelled prompt is not an answer and must not be recorded as one",
+      ).to.equal(0);
+    });
+  });
+
   describe("shouldInitializeConversation (orphaned-conversation backstop)", () => {
     // A conversation whose first prompt was cancelled never had ConversationAdded emitted.
     // The dApp is the primary fix (flags such a resend new); this predicate is the oracle's

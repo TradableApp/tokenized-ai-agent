@@ -30,14 +30,19 @@ const { expect } = require("chai");
 // identical, but locally the index is what is about to BE committed — so a staged bump is
 // validated before it lands, instead of the guard reporting the previous commit's pin.
 
-// Brain #13 — `metadata` declared on NewsSearchHit, which is what lets BOTH bodies type the
-// search boundary instead of casting onto a locally-restated shape.
+// Brain #15 — `buildActivityBreakdown` moved into the Brain beside `recordActivity`, with an
+// `oracle` bucket. This body needs BOTH: the writer, which it now calls from the answer path, and
+// the categoriser, so its rows are bucketed rather than swept into "unknown".
 //
-// sense-ai-core is already here: it carries the identical SHA in src/__tests__/brain-pin.test.ts
-// as of its #88 (merged). This repo was the one behind — main still pins #11's 606b055, and this
-// branch is what closes that gap. See CU-86d408nb4 for making that class of drift CI-visible
-// rather than a review step, which is the limitation the scope note above describes.
-const EXPECTED_BRAIN_SHA = "7bfebaac8a630a4b8a7af93cf967c0bdc992ed9c";
+// THE PINS ARE BACK IN LOCKSTEP. sense-ai-core carries this identical SHA as of its #90, and its
+// brain-pin.test.ts held a `DIVERGENCE-UNTIL: CU-86d3z0r81` sentinel explaining that this repo
+// deliberately lagged on `7bfebaa` while it had not yet adopted `recordActivity`. That is exactly
+// what this branch does, so the divergence ends here and that sentinel becomes false — it is
+// removed in the companion core PR, not left to rot.
+//
+// See CU-86d408nb4 for making this class of drift CI-visible rather than a review step, which is
+// the limitation the scope note above describes.
+const EXPECTED_BRAIN_SHA = "1b908f861df73c1e3fb7af339c40ed57d7eda53a";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 

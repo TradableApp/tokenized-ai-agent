@@ -61,6 +61,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
 const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
+const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { selectAnswer } = require("./answerSelection");
@@ -1279,6 +1280,27 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
 // --- Event Handlers ---
 
+/**
+ * Malformed / malicious input, as opposed to a failure on our side.
+ *
+ * ONE predicate, TWO consumers: `handleAndRecord` drops these events silently (no retry, no
+ * Sentry) and the answer-path telemetry declines to record them as `answer_failed`. Those
+ * decisions must agree — an event the system has decided is not its problem must not appear in
+ * the daily summary as an oracle failure, especially since the input is attacker-controlled.
+ *
+ * Known to over-match: "Unexpected token" is a stock SyntaxError string, so an AI endpoint's HTML
+ * 502 matches it. Narrowing changes handleAndRecord's drop behaviour — tracked as CU-86d41hquj.
+ */
+function isBadInputError(error) {
+  const message = error?.message ?? "";
+
+  return (
+    message.includes("Validation Failed") ||
+    message.includes("Invalid encrypted data format") ||
+    message.includes("Unexpected token") // JSON parse error
+  );
+}
+
 // Helper to check for specific contract errors using Ethers v6 Interface
 function isContractError(error, errorName) {
   try {
@@ -1319,6 +1341,11 @@ async function handlePrompt(
   console.log(
     `[EVENT] Processing PromptSubmitted for convId: ${conversationId} in block ${event.blockNumber}`,
   );
+
+  // Did the answer actually reach the chain? The isJobFinalized guard inside the tx mutex returns
+  // from that arrow function, not this handler, so nothing downstream can otherwise tell a
+  // submitted answer from a cancelled one. Declared out here to survive the try/catch.
+  let submitted = false;
 
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
@@ -1586,6 +1613,10 @@ async function handlePrompt(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
+      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
+      // the connection drops after the tx lands but before this resolves, the escrow settles
+      // unrecorded. Recording before confirmation would be the worse error.
+      submitted = true;
       console.log(
         `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
       );
@@ -1613,7 +1644,27 @@ async function handlePrompt(
         return; // Exit gracefully
       }
     } catch (checkErr) {
-      console.warn("  ⚠️ Could not verify job finalization status after error.");
+      // Submit and verification both failed, so a cancellation is indistinguishable from a real
+      // failure here. `answer_failed` is still recorded below — it means "no answer reached the
+      // chain", true either way — but during an RPC outage it will include cancellations.
+      console.warn(
+        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED.",
+      );
+    }
+
+    // `answer_failed` means no answer reached the chain — a real failure, or a cancellation we
+    // could not verify. Bad input is excluded: this catch wraps the whole try, including decrypt
+    // and validatePayload, and handleAndRecord already drops and logs those as not our failure.
+    // Recording them would let attacker-controlled input inflate the failure count. Before the
+    // rethrow, since handleAndRecord may retry and the kind is part of the seed.
+    if (!isBadInputError(error)) {
+      await recordAnswerActivity({
+        answerMessageId,
+        kind: "answer_failed",
+        userWallet: user,
+        conversationId,
+        promptMessageId,
+      });
     }
 
     Sentry.captureException(error, {
@@ -1623,6 +1674,19 @@ async function handlePrompt(
     console.error(`Error in handlePrompt for convId ${conversationId}:`, error);
 
     throw error; // Propagate error to be caught by handleAndRecord
+  }
+
+  // Outside the try/catch so a telemetry throw could never be caught below and recorded as a
+  // failure for an answer that succeeded; outside the mutex so a Postgres round-trip does not
+  // serialise submissions behind the tx lock.
+  if (submitted) {
+    await recordAnswerActivity({
+      answerMessageId,
+      kind: "answer",
+      userWallet: user,
+      conversationId,
+      promptMessageId,
+    });
   }
 }
 
@@ -1639,6 +1703,10 @@ async function handleRegeneration(
   console.log(
     `[EVENT] Processing RegenerationRequested for promptId: ${promptMessageId} in block ${event.blockNumber}`,
   );
+
+  // Did the answer actually reach the chain? See handlePrompt — the mutex's isJobFinalized guard
+  // returns from that arrow function, not this handler.
+  let submitted = false;
 
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
@@ -1745,6 +1813,10 @@ async function handleRegeneration(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
+      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
+      // the connection drops after the tx lands but before this resolves, the escrow settles
+      // unrecorded. Recording before confirmation would be the worse error.
+      submitted = true;
       console.log(
         `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
       );
@@ -1770,11 +1842,44 @@ async function handleRegeneration(
         return; // Exit gracefully
       }
     } catch (checkErr) {
-      console.warn("  ⚠️ Could not verify job finalization status after error.");
+      // Submit and verification both failed, so a cancellation is indistinguishable from a real
+      // failure here. `answer_failed` is still recorded below — it means "no answer reached the
+      // chain", true either way — but during an RPC outage it will include cancellations.
+      console.warn(
+        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED.",
+      );
+    }
+
+    // `answer_failed` means no answer reached the chain — a real failure, or a cancellation we
+    // could not verify. Bad input is excluded: this catch wraps the whole try, including decrypt
+    // and validatePayload, and handleAndRecord already drops and logs those as not our failure.
+    // Recording them would let attacker-controlled input inflate the failure count. Before the
+    // rethrow, since handleAndRecord may retry and the kind is part of the seed.
+    if (!isBadInputError(error)) {
+      await recordAnswerActivity({
+        answerMessageId,
+        kind: "answer_failed",
+        userWallet: user,
+        conversationId,
+        promptMessageId,
+      });
     }
 
     console.error(`Error in handleRegeneration for promptId ${promptMessageId}:`, error);
     throw error;
+  }
+
+  // Outside the try/catch so a telemetry throw could never be caught below and recorded as a
+  // failure for an answer that succeeded; outside the mutex so a Postgres round-trip does not
+  // serialise submissions behind the tx lock.
+  if (submitted) {
+    await recordAnswerActivity({
+      answerMessageId,
+      kind: "answer",
+      userWallet: user,
+      conversationId,
+      promptMessageId,
+    });
   }
 }
 
@@ -2002,11 +2107,7 @@ async function handleAndRecord(eventName, handler, ...args) {
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
     // "Validation Failed" covers all schema mismatches from payloadValidator.js
-    if (
-      error.message.includes("Validation Failed") ||
-      error.message.includes("Invalid encrypted data format") ||
-      error.message.includes("Unexpected token") // JSON parse error
-    ) {
+    if (isBadInputError(error)) {
       console.warn(
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${error.message}`,
       );
