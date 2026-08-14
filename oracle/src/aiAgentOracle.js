@@ -1281,6 +1281,28 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 // --- Event Handlers ---
 
 // Helper to check for specific contract errors using Ethers v6 Interface
+/**
+ * Malformed / malicious input, as opposed to something going wrong on our side.
+ *
+ * ONE PREDICATE, TWO CONSUMERS, deliberately. `handleAndRecord` uses it to drop these events
+ * silently — no retry, no Sentry, no alert — and the answer-path telemetry uses it to refrain
+ * from recording `answer_failed`. Those two decisions have to agree: an event the system has
+ * decided is not its problem must not show up in the daily summary as an oracle failure. Writing
+ * the string list out twice is how they would stop agreeing.
+ *
+ * It matters more for telemetry than for retry, because the input is ATTACKER-CONTROLLED. Anyone
+ * able to emit malformed payloads could otherwise inflate the oracle's failure count at will.
+ */
+function isBadInputError(error) {
+  const message = error?.message ?? "";
+
+  return (
+    message.includes("Validation Failed") ||
+    message.includes("Invalid encrypted data format") ||
+    message.includes("Unexpected token") // JSON parse error
+  );
+}
+
 function isContractError(error, errorName) {
   try {
     // 1. Get the specific error fragment from the ABI
@@ -1647,15 +1669,22 @@ async function handlePrompt(
     // `answer_failed` means NO ANSWER REACHED THE CHAIN — not "the oracle is broken". The two
     // graceful returns above handle the cancellations we can PROVE; what reaches here is either a
     // real failure or a cancellation whose evidence we could not obtain (see the checkErr warn).
-    // Recording it is still correct: the prompt went unanswered. Recorded BEFORE the rethrow because handleAndRecord may retry — and
+    // Recording it is still correct: the prompt went unanswered.
+    //
+    // EXCEPT for bad input. This catch covers the whole try — getSessionKey, decrypt and
+    // validatePayload all run before any chain interaction — and handleAndRecord deliberately
+    // drops those events silently, as not our failure. Recording them would contradict that
+    // decision using attacker-controlled input. Recorded BEFORE the rethrow because handleAndRecord may retry — and
     // the kind is part of the content seed so a later success is not deduped away against this.
-    await recordAnswerActivity({
-      answerMessageId,
-      kind: "answer_failed",
-      userWallet: user,
-      conversationId,
-      promptMessageId,
-    });
+    if (!isBadInputError(error)) {
+      await recordAnswerActivity({
+        answerMessageId,
+        kind: "answer_failed",
+        userWallet: user,
+        conversationId,
+        promptMessageId,
+      });
+    }
 
     Sentry.captureException(error, {
       tags: { site: "handle_prompt" },
@@ -1845,13 +1874,15 @@ async function handleRegeneration(
     // a real failure and a cancellation we could not verify. Recorded before the rethrow because
     // handleAndRecord may retry, and the kind is part of the content seed so a later success is
     // not deduped away against this failure.
-    await recordAnswerActivity({
-      answerMessageId,
-      kind: "answer_failed",
-      userWallet: user,
-      conversationId,
-      promptMessageId,
-    });
+    if (!isBadInputError(error)) {
+      await recordAnswerActivity({
+        answerMessageId,
+        kind: "answer_failed",
+        userWallet: user,
+        conversationId,
+        promptMessageId,
+      });
+    }
 
     console.error(`Error in handleRegeneration for promptId ${promptMessageId}:`, error);
     throw error;
@@ -2082,11 +2113,7 @@ async function handleAndRecord(eventName, handler, ...args) {
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
     // "Validation Failed" covers all schema mismatches from payloadValidator.js
-    if (
-      error.message.includes("Validation Failed") ||
-      error.message.includes("Invalid encrypted data format") ||
-      error.message.includes("Unexpected token") // JSON parse error
-    ) {
+    if (isBadInputError(error)) {
       console.warn(
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${error.message}`,
       );

@@ -698,6 +698,44 @@ describe("aiAgentOracle", function () {
       expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
     });
 
+    it("records NOTHING for a malformed payload — that is bad input, not an oracle failure", async () => {
+      // handleAndRecord classifies these explicitly: "MALICIOUS / BAD INPUT ERRORS (Drop
+      // silently or log warning, DO NOT RETRY)" — no throw, no alert, no retry. Writing
+      // answer_failed for them contradicts that decision, and does so with ATTACKER-CONTROLLED
+      // input: anyone able to emit malformed payloads could inflate the oracle's failure count in
+      // the daily summary at will.
+      //
+      // The catch block covers the whole try, which begins well before any chain interaction —
+      // getSessionKey, decryptSymmetrically and validatePayload are all inside it.
+      const { mod, recordAnswerActivity } = loadWithSpy();
+
+      // Not a valid encrypted string, so validatePayload rejects before the mutex is reached.
+      const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, garbage, "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(
+        recordAnswerActivity.callCount,
+        "bad input must not reach the ledger as an oracle failure",
+      ).to.equal(0);
+    });
+
+    it("records NOTHING for a malformed REGENERATION payload either", async () => {
+      // handleRegeneration carries its own gate. Disabling only that one is invisible to the
+      // handlePrompt case above — and the exposure is identical, since both catches wrap a try
+      // that begins with decrypt + validate.
+      const { mod, recordAnswerActivity } = loadWithSpy();
+      const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
+
+      await mod
+        .handleRegeneration("0xUser", 123, 456, 457, 458, garbage, "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(recordAnswerActivity.callCount).to.equal(0);
+    });
+
     it("records `answer_failed` when handlePrompt cannot submit", async () => {
       // Neither the success nor the cancelled case touches the catch block, so deleting the
       // recording there was invisible until this existed.
