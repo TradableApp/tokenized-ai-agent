@@ -1346,6 +1346,13 @@ async function handlePrompt(
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
   // This prevents wasting AI/Arweave credits on restarts or re-orgs.
+  // Whether the answer actually reached the chain. The isJobFinalized early return inside the tx
+  // mutex exits THAT arrow function, not this handler, so without a flag the code afterwards
+  // cannot tell a submitted answer from a cancelled one — and would record telemetry for prompts
+  // the user cancelled, inventing revenue that never happened. Declared out here so it survives
+  // the try/catch, which the recording now sits after.
+  let submitted = false;
+
   try {
     const isAlreadyDone = await contract.isJobFinalized(answerMessageId);
     if (isAlreadyDone) {
@@ -1592,12 +1599,6 @@ async function handlePrompt(
       };
     }
 
-    // Whether the answer actually reached the chain. The early return below exits THIS arrow
-    // function, not the handler, so without a flag the code after the mutex cannot tell a
-    // submitted answer from a cancelled one — and would record telemetry for prompts the user
-    // cancelled, inventing revenue that never happened.
-    let submitted = false;
-
     // We lock the wallet to ensure Nonces are used sequentially.
     await txMutex.runExclusive(async () => {
       // Double-check finalization on-chain right before sending
@@ -1620,19 +1621,6 @@ async function handlePrompt(
         `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
       );
     });
-
-    // OUTSIDE the mutex on purpose: this is a Postgres round-trip, and holding the tx lock
-    // through it would serialise every answer submission behind it — the queue runs at
-    // concurrency 5.
-    if (submitted) {
-      await recordAnswerActivity({
-        answerMessageId,
-        kind: "answer",
-        userWallet: user,
-        conversationId,
-        promptMessageId,
-      });
-    }
   } catch (error) {
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
@@ -1694,6 +1682,24 @@ async function handlePrompt(
 
     throw error; // Propagate error to be caught by handleAndRecord
   }
+
+  // AFTER the try/catch, deliberately. recordAnswerActivity swallows everything today, but if
+  // that contract ever broke, a throw from inside the try would land in the catch and record
+  // `answer_failed` — plus Sentry, plus a retry — for a prompt the escrow had already settled.
+  // Out here only the happy path reaches it: every route through the catch either returns or
+  // rethrows.
+  //
+  // Outside the mutex too: this is a Postgres round-trip, and holding the tx lock through it
+  // would serialise every submission behind it — the queue runs at concurrency 5.
+  if (submitted) {
+    await recordAnswerActivity({
+      answerMessageId,
+      kind: "answer",
+      userWallet: user,
+      conversationId,
+      promptMessageId,
+    });
+  }
 }
 
 async function handleRegeneration(
@@ -1713,6 +1719,13 @@ async function handleRegeneration(
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
   // This prevents wasting AI/Arweave credits on restarts or re-orgs.
+  // Whether the answer actually reached the chain. The isJobFinalized early return inside the tx
+  // mutex exits THAT arrow function, not this handler, so without a flag the code afterwards
+  // cannot tell a submitted answer from a cancelled one — and would record telemetry for prompts
+  // the user cancelled, inventing revenue that never happened. Declared out here so it survives
+  // the try/catch, which the recording now sits after.
+  let submitted = false;
+
   try {
     const isAlreadyDone = await contract.isJobFinalized(answerMessageId);
     if (isAlreadyDone) {
@@ -1798,12 +1811,6 @@ async function handleRegeneration(
       searchDeltaCID: "",
     };
 
-    // Whether the answer actually reached the chain. The early return below exits THIS arrow
-    // function, not the handler, so without a flag the code after the mutex cannot tell a
-    // submitted answer from a cancelled one — and would record telemetry for prompts the user
-    // cancelled, inventing revenue that never happened.
-    let submitted = false;
-
     // We lock the wallet to ensure Nonces are used sequentially.
     await txMutex.runExclusive(async () => {
       // Double-check finalization on-chain right before sending
@@ -1826,19 +1833,6 @@ async function handleRegeneration(
         `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
       );
     });
-
-    // OUTSIDE the mutex on purpose: this is a Postgres round-trip, and holding the tx lock
-    // through it would serialise every answer submission behind it — the queue runs at
-    // concurrency 5.
-    if (submitted) {
-      await recordAnswerActivity({
-        answerMessageId,
-        kind: "answer",
-        userWallet: user,
-        conversationId,
-        promptMessageId,
-      });
-    }
   } catch (error) {
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
@@ -1886,6 +1880,24 @@ async function handleRegeneration(
 
     console.error(`Error in handleRegeneration for promptId ${promptMessageId}:`, error);
     throw error;
+  }
+
+  // AFTER the try/catch, deliberately. recordAnswerActivity swallows everything today, but if
+  // that contract ever broke, a throw from inside the try would land in the catch and record
+  // `answer_failed` — plus Sentry, plus a retry — for a prompt the escrow had already settled.
+  // Out here only the happy path reaches it: every route through the catch either returns or
+  // rethrows.
+  //
+  // Outside the mutex too: this is a Postgres round-trip, and holding the tx lock through it
+  // would serialise every submission behind it — the queue runs at concurrency 5.
+  if (submitted) {
+    await recordAnswerActivity({
+      answerMessageId,
+      kind: "answer",
+      userWallet: user,
+      conversationId,
+      promptMessageId,
+    });
   }
 }
 

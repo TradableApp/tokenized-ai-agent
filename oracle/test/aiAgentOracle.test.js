@@ -736,6 +736,41 @@ describe("aiAgentOracle", function () {
       expect(recordAnswerActivity.callCount).to.equal(0);
     });
 
+    it("still records `answer_failed` for a REGENERATION when the re-check also fails", async () => {
+      // handleRegeneration has its own catch, its own isBadInputError gate and its own recording.
+      // Mirrors the handlePrompt degraded-RPC case so a mutation to either is caught by its own
+      // test rather than by the other one happening to cover it.
+      const base = stubs["./contractUtility"].initializeOracle();
+      const finalized = sinon.stub();
+      finalized.onCall(0).resolves(false);
+      finalized.onCall(1).resolves(false);
+      finalized.onCall(2).resolves(false);
+      finalized.rejects(new Error("RPC unavailable"));
+      const failing = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: finalized,
+          submitAnswer: sinon.stub().rejects(new Error("RPC timeout")),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(failing);
+
+      await mod
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(finalized.callCount, "the catch's re-check must have been reached").to.be.at.least(4);
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
+    });
+
     it("records `answer_failed` when handlePrompt cannot submit", async () => {
       // Neither the success nor the cancelled case touches the catch block, so deleting the
       // recording there was invisible until this existed.
