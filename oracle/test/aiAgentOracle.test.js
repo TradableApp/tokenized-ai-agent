@@ -549,6 +549,40 @@ describe("aiAgentOracle", function () {
       getBlock: () => Promise.resolve({ timestamp: Date.now() }),
     });
 
+    const regenPayload = () =>
+      ethers.toUtf8Bytes(
+        createEncryptedString(
+          {
+            instructions: "be more concise",
+            promptMessageCID: "cid-prompt",
+            originalAnswerMessageCID: "cid-answer",
+          },
+          FAKE_SESSION_KEY,
+        ),
+      );
+
+    /** submitAnswer rejects; isJobFinalized stays false so the catch's re-check does not
+     *  short-circuit into the graceful "already cancelled" return. */
+    function loadWithSubmitFailure() {
+      const base = stubs["./contractUtility"].initializeOracle();
+      const failing = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: sinon.stub().resolves(false),
+          submitAnswer: sinon.stub().rejects(new Error("RPC timeout")),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(failing);
+      return { mod, recordAnswerActivity };
+    }
+
     beforeEach(() => {
       process.env.MOCK_AI = "true";
     });
@@ -573,25 +607,13 @@ describe("aiAgentOracle", function () {
       // The site that a single-call-site implementation would have missed.
       const { mod, recordAnswerActivity } = loadWithSpy();
 
-      // RegenerationRequested carries a different payload shape than PromptSubmitted.
-      const regenPayload = ethers.toUtf8Bytes(
-        createEncryptedString(
-          {
-            instructions: "be more concise",
-            promptMessageCID: "cid-prompt",
-            originalAnswerMessageCID: "cid-answer",
-          },
-          FAKE_SESSION_KEY,
-        ),
-      );
-
       await mod.handleRegeneration(
         "0xUser",
         123,
         456,
         457,
         458,
-        regenPayload,
+        regenPayload(),
         "0xkey",
         fakeEvent(),
       );
@@ -599,6 +621,69 @@ describe("aiAgentOracle", function () {
       expect(recordAnswerActivity.callCount).to.equal(1);
       expect(recordAnswerActivity.firstCall.args[0]).to.include({
         kind: "answer",
+        answerMessageId: 458,
+      });
+    });
+
+    it("records NOTHING when the user cancels a REGENERATION during upload", async () => {
+      // handleRegeneration carries its own copy of the `submitted` flag and its own guard.
+      // Disabling only that one is invisible to the handlePrompt case above — and regenerations
+      // are billed identically, so the revenue-inflation bug is exactly the same there.
+      const cancelled = { ...stubs["./contractUtility"].initializeOracle() };
+      const finalizedStub = sinon.stub();
+      finalizedStub.onCall(0).resolves(false);
+      finalizedStub.onCall(1).resolves(false);
+      finalizedStub.resolves(true); // inside the mutex
+      cancelled.contract = { ...cancelled.contract, isJobFinalized: finalizedStub };
+
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(cancelled) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(cancelled);
+
+      await mod.handleRegeneration(
+        "0xUser",
+        123,
+        456,
+        457,
+        458,
+        regenPayload(),
+        "0xkey",
+        fakeEvent(),
+      );
+
+      expect(recordAnswerActivity.callCount).to.equal(0);
+    });
+
+    it("records `answer_failed` when handlePrompt cannot submit", async () => {
+      // Neither the success nor the cancelled case touches the catch block, so deleting the
+      // recording there was invisible until this existed.
+      const { mod, recordAnswerActivity } = loadWithSubmitFailure();
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .catch(() => {}); // rethrows after recording, so handleAndRecord can retry
+
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer_failed",
+        answerMessageId: 457,
+      });
+    });
+
+    it("records `answer_failed` when handleRegeneration cannot submit", async () => {
+      const { mod, recordAnswerActivity } = loadWithSubmitFailure();
+
+      await mod
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer_failed",
         answerMessageId: 458,
       });
     });
