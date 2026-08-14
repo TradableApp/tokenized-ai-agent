@@ -771,6 +771,54 @@ describe("aiAgentOracle", function () {
       expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
     });
 
+    it("PINS THE ACCEPTED GAP: a receipt that never arrives records nothing, not an answer", async () => {
+      // The tx lands on chain, then the connection drops before tx.wait() resolves. The catch's
+      // isJobFinalized re-check returns true (it DID land) and returns gracefully, so `submitted`
+      // is never set and the settled escrow goes unrecorded.
+      //
+      // That is the DELIBERATE choice — recording answers that never confirmed is the worse
+      // error, and at that point "landed" and "cancelled" are indistinguishable from here.
+      //
+      // WHAT THIS ACTUALLY GUARDS. Not the placement of `submitted = true`: hoisting it above
+      // tx.wait() is INERT, because the catch's graceful `return` exits the handler before the
+      // post-try/catch recording is ever reached. Verified by mutation — that change fails
+      // nothing. What it guards is the plausible "fix" of recording an `answer` on that graceful
+      // branch, which would book answers for CANCELLED prompts too, since isFinalized === true
+      // means either outcome. That mutation does fail this test.
+      const base = stubs["./contractUtility"].initializeOracle();
+      const finalized = sinon.stub();
+      finalized.onCall(0).resolves(false); // pre-flight
+      finalized.onCall(1).resolves(false); // post-AI
+      finalized.onCall(2).resolves(false); // inside the mutex -> we submit
+      finalized.resolves(true); // the catch's re-check: the tx DID land
+      const dropped = {
+        ...base,
+        contract: {
+          ...base.contract,
+          isJobFinalized: finalized,
+          submitAnswer: sinon
+            .stub()
+            .resolves({ wait: sinon.stub().rejects(new Error("connection reset")) }),
+        },
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(dropped) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(dropped);
+
+      await mod
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .catch(() => {});
+
+      expect(
+        recordAnswerActivity.callCount,
+        "an unconfirmed submission must not be recorded as an answer",
+      ).to.equal(0);
+    });
+
     it("records `answer_failed` when handlePrompt cannot submit", async () => {
       // Neither the success nor the cancelled case touches the catch block, so deleting the
       // recording there was invisible until this existed.
