@@ -53,6 +53,17 @@ async function recordAnswerActivity({
       return;
     }
 
+    // WHY THERE IS NO TIMEOUT HERE. A try/catch bounds rejections, not stalls — so a hung await
+    // would hold a p-queue slot (concurrency 5) forever, and on the failure path would stop the
+    // rethrow that lets handleAndRecord retry. That bound exists, one layer down and not in this
+    // file: brainContext's pool sets connectionTimeoutMillis, query_timeout AND statement_timeout
+    // to QUERY_TIMEOUT_MS (3s), covering waiting for a connection, the client-side query and the
+    // server-side statement. getBrainHandles itself opens no socket — its only await is the
+    // dynamic import of the Brain.
+    //
+    // Wrapping a second timeout around it here would be a duplicate bound with its own constant,
+    // free to drift from the pool's and to disagree about which one fired. If that ever needs
+    // changing, change it at the pool.
     const handles = await getBrainHandles();
     // No Brain at all (localnet / e2e). Not an error: those runs have no shared cache.
     if (!handles?.brain?.recordActivity || !handles?.ctx) return;
