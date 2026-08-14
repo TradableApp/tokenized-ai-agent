@@ -11,6 +11,7 @@ import { elizaLogger, type IAgentRuntime, Service } from "@elizaos/core";
 // core writes all three bare. Nothing about the oracle required them; the adapter was simply
 // under-typed. Same lesson as CU-86d403h5a.
 import type {
+  AssetSentimentMetrics,
   EnrichedNewsRow,
   GlobalMacroData,
   NewsSearchHit,
@@ -114,6 +115,52 @@ export class BrainService extends Service {
       elizaLogger.error(`[Brain] Macro read failed: ${String((error as any)?.message ?? error)}`);
       return null;
     }
+  }
+
+  /**
+   * Per-asset on-chain / social metrics — the data half of ANALYZE_ASSET_SENTIMENT.
+   *
+   * NO try/catch, because core's adapter has none. core's is a bare delegate:
+   *
+   *   async getAssetSentiment(symbol, forceRefresh = false) {
+   *     return this.engine.getAssetSentiment(symbol, forceRefresh);
+   *   }
+   *
+   * so an engine throw reaches the ACTION's catch — byte-identical on both bodies — and yields
+   * `{ success: false, isBillable: false }` with no observation and no synthesis.
+   *
+   * An earlier revision of this file caught the throw and returned `null`. That looked harmless
+   * because all-null is already the non-billable outcome, but it forked the bodies on the paid
+   * path: the same outage would have answered `success: true` with "this asset is unsupported or
+   * lacks sufficient history" — a factual claim about the asset, made because our system broke —
+   * and with a second ticker resolving it would have been BILLABLE where core charges nothing.
+   *
+   * The distinction that matters: `null` means UNSUPPORTED and is a real reading on both bodies;
+   * a THROW means the ledger was unreachable and is not a reading at all. The engine currently
+   * blurs the two (it swallows its own cache-read error and falls through to adapters) — that
+   * conflation is core's and is tracked upstream as CU-86d40mckm rather than papered over here.
+   *
+   * Contrast `searchNewsDetails` below, which also propagates. Both adapters simply do what their
+   * core counterpart does; neither is expressing a view about billing.
+   *
+   * `getLatestMacro` and `getLatestNews` still catch, and so still diverge from core's bare
+   * delegates. They sit on the PROVIDER path rather than the action path, where a throw reaches
+   * `composeState` on every turn instead of one action — a different blast radius that deserves a
+   * decision rather than a copy of this fix. Tracked as CU-86d419bz0.
+   *
+   * @param symbol ticker, e.g. "BTC" — the engine upper-cases and strips `$`
+   * @param forceRefresh skip the 23h cache and re-fetch from the adapters
+   */
+  async getAssetSentiment(
+    symbol: string,
+    forceRefresh = false,
+  ): Promise<AssetSentimentMetrics | null> {
+    const h = await handles();
+    if (!h?.sentimentEngine?.getAssetSentiment) return null;
+
+    // NO try/catch — core's adapter has none, and adding one here would fork the two bodies on
+    // the paid path. See the note above.
+    return await h.sentimentEngine.getAssetSentiment(symbol, forceRefresh);
   }
 
   /** Latest enriched news rows, newest first. [] when unavailable. See getLatestMacro on typing. */

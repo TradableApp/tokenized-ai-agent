@@ -224,6 +224,106 @@ describe("BrainService (host-injected adapter)", () => {
     expect(threw, "an unavailable Brain must not masquerade as an empty ledger").to.be.an("error");
   });
 
+  it("delegates asset-sentiment reads to the host's Brain engine", async () => {
+    // The data half of ANALYZE_ASSET_SENTIMENT. Same delegation shape as the macro read above —
+    // the engine is the host's, built once by brainContext against the shared cache, not the
+    // isolated oracle_agent database plugin-sql points the runtime at.
+    let sawArgs = null;
+    const metrics = { mvrv_usd_30d: 1.4, _dataTimestamp: 1 };
+    setBrainAccessor(async () => ({
+      brain: {},
+      ctx: {},
+      sentimentEngine: {
+        getAssetSentiment: async (symbol, forceRefresh) => {
+          sawArgs = { symbol, forceRefresh };
+          return metrics;
+        },
+      },
+    }));
+
+    const svc = await BrainService.start({ getSetting: () => undefined });
+
+    expect(await svc.getAssetSentiment("BTC")).to.deep.equal(metrics);
+    expect(sawArgs.symbol).to.equal("BTC");
+    expect(sawArgs.forceRefresh, "core calls this with the default; so must we").to.equal(false);
+  });
+
+  it("forwards forceRefresh when the caller asks for it", async () => {
+    let sawRefresh = null;
+    setBrainAccessor(async () => ({
+      brain: {},
+      ctx: {},
+      sentimentEngine: {
+        getAssetSentiment: async (_symbol, forceRefresh) => {
+          sawRefresh = forceRefresh;
+          return null;
+        },
+      },
+    }));
+
+    const svc = await BrainService.start({ getSetting: () => undefined });
+    await svc.getAssetSentiment("BTC", true);
+
+    expect(sawRefresh).to.equal(true);
+  });
+
+  it("DEGRADES to null when the Brain is unavailable — the opposite of searchNewsDetails", async () => {
+    // WHY THIS ONE MAY DEGRADE WHERE THE NEWS SEARCH MAY NOT. Both feed actions, so the reasoning
+    // that makes searchNewsDetails throw looks like it should apply here too. It does not, and
+    // the difference is in the ACTION, not the service.
+    //
+    // getNewsDetails has no per-item counter: an empty array is indistinguishable from "we
+    // searched and found nothing", which is its SUCCESS path and bills. analyzeAssetSentiment
+    // loops over tickers and sets `isBillable: successfulFetches > 0` — a null for every ticker
+    // is already the non-billable outcome, by core's own rule, with no divergence needed.
+    //
+    // So null here costs the answer its data and nothing else, and it keeps the two bodies on
+    // ONE billing rule. Throwing would put them on two.
+    setBrainAccessor(async () => null);
+    const svc = await BrainService.start({ getSetting: () => undefined });
+
+    expect(await svc.getAssetSentiment("BTC")).to.equal(null);
+  });
+
+  it("PROPAGATES an engine read failure, because core's adapter does", async () => {
+    // PARITY, not preference. core's SentimentService.getAssetSentiment is a BARE DELEGATE:
+    //
+    //   async getAssetSentiment(symbol, forceRefresh = false) {
+    //     return this.engine.getAssetSentiment(symbol, forceRefresh);
+    //   }
+    //
+    // No try/catch. So on core an engine throw reaches the ACTION's catch and yields
+    // { success: false, isBillable: false } with no synthesis. If this adapter swallowed the
+    // throw into `null`, the same outage would instead read as "this asset is unsupported or
+    // lacks sufficient history" — a DIFFERENT answer, a different `success`, and with a second
+    // ticker resolving, a BILLABLE one where core charges nothing.
+    //
+    // Note this is not in tension with `searchNewsDetails` throwing: both adapters simply do what
+    // their core counterpart does. The engine returning `null` still means "unsupported" on both
+    // bodies (CU-86d40mckm covers that conflation upstream); only a THROW is an outage.
+    setBrainAccessor(async () => ({
+      brain: {},
+      ctx: {},
+      sentimentEngine: {
+        getAssetSentiment: async () => {
+          throw new Error("connection refused");
+        },
+      },
+    }));
+
+    const svc = await BrainService.start({ getSetting: () => undefined });
+
+    let caught = null;
+    try {
+      await svc.getAssetSentiment("BTC");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught, "an outage must not be reported as a null reading").to.be.an("error");
+    expect(caught.message).to.contain("connection refused");
+  });
+
   it("owns no database connection of its own", async () => {
     // The regression guard for the bug that prompted this file: if the service ever grows its
     // own pool again it will diverge from brainContext's TLS, drizzle and timeout handling.

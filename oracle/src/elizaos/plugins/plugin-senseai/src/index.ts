@@ -1,5 +1,6 @@
 import type { Plugin } from "@elizaos/core";
 
+import { analyzeAssetSentimentAction } from "./actions/analyzeAssetSentiment";
 import { getNewsDetailsAction } from "./actions/getNewsDetails";
 import { macroSentimentProvider } from "./providers/macroSentiment";
 import { marketIntelligenceProvider } from "./providers/marketIntelligence";
@@ -55,15 +56,55 @@ const senseaiPlugin: Plugin = {
   description:
     "SenseAI oracle body: a thin ElizaOS wrapper over the shared @tradableapp/sense-ai-brain analytical engine.",
 
-  // The analytical action sense-ai-core registers, ported near-verbatim so a news question is
+  // The analytical actions sense-ai-core registers, ported near-verbatim so a question is
   // answered the same way on both bodies. Anything Telegram/X-shaped stays in core.
-  actions: [getNewsDetailsAction],
+  //
+  // ANALYZE_ASSET_SENTIMENT deliberately has NO provider instruction pointing at it, and that is
+  // not the omission GET_NEWS_DETAILS suffered from. Core has none either: the action is selected
+  // from its own `similes` and `examples` ("what is the outlook on", "is it a good time to buy"),
+  // which is how ElizaOS is meant to route. The news case was different because
+  // MARKET_INTELLIGENCE injects a ticker of headlines the model can see but was never told it
+  // could act on — context without an affordance. There is no equivalent standing sentiment
+  // block, so there is nothing to point at.
+  //
+  // NOT PORTED: ANALYZE_FINANCIAL_IMAGE — recorded here rather than only in a plan, because
+  // "every non-social capability is ported or has a recorded reason for omission" is an
+  // acceptance criterion, and a reason nobody can find at the call site is not recorded.
+  //
+  // The analysis is genuinely analytical and would belong in the Brain. The INTAKE does not
+  // exist: core's action is fed by a Telegram photo upload, and this body's only input is the
+  // `encryptedPayload` of a `PromptSubmitted` event — text, validated by Zod in
+  // `payloadValidator.js`. There is no dApp affordance for attaching an image either. Porting
+  // the action would register a capability the model could select and then never satisfy, on a
+  // prompt that has already been paid for.
+  //
+  // If an image intake is ever added, this is a port and not a rewrite: the vision prompt and
+  // parsing move to the Brain first (both bodies), the action is copied here as the other two
+  // were, and its name joins SYNTHESIS_ACTIONS in `oracle/src/answerSelection.js` in the SAME
+  // commit — `oracle/test/synthesisActions.test.js` enforces that pairing in both directions.
+  actions: [getNewsDetailsAction, analyzeAssetSentimentAction],
   // The Brain-backed pair sense-ai-core injects, from the same shared Brain so both bodies
   // see identical context. Oracle-only capabilities go here later; anything shared with the
   // Social body belongs in the Brain instead, so both get it.
   providers: [macroSentimentProvider, marketIntelligenceProvider],
   // Owns this body's read access to the shared warm cache — see services/brain.ts for why it
   // cannot derive a BrainContext from the runtime the way core does.
+  //
+  // NOT PORTED: healthCheckService / dailySummaryService — DEFERRED, not rejected, and the
+  // distinction matters because the reasoning differs from every other omission here.
+  //
+  // They are not social FEATURES; they are ops telemetry that happens to be delivered over
+  // Slack, and an on-chain oracle answering paid prompts inside a TEE arguably needs that
+  // visibility MORE than the Social body does — `oasis rofl machine logs` surfaces only warn and
+  // error, so a healthy oracle is currently indistinguishable from a silent one. What stops the
+  // port today is shape, not scope: both read the shared `senseai` tables and build a Slack
+  // payload, so the query half belongs in the Brain (like every other shared read) and only the
+  // scheduling and the reporter identity stay per body. Copying them here first would fork the
+  // query half, which is the drift the shared Brain exists to prevent.
+  //
+  // Sequenced behind `recordActivity` (CU-86d3z0r81, PR C3) deliberately: the summary reports on
+  // the `daily_activity` table this body does not yet write to, so porting the reporter before
+  // the recorder would ship a summary that reports the oracle as idle.
   services: [BrainService],
   evaluators: [],
 };
