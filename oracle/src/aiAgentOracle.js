@@ -1280,31 +1280,16 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
 // --- Event Handlers ---
 
-// Helper to check for specific contract errors using Ethers v6 Interface
 /**
- * Malformed / malicious input, as opposed to something going wrong on our side.
+ * Malformed / malicious input, as opposed to a failure on our side.
  *
- * ONE PREDICATE, TWO CONSUMERS, deliberately. `handleAndRecord` uses it to drop these events
- * silently — no retry, no Sentry, no alert — and the answer-path telemetry uses it to refrain
- * from recording `answer_failed`. Those two decisions have to agree: an event the system has
- * decided is not its problem must not show up in the daily summary as an oracle failure. Writing
- * the string list out twice is how they would stop agreeing.
+ * ONE predicate, TWO consumers: `handleAndRecord` drops these events silently (no retry, no
+ * Sentry) and the answer-path telemetry declines to record them as `answer_failed`. Those
+ * decisions must agree — an event the system has decided is not its problem must not appear in
+ * the daily summary as an oracle failure, especially since the input is attacker-controlled.
  *
- * It matters more for telemetry than for retry, because the input is ATTACKER-CONTROLLED. Anyone
- * able to emit malformed payloads could otherwise inflate the oracle's failure count at will.
- *
- * KNOWN IMPRECISION, AND THIS PREDICATE NOW CARRIES MORE WEIGHT THAN IT USED TO. "Unexpected
- * token" is a stock JavaScript SyntaxError string, so it matches ANY JSON.parse in the try that
- * receives something unexpected — an HTML 502 from an AI endpoint under load, say, which is an
- * infrastructure failure rather than bad input. Before telemetry existed, a false positive here
- * cost a silent drop; now it also suppresses the `answer_failed` row, so the two consequences
- * compound.
- *
- * Narrowing it (requiring `error instanceof SyntaxError`, or better, a typed BadInputError thrown
- * by payloadValidator/decrypt) changes handleAndRecord's drop decision, which is merged behaviour
- * outside this change's purpose — tracked as CU-86d41hquj. What IS done here: the telemetry gate
- * logs when it suppresses a recording, so a false positive still leaves a trace even though no
- * row is written.
+ * Known to over-match: "Unexpected token" is a stock SyntaxError string, so an AI endpoint's HTML
+ * 502 matches it. Narrowing changes handleAndRecord's drop behaviour — tracked as CU-86d41hquj.
  */
 function isBadInputError(error) {
   const message = error?.message ?? "";
@@ -1316,6 +1301,7 @@ function isBadInputError(error) {
   );
 }
 
+// Helper to check for specific contract errors using Ethers v6 Interface
 function isContractError(error, errorName) {
   try {
     // 1. Get the specific error fragment from the ABI
@@ -1356,16 +1342,14 @@ async function handlePrompt(
     `[EVENT] Processing PromptSubmitted for convId: ${conversationId} in block ${event.blockNumber}`,
   );
 
+  // Did the answer actually reach the chain? The isJobFinalized guard inside the tx mutex returns
+  // from that arrow function, not this handler, so nothing downstream can otherwise tell a
+  // submitted answer from a cancelled one. Declared out here to survive the try/catch.
+  let submitted = false;
+
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
   // This prevents wasting AI/Arweave credits on restarts or re-orgs.
-  // Whether the answer actually reached the chain. The isJobFinalized early return inside the tx
-  // mutex exits THAT arrow function, not this handler, so without a flag the code afterwards
-  // cannot tell a submitted answer from a cancelled one — and would record telemetry for prompts
-  // the user cancelled, inventing revenue that never happened. Declared out here so it survives
-  // the try/catch, which the recording now sits after.
-  let submitted = false;
-
   try {
     const isAlreadyDone = await contract.isJobFinalized(answerMessageId);
     if (isAlreadyDone) {
@@ -1629,13 +1613,9 @@ async function handlePrompt(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
-      // AFTER the receipt, deliberately — an unconfirmed submission is not an answer. The cost is
-      // a known blind spot: if the connection drops between the tx being included on-chain and
-      // tx.wait() resolving, this throws, the catch's isJobFinalized re-check returns true (it
-      // DID land) and returns gracefully — so a settled escrow goes unrecorded. Setting the flag
-      // before the receipt would trade that for the worse error of recording answers that never
-      // confirmed. The ambiguity is inherent: at that point "landed" and "cancelled" are
-      // indistinguishable from here. Recorded rather than papered over.
+      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
+      // the connection drops after the tx lands but before this resolves, the escrow settles
+      // unrecorded. Recording before confirmation would be the worse error.
       submitted = true;
       console.log(
         `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
@@ -1664,34 +1644,20 @@ async function handlePrompt(
         return; // Exit gracefully
       }
     } catch (checkErr) {
-      // BOTH the submit AND the verification failed, so we cannot tell a genuine oracle failure
-      // from a cancellation whose typed revert the RPC swallowed. `answer_failed` is recorded
-      // below either way, and that is the honest reading — its meaning is "no answer reached the
-      // chain", which is true in both cases. But during an RPC degradation window it will inflate
-      // the failure count with cancellations, so the two sub-paths are logged distinctly.
+      // Submit and verification both failed, so a cancellation is indistinguishable from a real
+      // failure here. `answer_failed` is still recorded below — it means "no answer reached the
+      // chain", true either way — but during an RPC outage it will include cancellations.
       console.warn(
-        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED (a cancellation may be counted as a failure).",
+        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED.",
       );
     }
 
-    // `answer_failed` means NO ANSWER REACHED THE CHAIN — not "the oracle is broken". The two
-    // graceful returns above handle the cancellations we can PROVE; what reaches here is either a
-    // real failure or a cancellation whose evidence we could not obtain (see the checkErr warn).
-    // Recording it is still correct: the prompt went unanswered.
-    //
-    // EXCEPT for bad input. This catch covers the whole try — getSessionKey, decrypt and
-    // validatePayload all run before any chain interaction — and handleAndRecord deliberately
-    // drops those events silently, as not our failure. Recording them would contradict that
-    // decision using attacker-controlled input. Recorded BEFORE the rethrow because handleAndRecord may retry — and
-    // the kind is part of the content seed so a later success is not deduped away against this.
-    if (isBadInputError(error)) {
-      // Leaves a trace even though no row is written: this predicate is known to over-match (see
-      // its docstring), and without this a false positive would suppress the Sentry report AND
-      // the ledger row, leaving the failure observable nowhere at all.
-      console.warn(
-        `  ℹ️ Not recording answer_failed for ${String(answerMessageId)} — classified as bad input: ${error?.message ?? error}`,
-      );
-    } else {
+    // `answer_failed` means no answer reached the chain — a real failure, or a cancellation we
+    // could not verify. Bad input is excluded: this catch wraps the whole try, including decrypt
+    // and validatePayload, and handleAndRecord already drops and logs those as not our failure.
+    // Recording them would let attacker-controlled input inflate the failure count. Before the
+    // rethrow, since handleAndRecord may retry and the kind is part of the seed.
+    if (!isBadInputError(error)) {
       await recordAnswerActivity({
         answerMessageId,
         kind: "answer_failed",
@@ -1710,14 +1676,9 @@ async function handlePrompt(
     throw error; // Propagate error to be caught by handleAndRecord
   }
 
-  // AFTER the try/catch, deliberately. recordAnswerActivity swallows everything today, but if
-  // that contract ever broke, a throw from inside the try would land in the catch and record
-  // `answer_failed` — plus Sentry, plus a retry — for a prompt the escrow had already settled.
-  // Out here only the happy path reaches it: every route through the catch either returns or
-  // rethrows.
-  //
-  // Outside the mutex too: this is a Postgres round-trip, and holding the tx lock through it
-  // would serialise every submission behind it — the queue runs at concurrency 5.
+  // Outside the try/catch so a telemetry throw could never be caught below and recorded as a
+  // failure for an answer that succeeded; outside the mutex so a Postgres round-trip does not
+  // serialise submissions behind the tx lock.
   if (submitted) {
     await recordAnswerActivity({
       answerMessageId,
@@ -1743,16 +1704,13 @@ async function handleRegeneration(
     `[EVENT] Processing RegenerationRequested for promptId: ${promptMessageId} in block ${event.blockNumber}`,
   );
 
+  // Did the answer actually reach the chain? See handlePrompt — the mutex's isJobFinalized guard
+  // returns from that arrow function, not this handler.
+  let submitted = false;
+
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
   // This prevents wasting AI/Arweave credits on restarts or re-orgs.
-  // Whether the answer actually reached the chain. The isJobFinalized early return inside the tx
-  // mutex exits THAT arrow function, not this handler, so without a flag the code afterwards
-  // cannot tell a submitted answer from a cancelled one — and would record telemetry for prompts
-  // the user cancelled, inventing revenue that never happened. Declared out here so it survives
-  // the try/catch, which the recording now sits after.
-  let submitted = false;
-
   try {
     const isAlreadyDone = await contract.isJobFinalized(answerMessageId);
     if (isAlreadyDone) {
@@ -1855,13 +1813,9 @@ async function handleRegeneration(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
-      // AFTER the receipt, deliberately — an unconfirmed submission is not an answer. The cost is
-      // a known blind spot: if the connection drops between the tx being included on-chain and
-      // tx.wait() resolving, this throws, the catch's isJobFinalized re-check returns true (it
-      // DID land) and returns gracefully — so a settled escrow goes unrecorded. Setting the flag
-      // before the receipt would trade that for the worse error of recording answers that never
-      // confirmed. The ambiguity is inherent: at that point "landed" and "cancelled" are
-      // indistinguishable from here. Recorded rather than papered over.
+      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
+      // the connection drops after the tx lands but before this resolves, the escrow settles
+      // unrecorded. Recording before confirmation would be the worse error.
       submitted = true;
       console.log(
         `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
@@ -1888,30 +1842,20 @@ async function handleRegeneration(
         return; // Exit gracefully
       }
     } catch (checkErr) {
-      // BOTH the submit AND the verification failed, so we cannot tell a genuine oracle failure
-      // from a cancellation whose typed revert the RPC swallowed. `answer_failed` is recorded
-      // below either way, and that is the honest reading — its meaning is "no answer reached the
-      // chain", which is true in both cases. But during an RPC degradation window it will inflate
-      // the failure count with cancellations, so the two sub-paths are logged distinctly.
+      // Submit and verification both failed, so a cancellation is indistinguishable from a real
+      // failure here. `answer_failed` is still recorded below — it means "no answer reached the
+      // chain", true either way — but during an RPC outage it will include cancellations.
       console.warn(
-        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED (a cancellation may be counted as a failure).",
+        "  ⚠️ Could not verify job finalization status after error — recording answer_failed UNVERIFIED.",
       );
     }
 
-    // Mirrors handlePrompt: `answer_failed` means no answer reached the chain, which covers both
-    // a real failure and a cancellation we could not verify. Recorded before the rethrow because
-    // handleAndRecord may retry, and the kind is part of the content seed so a later success is
-    // not deduped away against this failure.
-    if (isBadInputError(error)) {
-      // Leaves a trace even though no row is written: this predicate is known to over-match (see
-      // its docstring). It matters MORE here than in handlePrompt — that handler still reports to
-      // Sentry from its catch, whereas handleRegeneration never has, so for a regeneration this
-      // console.warn is the ONLY evidence a false positive leaves anywhere. Bringing the two to
-      // parity on Sentry is merged-behaviour surgery, not a telemetry change: CU-86d41hquj.
-      console.warn(
-        `  ℹ️ Not recording answer_failed for ${String(answerMessageId)} — classified as bad input: ${error?.message ?? error}`,
-      );
-    } else {
+    // `answer_failed` means no answer reached the chain — a real failure, or a cancellation we
+    // could not verify. Bad input is excluded: this catch wraps the whole try, including decrypt
+    // and validatePayload, and handleAndRecord already drops and logs those as not our failure.
+    // Recording them would let attacker-controlled input inflate the failure count. Before the
+    // rethrow, since handleAndRecord may retry and the kind is part of the seed.
+    if (!isBadInputError(error)) {
       await recordAnswerActivity({
         answerMessageId,
         kind: "answer_failed",
@@ -1925,14 +1869,9 @@ async function handleRegeneration(
     throw error;
   }
 
-  // AFTER the try/catch, deliberately. recordAnswerActivity swallows everything today, but if
-  // that contract ever broke, a throw from inside the try would land in the catch and record
-  // `answer_failed` — plus Sentry, plus a retry — for a prompt the escrow had already settled.
-  // Out here only the happy path reaches it: every route through the catch either returns or
-  // rethrows.
-  //
-  // Outside the mutex too: this is a Postgres round-trip, and holding the tx lock through it
-  // would serialise every submission behind it — the queue runs at concurrency 5.
+  // Outside the try/catch so a telemetry throw could never be caught below and recorded as a
+  // failure for an answer that succeeded; outside the mutex so a Postgres round-trip does not
+  // serialise submissions behind the tx lock.
   if (submitted) {
     await recordAnswerActivity({
       answerMessageId,

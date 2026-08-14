@@ -508,7 +508,7 @@ describe("aiAgentOracle", function () {
     });
   });
 
-  describe("daily_activity telemetry wiring (PR C3)", () => {
+  describe("daily_activity telemetry wiring", () => {
     // The helper's own behaviour is covered in answerActivity.test.js. What CANNOT be proven
     // there is that the two answer paths actually call it — and that the CANCELLED path does
     // not. Recording a cancelled prompt as an answer would invent revenue that never happened.
@@ -699,14 +699,10 @@ describe("aiAgentOracle", function () {
     });
 
     it("records NOTHING for a malformed payload — that is bad input, not an oracle failure", async () => {
-      // handleAndRecord classifies these explicitly: "MALICIOUS / BAD INPUT ERRORS (Drop
-      // silently or log warning, DO NOT RETRY)" — no throw, no alert, no retry. Writing
-      // answer_failed for them contradicts that decision, and does so with ATTACKER-CONTROLLED
-      // input: anyone able to emit malformed payloads could inflate the oracle's failure count in
-      // the daily summary at will.
-      //
-      // The catch block covers the whole try, which begins well before any chain interaction —
-      // getSessionKey, decryptSymmetrically and validatePayload are all inside it.
+      // handleAndRecord drops these silently as malicious input. Recording them contradicts that
+      // decision using attacker-controlled input — anyone able to emit malformed payloads could
+      // inflate the failure count at will. The catch wraps the whole try, which begins before any
+      // chain interaction.
       const { mod, recordAnswerActivity } = loadWithSpy();
 
       // Not a valid encrypted string, so validatePayload rejects before the mutex is reached.
@@ -776,15 +772,12 @@ describe("aiAgentOracle", function () {
       // isJobFinalized re-check returns true (it DID land) and returns gracefully, so `submitted`
       // is never set and the settled escrow goes unrecorded.
       //
-      // That is the DELIBERATE choice — recording answers that never confirmed is the worse
-      // error, and at that point "landed" and "cancelled" are indistinguishable from here.
+      // Deliberate: recording answers that never confirmed is the worse error, and `isFinalized`
+      // being true there means either "the tx landed" or "the user cancelled".
       //
-      // WHAT THIS ACTUALLY GUARDS. Not the placement of `submitted = true`: hoisting it above
-      // tx.wait() is INERT, because the catch's graceful `return` exits the handler before the
-      // post-try/catch recording is ever reached. Verified by mutation — that change fails
-      // nothing. What it guards is the plausible "fix" of recording an `answer` on that graceful
-      // branch, which would book answers for CANCELLED prompts too, since isFinalized === true
-      // means either outcome. That mutation does fail this test.
+      // What this guards is the plausible repair — recording an `answer` on that graceful branch,
+      // which would book answers for cancelled prompts. Note hoisting `submitted = true` above
+      // tx.wait() is inert, since the graceful return exits before the recording is reached.
       const base = stubs["./contractUtility"].initializeOracle();
       const finalized = sinon.stub();
       finalized.onCall(0).resolves(false); // pre-flight
@@ -850,17 +843,10 @@ describe("aiAgentOracle", function () {
     });
 
     it("records NOTHING when the user cancels during upload, inside the tx mutex", async () => {
-      // THE CASE THE `submitted` FLAG EXISTS FOR, and it takes care to reach.
-      //
-      // handlePrompt checks isJobFinalized THREE times: twice early (each returning from the
-      // handler outright) and once inside txMutex.runExclusive. Only the third is interesting —
-      // its `return` exits the ARROW FUNCTION, so execution continues after the mutex with no
-      // answer submitted. A naive `await recordAnswerActivity(...)` there books an answer for a
-      // prompt the user cancelled.
-      //
-      // A stub that always resolves true returns at the FIRST check and never reaches the mutex,
-      // so it would pass against the buggy implementation too. False, false, then true is what
-      // actually drives the path.
+      // handlePrompt checks isJobFinalized three times; only the one inside the mutex matters,
+      // because its `return` exits the arrow function and execution continues afterwards with no
+      // answer submitted. A stub that always resolves true exits at the FIRST check and never
+      // reaches the mutex — so false, false, true is what actually drives this path.
       const cancelled = {
         ...stubs["./contractUtility"].initializeOracle(),
       };

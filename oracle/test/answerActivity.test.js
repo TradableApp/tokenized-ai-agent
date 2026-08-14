@@ -1,27 +1,18 @@
 const { expect } = require("chai");
 const proxyquire = require("proxyquire").noCallThru();
 
-// Oracle-side `daily_activity` telemetry — the writer half of PR C3 (CU-86d3z0r81).
+// Oracle-side `daily_activity` telemetry.
 //
-// The Brain owns `recordActivity` (brain#14) and the categoriser that buckets these rows
-// (brain#15); core adopted both and renders them in Slack (core#89, #90, #91). This is the last
-// piece: the Oracle body actually writing.
+// Two traps pinned here, both of which would otherwise compile, run, and be silently wrong:
 //
-// TWO TRAPS THIS FILE EXISTS TO PIN, both of which would compile, run, and be silently wrong:
+//   1. THE DATABASE. `runtime.db` is plugin-sql's, pointed at the isolated `oracle_agent`; the
+//      Brain's `ctx.db` is the shared `senseai` DB where `daily_activity` lives. Writing through
+//      the former succeeds and lands where core's daily summary never reads.
 //
-//   1. THE DATABASE. This body holds two Postgres handles. `runtime.db` is plugin-sql's, pointed
-//      at the ISOLATED `oracle_agent` database; the Brain's `ctx.db` is the shared `senseai` DB
-//      where `senseai.daily_activity` actually lives. Writing through the former succeeds and
-//      lands somewhere core's daily summary never reads — no error, no warning, telemetry that
-//      simply never appears.
-//
-//   2. THE SEED PREFIX. `content_hash` is derived from `contentSeed` ALONE — `platform` and
-//      `kind` are deliberately not folded in (see recordActivity's docstring). So an unprefixed
-//      seed can collide with a Social row and be silently discarded by `onConflictDoNothing`.
-//      Oracle seeds must be `oracle:<answerMessageId>`.
+//   2. THE SEED. `content_hash` derives from `contentSeed` alone, so an unprefixed seed can
+//      collide with a Social row and be silently discarded by `onConflictDoNothing`.
 //
 // Best-effort is a hard requirement, not a nicety: this runs on a paid, immutable answer path.
-// Telemetry must never be able to fail a prompt the escrow has already charged for.
 
 function load({ handles = undefined, recordActivity } = {}) {
   const calls = [];
