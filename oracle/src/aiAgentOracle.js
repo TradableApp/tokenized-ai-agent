@@ -1292,6 +1292,19 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
  *
  * It matters more for telemetry than for retry, because the input is ATTACKER-CONTROLLED. Anyone
  * able to emit malformed payloads could otherwise inflate the oracle's failure count at will.
+ *
+ * KNOWN IMPRECISION, AND THIS PREDICATE NOW CARRIES MORE WEIGHT THAN IT USED TO. "Unexpected
+ * token" is a stock JavaScript SyntaxError string, so it matches ANY JSON.parse in the try that
+ * receives something unexpected — an HTML 502 from an AI endpoint under load, say, which is an
+ * infrastructure failure rather than bad input. Before telemetry existed, a false positive here
+ * cost a silent drop; now it also suppresses the `answer_failed` row, so the two consequences
+ * compound.
+ *
+ * Narrowing it (requiring `error instanceof SyntaxError`, or better, a typed BadInputError thrown
+ * by payloadValidator/decrypt) changes handleAndRecord's drop decision, which is merged behaviour
+ * outside this change's purpose — tracked as CU-86d41hquj. What IS done here: the telemetry gate
+ * logs when it suppresses a recording, so a false positive still leaves a trace even though no
+ * row is written.
  */
 function isBadInputError(error) {
   const message = error?.message ?? "";
@@ -1664,7 +1677,14 @@ async function handlePrompt(
     // drops those events silently, as not our failure. Recording them would contradict that
     // decision using attacker-controlled input. Recorded BEFORE the rethrow because handleAndRecord may retry — and
     // the kind is part of the content seed so a later success is not deduped away against this.
-    if (!isBadInputError(error)) {
+    if (isBadInputError(error)) {
+      // Leaves a trace even though no row is written: this predicate is known to over-match (see
+      // its docstring), and without this a false positive would suppress the Sentry report AND
+      // the ledger row, leaving the failure observable nowhere at all.
+      console.warn(
+        `  ℹ️ Not recording answer_failed for ${String(answerMessageId)} — classified as bad input: ${error?.message ?? error}`,
+      );
+    } else {
       await recordAnswerActivity({
         answerMessageId,
         kind: "answer_failed",
@@ -1868,7 +1888,14 @@ async function handleRegeneration(
     // a real failure and a cancellation we could not verify. Recorded before the rethrow because
     // handleAndRecord may retry, and the kind is part of the content seed so a later success is
     // not deduped away against this failure.
-    if (!isBadInputError(error)) {
+    if (isBadInputError(error)) {
+      // Leaves a trace even though no row is written: this predicate is known to over-match (see
+      // its docstring), and without this a false positive would suppress the Sentry report AND
+      // the ledger row, leaving the failure observable nowhere at all.
+      console.warn(
+        `  ℹ️ Not recording answer_failed for ${String(answerMessageId)} — classified as bad input: ${error?.message ?? error}`,
+      );
+    } else {
       await recordAnswerActivity({
         answerMessageId,
         kind: "answer_failed",
