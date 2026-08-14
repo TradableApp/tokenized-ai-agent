@@ -285,7 +285,22 @@ describe("BrainService (host-injected adapter)", () => {
     expect(await svc.getAssetSentiment("BTC")).to.equal(null);
   });
 
-  it("degrades to null when the engine read fails", async () => {
+  it("PROPAGATES an engine read failure, because core's adapter does", async () => {
+    // PARITY, not preference. core's SentimentService.getAssetSentiment is a BARE DELEGATE:
+    //
+    //   async getAssetSentiment(symbol, forceRefresh = false) {
+    //     return this.engine.getAssetSentiment(symbol, forceRefresh);
+    //   }
+    //
+    // No try/catch. So on core an engine throw reaches the ACTION's catch and yields
+    // { success: false, isBillable: false } with no synthesis. If this adapter swallowed the
+    // throw into `null`, the same outage would instead read as "this asset is unsupported or
+    // lacks sufficient history" — a DIFFERENT answer, a different `success`, and with a second
+    // ticker resolving, a BILLABLE one where core charges nothing.
+    //
+    // Note this is not in tension with `searchNewsDetails` throwing: both adapters simply do what
+    // their core counterpart does. The engine returning `null` still means "unsupported" on both
+    // bodies (CU-86d40mckm covers that conflation upstream); only a THROW is an outage.
     setBrainAccessor(async () => ({
       brain: {},
       ctx: {},
@@ -298,7 +313,15 @@ describe("BrainService (host-injected adapter)", () => {
 
     const svc = await BrainService.start({ getSetting: () => undefined });
 
-    expect(await svc.getAssetSentiment("BTC")).to.equal(null);
+    let caught = null;
+    try {
+      await svc.getAssetSentiment("BTC");
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught, "an outage must not be reported as a null reading").to.be.an("error");
+    expect(caught.message).to.contain("connection refused");
   });
 
   it("owns no database connection of its own", async () => {

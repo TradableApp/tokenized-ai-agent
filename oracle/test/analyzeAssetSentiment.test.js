@@ -209,6 +209,49 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
     );
   });
 
+  it("matches core on an outage: reports failure, does not synthesise, does not bill", async () => {
+    // THE PARITY CASE, at the ACTION layer. core's SentimentService is a bare delegate, so an
+    // engine throw reaches this action's catch — a catch that is byte-identical on both bodies —
+    // and produces success:false with no observation and no synthesis.
+    //
+    // SCOPE, HONESTLY: this stub injects the throwing function AS the service, so it does not
+    // exercise BrainService at all and passes whether or not that adapter swallows throws. What
+    // it pins is the half core owns — given a throwing service, this action must answer exactly as
+    // core's does. That the adapter actually propagates is pinned separately, in
+    // `brainService.test.js` ("PROPAGATES an engine read failure"). Both halves are needed: this
+    // one would still pass against an adapter that degraded, which is precisely the bug that was
+    // here before.
+    const runtime = buildRuntime({
+      extraction: { tickers: ["BTC", "ETH"] },
+      getAssetSentiment: async () => {
+        throw new Error("connection refused");
+      },
+    });
+
+    let callbackFired = false;
+    const result = await action.handler(
+      runtime,
+      MESSAGE,
+      undefined,
+      MID_CHAIN,
+      async () => {
+        callbackFired = true;
+      },
+      [],
+    );
+
+    expect(result.success, "an outage is not an answered turn").to.equal(false);
+    expect(result.data.isBillable, "core does not bill an outage, so neither may this").to.equal(
+      false,
+    );
+    expect(result.error).to.contain("connection refused");
+    expect(result.text, "no observation may be built from an outage").to.equal(undefined);
+    // The interim "Extracting institutional-grade data for BTC, ETH..." callback fires BEFORE the
+    // fetch loop, so it is expected even on the failure path — core does the same. What must not
+    // happen is a synthesised report, and `result.text` being undefined is what shows it did not.
+    expect(callbackFired, "core emits the interim callback before fetching too").to.equal(true);
+  });
+
   it("reports NON-BILLABLE when the Brain service is unregistered", async () => {
     // Kept in core's position, before the try, so this early return is byte-for-byte core's: an
     // unregistered service is not a failed lookup and must never read as one.

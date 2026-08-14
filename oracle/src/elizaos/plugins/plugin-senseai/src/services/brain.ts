@@ -120,21 +120,33 @@ export class BrainService extends Service {
   /**
    * Per-asset on-chain / social metrics — the data half of ANALYZE_ASSET_SENTIMENT.
    *
-   * DEGRADES to null, unlike `searchNewsDetails` below. The reasoning that makes the news search
-   * throw looks like it should apply here — both back actions, both on the paid path — but the
-   * difference lives in the ACTION, not in this service.
+   * NO try/catch, because core's adapter has none. core's is a bare delegate:
    *
-   * `getNewsDetails` has no per-item counter, so an empty array is indistinguishable from "we
-   * searched the ledger and found nothing", which is its SUCCESS path and bills.
-   * `analyzeAssetSentiment` loops over tickers and sets `isBillable: successfulFetches > 0`, so a
-   * null for every ticker is ALREADY the non-billable outcome — by core's own rule, with no
-   * divergence required. Throwing would put the two bodies on different billing rules to reach
-   * the same result, which is the drift a shared Brain exists to prevent.
+   *   async getAssetSentiment(symbol, forceRefresh = false) {
+   *     return this.engine.getAssetSentiment(symbol, forceRefresh);
+   *   }
    *
-   * The engine returns null for an unrecognised symbol too, so "unsupported" and "unavailable"
-   * arrive here as the same value. That conflation is core's (`SentimentEngine` swallows its
-   * cache-read error and falls through to adapters) and is tracked upstream as CU-86d40mckm
-   * rather than fixed in the copy.
+   * so an engine throw reaches the ACTION's catch — byte-identical on both bodies — and yields
+   * `{ success: false, isBillable: false }` with no observation and no synthesis.
+   *
+   * An earlier revision of this file caught the throw and returned `null`. That looked harmless
+   * because all-null is already the non-billable outcome, but it forked the bodies on the paid
+   * path: the same outage would have answered `success: true` with "this asset is unsupported or
+   * lacks sufficient history" — a factual claim about the asset, made because our system broke —
+   * and with a second ticker resolving it would have been BILLABLE where core charges nothing.
+   *
+   * The distinction that matters: `null` means UNSUPPORTED and is a real reading on both bodies;
+   * a THROW means the ledger was unreachable and is not a reading at all. The engine currently
+   * blurs the two (it swallows its own cache-read error and falls through to adapters) — that
+   * conflation is core's and is tracked upstream as CU-86d40mckm rather than papered over here.
+   *
+   * Contrast `searchNewsDetails` below, which also propagates. Both adapters simply do what their
+   * core counterpart does; neither is expressing a view about billing.
+   *
+   * `getLatestMacro` and `getLatestNews` still catch, and so still diverge from core's bare
+   * delegates. They sit on the PROVIDER path rather than the action path, where a throw reaches
+   * `composeState` on every turn instead of one action — a different blast radius that deserves a
+   * decision rather than a copy of this fix. Tracked as CU-86d419bz0.
    *
    * @param symbol ticker, e.g. "BTC" — the engine upper-cases and strips `$`
    * @param forceRefresh skip the 23h cache and re-fetch from the adapters
@@ -145,16 +157,10 @@ export class BrainService extends Service {
   ): Promise<AssetSentimentMetrics | null> {
     const h = await handles();
     if (!h?.sentimentEngine?.getAssetSentiment) return null;
-    try {
-      return await h.sentimentEngine.getAssetSentiment(symbol, forceRefresh);
-    } catch (error) {
-      elizaLogger.error(
-        `[Brain] Asset sentiment read failed for ${symbol}: ${String(
-          (error as any)?.message ?? error,
-        )}`,
-      );
-      return null;
-    }
+
+    // NO try/catch — core's adapter has none, and adding one here would fork the two bodies on
+    // the paid path. See the note above.
+    return await h.sentimentEngine.getAssetSentiment(symbol, forceRefresh);
   }
 
   /** Latest enriched news rows, newest first. [] when unavailable. See getLatestMacro on typing. */
