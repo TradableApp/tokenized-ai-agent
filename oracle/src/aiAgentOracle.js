@@ -61,6 +61,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
 const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
+const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const { selectAnswer } = require("./answerSelection");
@@ -1569,6 +1570,12 @@ async function handlePrompt(
       };
     }
 
+    // Whether the answer actually reached the chain. The early return below exits THIS arrow
+    // function, not the handler, so without a flag the code after the mutex cannot tell a
+    // submitted answer from a cancelled one — and would record telemetry for prompts the user
+    // cancelled, inventing revenue that never happened.
+    let submitted = false;
+
     // We lock the wallet to ensure Nonces are used sequentially.
     await txMutex.runExclusive(async () => {
       // Double-check finalization on-chain right before sending
@@ -1586,10 +1593,24 @@ async function handlePrompt(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
+      submitted = true;
       console.log(
         `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
       );
     });
+
+    // OUTSIDE the mutex on purpose: this is a Postgres round-trip, and holding the tx lock
+    // through it would serialise every answer submission behind it — the queue runs at
+    // concurrency 5.
+    if (submitted) {
+      await recordAnswerActivity({
+        answerMessageId,
+        kind: "answer",
+        userWallet: user,
+        conversationId,
+        promptMessageId,
+      });
+    }
   } catch (error) {
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
@@ -1615,6 +1636,18 @@ async function handlePrompt(
     } catch (checkErr) {
       console.warn("  ⚠️ Could not verify job finalization status after error.");
     }
+
+    // A genuine failure: both graceful returns above (JobAlreadyFinalized, and the on-chain
+    // finalisation re-check) have already handled the cancelled cases, so reaching here means no
+    // answer went on chain. Recorded BEFORE the rethrow because handleAndRecord may retry — and
+    // the kind is part of the content seed so a later success is not deduped away against this.
+    await recordAnswerActivity({
+      answerMessageId,
+      kind: "answer_failed",
+      userWallet: user,
+      conversationId,
+      promptMessageId,
+    });
 
     Sentry.captureException(error, {
       tags: { site: "handle_prompt" },
@@ -1728,6 +1761,12 @@ async function handleRegeneration(
       searchDeltaCID: "",
     };
 
+    // Whether the answer actually reached the chain. The early return below exits THIS arrow
+    // function, not the handler, so without a flag the code after the mutex cannot tell a
+    // submitted answer from a cancelled one — and would record telemetry for prompts the user
+    // cancelled, inventing revenue that never happened.
+    let submitted = false;
+
     // We lock the wallet to ensure Nonces are used sequentially.
     await txMutex.runExclusive(async () => {
       // Double-check finalization on-chain right before sending
@@ -1745,10 +1784,24 @@ async function handleRegeneration(
       const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
 
       const receipt = await tx.wait();
+      submitted = true;
       console.log(
         `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
       );
     });
+
+    // OUTSIDE the mutex on purpose: this is a Postgres round-trip, and holding the tx lock
+    // through it would serialise every answer submission behind it — the queue runs at
+    // concurrency 5.
+    if (submitted) {
+      await recordAnswerActivity({
+        answerMessageId,
+        kind: "answer",
+        userWallet: user,
+        conversationId,
+        promptMessageId,
+      });
+    }
   } catch (error) {
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
@@ -1772,6 +1825,18 @@ async function handleRegeneration(
     } catch (checkErr) {
       console.warn("  ⚠️ Could not verify job finalization status after error.");
     }
+
+    // Mirrors handlePrompt: both graceful returns above have handled the cancelled cases, so
+    // reaching here means no answer went on chain. Recorded before the rethrow because
+    // handleAndRecord may retry, and the kind is part of the content seed so a later success is
+    // not deduped away against this failure.
+    await recordAnswerActivity({
+      answerMessageId,
+      kind: "answer_failed",
+      userWallet: user,
+      conversationId,
+      promptMessageId,
+    });
 
     console.error(`Error in handleRegeneration for promptId ${promptMessageId}:`, error);
     throw error;

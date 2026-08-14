@@ -64,7 +64,28 @@ describe("answerActivity — oracle daily_activity writer", () => {
 
     await mod.recordAnswerActivity({ answerMessageId: 457n, kind: "answer" });
 
-    expect(calls[0].args.contentSeed).to.equal("oracle:457");
+    expect(calls[0].args.contentSeed).to.equal("oracle:answer:457");
+  });
+
+  it("puts the KIND in the seed, so a retry that finally succeeds is not deduped away", async () => {
+    // A prompt can be recorded as failed and then, after handleAndRecord retries it, succeed.
+    // With the answerMessageId alone as the seed both rows hash identically and the SECOND one —
+    // the successful answer — is silently dropped by onConflictDoNothing, leaving a permanent
+    // "failed" for a prompt that was in fact answered.
+    //
+    // Including the kind mirrors core, whose seeds already carry it
+    // (`twitter:<user>:broadcast:<text>`), so this is the established shape rather than a
+    // divergence. Retrying the SAME outcome still dedups, which is what we want: one failure per
+    // answer, not one per attempt.
+    const { mod, calls } = load();
+
+    await mod.recordAnswerActivity({ answerMessageId: 457n, kind: "answer_failed" });
+    await mod.recordAnswerActivity({ answerMessageId: 457n, kind: "answer" });
+
+    expect(calls.map((c) => c.args.contentSeed)).to.deep.equal([
+      "oracle:answer_failed:457",
+      "oracle:answer:457",
+    ]);
   });
 
   it("records platform `oracle` and the caller's kind", async () => {

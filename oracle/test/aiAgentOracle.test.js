@@ -508,6 +508,141 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("daily_activity telemetry wiring (PR C3)", () => {
+    // The helper's own behaviour is covered in answerActivity.test.js. What CANNOT be proven
+    // there is that the two answer paths actually call it — and that the CANCELLED path does
+    // not. Recording a cancelled prompt as an answer would invent revenue that never happened.
+    //
+    // Both handlers matter: `submitAnswer` finalises the escrow payment in the same transaction
+    // for a regeneration exactly as for a first answer, so wiring only handlePrompt would drop
+    // every regeneration from the ledger while still charging for it.
+
+    function loadWithSpy(extraStubs = {}) {
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        ...extraStubs,
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(
+        extraStubs["./contractUtility"]
+          ? extraStubs["./contractUtility"].initializeOracle()
+          : stubs["./contractUtility"].initializeOracle(),
+      );
+      return { mod, recordAnswerActivity };
+    }
+
+    const payloadFor = (text) =>
+      ethers.toUtf8Bytes(
+        createEncryptedString(
+          {
+            promptText: text,
+            isNewConversation: true,
+            previousMessageId: null,
+            previousMessageCID: null,
+          },
+          FAKE_SESSION_KEY,
+        ),
+      );
+    const fakeEvent = () => ({
+      blockNumber: 1,
+      getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+    });
+
+    beforeEach(() => {
+      process.env.MOCK_AI = "true";
+    });
+    afterEach(() => {
+      delete process.env.MOCK_AI;
+    });
+
+    it("records an `answer` when handlePrompt submits", async () => {
+      const { mod, recordAnswerActivity } = loadWithSpy();
+
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+
+      expect(recordAnswerActivity.callCount, "exactly one row per answer").to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer",
+        answerMessageId: 457,
+        userWallet: "0xUser",
+      });
+    });
+
+    it("records an `answer` when handleRegeneration submits", async () => {
+      // The site that a single-call-site implementation would have missed.
+      const { mod, recordAnswerActivity } = loadWithSpy();
+
+      // RegenerationRequested carries a different payload shape than PromptSubmitted.
+      const regenPayload = ethers.toUtf8Bytes(
+        createEncryptedString(
+          {
+            instructions: "be more concise",
+            promptMessageCID: "cid-prompt",
+            originalAnswerMessageCID: "cid-answer",
+          },
+          FAKE_SESSION_KEY,
+        ),
+      );
+
+      await mod.handleRegeneration(
+        "0xUser",
+        123,
+        456,
+        457,
+        458,
+        regenPayload,
+        "0xkey",
+        fakeEvent(),
+      );
+
+      expect(recordAnswerActivity.callCount).to.equal(1);
+      expect(recordAnswerActivity.firstCall.args[0]).to.include({
+        kind: "answer",
+        answerMessageId: 458,
+      });
+    });
+
+    it("records NOTHING when the user cancels during upload, inside the tx mutex", async () => {
+      // THE CASE THE `submitted` FLAG EXISTS FOR, and it takes care to reach.
+      //
+      // handlePrompt checks isJobFinalized THREE times: twice early (each returning from the
+      // handler outright) and once inside txMutex.runExclusive. Only the third is interesting —
+      // its `return` exits the ARROW FUNCTION, so execution continues after the mutex with no
+      // answer submitted. A naive `await recordAnswerActivity(...)` there books an answer for a
+      // prompt the user cancelled.
+      //
+      // A stub that always resolves true returns at the FIRST check and never reaches the mutex,
+      // so it would pass against the buggy implementation too. False, false, then true is what
+      // actually drives the path.
+      const cancelled = {
+        ...stubs["./contractUtility"].initializeOracle(),
+      };
+      const finalizedStub = sinon.stub();
+      finalizedStub.onCall(0).resolves(false); // pre-flight check
+      finalizedStub.onCall(1).resolves(false); // post-AI check
+      finalizedStub.resolves(true); // inside the mutex: cancelled while we were uploading
+      cancelled.contract = {
+        ...cancelled.contract,
+        isJobFinalized: finalizedStub,
+      };
+      const recordAnswerActivity = sinon.stub().resolves();
+      const mod = proxyquire("../src/aiAgentOracle", {
+        ...stubs,
+        "./contractUtility": { initializeOracle: sinon.stub().returns(cancelled) },
+        "./answerActivity": { recordAnswerActivity },
+      });
+      mod.initForTest(cancelled);
+
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+
+      expect(
+        recordAnswerActivity.callCount,
+        "a cancelled prompt is not an answer and must not be recorded as one",
+      ).to.equal(0);
+    });
+  });
+
   describe("shouldInitializeConversation (orphaned-conversation backstop)", () => {
     // A conversation whose first prompt was cancelled never had ConversationAdded emitted.
     // The dApp is the primary fix (flags such a resend new); this predicate is the oracle's
