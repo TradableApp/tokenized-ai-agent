@@ -110,4 +110,40 @@ function startHeartbeat({ recordActivity, ctx, collect, intervalMs, logger = con
   };
 }
 
-module.exports = { startHeartbeat, DEFAULT_INTERVAL_MS };
+/**
+ * Assemble the real dependencies and start the chain.
+ *
+ * Separated from `startHeartbeat` so the timer stays a pure, fully injectable unit and the
+ * environment-specific plumbing is the only part that needs the app's singletons.
+ *
+ * THE DATABASE IS THE TRAP HERE. `runtime.db` is plugin-sql's, pointed at the isolated
+ * `oracle_agent`; the Brain's `ctx.db` is the SHARED `senseai` DB where `daily_activity` lives
+ * and where core's daily summary reads. Writing through the former succeeds, looks perfectly
+ * healthy, and lands somewhere core will never look — so the heartbeat would be invisible while
+ * appearing to work. Always the Brain's ctx.
+ */
+async function startOracleHeartbeat(opts = {}) {
+  const { getHandles } = require("./brainContext");
+  const { collectVitals } = require("./oracleVitals");
+  const { logger = console } = opts;
+
+  const handles = await getHandles().catch(() => null);
+
+  // No Brain configured (localnet / e2e) — not an error, and not a reason to crash the oracle.
+  // Same posture as answerActivity: telemetry is optional, answering prompts is not.
+  if (!handles?.brain?.recordActivity || !handles?.ctx) {
+    logger.warn?.("[Heartbeat] Brain not configured — liveness beat disabled.");
+
+    return { stop() {} };
+  }
+
+  return startHeartbeat({
+    recordActivity: handles.brain.recordActivity,
+    ctx: handles.ctx,
+    collect: () => collectVitals(opts),
+    intervalMs: opts.intervalMs,
+    logger,
+  });
+}
+
+module.exports = { startHeartbeat, startOracleHeartbeat, DEFAULT_INTERVAL_MS };

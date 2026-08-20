@@ -61,6 +61,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
 const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
+const { startOracleHeartbeat } = require("./oracleHeartbeat");
 const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
@@ -2624,6 +2625,24 @@ async function start() {
 
   // Start background retry mechanism
   setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
+
+  // Liveness beat. Standalone and entirely off the prompt path — core reads the newest
+  // `kind: "heartbeat"` row and checks its AGE, which is what distinguishes a silent oracle from
+  // a healthy-but-idle one. Awaited only to resolve the Brain handles; the chain itself is
+  // self-rescheduling and unref'd, so it neither blocks boot nor holds the process open.
+  //
+  // Not assigned to anything: nothing in this process stops the oracle short of exit, and the
+  // returned handle exists for tests. Disk is measured where oracle-state.json actually lives —
+  // the volume this process writes to — rather than core's dead PGLITE_DATA_DIR.
+  await startOracleHeartbeat({
+    provider,
+    walletAddress: signer.address,
+    queue,
+    readState: async () => JSON.parse(await fs.readFile(STATE_FILE_PATH, "utf-8")),
+    readFailedJobs: async () => JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8")),
+    fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
+    diskPath: path.dirname(STATE_FILE_PATH),
+  });
 
   // 2. Listening Phase — fire-and-forget; the infinite poll loop never resolves
   pollEvents(latestBlock).catch((err) => {

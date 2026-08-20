@@ -198,3 +198,52 @@ describe("startHeartbeat", () => {
     expect(record.callCount).to.equal(0);
   });
 });
+
+// --- WIRING -------------------------------------------------------------------------------
+//
+// The trap this pins is the one answerActivity's test names first: `runtime.db` is plugin-sql's,
+// pointed at the isolated `oracle_agent`, while the Brain's `ctx.db` is the SHARED `senseai` DB
+// where daily_activity lives and where core's summary reads. Writing through the wrong one
+// succeeds, looks healthy, and lands somewhere core will never look.
+
+describe("startOracleHeartbeat", () => {
+  const deps = () => ({
+    provider: { getBlockNumber: async () => 1, getBalance: async () => 0n },
+    walletAddress: "0xabc",
+    queue: { pending: 0, size: 0 },
+    readState: async () => ({ lastProcessedBlock: 1 }),
+    readFailedJobs: async () => [],
+    fetchAccountInfo: async () => ({ pendingUploadCredits: 1, pendingDownloadCredits: 1 }),
+    diskPath: "/",
+    intervalMs: 1000,
+    logger: { warn() {}, log() {} },
+  });
+
+  function loadWith(handles) {
+    return proxyquire("../src/oracleHeartbeat", {
+      "./brainContext": { getHandles: async () => handles },
+    });
+  }
+
+  it("beats through the SHARED brain ctx, not the oracle_agent runtime db", async () => {
+    const clock = sinon.useFakeTimers();
+    const record = sinon.stub().resolves();
+    const sharedCtx = { db: "SHARED_senseai" };
+    const { startOracleHeartbeat } = loadWith({ brain: { recordActivity: record }, ctx: sharedCtx });
+
+    const hb = await startOracleHeartbeat(deps());
+    await clock.tickAsync(1000);
+    hb.stop();
+    clock.restore();
+
+    expect(record.called).to.equal(true);
+    expect(record.firstCall.args[0]).to.equal(sharedCtx);
+  });
+
+  it("is a no-op when the Brain is not configured (localnet / e2e), not a crash", async () => {
+    const { startOracleHeartbeat } = loadWith(null);
+    const hb = await startOracleHeartbeat(deps());
+    expect(hb).to.have.property("stop").that.is.a("function");
+    hb.stop(); // must not throw
+  });
+});
