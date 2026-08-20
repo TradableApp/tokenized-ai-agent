@@ -27,11 +27,29 @@ describe("providerTally call-site ordering in queryAIModel", () => {
   const source = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf-8");
   const lines = source.split("\n");
   const start = lines.findIndex((l) => l.startsWith("async function queryAIModel"));
-  const end = lines.findIndex((l, i) => i > start && l === "}");
+  // Brace-counting rather than "first unindented }". The loose version happens to work today
+  // only because queryAIModel is top-level and its closing brace is column 0; a refactor that
+  // nests it, or a stray unindented brace inside a template literal, would silently shrink the
+  // scanned range and make this whole file pass by covering nothing.
+  const end = (() => {
+    let depth = 0;
+    for (let i = start; i < lines.length; i += 1) {
+      depth += (lines[i].match(/\{/g) ?? []).length;
+      depth -= (lines[i].match(/\}/g) ?? []).length;
+      if (i > start && depth <= 0) return i;
+    }
+
+    return -1;
+  })();
 
   it("locates the dispatcher (guards against this test silently covering nothing)", () => {
     expect(start).to.be.greaterThan(-1);
     expect(end).to.be.greaterThan(start);
+    // The range must actually contain the instrumentation, or "no offenders" is vacuous.
+    const body = lines.slice(start, end).join("\n");
+    expect(body).to.include("providerTally.recordServed");
+    expect(body).to.include("queryChainGPT");
+    expect(body).to.include("queryDeepSeek");
   });
 
   it("never records a tier on the line before a `return` that still has to await", () => {

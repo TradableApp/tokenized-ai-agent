@@ -76,7 +76,12 @@ function startHeartbeat({ recordActivity, ctx, collect, intervalMs, logger = con
         metadata: vitals,
       });
     } catch (error) {
-      logger.warn?.(`[Heartbeat] Beat failed: ${String(error?.message ?? error)}`);
+      // Stack included, not just the message. `oasis rofl machine logs` is the ONLY debugging
+      // window into a running TEE, and "connection reset" without a frame does not say whether
+      // it came from the RPC, Auto-Drive, or the Postgres write — three different fixes.
+      logger.warn?.(
+        `[Heartbeat] Beat failed: ${String(error?.stack ?? error?.message ?? error)}`,
+      );
     }
   }
 

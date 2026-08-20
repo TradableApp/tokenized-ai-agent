@@ -8,13 +8,19 @@ const os = require("node:os");
  * `oasis rofl machine logs` surfaces warn/error only, so a healthy oracle was indistinguishable
  * from a dead one. These vitals are the payload of the heartbeat that closes that gap.
  *
- * THE ONE INVARIANT: this never throws.
+ * THE INVARIANT: no PROBE can throw out of here.
  *
- * It is called by a background timer whose entire purpose is to prove liveness. An exception
- * escaping here kills the beat, core sees a stale heartbeat, and reports the oracle DEAD — a
- * false alarm manufactured by the monitoring itself, which is worse than no monitoring because
- * it teaches you to ignore the alert. Every probe therefore degrades to `null` INDEPENDENTLY;
- * a broken RPC must not blank the memory figures next to it.
+ * Stated precisely, because "this never throws" would be a lie — the `process`/`os` reads below
+ * are deliberately outside `safe()`, and in principle they can throw. Every probe that touches
+ * the network, the filesystem or the database degrades to `null` INDEPENDENTLY; the in-process
+ * reads do not, on the grounds that if `process.memoryUsage()` is failing, a null in a Slack
+ * field is the least of it and silently nulling would hide a fault in the runtime itself.
+ *
+ * Why it matters: this feeds a background timer whose entire purpose is to prove liveness. An
+ * exception escaping kills the beat, core sees staleness, and reports the oracle DEAD — a false
+ * alarm manufactured by the monitoring, which is worse than none because it teaches you to
+ * ignore the alert. The heartbeat loop wraps this call too, so even the in-process case cannot
+ * stop the chain.
  *
  * Field names deliberately mirror core's `ProcessHealth` so the Slack block reads the same for
  * both bodies.
