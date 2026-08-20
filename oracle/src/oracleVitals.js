@@ -73,12 +73,21 @@ async function probeDisk(diskPath) {
  * @param {Function} [deps.readState] - resolves `{ lastProcessedBlock }` from oracle-state.json
  * @param {Function} [deps.readFailedJobs] - resolves the failed-jobs array
  * @param {Function} [deps.fetchAccountInfo] - Auto-Drive account info (upload/download credits)
+ * @param {object} [deps.providerTally] - AI tier counters (`snapshot()`); see providerTally.js
  * @param {string} [deps.diskPath] - a real path to measure
  * @returns {Promise<object>} vitals, every field either a value or null
  */
 async function collectVitals(deps = {}) {
-  const { provider, walletAddress, queue, readState, readFailedJobs, fetchAccountInfo, diskPath } =
-    deps;
+  const {
+    provider,
+    walletAddress,
+    queue,
+    readState,
+    readFailedJobs,
+    fetchAccountInfo,
+    providerTally,
+    diskPath,
+  } = deps;
 
   // Process vitals come from `process`/`os` and cannot realistically fail. They are collected
   // OUTSIDE `safe()` on purpose: if these ever throw, the snapshot is meaningless anyway, and
@@ -146,6 +155,11 @@ async function collectVitals(deps = {}) {
       typeof accountInfo?.pendingDownloadCredits === "number"
         ? accountInfo.pendingDownloadCredits
         : null,
+
+    // Cumulative per-tier answer counts. Core diffs consecutive beats to get the mix; a sudden
+    // collapse of `elizaos` into `chaingpt` is the signature of the silent Gemini failover that
+    // queryAIModel's comment warns about.
+    providers: typeof providerTally?.snapshot === "function" ? providerTally.snapshot() : null,
   };
 }
 

@@ -62,6 +62,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 // --- Mock Flags (for local E2E testing without external dependencies) ---
 const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
 const { startOracleHeartbeat } = require("./oracleHeartbeat");
+const { providerTally } = require("./providerTally");
 const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
@@ -1210,6 +1211,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     const mockResponse = `[MOCK] I acknowledge your query about "${latestUserMessage.substring(0, 40)}...". This is a deterministic mock response for local testing.`;
     console.log("[Mock AI] Returning deterministic mock response");
+    // MOCK_AI (localnet / e2e). Counted so a mock-mode deploy is unmistakable.
+    providerTally.recordServed("mock");
+
     return asAnswer(mockResponse);
   }
 
@@ -1218,17 +1222,28 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // Direct provider bypass (used in tests and explicit operator config)
   if (aiProvider === "ChainGPT") {
     try {
-      return asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      providerTally.recordServed("chaingpt");
+
+      return answer;
     } catch (err) {
       console.error("[queryAIModel] ChainGPT provider failed.", err.message);
+      // Bypass configured but the provider failed — no answer produced.
+      providerTally.recordServed("none");
+
       return asAnswer("Error: Could not generate a response from the ChainGPT service.");
     }
   }
   if (aiProvider === "DeepSeek") {
     try {
+      providerTally.recordServed("deepseek");
+
       return asAnswer(await queryDeepSeek(conversationHistory));
     } catch (err) {
       console.error("[queryAIModel] DeepSeek provider failed.", err.message);
+      // Bypass configured but the provider failed — no answer produced.
+      providerTally.recordServed("none");
+
       return asAnswer("Error: Could not generate a response from the DeepSeek service.");
     }
   }
@@ -1239,7 +1254,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // 2. Path A: 1st Party Tradable Backend
   if (intent === "TRADABLE") {
     try {
-      return asAnswer(await queryTradableAssistant(conversationHistory, userWallet));
+      const answer = asAnswer(await queryTradableAssistant(conversationHistory, userWallet));
+      providerTally.recordServed("tradable");
+
+      return answer;
     } catch (err) {
       console.warn("[Failover] First-party path failed. Falling back to ElizaOS.");
     }
@@ -1248,7 +1266,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // 3. Path B: 3rd Party ElizaOS (Google Vertex/Gemini via Plugin)
   try {
     // We pass conversationId here to ensure proper room isolation in Eliza
-    return await queryElizaOS(conversationHistory, conversationId, userWallet);
+    const answer = await queryElizaOS(conversationHistory, conversationId, userWallet);
+    providerTally.recordServed("elizaos");
+
+    return answer;
   } catch (err) {
     /* A retired or misspelled GOOGLE_* model id surfaces here, not at startup: Gemini
        404s the generateContent call, queryElizaOS throws, and we fall through to ChainGPT
@@ -1260,6 +1281,8 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     // 4. Failover 1: ChainGPT
     try {
+      providerTally.recordServed("chaingpt");
+
       return asAnswer(await queryChainGPT(conversationHistory, conversationId));
     } catch (err2) {
       console.error(
@@ -1268,9 +1291,16 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
       // 5. Failover 2: Local TEE Model (DeepSeek)
       try {
-        return asAnswer(await queryDeepSeek(conversationHistory));
+        const answer = asAnswer(await queryDeepSeek(conversationHistory));
+        providerTally.recordServed("deepseek");
+
+        return answer;
       } catch (err3) {
         Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
+        // Counted, not skipped: zeros across every tier would be indistinguishable from
+        // "nobody asked anything". A total outage must not look like a quiet hour.
+        providerTally.recordServed("none");
+
         return asAnswer(
           "Error: Could not generate a response. All AI providers are currently unavailable.",
         );

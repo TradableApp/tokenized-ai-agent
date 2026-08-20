@@ -65,6 +65,20 @@ describe("collectVitals", () => {
     expect(v.autoDriveDownloadCredits).to.equal(104857600);
   });
 
+  it("carries the cumulative AI tier mix, and null when no tally is injected", async () => {
+    const { collectVitals } = load();
+    const deps = OK_DEPS();
+    deps.providerTally = { snapshot: () => ({ elizaos: 40, chaingpt: 2, none: 0 }) };
+
+    const withTally = await collectVitals(deps);
+    // The signature of the silent Gemini failover is elizaos collapsing into chaingpt, so the
+    // per-tier split has to survive into the heartbeat rather than being summed away.
+    expect(withTally.providers).to.deep.equal({ elizaos: 40, chaingpt: 2, none: 0 });
+
+    const withoutTally = await collectVitals(OK_DEPS());
+    expect(withoutTally.providers).to.equal(null);
+  });
+
   it("never throws when EVERY probe fails, and reports nulls instead", async () => {
     const { collectVitals } = load();
     const boom = () => {

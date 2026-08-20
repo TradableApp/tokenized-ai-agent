@@ -125,6 +125,7 @@ function startHeartbeat({ recordActivity, ctx, collect, intervalMs, logger = con
 async function startOracleHeartbeat(opts = {}) {
   const { getHandles } = require("./brainContext");
   const { collectVitals } = require("./oracleVitals");
+  const { providerTally } = require("./providerTally");
   const { logger = console } = opts;
 
   const handles = await getHandles().catch(() => null);
@@ -140,7 +141,7 @@ async function startOracleHeartbeat(opts = {}) {
   return startHeartbeat({
     recordActivity: handles.brain.recordActivity,
     ctx: handles.ctx,
-    collect: () => collectVitals(opts),
+    collect: () => collectVitals({ providerTally, ...opts }),
     intervalMs: opts.intervalMs,
     logger,
   });
