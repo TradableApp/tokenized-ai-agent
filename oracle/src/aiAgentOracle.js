@@ -1236,9 +1236,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   }
   if (aiProvider === "DeepSeek") {
     try {
+      const answer = asAnswer(await queryDeepSeek(conversationHistory));
+      // AFTER the await, never before: recording first means a throw is counted as both a
+      // deepseek success and a `none` failure from the catch below.
       providerTally.recordServed("deepseek");
 
-      return asAnswer(await queryDeepSeek(conversationHistory));
+      return answer;
     } catch (err) {
       console.error("[queryAIModel] DeepSeek provider failed.", err.message);
       // Bypass configured but the provider failed — no answer produced.
@@ -1281,9 +1284,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     // 4. Failover 1: ChainGPT
     try {
+      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
+      // success AND as whatever the inner catch then records (deepseek or none).
       providerTally.recordServed("chaingpt");
 
-      return asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      return answer;
     } catch (err2) {
       console.error(
         "[Failover] All external providers failed. Executing final local TEE fallback.",

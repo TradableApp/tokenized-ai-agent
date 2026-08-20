@@ -22,7 +22,11 @@ const { randomUUID } = require("node:crypto");
 const DEFAULT_INTERVAL_MS = 900000;
 
 function resolveIntervalMs(explicit) {
-  if (typeof explicit === "number") return explicit;
+  // `Number.isFinite`, not `typeof === "number"`: NaN IS a number in JS, so a typeof check
+  // returns NaN early and skips the env fallback entirely. The caller's guard catches it and
+  // disables the beat, but silently — a caller passing NaN deserves the env default, not a
+  // dead heartbeat.
+  if (Number.isFinite(explicit)) return explicit;
   const raw = Number.parseInt(process.env.ORACLE_HEARTBEAT_INTERVAL_MS ?? "", 10);
 
   return Number.isFinite(raw) ? raw : DEFAULT_INTERVAL_MS;
@@ -128,12 +132,22 @@ async function startOracleHeartbeat(opts = {}) {
   const { providerTally } = require("./providerTally");
   const { logger = console } = opts;
 
-  const handles = await getHandles().catch(() => null);
+  // Distinguish "no Brain configured" from "Brain FAILED to initialise". Both end with the beat
+  // disabled, but only one is normal: a credential error or a network timeout during Brain setup
+  // would otherwise log "not configured" and look like an intentional localnet run, hiding a real
+  // fault behind a reassuring message.
+  const handles = await getHandles().catch((error) => {
+    logger.warn?.(
+      `[Heartbeat] Brain handles failed to resolve: ${String(error?.message ?? error)}`,
+    );
+
+    return null;
+  });
 
   // No Brain configured (localnet / e2e) — not an error, and not a reason to crash the oracle.
   // Same posture as answerActivity: telemetry is optional, answering prompts is not.
   if (!handles?.brain?.recordActivity || !handles?.ctx) {
-    logger.warn?.("[Heartbeat] Brain not configured — liveness beat disabled.");
+    logger.warn?.("[Heartbeat] Brain unavailable — liveness beat disabled.");
 
     return { stop() {} };
   }
