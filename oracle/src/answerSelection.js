@@ -9,9 +9,12 @@
  * into an immutable MessageFile the user had already paid for.
  *
  * sense-ai-core avoids this with `utils/actionChainHelper.ts` — action results feed a
- * synthesis pass, so tool output is never itself user-facing. Porting that wholesale is
- * the rest of this task; this module is the narrow, testable part: given everything the
- * run emitted, decide what a user may be charged for.
+ * synthesis pass, so tool output is never itself user-facing. That helper is now ported
+ * (`plugins/plugin-senseai/src/utils/actionChainHelper.ts`, imported by both analytical
+ * actions), so the two mechanisms are complementary rather than pending: the helper stops
+ * an action's raw output from BECOMING user-facing text, and this module decides which of
+ * the emissions a user may be charged for if one slips through anyway. Defence in depth —
+ * `CALL_MCP_TOOL` is an ElizaOS built-in and does not route through our helper.
  *
  * The rule is deliberately "last SUBSTANTIVE emission", not "first" and not "last":
  *   - last, and a tool payload wins (the bug);

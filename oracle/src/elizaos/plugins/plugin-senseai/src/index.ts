@@ -32,6 +32,20 @@ export type { BrainAccessor } from "./services/brain";
  * - **Access control.** The oracle is $ABLE/escrow-bounded, enforced on-chain by
  *   `EVMAIAgentEscrow` before a prompt is ever emitted. It was never the plugin's job, and
  *   the deleted accessProvider was a Telegram quota gate, not an escrow gate.
+ * - **accessProvider's INSTRUCTIONS, not just its gating.** Re-audited 2026-08-20, because
+ *   "it only gated access" is the easy reading and it is incomplete: the provider also
+ *   injects behavioural directives, including a literal `You MUST execute the
+ *   "CALL_MCP_TOOL" action now`. Losing that would matter — it is the same action that
+ *   produced the fenced-TypeScript answer. It does not, because every directive is gated on
+ *   an input shape this body cannot receive: the MCP ones fire only on Telegram button
+ *   callbacks (`action:get_btc_price`, `action:market_overview`), the menu ones on a menu
+ *   keyword, `ORGANIC INTERJECTION` on the TG eavesdropper's server-set `isOrganic` flag,
+ *   and the persona block on `source === "twitter"`. Core's own comment is explicit that
+ *   "Free-text messages NEVER reach this branch". On the free-text path — the oracle's ONLY
+ *   input, an `encryptedPayload` validated by `payloadValidator.js` — the provider returns
+ *   rate-limit bookkeeping plus "Proceed with answering the user's current query." Nothing
+ *   behavioural is lost, and re-adding the provider to carry that one content-free sentence
+ *   would invent divergence rather than remove it.
  * - **Analysis.** The old `getSentimentAction` returned hardcoded mock data AND was
  *   unreachable — its only caller was the Telegram menu-callback handler. So the Brain-backed
  *   replacement must be registered here as a FIRST-CLASS action, not behind a menu.
@@ -105,6 +119,31 @@ const senseaiPlugin: Plugin = {
   // Sequenced behind `recordActivity` (CU-86d3z0r81, PR C3) deliberately: the summary reports on
   // the `daily_activity` table this body does not yet write to, so porting the reporter before
   // the recorder would ship a summary that reports the oracle as idle.
+  //
+  // Now tracked as CU-86d438hwt — a deferral recorded only in a comment is a deferral that
+  // gets forgotten.
+  //
+  // NOT PORTED: a `messageHandlerTemplate` override — and this one is recorded because the
+  // CU-86d3z0r81 description ASKS for it, so the next reader will otherwise go looking.
+  //
+  // That description says core "prevents this with `utils/actionChainHelper.ts` plus a
+  // `messageHandlerTemplate` override that constrains the action-selection pass". Verified
+  // 2026-08-20: no such override exists on core's answer path. Core's ONLY
+  // `messageHandlerTemplate` is in `plugin-twitter-senseai/src/interactions.ts`, and it is an
+  // X reply-style template ("{{agentName}} is replying to you", no URLs, no hashtags, under
+  // 240 chars) — delivery styling, not action selection, and `plugin-twitter-senseai` is on
+  // the SKIP list. Core's Telegram and senseai paths use the ElizaOS DEFAULT template, so
+  // parity means this body uses it too. Porting the X template would CREATE divergence.
+  //
+  // The fenced-TypeScript failure was never caused by the template. Core registers the same
+  // `@elizaos/plugin-mcp` against the same CoinGecko server and does not produce it, because
+  // core had a sanctioned action for the question and this body did not: deprived of one, the
+  // model reached for `CALL_MCP_TOOL`. Both halves of the real fix are in place —
+  // GET_NEWS_DETAILS registered above, and `handleChainSynthesis` keeping raw action output
+  // out of the answer. The behavioural guard against a regression is `answerQuality.js`,
+  // which fails the smoke on a code-fenced or apology-shaped answer; being behavioural, it
+  // survives an ElizaOS upgrade changing its default template, which a copied override
+  // would not.
   services: [BrainService],
   evaluators: [],
 };
