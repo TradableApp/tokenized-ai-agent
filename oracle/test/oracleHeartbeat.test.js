@@ -219,9 +219,15 @@ describe("startOracleHeartbeat", () => {
     logger: { warn() {}, log() {} },
   });
 
+  // The vitals collector is STUBBED here on purpose. This describe tests WIRING — that the beat
+  // goes through the Brain's shared ctx — and the real collector performs actual disk I/O via
+  // statfs. Under sinon's fake timers that real async work is not guaranteed to settle inside a
+  // tick, which passed locally and failed on CI: a timing-dependent test masquerading as a
+  // wiring test. collectVitals has its own suite; it does not need exercising again here.
   function loadWith(handles) {
     return proxyquire("../src/oracleHeartbeat", {
       "./brainContext": { getHandles: async () => handles },
+      "./oracleVitals": { collectVitals: async () => ({ stubbed: true }) },
     });
   }
 
