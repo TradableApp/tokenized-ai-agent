@@ -61,6 +61,8 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
 const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
+const { startOracleHeartbeat } = require("./oracleHeartbeat");
+const { providerTally } = require("./providerTally");
 const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
@@ -1209,6 +1211,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     const mockResponse = `[MOCK] I acknowledge your query about "${latestUserMessage.substring(0, 40)}...". This is a deterministic mock response for local testing.`;
     console.log("[Mock AI] Returning deterministic mock response");
+    // MOCK_AI (localnet / e2e). Counted so a mock-mode deploy is unmistakable.
+    providerTally.recordServed("mock");
+
     return asAnswer(mockResponse);
   }
 
@@ -1217,17 +1222,31 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // Direct provider bypass (used in tests and explicit operator config)
   if (aiProvider === "ChainGPT") {
     try {
-      return asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      providerTally.recordServed("chaingpt");
+
+      return answer;
     } catch (err) {
       console.error("[queryAIModel] ChainGPT provider failed.", err.message);
+      // Bypass configured but the provider failed — no answer produced.
+      providerTally.recordServed("none");
+
       return asAnswer("Error: Could not generate a response from the ChainGPT service.");
     }
   }
   if (aiProvider === "DeepSeek") {
     try {
-      return asAnswer(await queryDeepSeek(conversationHistory));
+      const answer = asAnswer(await queryDeepSeek(conversationHistory));
+      // AFTER the await, never before: recording first means a throw is counted as both a
+      // deepseek success and a `none` failure from the catch below.
+      providerTally.recordServed("deepseek");
+
+      return answer;
     } catch (err) {
       console.error("[queryAIModel] DeepSeek provider failed.", err.message);
+      // Bypass configured but the provider failed — no answer produced.
+      providerTally.recordServed("none");
+
       return asAnswer("Error: Could not generate a response from the DeepSeek service.");
     }
   }
@@ -1238,7 +1257,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // 2. Path A: 1st Party Tradable Backend
   if (intent === "TRADABLE") {
     try {
-      return asAnswer(await queryTradableAssistant(conversationHistory, userWallet));
+      const answer = asAnswer(await queryTradableAssistant(conversationHistory, userWallet));
+      providerTally.recordServed("tradable");
+
+      return answer;
     } catch (err) {
       console.warn("[Failover] First-party path failed. Falling back to ElizaOS.");
     }
@@ -1247,7 +1269,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
   // 3. Path B: 3rd Party ElizaOS (Google Vertex/Gemini via Plugin)
   try {
     // We pass conversationId here to ensure proper room isolation in Eliza
-    return await queryElizaOS(conversationHistory, conversationId, userWallet);
+    const answer = await queryElizaOS(conversationHistory, conversationId, userWallet);
+    providerTally.recordServed("elizaos");
+
+    return answer;
   } catch (err) {
     /* A retired or misspelled GOOGLE_* model id surfaces here, not at startup: Gemini
        404s the generateContent call, queryElizaOS throws, and we fall through to ChainGPT
@@ -1259,7 +1284,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     // 4. Failover 1: ChainGPT
     try {
-      return asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
+      // success AND as whatever the inner catch then records (deepseek or none).
+      providerTally.recordServed("chaingpt");
+
+      return answer;
     } catch (err2) {
       console.error(
         "[Failover] All external providers failed. Executing final local TEE fallback.",
@@ -1267,9 +1297,16 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
       // 5. Failover 2: Local TEE Model (DeepSeek)
       try {
-        return asAnswer(await queryDeepSeek(conversationHistory));
+        const answer = asAnswer(await queryDeepSeek(conversationHistory));
+        providerTally.recordServed("deepseek");
+
+        return answer;
       } catch (err3) {
         Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
+        // Counted, not skipped: zeros across every tier would be indistinguishable from
+        // "nobody asked anything". A total outage must not look like a quiet hour.
+        providerTally.recordServed("none");
+
         return asAnswer(
           "Error: Could not generate a response. All AI providers are currently unavailable.",
         );
@@ -2624,6 +2661,24 @@ async function start() {
 
   // Start background retry mechanism
   setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
+
+  // Liveness beat. Standalone and entirely off the prompt path — core reads the newest
+  // `kind: "heartbeat"` row and checks its AGE, which is what distinguishes a silent oracle from
+  // a healthy-but-idle one. Awaited only to resolve the Brain handles; the chain itself is
+  // self-rescheduling and unref'd, so it neither blocks boot nor holds the process open.
+  //
+  // Not assigned to anything: nothing in this process stops the oracle short of exit, and the
+  // returned handle exists for tests. Disk is measured where oracle-state.json actually lives —
+  // the volume this process writes to — rather than core's dead PGLITE_DATA_DIR.
+  await startOracleHeartbeat({
+    provider,
+    walletAddress: signer.address,
+    queue,
+    readState: async () => JSON.parse(await fs.readFile(STATE_FILE_PATH, "utf-8")),
+    readFailedJobs: async () => JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8")),
+    fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
+    diskPath: path.dirname(STATE_FILE_PATH),
+  });
 
   // 2. Listening Phase — fire-and-forget; the infinite poll loop never resolves
   pollEvents(latestBlock).catch((err) => {

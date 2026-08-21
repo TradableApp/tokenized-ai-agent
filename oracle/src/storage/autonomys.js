@@ -331,4 +331,8 @@ module.exports = {
   queryTransactionByTags,
   listMyFiles,
   checkAutoDriveCredits,
+  // Exported for the heartbeat's vitals snapshot, which needs the credit figures as DATA.
+  // `checkAutoDriveCredits` is the wrong call there: it logs and fires `sendAlert` as side
+  // effects, so sampling it every beat would turn a low-credit warning into a repeating alarm.
+  fetchAccountInfo,
 };

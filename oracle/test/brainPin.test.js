@@ -42,7 +42,7 @@ const { expect } = require("chai");
 //
 // See CU-86d408nb4 for making this class of drift CI-visible rather than a review step, which is
 // the limitation the scope note above describes.
-const EXPECTED_BRAIN_SHA = "1b908f861df73c1e3fb7af339c40ed57d7eda53a";
+const EXPECTED_BRAIN_SHA = "2543a51acffafb3871ad8134f25fc2241b711df5";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
