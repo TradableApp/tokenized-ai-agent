@@ -76,6 +76,16 @@ const ESCROW_ABI = [
   "function spendingLimits(address) view returns (uint256 allowance, uint256 spent, uint256 expiresAt)",
   "function setSpendingLimit(uint256 allowance, uint256 expiresAt)",
   "function initiatePrompt(uint256 conversationId, bytes encryptedPayload, bytes roflEncryptedKey)",
+  // Custom errors. ethers can only NAME a revert it holds the signature for — without these a
+  // failure prints the bare selector (`0x26575023` cost a manual 4-byte lookup during the
+  // 2026-08-22 deploy). Cheap to carry, and they turn every escrow revert into a readable cause.
+  "error SpendingLimitExpired()",
+  "error NoActiveSpendingLimit()",
+  "error InsufficientSpendingLimitAllowance()",
+  "error ZeroSpendingLimit()",
+  "error ExpirationInThePast()",
+  "error HasPendingPrompts()",
+  "error NotPromptOwner()",
 ];
 const AGENT_ABI = [
   "event PromptSubmitted(address indexed user, uint256 indexed conversationId, uint256 indexed promptMessageId, uint256 answerMessageId, bytes encryptedPayload, bytes roflEncryptedKey)",
@@ -156,6 +166,61 @@ async function fetchEncrypted(cid) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
 
+/**
+ * Make sure the wallet has a spending limit that covers one prompt, and that the chain will
+ * actually SHOW it to the next call.
+ *
+ * Awaiting the receipt is not enough. `.wait()` resolves on one confirmation from whichever node
+ * in Base Sepolia's load-balanced pool served the request; ethers then runs `eth_estimateGas` for
+ * `initiatePrompt`, which can land on a different node a block or two behind that still sees no
+ * limit — and the estimate reverts with `SpendingLimitExpired()`. Exactly this failed the
+ * 2026-08-22 smoke run and passed on a plain retry, which is the signature of a read race rather
+ * than a bad write.
+ *
+ * So: write, then re-read until the state is visible, and only then let the caller submit.
+ *
+ * @returns {Promise<object>} the live plan as last read
+ */
+async function ensurePlanActive({
+  escrow,
+  address,
+  capped,
+  fee,
+  now,
+  sleep,
+  log = () => {},
+  fmt = (v) => String(v),
+  confirmAttempts = 10,
+  confirmDelayMs = 2000,
+}) {
+  const isLive = (p) => p.allowance - p.spent >= fee && Number(p.expiresAt) > now;
+
+  const plan = await escrow.spendingLimits(address);
+  if (isLive(plan)) {
+    log(`plan already active (allowance=${fmt(plan.allowance)}, spent=${fmt(plan.spent)})`);
+    return plan;
+  }
+
+  log(`setSpendingLimit(${fmt(capped)}, +1d)...`);
+  await (await escrow.setSpendingLimit(capped, now + 86400)).wait();
+
+  // Confirm READABILITY, not just inclusion. Re-read only — never re-send, or a slow node turns
+  // into duplicate transactions.
+  for (let i = 0; i < confirmAttempts; i++) {
+    const fresh = await escrow.spendingLimits(address);
+    if (isLive(fresh)) {
+      if (i > 0) log(`plan visible after ${i + 1} read(s) (RPC lag)`);
+      return fresh;
+    }
+    await sleep(confirmDelayMs);
+  }
+
+  throw new Error(
+    `spending limit was set but is still not readable after ${confirmAttempts} attempts — ` +
+      `the RPC pool is lagging badly; re-run in a moment`,
+  );
+}
+
 async function main() {
   if (!PRIVATE_KEY) throw new Error("SMOKE_PRIVATE_KEY is required");
   if (!ORACLE_PUBLIC_KEY)
@@ -213,15 +278,16 @@ async function main() {
     log(`approve ${fmt(capped)} ${sym} → escrow...`);
     await (await token.approve(ESCROW_ADDRESS, capped)).wait();
   }
-  const plan = await escrow.spendingLimits(wallet.address);
-  const now = Math.floor(Date.now() / 1000);
-  const planLive = plan.allowance - plan.spent >= fee && Number(plan.expiresAt) > now;
-  if (!planLive) {
-    log(`setSpendingLimit(${fmt(capped)}, +1d)...`);
-    await (await escrow.setSpendingLimit(capped, now + 86400)).wait();
-  } else {
-    log(`plan already active (allowance=${fmt(plan.allowance)}, spent=${fmt(plan.spent)})`);
-  }
+  await ensurePlanActive({
+    escrow,
+    address: wallet.address,
+    capped,
+    fee,
+    now: Math.floor(Date.now() / 1000),
+    sleep,
+    log,
+    fmt,
+  });
 
   // 3. Encrypt payload + session key (random one-shot session key; the oracle
   //    recovers it from roflEncryptedKey via ECIES, then encrypts the answer with it)
@@ -352,7 +418,13 @@ async function main() {
   log(`\n✅ SMOKE PASS — deployed oracle answered with Brain-enriched reasoning + sources.`);
 }
 
-main().catch((e) => {
-  console.error(`\n❌ SMOKE ERROR: ${e?.stack || e}`);
-  process.exit(1);
-});
+// Only run when executed directly — `require()`ing this file (the unit tests do) must not fire
+// a live smoke run against Base Sepolia.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(`\n❌ SMOKE ERROR: ${e?.stack || e}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { ensurePlanActive, ESCROW_ABI, AGENT_ABI, ERC20_ABI };
