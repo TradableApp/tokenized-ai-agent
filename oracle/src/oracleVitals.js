@@ -76,7 +76,10 @@ async function probeDisk(diskPath) {
  * @param {object} [deps.provider] - ethers provider (chain head + wallet balance)
  * @param {string} [deps.walletAddress] - the oracle signer that pays gas to submit answers
  * @param {object} [deps.queue] - the p-queue instance (`pending` / `size`)
- * @param {Function} [deps.readState] - resolves `{ lastProcessedBlock }` from oracle-state.json
+ * @param {Function} [deps.getLastProcessedBlock] - returns the IN-MEMORY chain cursor.
+ *   Deliberately not a file read: the poll loop rewrites oracle-state.json every few seconds
+ *   with fs.writeFile, which truncates first, so a read landing in that window returns "" and
+ *   the field silently blanks. Seen in production 2026-08-22 — beat 1 null, beat 2 fine.
  * @param {Function} [deps.readFailedJobs] - resolves the failed-jobs array
  * @param {Function} [deps.fetchAccountInfo] - Auto-Drive account info (upload/download credits)
  * @param {object} [deps.providerTally] - AI tier counters (`snapshot()`); see providerTally.js
@@ -88,7 +91,7 @@ async function collectVitals(deps = {}) {
     provider,
     walletAddress,
     queue,
-    readState,
+    getLastProcessedBlock,
     readFailedJobs,
     fetchAccountInfo,
     providerTally,
@@ -106,17 +109,24 @@ async function collectVitals(deps = {}) {
 
   // Probes run concurrently — a slow RPC should not serialise behind a slow disk when the whole
   // snapshot is meant to be a cheap periodic sample.
-  const [chainHead, walletBalanceWei, state, failedJobs, accountInfo, disk] = await Promise.all([
+  const [chainHead, walletBalanceWei, failedJobs, accountInfo, disk] = await Promise.all([
     safe(() => (provider ? provider.getBlockNumber() : null)),
     safe(() => (provider && walletAddress ? provider.getBalance(walletAddress) : null)),
-    safe(() => (readState ? readState() : null)),
     safe(() => (readFailedJobs ? readFailedJobs() : null)),
     safe(() => (fetchAccountInfo ? fetchAccountInfo() : null)),
     safe(() => (diskPath ? probeDisk(diskPath) : null)),
   ]);
 
-  const lastProcessedBlock =
-    typeof state?.lastProcessedBlock === "number" ? state.lastProcessedBlock : null;
+  // Synchronous in-memory read — nothing to race. Still guarded, because the getter is supplied
+  // by the caller and this collector's contract is that it NEVER throws: an exception escaping
+  // here kills the beat, core sees staleness, and a healthy oracle gets reported dead.
+  let cursor = null;
+  try {
+    if (typeof getLastProcessedBlock === "function") cursor = getLastProcessedBlock();
+  } catch {
+    cursor = null;
+  }
+  const lastProcessedBlock = typeof cursor === "number" ? cursor : null;
 
   // Null when EITHER side is unknown, rather than substituting 0 for the missing one. On a fresh
   // deploy the cursor is unwritten, and `chainHead - 0` reads as catastrophically behind — a

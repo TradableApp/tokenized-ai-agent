@@ -20,10 +20,14 @@ describe("chain cursor persistence", () => {
   const source = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf-8");
 
   it("routes every cursor write through the single helper", () => {
+    // The helper itself is the one legitimate writer; everything else must go through it.
+    const helperStart = source.indexOf("async function persistCursor(");
+    const helperEnd = source.indexOf("\n}", helperStart);
     const raw = source
       .split("\n")
-      .map((l, i) => [i + 1, l])
-      .filter(([, l]) => /fs\.writeFile\(\s*STATE_FILE_PATH/.test(l));
+      .map((l, i) => [i + 1, l, source.split("\n").slice(0, i).join("\n").length])
+      .filter(([, l]) => /fs\.writeFile\(\s*STATE_FILE_PATH/.test(l))
+      .filter(([, , offset]) => offset < helperStart || offset > helperEnd);
 
     expect(
       raw.map(([n, l]) => `L${n}: ${l.trim()}`),

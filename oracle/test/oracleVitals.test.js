@@ -22,7 +22,7 @@ const OK_DEPS = () => ({
   },
   walletAddress: "0x0DECafC0ffee00000000000000000000000009a12",
   queue: { pending: 2, size: 7 },
-  readState: async () => ({ lastProcessedBlock: 45714300 }),
+  getLastProcessedBlock: () => 45714300,
   readFailedJobs: async () => [{ id: 1 }, { id: 2 }, { id: 3 }],
   fetchAccountInfo: async () => ({
     pendingUploadCredits: 52428800,
@@ -90,7 +90,6 @@ describe("collectVitals", () => {
     // Atomic writes would only narrow the window. Not touching the filesystem removes it.
     const { collectVitals } = load();
     const deps = OK_DEPS();
-    delete deps.readState;
     deps.getLastProcessedBlock = () => 45714300;
 
     const v = await collectVitals(deps);
@@ -101,7 +100,6 @@ describe("collectVitals", () => {
   it("still reports null lag when the in-memory cursor is not set yet", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();
-    delete deps.readState;
     deps.getLastProcessedBlock = () => null;
 
     const v = await collectVitals(deps);
@@ -118,7 +116,7 @@ describe("collectVitals", () => {
       provider: { getBlockNumber: boom, getBalance: boom },
       walletAddress: "0xdead",
       queue: null,
-      readState: boom,
+      getLastProcessedBlock: boom,
       readFailedJobs: boom,
       fetchAccountInfo: boom,
       diskPath: "/definitely/not/a/real/path/xyzzy",
@@ -157,7 +155,7 @@ describe("collectVitals", () => {
   it("returns a null blockLag rather than a bogus number when either side is unknown", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();
-    deps.readState = async () => ({}); // no lastProcessedBlock recorded yet (fresh deploy)
+    deps.getLastProcessedBlock = () => null; // cursor not persisted yet (fresh deploy)
 
     const v = await collectVitals(deps);
 
@@ -171,7 +169,7 @@ describe("collectVitals", () => {
   it("never reports a negative blockLag when the cursor is ahead of a lagging RPC read", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();
-    deps.readState = async () => ({ lastProcessedBlock: 45714330 }); // ahead of head
+    deps.getLastProcessedBlock = () => 45714330; // ahead of head
     const v = await collectVitals(deps);
     // Load-balanced RPCs legitimately serve a slightly stale head. A negative lag is noise,
     // not a signal — clamp it, but do not pretend the cursor is unknown.
