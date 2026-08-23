@@ -2537,12 +2537,6 @@ async function pollEvents(startBlock) {
   let currentBlock = startBlock;
   while (true) {
     try {
-      // Seed the in-memory cursor from what we just read, so the FIRST heartbeat has a value rather
-  // than reporting null until the poll loop happens to persist once.
-  if (typeof state.lastProcessedBlock === "number" && state.lastProcessedBlock > 0) {
-    await persistCursor(state.lastProcessedBlock);
-  }
-
   const latestBlock = await provider.getBlockNumber();
 
       // Reorg/revert reconciliation: if the head has dropped below our cursor (a

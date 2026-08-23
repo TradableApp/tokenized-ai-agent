@@ -39,4 +39,25 @@ describe("chain cursor persistence", () => {
     expect(source).to.match(/function persistCursor\(/);
     expect(source).to.include("getLastProcessedBlock");
   });
+
+  it("does not read start()'s `state` from pollEvents — it is not in scope there", () => {
+    // A seed block landed inside pollEvents' `while (true)` during review. Two faults in one:
+    // `state` is a start()-local, so the reference is a ReferenceError that crashes the oracle on
+    // its FIRST poll; and had it been in scope it would have reset the cursor BACKWARD to the
+    // boot-time block on every cycle, making the heartbeat report a false giant lag — the exact
+    // alarm this file exists to prevent. Neither unit tests nor CI catch it, because pollEvents
+    // needs a live chain to run at all.
+    //
+    // start() already calls persistCursor(latestBlock) before starting the heartbeat, so the
+    // first beat has a value without any seeding inside the loop.
+    const source = fs.readFileSync(require.resolve("../src/aiAgentOracle"), "utf8");
+    const start = source.indexOf("async function pollEvents(");
+    expect(start, "pollEvents should exist").to.be.greaterThan(-1);
+    const end = source.indexOf("\nasync function ", start + 1);
+    const body = source.slice(start, end === -1 ? undefined : end);
+
+    expect(body, "pollEvents must not reference start()'s local `state`").to.not.match(
+      /\bstate\.lastProcessedBlock\b/,
+    );
+  });
 });

@@ -16,7 +16,18 @@ const fs = require("fs");
 // oracleVitals degrades per-probe instead of per-snapshot. The oracle's own retry loop already
 // treats a missing or corrupt file as `[]` — the heartbeat just wasn't using the same reader.
 
-const noop = () => {};
+/**
+ * A real ENOENT, matching what `fs.readFile` throws for a file that was never created.
+ *
+ * This must be a genuine Error with `code: "ENOENT"`. An earlier revision lost this factory, and
+ * because `readFailedJobsList` catches everything, the resulting `ReferenceError: enoent is not
+ * defined` was swallowed and the test passed VACUOUSLY — asserting "returns [] when something
+ * throws" rather than "returns [] when the file is absent". Caught in review on PR #76.
+ */
+const enoent = () =>
+  Object.assign(new Error("ENOENT: no such file or directory, open 'failed-jobs.json'"), {
+    code: "ENOENT",
+  });
 
 describe("heartbeat failed-jobs probe", () => {
   // aiAgentOracle builds a signer at module load, so the placeholder key in .env.oracle.example
