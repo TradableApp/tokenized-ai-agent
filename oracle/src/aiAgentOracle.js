@@ -70,6 +70,29 @@ const FAILED_JOBS_FILE_PATH = path.resolve(__dirname, "../failed-jobs.json");
  */
 let lastProcessedBlockInMemory = null;
 
+/**
+ * Read `failed-jobs.json`, tolerating the file being absent or malformed.
+ *
+ * It is only written once a job has actually FAILED, so on a healthy oracle it does not exist.
+ * The retry loop has always treated that as `[]`; the heartbeat originally used a bare
+ * `JSON.parse(await fs.readFile(...))`, so ENOENT threw, the vitals `safe()` degraded it, and
+ * `failedJobsCount` reported null on all three beats of the 2026-08-22 Base-testnet run — a
+ * perfectly healthy oracle reading as "unknown" for the one number that should say a confident 0.
+ * "No failures" must never look the same as "cannot tell".
+ *
+ * `readFile` is injectable so the behaviour can be tested without touching the disk.
+ *
+ * @returns {Promise<Array>} the failed jobs, or [] if the file is missing/corrupt/not an array
+ */
+async function readFailedJobsList(readFile = () => fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8")) {
+  try {
+    const parsed = JSON.parse(await readFile());
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Current cursor, or null before the first persist. Read by the heartbeat's vitals collector. */
 function getLastProcessedBlock() {
   return lastProcessedBlockInMemory;
@@ -2705,7 +2728,7 @@ async function start() {
     walletAddress: signer.address,
     queue,
     getLastProcessedBlock,
-    readFailedJobs: async () => JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8")),
+    readFailedJobs: readFailedJobsList,
     fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
     diskPath: path.dirname(STATE_FILE_PATH),
   });
@@ -2718,6 +2741,7 @@ async function start() {
 }
 
 module.exports = {
+  readFailedJobsList,
   start,
   queryElizaOS,
   initForTest,

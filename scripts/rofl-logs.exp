@@ -1,0 +1,66 @@
+#!/usr/bin/env expect -f
+# Capture `oasis rofl machine logs` NON-INTERACTIVELY, feeding the passphrase from the macOS
+# Keychain, so an agent (or a cron canary) can read TEE logs without a human at the keyboard.
+#
+#   usage:  expect scripts/rofl-logs.exp [--deployment base-testnet] | tee /tmp/boot.log
+#           bun run logs:base-testnet > /tmp/boot.log
+#
+# Prerequisite (one-off, per machine):
+#   security add-generic-password -s oasis-passphrase -a "$USER" -w
+#
+# TWO NON-OBVIOUS THINGS, recorded because both cost real time:
+#
+# 1. Tcl does NOT honour an inline `(?i)` flag. `-re "(?i)passphrase"` silently searches for the
+#    literal lowercase text and never matches the actual `Passphrase:` prompt. Five earlier
+#    attempts concluded from this that `oasis` "cannot be automated" — it can. Use `-nocase -re`.
+#
+# 2. `oasis` probes the terminal with a DSR cursor query (ESC[6n) and BLOCKS until something
+#    answers, so that branch is required. It must come AFTER the passphrase branch: expect tries
+#    branches in order against the same buffer, and matching the probe first consumes the prompt
+#    text along with it.
+#
+# The passphrase is only ever held in a local variable and sent to the child; it is never echoed
+# (`spawn -noecho`, and the child prompt does not echo input).
+
+set timeout 600
+set stty_init "rows 50 columns 200"
+
+set svc "oasis-passphrase"
+if {[info exists env(OASIS_PASSPHRASE_SERVICE)]} { set svc $env(OASIS_PASSPHRASE_SERVICE) }
+
+if {[catch {exec security find-generic-password -s $svc -a $env(USER) -w} pass]} {
+    send_user "error: no Keychain item '$svc' for user $env(USER).\n"
+    send_user "       add it with: security add-generic-password -s $svc -a \"\$USER\" -w\n"
+    exit 2
+}
+
+set cmdargs $argv
+if {[llength $cmdargs] == 0} { set cmdargs {--deployment base-testnet} }
+
+spawn -noecho oasis rofl machine logs {*}$cmdargs
+
+set sent 0
+expect {
+    -nocase -re "passphrase" {
+        # Answer once. Re-sending on a repeat prompt would mean the first was rejected, and
+        # spraying a passphrase at a failing prompt risks tripping a retry limit.
+        if {$sent == 0} {
+            send -- "$pass\r"
+            set sent 1
+        }
+        exp_continue
+    }
+    -re "\x1b\\\[6n" {
+        send -- "\x1b\[50;200R"
+        exp_continue
+    }
+    timeout {
+        send_user "\n\[rofl-logs] TIMEOUT after ${timeout}s (passphrase sent: $sent)\n"
+        exit 1
+    }
+    eof {}
+}
+
+# Surface the child's exit status rather than always reporting success.
+catch wait result
+exit [lindex $result 3]

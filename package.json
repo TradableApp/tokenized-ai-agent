@@ -52,7 +52,9 @@
     "rofl:build:base-mainnet": "bash scripts/rofl-preflight.sh compose.base-mainnet.yaml && cp compose.base-mainnet.yaml compose.yaml && oasis rofl build --deployment base-mainnet",
     "rofl:update:base-mainnet": "bun run rofl:set:base-mainnet && oasis rofl update --deployment base-mainnet --account oasis_mainnet --gas-limit 200000",
     "rofl:deploy:base-mainnet": "oasis rofl deploy --deployment base-mainnet --account oasis_mainnet --offer medium",
-    "prepare:brain": "cd oracle/packages/sense-ai-brain && bun install --frozen-lockfile && bun run build && rm -rf node_modules"
+    "prepare:brain": "cd oracle/packages/sense-ai-brain && bun install --frozen-lockfile && bun run build && rm -rf node_modules",
+    "logs:base-testnet": "expect scripts/rofl-logs.exp --deployment base-testnet",
+    "logs:base-mainnet": "expect scripts/rofl-logs.exp --deployment base-mainnet"
   },
   "repository": {
     "type": "git",
