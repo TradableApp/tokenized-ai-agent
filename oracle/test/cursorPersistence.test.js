@@ -23,11 +23,20 @@ describe("chain cursor persistence", () => {
     // The helper itself is the one legitimate writer; everything else must go through it.
     const helperStart = source.indexOf("async function persistCursor(");
     const helperEnd = source.indexOf("\n}", helperStart);
+    // Running offset, not a re-join: reconstructing the prefix with .join("\n") drops each
+    // line's trailing newline, so every position came out `i` bytes short. The guard still
+    // passed, but only because the rogue call sites sit far below the helper — an arithmetic
+    // coincidence, not a correct comparison. (It was also O(n²), re-splitting per line.)
+    let offset = 0;
     const raw = source
       .split("\n")
-      .map((l, i) => [i + 1, l, source.split("\n").slice(0, i).join("\n").length])
+      .map((l, i) => {
+        const entry = [i + 1, l, offset];
+        offset += l.length + 1; // +1 for the newline that split() consumed
+        return entry;
+      })
       .filter(([, l]) => /fs\.writeFile\(\s*STATE_FILE_PATH/.test(l))
-      .filter(([, , offset]) => offset < helperStart || offset > helperEnd);
+      .filter(([, , off]) => off < helperStart || off > helperEnd);
 
     expect(
       raw.map(([n, l]) => `L${n}: ${l.trim()}`),

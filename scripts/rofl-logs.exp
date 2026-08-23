@@ -19,6 +19,8 @@
 #    branches in order against the same buffer, and matching the probe first consumes the prompt
 #    text along with it.
 #
+# Exit codes: 0 ok · 1 timeout or child failure · 2 no Keychain item · 3 passphrase rejected.
+#
 # The passphrase is only ever held in a local variable and sent to the child; it is never echoed
 # (`spawn -noecho`, and the child prompt does not echo input).
 
@@ -42,13 +44,16 @@ spawn -noecho oasis rofl machine logs {*}$cmdargs
 set sent 0
 expect {
     -nocase -re "passphrase" {
-        # Answer once. Re-sending on a repeat prompt would mean the first was rejected, and
-        # spraying a passphrase at a failing prompt risks tripping a retry limit.
+        # Answer once. A REPEAT prompt means the first answer was rejected, so fail fast: spraying
+        # a passphrase at a failing prompt risks tripping a retry limit, and silently looping to
+        # the 600s timeout would look like a slow machine rather than a wrong Keychain item.
         if {$sent == 0} {
             send -- "$pass\r"
             set sent 1
+            exp_continue
         }
-        exp_continue
+        send_user "\n\[rofl-logs] passphrase rejected — check the Keychain item '$svc'\n"
+        exit 3
     }
     -re "\x1b\\\[6n" {
         send -- "\x1b\[50;200R"
