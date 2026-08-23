@@ -100,9 +100,21 @@ function getLastProcessedBlock() {
 
 async function persistCursor(blockNumber) {
   const n = Number(blockNumber);
-  if (Number.isFinite(n)) lastProcessedBlockInMemory = n;
 
-  await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: blockNumber }));
+  // Reject garbage loudly rather than writing it. A NaN or undefined here would corrupt the
+  // checkpoint the oracle resumes from, and every caller passes a block number straight from
+  // ethers, so a non-finite value is a programming error worth surfacing — not a runtime
+  // condition to absorb. Each call site sits inside the poll loop's try/catch, which logs.
+  if (!Number.isFinite(n)) {
+    throw new TypeError(`persistCursor: expected a finite block number, got ${blockNumber}`);
+  }
+
+  lastProcessedBlockInMemory = n;
+
+  // Write the SAME coerced value that went into memory. Writing the raw argument instead lets the
+  // two copies disagree — and a BigInt (which ethers can hand back) would throw inside
+  // JSON.stringify after the in-memory cursor had already advanced, leaving a silently stale file.
+  await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: n }));
 }
 const AI_CONTEXT_MESSAGES_LIMIT = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT) || 20;
 const RETRY_INTERVAL_MS = 60 * 1000; // Check for failed jobs every 60 seconds
@@ -2537,7 +2549,7 @@ async function pollEvents(startBlock) {
   let currentBlock = startBlock;
   while (true) {
     try {
-  const latestBlock = await provider.getBlockNumber();
+      const latestBlock = await provider.getBlockNumber();
 
       // Reorg/revert reconciliation: if the head has dropped below our cursor (a
       // chain reorg, or a localnet Hardhat evm_revert between e2e tests), rewind

@@ -57,13 +57,13 @@ const EXPIRED = { allowance: 100n, spent: 0n, expiresAt: BigInt(NOW - 60) };
 describe("smoke: ensurePlanActive", () => {
   it("does not touch the chain when the plan is already live", async () => {
     const escrow = fakeEscrow({ initial: LIVE });
-    await ensurePlanActive({ escrow, capped: CAPPED, fee: FEE, now: NOW, sleep: async () => {} });
+    await ensurePlanActive({ escrow, capped: CAPPED, fee: FEE, now: () => NOW, sleep: async () => {} });
     expect(escrow.calls.setSpendingLimit).to.equal(0);
   });
 
   it("sets a new limit when the old one has expired", async () => {
     const escrow = fakeEscrow({ initial: EXPIRED });
-    await ensurePlanActive({ escrow, capped: CAPPED, fee: FEE, now: NOW, sleep: async () => {} });
+    await ensurePlanActive({ escrow, capped: CAPPED, fee: FEE, now: () => NOW, sleep: async () => {} });
     expect(escrow.calls.setSpendingLimit).to.equal(1);
   });
 
@@ -75,7 +75,7 @@ describe("smoke: ensurePlanActive", () => {
       escrow,
       capped: CAPPED,
       fee: FEE,
-      now: NOW,
+      now: () => NOW,
       sleep: async () => {},
     });
     expect(Number(plan.expiresAt)).to.be.greaterThan(NOW);
@@ -93,7 +93,7 @@ describe("smoke: ensurePlanActive", () => {
         escrow,
         capped: CAPPED,
         fee: FEE,
-        now: NOW,
+        now: () => NOW,
         sleep: async () => {},
         confirmAttempts: 3,
       });

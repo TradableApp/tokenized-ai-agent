@@ -60,4 +60,21 @@ describe("chain cursor persistence", () => {
       /\bstate\.lastProcessedBlock\b/,
     );
   });
+
+  it("writes the SAME coerced value to memory and to disk", () => {
+    // The two copies must never diverge — that divergence is the bug class this whole file exists
+    // for. Writing the raw argument while storing the coerced one also means a BigInt (which
+    // ethers can hand back) throws inside JSON.stringify AFTER the in-memory cursor has advanced,
+    // leaving a silently stale checkpoint. Caught in review on PR #76.
+    const source = fs.readFileSync(require.resolve("../src/aiAgentOracle"), "utf8");
+    const i = source.indexOf("async function persistCursor(");
+    const body = source.slice(i, source.indexOf("\n}", i));
+
+    expect(body, "must persist the coerced number, not the raw argument").to.match(
+      /lastProcessedBlock:\s*n\s*\}/,
+    );
+    expect(body, "must reject a non-finite block number rather than writing it").to.match(
+      /Number\.isFinite\(n\)/,
+    );
+  });
 });

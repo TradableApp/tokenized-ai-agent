@@ -186,14 +186,17 @@ async function ensurePlanActive({
   address,
   capped,
   fee,
-  now,
+  // A CLOCK, not a timestamp. Snapshotting `now` at the call site left it stale through a confirm
+  // loop that can sleep ~20s, so a plan expiring inside that window could pass the last liveness
+  // check and still fail estimateGas. Injectable so tests can pin time.
+  now = () => Math.floor(Date.now() / 1000),
   sleep,
   log = () => {},
   fmt = (v) => String(v),
   confirmAttempts = 10,
   confirmDelayMs = 2000,
 }) {
-  const isLive = (p) => p.allowance - p.spent >= fee && Number(p.expiresAt) > now;
+  const isLive = (p) => p.allowance - p.spent >= fee && Number(p.expiresAt) > now();
 
   const plan = await escrow.spendingLimits(address);
   if (isLive(plan)) {
@@ -202,7 +205,7 @@ async function ensurePlanActive({
   }
 
   log(`setSpendingLimit(${fmt(capped)}, +1d)...`);
-  await (await escrow.setSpendingLimit(capped, now + 86400)).wait();
+  await (await escrow.setSpendingLimit(capped, now() + 86400)).wait();
 
   // Confirm READABILITY, not just inclusion. Re-read only — never re-send, or a slow node turns
   // into duplicate transactions.
@@ -283,7 +286,6 @@ async function main() {
     address: wallet.address,
     capped,
     fee,
-    now: Math.floor(Date.now() / 1000),
     sleep,
     log,
     fmt,
