@@ -22,7 +22,7 @@ const OK_DEPS = () => ({
   },
   walletAddress: "0x0DECafC0ffee00000000000000000000000009a12",
   queue: { pending: 2, size: 7 },
-  readState: async () => ({ lastProcessedBlock: 45714300 }),
+  getLastProcessedBlock: () => 45714300,
   readFailedJobs: async () => [{ id: 1 }, { id: 2 }, { id: 3 }],
   fetchAccountInfo: async () => ({
     pendingUploadCredits: 52428800,
@@ -79,6 +79,34 @@ describe("collectVitals", () => {
     expect(withoutTally.providers).to.equal(null);
   });
 
+  it("reads the chain cursor from MEMORY, never from the state file", async () => {
+    // THE BUG THIS PINS, observed in production on 2026-08-22. The heartbeat used to read
+    // oracle-state.json, which the poll loop rewrites every ~4s with fs.writeFile — and
+    // writeFile TRUNCATES before writing. Beat 1 hit that window, got "", JSON.parse threw,
+    // safe() returned null, and blockLag — the most actionable field in the payload — was
+    // blank. Beat 2 won the race and reported lag=2. Intermittent, and it reads as "unknown"
+    // rather than "broken", which is the worse failure.
+    //
+    // Atomic writes would only narrow the window. Not touching the filesystem removes it.
+    const { collectVitals } = load();
+    const deps = OK_DEPS();
+    deps.getLastProcessedBlock = () => 45714300;
+
+    const v = await collectVitals(deps);
+    expect(v.lastProcessedBlock).to.equal(45714300);
+    expect(v.blockLag).to.equal(25);
+  });
+
+  it("still reports null lag when the in-memory cursor is not set yet", async () => {
+    const { collectVitals } = load();
+    const deps = OK_DEPS();
+    deps.getLastProcessedBlock = () => null;
+
+    const v = await collectVitals(deps);
+    expect(v.lastProcessedBlock).to.equal(null);
+    expect(v.blockLag).to.equal(null);
+  });
+
   it("never throws when EVERY probe fails, and reports nulls instead", async () => {
     const { collectVitals } = load();
     const boom = () => {
@@ -88,7 +116,7 @@ describe("collectVitals", () => {
       provider: { getBlockNumber: boom, getBalance: boom },
       walletAddress: "0xdead",
       queue: null,
-      readState: boom,
+      getLastProcessedBlock: boom,
       readFailedJobs: boom,
       fetchAccountInfo: boom,
       diskPath: "/definitely/not/a/real/path/xyzzy",
@@ -127,7 +155,7 @@ describe("collectVitals", () => {
   it("returns a null blockLag rather than a bogus number when either side is unknown", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();
-    deps.readState = async () => ({}); // no lastProcessedBlock recorded yet (fresh deploy)
+    deps.getLastProcessedBlock = () => null; // cursor not persisted yet (fresh deploy)
 
     const v = await collectVitals(deps);
 
@@ -141,7 +169,7 @@ describe("collectVitals", () => {
   it("never reports a negative blockLag when the cursor is ahead of a lagging RPC read", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();
-    deps.readState = async () => ({ lastProcessedBlock: 45714330 }); // ahead of head
+    deps.getLastProcessedBlock = () => 45714330; // ahead of head
     const v = await collectVitals(deps);
     // Load-balanced RPCs legitimately serve a slightly stale head. A negative lag is noise,
     // not a signal — clamp it, but do not pretend the cursor is unknown.

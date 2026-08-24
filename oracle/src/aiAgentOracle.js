@@ -51,6 +51,71 @@ dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
 const FAILED_JOBS_FILE_PATH = path.resolve(__dirname, "../failed-jobs.json");
+
+/**
+ * The chain cursor, held in memory and mirrored to disk.
+ *
+ * WHY IN MEMORY AT ALL. The heartbeat (CU-86d438hwt) reports `lastProcessedBlock` and the lag
+ * behind head — a stalled listener means paid prompts go unanswered, so it is the most
+ * actionable figure it carries. It used to read oracle-state.json to get it, and this loop
+ * rewrites that file every few seconds with `fs.writeFile`, which TRUNCATES before writing. A
+ * read landing in that window returns "", JSON.parse throws, and the field silently blanks.
+ * Observed on 2026-08-22: beat 1 null, beat 2 fine, no code change between them.
+ *
+ * Atomic write-and-rename would only shrink the window. Reading memory removes it.
+ *
+ * ONE writer for both copies, deliberately: six call sites used to write the file directly, and
+ * any that skipped the in-memory update would leave a stale cursor reporting a growing lag for a
+ * healthy oracle. `test/cursorPersistence.test.js` fails if a raw write reappears.
+ */
+let lastProcessedBlockInMemory = null;
+
+/**
+ * Read `failed-jobs.json`, tolerating the file being absent or malformed.
+ *
+ * It is only written once a job has actually FAILED, so on a healthy oracle it does not exist.
+ * The retry loop has always treated that as `[]`; the heartbeat originally used a bare
+ * `JSON.parse(await fs.readFile(...))`, so ENOENT threw, the vitals `safe()` degraded it, and
+ * `failedJobsCount` reported null on all three beats of the 2026-08-22 Base-testnet run — a
+ * perfectly healthy oracle reading as "unknown" for the one number that should say a confident 0.
+ * "No failures" must never look the same as "cannot tell".
+ *
+ * `readFile` is injectable so the behaviour can be tested without touching the disk.
+ *
+ * @returns {Promise<Array>} the failed jobs, or [] if the file is missing/corrupt/not an array
+ */
+async function readFailedJobsList(readFile = () => fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8")) {
+  try {
+    const parsed = JSON.parse(await readFile());
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Current cursor, or null before the first persist. Read by the heartbeat's vitals collector. */
+function getLastProcessedBlock() {
+  return lastProcessedBlockInMemory;
+}
+
+async function persistCursor(blockNumber) {
+  const n = Number(blockNumber);
+
+  // Reject garbage loudly rather than writing it. A NaN or undefined here would corrupt the
+  // checkpoint the oracle resumes from, and every caller passes a block number straight from
+  // ethers, so a non-finite value is a programming error worth surfacing — not a runtime
+  // condition to absorb. Each call site sits inside the poll loop's try/catch, which logs.
+  if (!Number.isFinite(n)) {
+    throw new TypeError(`persistCursor: expected a finite block number, got ${blockNumber}`);
+  }
+
+  lastProcessedBlockInMemory = n;
+
+  // Write the SAME coerced value that went into memory. Writing the raw argument instead lets the
+  // two copies disagree — and a BigInt (which ethers can hand back) would throw inside
+  // JSON.stringify after the in-memory cursor had already advanced, leaving a silently stale file.
+  await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: n }));
+}
 const AI_CONTEXT_MESSAGES_LIMIT = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT) || 20;
 const RETRY_INTERVAL_MS = 60 * 1000; // Check for failed jobs every 60 seconds
 const MAX_RETRIES = 10;
@@ -2140,7 +2205,7 @@ async function handleAndRecord(eventName, handler, ...args) {
 
     await handler(...args);
 
-    await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: event.blockNumber }));
+    await persistCursor(event.blockNumber);
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
     // "Validation Failed" covers all schema mismatches from payloadValidator.js
@@ -2150,10 +2215,7 @@ async function handleAndRecord(eventName, handler, ...args) {
       );
       // We do NOT throw, we do NOT alert, we do NOT queue for retry.
       // We update state and move on.
-      await fs.writeFile(
-        STATE_FILE_PATH,
-        JSON.stringify({ lastProcessedBlock: event.blockNumber }),
-      );
+      await persistCursor(event.blockNumber);
 
       return;
     }
@@ -2205,10 +2267,7 @@ async function handleAndRecord(eventName, handler, ...args) {
 
       // Still save the block progress, because we have successfully QUEUED the failed job.
       // This prevents it from being picked up again by the catch-up scanner.
-      await fs.writeFile(
-        STATE_FILE_PATH,
-        JSON.stringify({ lastProcessedBlock: event.blockNumber }),
-      );
+      await persistCursor(event.blockNumber);
     } else {
       const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
       console.error(alertMessage, error);
@@ -2448,7 +2507,7 @@ async function processPastEvents(fromBlock, toBlock) {
       }
 
       // Update checkpoint after every successful batch to avoid re-processing
-      await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentEnd }));
+      await persistCursor(currentEnd);
 
       // Move window forward
       currentStart = currentEnd + 1;
@@ -2509,7 +2568,7 @@ async function pollEvents(startBlock) {
           `Head ${latestBlock} dropped below cursor ${currentBlock}. Rewound to ${reconciledBlock}; re-mined events will be re-processed.`,
         ).catch((err) => console.error("sendAlert (reorg) failed:", err.message));
         currentBlock = reconciledBlock;
-        await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentBlock }));
+        await persistCursor(currentBlock);
       }
 
       // Only proceed if there are new blocks to check
@@ -2575,7 +2634,7 @@ async function pollEvents(startBlock) {
         // Update the state file to the block we just finished checking (toBlock).
         // This happens even if allEvents.length is 0.
         currentBlock = toBlock;
-        await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: currentBlock }));
+        await persistCursor(currentBlock);
 
         // This confirms the oracle is moving forward and saving state.
         if (allEvents.length > 0) {
@@ -2657,7 +2716,7 @@ async function start() {
   await processPastEvents(fromBlock, latestBlock);
 
   // Ensure state is synced to latest before starting poll (redundant safety save)
-  await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: latestBlock }));
+  await persistCursor(latestBlock);
 
   // Start background retry mechanism
   setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
@@ -2674,8 +2733,8 @@ async function start() {
     provider,
     walletAddress: signer.address,
     queue,
-    readState: async () => JSON.parse(await fs.readFile(STATE_FILE_PATH, "utf-8")),
-    readFailedJobs: async () => JSON.parse(await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8")),
+    getLastProcessedBlock,
+    readFailedJobs: readFailedJobsList,
     fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
     diskPath: path.dirname(STATE_FILE_PATH),
   });
@@ -2688,6 +2747,7 @@ async function start() {
 }
 
 module.exports = {
+  readFailedJobsList,
   start,
   queryElizaOS,
   initForTest,
