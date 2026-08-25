@@ -17,8 +17,12 @@ document exists so the change can be reversed at mainnet without re-deriving any
 ## TL;DR — full revert
 
 ```bash
-# sense-ai-core AND tokenized-ai-agent/oracle — the oracle instantiates SentimentEngine,
-# so the sentiment flags genuinely apply in both.
+# WHICH FILES. sense-ai-core: .env.testnet / .env.mainnet (and .env for local).
+# tokenized-ai-agent: oracle/.env.oracle.base-testnet AND oracle/.env.oracle.base-mainnet
+# (oracle/.env.oracle is the local default; .env.oracle.base-localnet is localnet only).
+# Apply to EVERY environment whose key you are cancelling — missing one leaves a live
+# adapter holding a dead key, which is the 401 case this runbook exists to avoid.
+# The oracle instantiates SentimentEngine, so the sentiment flags genuinely apply in both.
 SANTIMENT_ENABLED=true            # or unset entirely
 SANTIMENT_API_KEY='<paste-key>'   # re-subscribe FIRST
 # PER ENVIRONMENT — the order of operations below is testnet-first, so this is the
@@ -115,6 +119,20 @@ analysis. Two gates were added:
 |---|---|
 | `shouldTriggerTopAssetsSync` | The boot integrity check judged **presence** (`btcData.length === 0`), so a deployment returning after weeks idle saw rows, called itself healthy and never refreshed. It now judges **age**, with a 2-day grace so an ordinary boot does not re-sync the Top 25 and burn compute units. |
 | `isStaleDataServable` + `SENTIMENT_MAX_STALE_DAYS` | The stale fallback refuses data past a maximum age and omits sentiment instead of reporting it as current. |
+
+> **PREREQUISITE — these gates ship in `sense-ai-brain`, not in either body.** They landed in
+> `sense-ai-brain` PR #17. Both bodies consume the Brain as a **path dependency copied into
+> `node_modules` at install time**, so a body only has them once its submodule pointer is bumped
+> **and** `bun install --force` has run there. Until then `SENTIMENT_MAX_STALE_DAYS` is a silent
+> no-op and the 365-day stale-data exposure is still open.
+>
+> Check before relying on it:
+> ```bash
+> git -C <body>/packages/sense-ai-brain log -1 --oneline        # or oracle/packages/...
+> grep -c isStaleDataServable node_modules/@tradableapp/sense-ai-brain/dist/index.js
+> ```
+> The second command is the one that matters — a bumped submodule with stale `node_modules` is
+> the documented trap in the Brain's own CLAUDE.md, and it reports a false green.
 
 **Default is 45 days, deliberately generous.** Testnet and dev run `SANTIMENT_TIER=FREE`, whose
 hardcoded 32-day offset means freshly-fetched data there is *already* ~32 days old — a tighter
