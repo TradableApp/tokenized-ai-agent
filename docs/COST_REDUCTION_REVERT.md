@@ -17,6 +17,9 @@ document exists so the change can be reversed at mainnet without re-deriving any
 ## TL;DR — full revert
 
 ```bash
+# NB: these are SHELL commands. Pasting them into a session sets variables in that subshell only —
+# to persist, edit the .env file itself (set the value, or DELETE the line where `unset` is shown).
+#
 # WHICH FILES. sense-ai-core: .env.testnet / .env.mainnet (and .env for local).
 # tokenized-ai-agent: oracle/.env.oracle.base-testnet AND oracle/.env.oracle.base-mainnet
 # (oracle/.env.oracle is the local default; .env.oracle.base-localnet is localnet only).
@@ -93,9 +96,11 @@ a live adapter with a dead key throws 401s and rate-limit errors into the agent 
 
 **`SANTIMENT_TIER` matters more than it looks.** `santimentAdapter.ts` applies
 `offsetDays = tier === "FREE" ? 32 : 0`, so `FREE` deliberately fetches data ~32 days old. At the
-time of writing `.env` and `.env.testnet` are `FREE` while `.env.mainnet` is `MAX`. Note the cast
-is `as "FREE" | "PRO"` and `MAX` is in neither — it behaves correctly (anything not `FREE` gets
-offset 0) but the type is untrue, so do not assume the union is exhaustive. Set this to match
+time of writing `.env` and `.env.testnet` are `FREE` while `.env.mainnet` is `MAX`. This used to be a footgun: the cast was `as "FREE" | "PRO"` while `.env.mainnet` ran `MAX`, so the
+union was untrue and a future tier-conditional branch would have mis-handled mainnet. **Fixed in
+sense-ai-brain #17** — `SANTIMENT_TIER` is now a real union (`FREE | PRO | MAX`) parsed by
+`parseSantimentTier`, which also strips quotes (docker-compose does not) and never falls back to
+`FREE`. Set this to match
 whatever plan you actually return on: get it wrong towards `FREE` and you silently pull month-old
 data on mainnet.
 
@@ -334,10 +339,18 @@ re-enabling.**
 
 ## Verification checklist (either direction)
 
+- [ ] **Brain gates actually live** — `SENTIMENT_MAX_STALE_DAYS` is a silent no-op until the
+      submodule is bumped AND `bun install --force` has run. Check the INSTALLED dist, not the
+      submodule log, because a bumped submodule with stale `node_modules` reports a false green:
+      `grep -c isStaleDataServable node_modules/@tradableapp/sense-ai-brain/dist/index.js`
 - [ ] Sentiment section renders; no 401 / rate-limit errors in the agent loop
+      (NB: this passes even with 365-day-old data if the gates above are not live — check both)
 - [ ] News flowing from CoinDesk, CryptoPanic, CryptoRank
 - [ ] CoinGecko price resolves at `pro`; news skipped with the expected warning when disabled
-- [ ] Exactly one X post per day, inside the LUNCH window
+- [ ] Exactly one X post per day, inside the LUNCH window.
+      **Not verifiable under `SENSEAI_BROADCAST_DEBUG_MODE=MOCK_ALL`/`LIVE_ALL`** — those modes
+      deliberately ignore `TWITTER_ACTIVE_BLOCKS` and run every pillar. Use `OFF` or
+      `MOCK_CURRENT` for this check.
 - [ ] Telegram broadcast cadence unchanged
 - [ ] Daily summary `costUsd` tracking under budget
 
