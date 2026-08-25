@@ -276,6 +276,47 @@ it can stay.
 
 ---
 
+## 4. Phase 0 warm-run state (MUST be reverted)
+
+The Phase 0 warm run temporarily changed `sense-ai-core/.env.testnet` so testnet could pull
+current data. **These are not part of the cost reduction and must be undone.**
+
+| variable | before | during warm run | revert to |
+|---|---|---|---|
+| `SANTIMENT_TIER` | `FREE` | `MAX` | `FREE` |
+| `SANTIMENT_API_KEY` | the testnet key | **the mainnet key** | the testnet key |
+
+**Why the key was swapped.** The testnet key is on the free plan. Probed directly against the
+Santiment API with `mvrv_usd_z_score`: at the current window it returned 0 points and *"Both `from`
+and `to` parameters are outside the allowed interval"* — identical to an unauthenticated request —
+while the mainnet key returned data. `MAX` removes the 32-day offset, so a free key at `MAX` asks
+for a window it cannot serve and every paid metric comes back empty.
+
+**Consequence to be aware of:** the mainnet Santiment key was pushed as an encrypted ROFL secret
+into the *testnet* TEE. Restoring the testnet key and re-running `rofl:set:testnet` replaces it.
+A backup of the original file was written to `/tmp/env.testnet.bak` at the time; do not rely on
+that surviving a reboot.
+
+### Deploy ordering footgun (cost one wrong-tier deploy)
+
+`rofl:build` bundles `docker-compose.<env>.yaml` into the ORC, but the script that regenerates
+that file from `.env.<env>` (`scripts/rofl-set-secrets.sh`) runs **inside `rofl:update`**, not
+before the build. So this order silently ships the PREVIOUS config:
+
+```
+rofl:build → rofl:update → rofl:deploy      # WRONG: ORC has stale compose
+rofl:set   → rofl:build  → rofl:update → rofl:deploy   # correct
+```
+
+The first Phase 0 deploy hit exactly this: `.env.testnet` said `MAX`, the bundled compose said
+`FREE`, and the run fetched with the free-tier 32-day offset. **Verify before deploying:**
+
+```bash
+grep SANTIMENT_TIER docker-compose.yaml     # this is what actually ships
+```
+
+---
+
 ## Order of operations (why it mattered)
 
 1. Deploy core testnet **as-is** to warm `senseai.sentiment_history` while the Santiment
