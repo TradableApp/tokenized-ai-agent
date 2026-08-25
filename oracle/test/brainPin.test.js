@@ -42,7 +42,17 @@ const { expect } = require("chai");
 //
 // See CU-86d408nb4 for making this class of drift CI-visible rather than a review step, which is
 // the limitation the scope note above describes.
-const EXPECTED_BRAIN_SHA = "2543a51acffafb3871ad8134f25fc2241b711df5";
+// Brain #17 + #18 (CU-86d44ewwa) — sentiment staleness gates and gap-aware backfill, prerequisites
+// for cancelling Santiment. CFGI is disabled with no key in every env file, so once Santiment is
+// off NO adapter implements fetchAssetMetrics and every lookup falls into the stale-data path;
+// #17 stops that path serving 365-day-old rows as current, and #18 makes a returning deployment
+// close its gap instead of fetching a 2-day sliver. sense-ai-core bumps to the same SHA in the
+// same change-set — no divergence declared.
+//
+// Only #17's gates reach the oracle at runtime: brainContext.js constructs SentimentEngine but
+// calls only getLatestMacro(), a plain DB read, so #18's deeper fetch cannot land on the prompt
+// path. The pin still moves in lockstep — the bodies share one Brain by design.
+const EXPECTED_BRAIN_SHA = "7ba2f2fb8260d42226c1ede6010d4a6246d93035";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
