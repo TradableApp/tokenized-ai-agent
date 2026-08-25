@@ -62,7 +62,7 @@ unset.
 **Applied:** `SANTIMENT_ENABLED=false` in `sense-ai-core` and `tokenized-ai-agent/oracle`.
 
 **Mechanism.** `santimentAdapter.ts` reads `SANTIMENT_ENABLED !== "false"` in its constructor;
-`sentimentEngine.ts`, the per-asset adapter loop (`if (!adapter.enabled || !adapter.fetchAssetMetrics) continue`, ~line 511) skips any adapter whose `enabled` is false. The adapter and its
+`sentimentEngine.ts`, the per-asset adapter loop (`if (!adapter.enabled || !adapter.fetchAssetMetrics) continue`) skips any adapter whose `enabled` is false. The adapter and its
 registration are untouched — nothing was deleted.
 
 **What actually changes — read this with §1b.** In *code*, sentiment degrades to `cfgiAdapter`,
@@ -84,7 +84,7 @@ rather than overwriting them (different `recordedAt`). Historical Santiment metr
 `senseai.sentiment_history` for a year.
 
 **But they stop being read after ~23h.** Every read is `ORDER BY recordedAt DESC LIMIT 1`
-(`sentimentEngine.ts` — the cache probe, the backfill probe and the stale fallback (all `ORDER BY recordedAt DESC LIMIT 1`; line numbers ~455/481/547 at time of writing and liable to move)) and `CACHE_TTL_MS` is 23h, so once the daily
+(`sentimentEngine.ts` — the cache probe, the backfill probe and the stale fallback (all `ORDER BY recordedAt DESC LIMIT 1`)) and `CACHE_TTL_MS` is 23h, so once the daily
 `syncTopAssets` writes a CFGI-only row it becomes the newest and reads return two fields. This is
 expected, not a fault.
 
@@ -194,7 +194,7 @@ COINGECKO_ENVIRONMENT: process.env.COINGECKO_API_KEY ? "pro" : "demo",
 ```
 
 Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
-`coinGeckoAdapter.ts` constructor (~line 28) reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts`, the adapter loop (`if (!adapter.enabled) continue`, ~line 81)
+`coinGeckoAdapter.ts` constructor reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts`, the adapter loop (`if (!adapter.enabled) continue`)
 skips disabled adapters, so only the news fetch stops.
 
 **What still works.** News continues from CoinDesk, CryptoPanic and CryptoRank (3 of 4 adapters).
@@ -276,10 +276,11 @@ it can stay.
 
 ---
 
-## 4. Phase 0 warm-run state (MUST be reverted)
+## 4. Phase 0 warm-run state — REVERTED 2026-08-25
 
 The Phase 0 warm run temporarily changed `sense-ai-core/.env.testnet` so testnet could pull
-current data. **These are not part of the cost reduction and must be undone.**
+current data. **This has already been reverted** — recorded here because the same swap will be
+needed if the warm run is ever repeated, and because the on-chain half is easy to miss.
 
 | variable | before | during warm run | revert to |
 |---|---|---|---|
@@ -292,10 +293,10 @@ and `to` parameters are outside the allowed interval"* — identical to an unaut
 while the mainnet key returned data. `MAX` removes the 32-day offset, so a free key at `MAX` asks
 for a window it cannot serve and every paid metric comes back empty.
 
-**Consequence to be aware of:** the mainnet Santiment key was pushed as an encrypted ROFL secret
-into the *testnet* TEE. Restoring the testnet key and re-running `rofl:set:testnet` replaces it.
-A backup of the original file was written to `/tmp/env.testnet.bak` at the time; do not rely on
-that surviving a reboot.
+**The on-chain half is the part that is easy to miss.** The mainnet key is pushed as an encrypted
+ROFL secret into the *testnet* app, so reverting the file alone leaves it there — you must re-run
+`rofl:set:testnet` to overwrite it. That was done on 2026-08-25; the testnet and mainnet key
+fingerprints were confirmed to differ again afterwards.
 
 ### Deploy ordering footgun (cost one wrong-tier deploy)
 
