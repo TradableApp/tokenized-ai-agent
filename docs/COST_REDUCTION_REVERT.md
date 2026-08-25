@@ -17,9 +17,15 @@ document exists so the change can be reversed at mainnet without re-deriving any
 ## TL;DR — full revert
 
 ```bash
-# sense-ai-core AND tokenized-ai-agent/oracle
+# sense-ai-core AND tokenized-ai-agent/oracle — the oracle instantiates SentimentEngine,
+# so the sentiment flags genuinely apply in both.
 SANTIMENT_ENABLED=true            # or unset entirely
-SANTIMENT_API_KEY=<restore>       # re-subscribe first
+SANTIMENT_API_KEY=<restore>       # re-subscribe FIRST
+SANTIMENT_TIER=MAX                # match the plan you return on — see note below
+SENTIMENT_MAX_STALE_DAYS          # unset to restore the 45-day default
+
+# sense-ai-core ONLY — the oracle never runs the news adapters (see §2), so setting
+# this in the oracle env is a no-op.
 COINGECKO_NEWS_ENABLED=true       # or unset entirely
 
 # sense-ai-core only — unset ALL of these to restore the previous cadence
@@ -44,7 +50,7 @@ unset.
 **Applied:** `SANTIMENT_ENABLED=false` in `sense-ai-core` and `tokenized-ai-agent/oracle`.
 
 **Mechanism.** `santimentAdapter.ts` reads `SANTIMENT_ENABLED !== "false"` in its constructor;
-`sentimentEngine.ts:511` skips any adapter whose `enabled` is false. The adapter and its
+`sentimentEngine.ts`, the per-asset adapter loop (`if (!adapter.enabled || !adapter.fetchAssetMetrics) continue`, ~line 511) skips any adapter whose `enabled` is false. The adapter and its
 registration are untouched — nothing was deleted.
 
 **What actually changes.** Sentiment does not error or disappear; it degrades to `cfgiAdapter`,
@@ -61,21 +67,34 @@ rather than overwriting them (different `recordedAt`). Historical Santiment metr
 `senseai.sentiment_history` for a year.
 
 **But they stop being read after ~23h.** Every read is `ORDER BY recordedAt DESC LIMIT 1`
-(`sentimentEngine.ts:455`, `:481`, `:547`) and `CACHE_TTL_MS` is 23h, so once the daily
+(`sentimentEngine.ts` — the cache probe, the backfill probe and the stale fallback (all `ORDER BY recordedAt DESC LIMIT 1`; line numbers ~455/481/547 at time of writing and liable to move)) and `CACHE_TTL_MS` is 23h, so once the daily
 `syncTopAssets` writes a CFGI-only row it becomes the newest and reads return two fields. This is
 expected, not a fault.
 
 **Revert:** `SANTIMENT_ENABLED=true` (or unset) + restore `SANTIMENT_API_KEY`. Re-subscribe first —
 a live adapter with a dead key throws 401s and rate-limit errors into the agent loop.
 
-`SANTIMENT_TIER` (`"FREE" | "PRO"`, default `PRO`) controls the free-tier 30-day offset. If you
-return on a cheaper plan, set `SANTIMENT_TIER=FREE`.
+**`SANTIMENT_TIER` matters more than it looks.** `santimentAdapter.ts` applies
+`offsetDays = tier === "FREE" ? 32 : 0`, so `FREE` deliberately fetches data ~32 days old. At the
+time of writing `.env` and `.env.testnet` are `FREE` while `.env.mainnet` is `MAX`. Note the cast
+is `as "FREE" | "PRO"` and `MAX` is in neither — it behaves correctly (anything not `FREE` gets
+offset 0) but the type is untrue, so do not assume the union is exhaustive. Set this to match
+whatever plan you actually return on: get it wrong towards `FREE` and you silently pull month-old
+data on mainnet.
 
 ---
 
 ## 2. CoinGecko news
 
-**Applied:** `COINGECKO_NEWS_ENABLED=false`. **`COINGECKO_API_KEY` stays set.**
+**Applied:** `COINGECKO_NEWS_ENABLED=false` **in `sense-ai-core` only**. **`COINGECKO_API_KEY`
+stays set** in both.
+
+**Scope, precisely.** The oracle never runs the news adapters — `brainContext.js` instantiates
+only `SentimentEngine` and reads pre-enriched rows via `getLatestEnrichedNews()`, which is a plain
+Postgres `SELECT` from `market_news` and touches no adapter and no flag. Setting
+`COINGECKO_NEWS_ENABLED` in the oracle env is therefore a **no-op**. The sentiment flags are
+different: the oracle does construct `SentimentEngine`, so `SANTIMENT_ENABLED` and
+`SENTIMENT_MAX_STALE_DAYS` apply in both bodies.
 
 **Why the key stays.** `/v3/news` is Analyst-and-above, so it dies on Basic — but the key is shared
 with price lookups:
@@ -87,7 +106,7 @@ COINGECKO_ENVIRONMENT: process.env.COINGECKO_API_KEY ? "pro" : "demo",
 ```
 
 Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
-`coinGeckoAdapter.ts:28` reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts:81`
+`coinGeckoAdapter.ts` constructor (~line 28) reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts`, the adapter loop (`if (!adapter.enabled) continue`, ~line 81)
 skips disabled adapters, so only the news fetch stops.
 
 **What still works.** News continues from CoinDesk, CryptoPanic and CryptoRank (3 of 4 adapters).
@@ -95,6 +114,36 @@ CoinGecko price data is unaffected.
 
 **Revert:** `COINGECKO_NEWS_ENABLED=true` (or unset) **and** re-upgrade the plan to Analyst. The
 flag alone is not enough — on Basic the endpoint 4xxs.
+
+---
+
+## 2b. Sentiment staleness gates (added with this change)
+
+Disabling Santiment exposed a sharper problem than a thinner sentiment line.
+
+`cfgiAdapter` and `santimentAdapter` are the **only** adapters implementing `fetchAssetMetrics`
+(`cmcMacroAdapter` is macro-only), and `CFGI_ENABLED=false` with **no API key** in `.env`,
+`.env.testnet` and `.env.mainnet`. So with Santiment off there is **no per-asset sentiment adapter
+at all** — `anyAdapterSuccess` stays false and every lookup falls into the stale-data branch,
+which returned the newest `sentiment_history` row at **any** age. Retention is 365 days, and
+`_dataTimestamp` is written in three places and read by nothing.
+
+Left alone, broadcasts would have quoted year-old MVRV and dev activity as current market
+analysis. Two gates were added:
+
+| gate | what it does |
+|---|---|
+| `shouldTriggerTopAssetsSync` | The boot integrity check judged **presence** (`btcData.length === 0`), so a deployment returning after weeks idle saw rows, called itself healthy and never refreshed. It now judges **age**, with a 2-day grace so an ordinary boot does not re-sync the Top 25 and burn compute units. |
+| `isStaleDataServable` + `SENTIMENT_MAX_STALE_DAYS` | The stale fallback refuses data past a maximum age and omits sentiment instead of reporting it as current. |
+
+**Default is 45 days, deliberately generous.** Testnet and dev run `SANTIMENT_TIER=FREE`, whose
+hardcoded 32-day offset means freshly-fetched data there is *already* ~32 days old — a tighter
+default would reject rows the moment they were written. The goal is not freshness; it is stopping
+the 365-day worst case from reaching a broadcast. `0` means never serve stale data.
+
+**Revert:** unset `SENTIMENT_MAX_STALE_DAYS` to restore the 45-day default. The gates themselves
+should stay — they are correct regardless of whether Santiment is enabled, and with Santiment back
+on the stale path is rarely reached anyway.
 
 ---
 
