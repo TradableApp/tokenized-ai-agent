@@ -20,24 +20,27 @@ document exists so the change can be reversed at mainnet without re-deriving any
 # sense-ai-core AND tokenized-ai-agent/oracle — the oracle instantiates SentimentEngine,
 # so the sentiment flags genuinely apply in both.
 SANTIMENT_ENABLED=true            # or unset entirely
-SANTIMENT_API_KEY=<restore>       # re-subscribe FIRST
-SANTIMENT_TIER=MAX                # match the plan you return on — see note below
-SENTIMENT_MAX_STALE_DAYS          # unset to restore the 45-day default
+SANTIMENT_API_KEY='<paste-key>'   # re-subscribe FIRST
+SANTIMENT_TIER=MAX                # set to the plan you return on. NB: the code casts
+                                  # `as "FREE" | "PRO"` and MAX is in neither — it works
+                                  # only because the offset checks === "FREE". See §1.
+unset SENTIMENT_MAX_STALE_DAYS    # restores the 45-day default
 
 # sense-ai-core ONLY — the oracle never runs the news adapters (see §2), so setting
 # this in the oracle env is a no-op.
 COINGECKO_NEWS_ENABLED=true       # or unset entirely
 
-# sense-ai-core only — unset ALL of these to restore the previous cadence
-TWITTER_ACTIVE_BLOCKS
-TWITTER_BUDGET_DAILY_POST  TWITTER_BUDGET_DAILY_REPLY_MENTION  TWITTER_BUDGET_DAILY_READ_MENTIONS
-TWITTER_BUDGET_DAILY_REPLY_TIMELINE  TWITTER_BUDGET_DAILY_QUOTE_TIMELINE
-TWITTER_BUDGET_DAILY_REPLY_DISCOVERY  TWITTER_BUDGET_DAILY_QUOTE_DISCOVERY
-TWITTER_BUDGET_DAILY_LIKE  TWITTER_BUDGET_DAILY_LIKE_DISCOVERY
-TWITTER_BUDGET_DAILY_RETWEET  TWITTER_BUDGET_DAILY_FOLLOW
-TWITTER_BUDGET_DAILY_READ_TIMELINE  TWITTER_BUDGET_DAILY_READ_DISCOVERY
-TWITTER_ENABLE_DISCOVERY  TWITTER_TIMELINE_ENABLE  TWITTER_ENABLE_ACTIONS
-X_DAILY_BUDGET_USD  X_MONTHLY_BUDGET_USD
+# sense-ai-core only — restore the previous cadence.
+# In a shell/deploy script these are real commands; in a .env file, DELETE the matching lines.
+unset TWITTER_ACTIVE_BLOCKS
+unset TWITTER_BUDGET_DAILY_POST TWITTER_BUDGET_DAILY_REPLY_MENTION TWITTER_BUDGET_DAILY_READ_MENTIONS
+unset TWITTER_BUDGET_DAILY_REPLY_TIMELINE TWITTER_BUDGET_DAILY_QUOTE_TIMELINE
+unset TWITTER_BUDGET_DAILY_REPLY_DISCOVERY TWITTER_BUDGET_DAILY_QUOTE_DISCOVERY
+unset TWITTER_BUDGET_DAILY_LIKE TWITTER_BUDGET_DAILY_LIKE_DISCOVERY
+unset TWITTER_BUDGET_DAILY_RETWEET TWITTER_BUDGET_DAILY_FOLLOW
+unset TWITTER_BUDGET_DAILY_READ_TIMELINE TWITTER_BUDGET_DAILY_READ_DISCOVERY
+unset TWITTER_ENABLE_DISCOVERY TWITTER_TIMELINE_ENABLE TWITTER_ENABLE_ACTIONS
+unset X_DAILY_BUDGET_USD X_MONTHLY_BUDGET_USD
 ```
 
 Then redeploy. **No code revert is required** — every flag defaults to the previous behaviour when
@@ -53,11 +56,16 @@ unset.
 `sentimentEngine.ts`, the per-asset adapter loop (`if (!adapter.enabled || !adapter.fetchAssetMetrics) continue`, ~line 511) skips any adapter whose `enabled` is false. The adapter and its
 registration are untouched — nothing was deleted.
 
-**What actually changes.** Sentiment does not error or disappear; it degrades to `cfgiAdapter`,
-which still supplies per-asset `fetchAssetMetrics`. But the fallback carries **2 fields**
+**What actually changes — read this with §1b.** In *code*, sentiment degrades to `cfgiAdapter`,
+which does supply per-asset `fetchAssetMetrics`. In *practice it does not*, because
+`CFGI_ENABLED=false` with **no API key** in `.env`, `.env.testnet` and `.env.mainnet`. So there is
+**no per-asset sentiment adapter at all** once Santiment is off — every lookup falls into the
+stale-data path, which is why the gates in §1b exist. Do not read this paragraph and stop.
+
+Were CFGI enabled, the fallback would still be thin: **2 fields**
 (`cfgi_fear_greed_score`, `cfgi_fear_greed_tier`) against Santiment's ~50 on-chain/social metrics,
-and CFGI returns a single current point where Santiment returns a time series. Broadcasts keep
-their cadence and voice; they lose MVRV, dev activity, whale flows and social volume.
+and a single current point where Santiment returns a time series. Broadcasts keep their cadence
+and voice either way; they lose MVRV, dev activity, whale flows and social volume.
 
 `cmcMacroAdapter` supplies `fetchMacroMetrics` only, so it covers the macro path but cannot
 substitute on the per-asset path.
@@ -81,6 +89,36 @@ is `as "FREE" | "PRO"` and `MAX` is in neither — it behaves correctly (anythin
 offset 0) but the type is untrue, so do not assume the union is exhaustive. Set this to match
 whatever plan you actually return on: get it wrong towards `FREE` and you silently pull month-old
 data on mainnet.
+
+---
+
+## 1b. Sentiment staleness gates (added with this change)
+
+Disabling Santiment exposed a sharper problem than a thinner sentiment line.
+
+`cfgiAdapter` and `santimentAdapter` are the **only** adapters implementing `fetchAssetMetrics`
+(`cmcMacroAdapter` is macro-only), and `CFGI_ENABLED=false` with **no API key** in `.env`,
+`.env.testnet` and `.env.mainnet`. So with Santiment off there is **no per-asset sentiment adapter
+at all** — `anyAdapterSuccess` stays false and every lookup falls into the stale-data branch,
+which returned the newest `sentiment_history` row at **any** age. Retention is 365 days, and
+`_dataTimestamp` is written in three places and read by nothing.
+
+Left alone, broadcasts would have quoted year-old MVRV and dev activity as current market
+analysis. Two gates were added:
+
+| gate | what it does |
+|---|---|
+| `shouldTriggerTopAssetsSync` | The boot integrity check judged **presence** (`btcData.length === 0`), so a deployment returning after weeks idle saw rows, called itself healthy and never refreshed. It now judges **age**, with a 2-day grace so an ordinary boot does not re-sync the Top 25 and burn compute units. |
+| `isStaleDataServable` + `SENTIMENT_MAX_STALE_DAYS` | The stale fallback refuses data past a maximum age and omits sentiment instead of reporting it as current. |
+
+**Default is 45 days, deliberately generous.** Testnet and dev run `SANTIMENT_TIER=FREE`, whose
+hardcoded 32-day offset means freshly-fetched data there is *already* ~32 days old — a tighter
+default would reject rows the moment they were written. The goal is not freshness; it is stopping
+the 365-day worst case from reaching a broadcast. `0` means never serve stale data.
+
+**Revert:** unset `SENTIMENT_MAX_STALE_DAYS` to restore the 45-day default. The gates themselves
+should stay — they are correct regardless of whether Santiment is enabled, and with Santiment back
+on the stale path is rarely reached anyway.
 
 ---
 
@@ -114,36 +152,6 @@ CoinGecko price data is unaffected.
 
 **Revert:** `COINGECKO_NEWS_ENABLED=true` (or unset) **and** re-upgrade the plan to Analyst. The
 flag alone is not enough — on Basic the endpoint 4xxs.
-
----
-
-## 2b. Sentiment staleness gates (added with this change)
-
-Disabling Santiment exposed a sharper problem than a thinner sentiment line.
-
-`cfgiAdapter` and `santimentAdapter` are the **only** adapters implementing `fetchAssetMetrics`
-(`cmcMacroAdapter` is macro-only), and `CFGI_ENABLED=false` with **no API key** in `.env`,
-`.env.testnet` and `.env.mainnet`. So with Santiment off there is **no per-asset sentiment adapter
-at all** — `anyAdapterSuccess` stays false and every lookup falls into the stale-data branch,
-which returned the newest `sentiment_history` row at **any** age. Retention is 365 days, and
-`_dataTimestamp` is written in three places and read by nothing.
-
-Left alone, broadcasts would have quoted year-old MVRV and dev activity as current market
-analysis. Two gates were added:
-
-| gate | what it does |
-|---|---|
-| `shouldTriggerTopAssetsSync` | The boot integrity check judged **presence** (`btcData.length === 0`), so a deployment returning after weeks idle saw rows, called itself healthy and never refreshed. It now judges **age**, with a 2-day grace so an ordinary boot does not re-sync the Top 25 and burn compute units. |
-| `isStaleDataServable` + `SENTIMENT_MAX_STALE_DAYS` | The stale fallback refuses data past a maximum age and omits sentiment instead of reporting it as current. |
-
-**Default is 45 days, deliberately generous.** Testnet and dev run `SANTIMENT_TIER=FREE`, whose
-hardcoded 32-day offset means freshly-fetched data there is *already* ~32 days old — a tighter
-default would reject rows the moment they were written. The goal is not freshness; it is stopping
-the 365-day worst case from reaching a broadcast. `0` means never serve stale data.
-
-**Revert:** unset `SENTIMENT_MAX_STALE_DAYS` to restore the 45-day default. The gates themselves
-should stay — they are correct regardless of whether Santiment is enabled, and with Santiment back
-on the stale path is rarely reached anyway.
 
 ---
 
