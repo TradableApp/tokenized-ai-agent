@@ -99,6 +99,33 @@ offset 0) but the type is untrue, so do not assume the union is exhaustive. Set 
 whatever plan you actually return on: get it wrong towards `FREE` and you silently pull month-old
 data on mainnet.
 
+
+### Where these variables live in the env files
+
+`scripts/rofl-set-secrets.sh` splits each `.env.<env>` on the line
+`# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===`:
+
+| section | treatment |
+|---|---|
+| **above** the delimiter | encrypted and pushed on-chain via `oasis rofl secret set` |
+| **below** the delimiter | plaintext, emitted verbatim into `docker-compose.<env>.yaml` |
+
+Every flag in this runbook — `SANTIMENT_ENABLED`, `SANTIMENT_TIER`,
+`SENTIMENT_MAX_STALE_DAYS`, `COINGECKO_NEWS_ENABLED`, `TWITTER_ACTIVE_BLOCKS`, all
+`TWITTER_BUDGET_DAILY_*` and `X_*_BUDGET_USD` — is **config, below the delimiter**. Only the API
+keys belong above it. Putting a config flag in the secrets section encrypts it on-chain for no
+reason and makes changing it a redeploy rather than an edit.
+
+Two rules for the config section:
+
+- **Never quote values.** docker-compose passes quotes through verbatim, so `SANTIMENT_TIER="MAX"`
+  arrives as five characters including the quotes. The script's own preflight documents this as a
+  failure that has happened.
+- **An empty value is omitted from compose entirely** (`elif [ -n "$REMAINDER" ]`), so the
+  application default applies. That is why `TWITTER_ACTIVE_BLOCKS=` and
+  `SENTIMENT_MAX_STALE_DAYS=` ship blank: the keys are present and documented, and setting them is
+  a one-line edit rather than a code change.
+
 ---
 
 ## 1b. Sentiment staleness gates (added with this change)
