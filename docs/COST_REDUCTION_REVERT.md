@@ -21,9 +21,14 @@ document exists so the change can be reversed at mainnet without re-deriving any
 # so the sentiment flags genuinely apply in both.
 SANTIMENT_ENABLED=true            # or unset entirely
 SANTIMENT_API_KEY='<paste-key>'   # re-subscribe FIRST
-SANTIMENT_TIER=MAX                # set to the plan you return on. NB: the code casts
-                                  # `as "FREE" | "PRO"` and MAX is in neither — it works
-                                  # only because the offset checks === "FREE". See §1.
+# PER ENVIRONMENT — the order of operations below is testnet-first, so this is the
+# first value you will touch. Getting it wrong towards MAX on a FREE plan requests
+# data the plan does not serve; wrong towards FREE on mainnet silently backdates
+# analysis by 32 days.
+SANTIMENT_TIER=FREE               # .env and .env.testnet
+# SANTIMENT_TIER=MAX              # .env.mainnet. NB: the code casts `as "FREE" | "PRO"`
+                                  # and MAX is in neither — it works only because the
+                                  # offset check is === "FREE". See §1.
 unset SENTIMENT_MAX_STALE_DAYS    # restores the 45-day default
 
 # sense-ai-core ONLY — the oracle never runs the news adapters (see §2), so setting
@@ -150,8 +155,11 @@ skips disabled adapters, so only the news fetch stops.
 **What still works.** News continues from CoinDesk, CryptoPanic and CryptoRank (3 of 4 adapters).
 CoinGecko price data is unaffected.
 
-**Revert:** `COINGECKO_NEWS_ENABLED=true` (or unset) **and** re-upgrade the plan to Analyst. The
-flag alone is not enough — on Basic the endpoint 4xxs.
+**Revert — order matters here too.** **Upgrade the plan to Analyst FIRST, then set
+`COINGECKO_NEWS_ENABLED=true`** (or unset it). Same rule as §1: a live adapter with a dead
+entitlement means 4xx errors in the news fetch loop, just as a live Santiment adapter with a dead
+key means 401s. The flag alone is not enough either way — on Basic the `/v3/news` endpoint 4xxs
+regardless of the flag.
 
 ---
 
