@@ -45,22 +45,21 @@ const { expect } = require("chai");
 // Brain #17 + #18 (CU-86d44ewwa) — sentiment staleness gates and gap-aware backfill, prerequisites
 // for cancelling Santiment. CFGI is disabled with no key in every env file, so once Santiment is
 // off NO adapter implements fetchAssetMetrics and every lookup falls into the stale-data path;
-// Brain #19 + #20 + #22 (CU-86d44xyev) — the news pipeline rebuilt on free sources. #19 replaces
-// the dead paid cryptocurrency.cv extraction with self-hosted Readability; #20 replaces four
-// adapters that had all silently stopped producing rows with curated multi-feed RSS plus alpha
-// scoring on the existing AI call; #22 anchors two Brain tests that read source by a
-// cwd-relative path. sense-ai-core bumps to the same SHA in the same change-set — no divergence
-// declared.
+// Brain #23 (CU-86d45ehqr) — alpha threshold raised 4 -> 5 after the first real model output.
+// MIN_ALPHA_SCORE was a guess: every Brain test used a stubbed generateObject, so nothing had
+// ever measured how the model actually scores. Testnet (n=26) put threshold 4 at 85% pass —
+// near-decorative — against 62% at 5. The model's ranking was sound (an unpatched Core Lightning
+// vulnerability at 9, price commentary at 3); only the cut-off was wrong.
 //
-// NONE of the new code executes in the oracle. It never constructs MarketNewsEngine and never
-// runs an ingestion or enrichment cycle: those are core's scheduled tasks. The oracle only READS
-// the resulting rows — getLatestEnrichedNews and formatNewsTicker for the prompt block, and
-// searchNewsDetails behind the getNewsDetails action. So what changes here is the CONTENT of
-// market_news, not any path the oracle runs. Verified that nothing in the oracle reads the
-// metadata.isSignal field #20 stopped persisting.
+// Carries brain #19/#20/#22 forward: self-hosted extraction, curated multi-feed RSS, the
+// cwd-coupled test fix. sense-ai-core bumps to the same SHA in the same change-set — no
+// divergence declared.
 //
-// The pin still moves in lockstep — the bodies share one Brain by design.
-const EXPECTED_BRAIN_SHA = "a997ea1a01e0b6c7be8a038544cdb80543cdddb2";
+// Still nothing here executes it. The oracle never constructs MarketNewsEngine and never runs an
+// enrichment cycle, so it never computes a score; it only READS rows via getLatestEnrichedNews,
+// formatNewsTicker and searchNewsDetails. A stricter threshold changes WHICH rows core writes,
+// not any path the oracle runs. Verified nothing here reads metadata.isSignal or alphaScore.
+const EXPECTED_BRAIN_SHA = "30dd20da6ed840621acf263c08514395894bc2f8";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
