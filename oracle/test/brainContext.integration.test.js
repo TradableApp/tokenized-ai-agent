@@ -21,7 +21,28 @@ const { clearPostgresEnv, setFullPostgresEnv } = require("./helpers/postgresTest
 // takes the single newest row (limit 1). Asserting the observed limits below turns
 // the stub into a real regression guard against those query shapes changing.
 const EXPECTED_MACRO_LIMIT = 1;
-const EXPECTED_NEWS_LIMIT = 6;
+
+// The news read deliberately OVER-FETCHES. getLatestEnrichedNews filters on alphaScore in
+// TypeScript (the score lives in JSONB, so a SQL predicate would re-encode both the threshold and
+// the unscored fallback in a second language), and fetching exactly NEWS_LIMIT then filtering
+// would silently shrink the context block whenever the newest articles happen to be low-signal.
+//
+// This guard fired when that landed — it read 6 and observed 18 — and it was RIGHT to: the
+// warm-cache read really did get three times wider, which is a cost the oracle pays on its hot
+// path. Relaxing it to a new hardcoded number would have thrown away the guard, since it would
+// drift the moment the multiplier changes. Pinning the RELATIONSHIP keeps it honest, which is why
+// ALPHA_CANDIDATE_MULTIPLIER is exported from the Brain rather than duplicated here.
+//
+// DELIBERATELY A LITERAL, not `NEWS_LIMIT * ALPHA_CANDIDATE_MULTIPLIER`. Computing it from the
+// Brain's own constant would make this test FOLLOW the value it is supposed to police: raise the
+// multiplier to 4 and both sides move together, the assertion still passes, and the read silently
+// widens again — which is precisely the failure this guard exists to catch. A guard that imports
+// its expected value from the code under test is not a guard.
+//
+// The relationship is asserted separately below, so the two can never drift apart in MEANING
+// while this literal keeps any change in MAGNITUDE loud.
+const NEWS_LIMIT = 6;
+const EXPECTED_NEWS_LIMIT = 18;
 
 // Seeded warm cache. Two reads hit ctx.db.select():
 //   - getLatestMacro():        select().from(macro).orderBy().limit(1)      — NO .where()
@@ -90,6 +111,7 @@ const NEWS_ROWS = [
 ];
 
 describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
+  let brainModule;
   // This suite depends on the built Brain dist (git submodule at
   // oracle/packages/sense-ai-brain, prepare:brain). CI checks it out + builds it;
   // a fresh local clone without --recurse-submodules won't have it, and
@@ -100,6 +122,7 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     let brain;
     try {
       brain = await import("@tradableapp/sense-ai-brain");
+      brainModule = brain;
     } catch (error) {
       throw new Error(
         "Brain dist not loadable — the @tradableapp/sense-ai-brain submodule is " +
@@ -193,6 +216,14 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
     expect(db.observedLimits.macro).to.equal(EXPECTED_MACRO_LIMIT);
     expect(db.observedLimits.news).to.equal(EXPECTED_NEWS_LIMIT);
     expect([...db.observedRequests].sort()).to.deep.equal(["macro", "news"]);
+  });
+
+  it("keeps the literal limit and the Brain's multiplier from drifting apart", () => {
+    // The COUPLING half of the guard above. The literal 18 catches a widened read; this catches
+    // the literal quietly ceasing to mean "NEWS_LIMIT x the Brain's over-fetch". Without it,
+    // someone could change the multiplier, leave 18 alone, and the two would disagree with no
+    // test objecting.
+    expect(EXPECTED_NEWS_LIMIT).to.equal(NEWS_LIMIT * brainModule.ALPHA_CANDIDATE_MULTIPLIER);
   });
 
   it("returns null when the seeded cache is entirely empty (no macro, no news)", async () => {
