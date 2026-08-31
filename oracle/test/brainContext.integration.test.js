@@ -139,6 +139,12 @@ describe("brainContext ↔ real Brain integration (seeded warm cache)", () => {
       "getLatestEnrichedNews",
       "formatMacroEnvironment",
       "formatNewsTicker",
+      // The coupling test below multiplies by this. Without it in the loop, a rename or removal
+      // makes it `undefined`, the assertion becomes `expect(18).to.equal(NaN)`, and the failure
+      // reads as a limit drift rather than a missing export — the opposite of the clear diagnostic
+      // this guard exists to produce. `!brain[name]` is safe here because the value is 3; a
+      // multiplier of 0 would false-positive, but that is not a realistic over-fetch width.
+      "ALPHA_CANDIDATE_MULTIPLIER",
     ]) {
       if (!brain[name]) throw new Error(`Brain dist missing expected export: ${name}`);
     }

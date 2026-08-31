@@ -59,7 +59,7 @@ const { expect } = require("chai");
 // enrichment cycle, so it never computes a score; it only READS rows via getLatestEnrichedNews,
 // formatNewsTicker and searchNewsDetails. A stricter threshold changes WHICH rows core writes,
 // not any path the oracle runs. Verified nothing here reads metadata.isSignal or alphaScore.
-const EXPECTED_BRAIN_SHA = "ecde4b0898a2c00afe27bbeded01bcbabba009bc";
+const EXPECTED_BRAIN_SHA = "0d66c0592bbef0e8de26f958ecf3ee1a4ac3b4b8";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
