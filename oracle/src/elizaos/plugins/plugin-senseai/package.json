@@ -40,14 +40,14 @@
   ],
   "dependencies": {
     "@elizaos/core": "1.7.2",
-    "axios": "^1.16.1",
+    "axios": "^1.19.0",
     "zod": "^4.3.5",
     "@tradableapp/sense-ai-brain": "../../../../packages/sense-ai-brain"
   },
   "devDependencies": {
     "@elizaos/cli": "1.7.2",
-    "dotenv": "^17.2.3",
-    "prettier": "^3.7.4",
+    "dotenv": "^17.4.2",
+    "prettier": "^3.9.6",
     "typescript": "^5.9.3"
   },
   "scripts": {
