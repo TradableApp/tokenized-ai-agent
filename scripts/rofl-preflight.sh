@@ -46,8 +46,14 @@ in_config_block=false
 # Verified before the fix: a compose whose only config line was `0xYourAIAgentAddressHere`
 # passed with exit 0. Found by review on the sense-ai-core port of this file (#103) and applied
 # to both copies so they do not diverge.
-if ! grep -q "ORC BUNDLE CONFIGURATION" "$COMPOSE_FILE"; then
-  echo "❌ Preflight: '$COMPOSE_FILE' has no '# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===' marker."
+# The one marker string, matched EXACTLY. A loose substring also hits a comment such as
+# `# see the ORC BUNDLE CONFIGURATION block below`, which would open the scan early over the
+# secrets half, where quoted values are legitimate and deliberately unchecked. It also disagreed
+# with the error message below, which quotes the full marker. -F because it is a fixed string.
+ORC_MARKER='# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ==='
+
+if ! grep -qF "$ORC_MARKER" "$COMPOSE_FILE"; then
+  echo "❌ Preflight: '$COMPOSE_FILE' has no '$ORC_MARKER' marker."
   echo "   The plaintext block cannot be located, so nothing can be validated. Regenerate the"
   echo "   compose with \`bun run rofl:set:<env>\` rather than editing it by hand."
   exit 1
@@ -55,12 +61,19 @@ fi
 
 while IFS= read -r line; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
-  case "$trimmed" in *"ORC BUNDLE CONFIGURATION"*) in_config_block=true; continue ;; esac
+  if [[ "$trimmed" == "$ORC_MARKER"* ]]; then in_config_block=true; continue; fi
   # Explicit string test rather than `$in_config_block || continue`: that idiom only works
   # because `true`/`false` happen to be executable builtins, so any other value would be run as
   # a command. No live bug, but a trap for whoever patches this next.
   [[ "$in_config_block" == "true" ]] || continue
-  [[ "$trimmed" != "- "* ]] && continue
+  # Only real assignments. `- ` alone also matches ports: and volumes:, and in_config_block is
+  # never reset — so any such list appearing AFTER the environment block falls inside the scan
+  # and is parsed as a key/value pair. This repo's generated composes happen to put ports: and
+  # volumes: BEFORE the environment block, so it is latent here; sense-ai-core's put them after,
+  # where `- "3000:3000"` really was being scanned and escaped a quoted-value report only
+  # because, with no `=` in the line, `${trimmed#*=}` returns the whole string including `- `.
+  # Fixed in both copies rather than only where it currently bites.
+  [[ "$trimmed" =~ ^-[[:space:]][A-Za-z_][A-Za-z0-9_]*= ]] || continue
 
   key="${trimmed#- }"; key="${key%%=*}"
   val="${trimmed#*=}"

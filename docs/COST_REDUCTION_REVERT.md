@@ -53,7 +53,10 @@ unset SENTIMENT_MAX_STALE_DAYS    # restores the 45-day default
 
 # sense-ai-core ONLY — the oracle never runs the news adapters (see §2), so setting
 # this in the oracle env is a no-op.
-COINGECKO_NEWS_ENABLED=true       # or unset entirely
+# ⚠️  DO NOT — this flag has had NO READER since the CU-86d44xyev news rebuild, and CoinGecko
+# is no longer a news source in any form. Re-upgrading to Analyst to pair with it costs
+# US$94/mo and returns nothing. See the warning at the top of §2.
+# COINGECKO_NEWS_ENABLED=true     # inert — kept commented as the historical record
 
 # sense-ai-core only — restore the previous cadence.
 # In a shell/deploy script these are real commands; in a .env file, DELETE the matching lines.
@@ -192,6 +195,41 @@ on the stale path is rarely reached anyway.
 
 ## 2. CoinGecko news
 
+> ### ⚠️ §2 IS SUPERSEDED — `COINGECKO_NEWS_ENABLED` NO LONGER HAS A READER
+>
+> The news pipeline was rebuilt under **CU-86d44xyev**, after this runbook was written. All four
+> per-provider adapters were replaced by a single `rssAggregatorAdapter.ts` reading ~8 RSS feeds
+> (CoinDesk, The Block, Bankless, The Defiant, Protos, Decrypt, Cointelegraph, …). **CoinGecko is
+> not a news source any more, in any form.**
+>
+> Verified 2026-09-01 — zero readers in `sense-ai-brain/src`, `sense-ai-core/src`,
+> `oracle/src`, **or either installed `@tradableapp/sense-ai-brain/dist`**:
+>
+> | key | readers |
+> |---|---|
+> | `COINGECKO_NEWS_ENABLED` | **0** |
+> | `COINGECKO_NEWS_FETCH_INTERVAL` | **0** |
+> | `CRYPTOPANIC_ENABLED` · `CRYPTOPANIC_API_KEY` · `CRYPTOPANIC_FETCH_INTERVAL` | **0** |
+> | `CRYPTORANK_ENABLED` · `CRYPTORANK_API_KEY` | **0** |
+> | `SANTIMENT_ENABLED` | 4 source files + dist — **§1 is still live** |
+>
+> **What this means for the revert, and why it matters in money.** Following §2 as written —
+> "upgrade the plan to Analyst FIRST, then set `COINGECKO_NEWS_ENABLED=true`" — would put
+> **US$94/mo back on the CoinGecko bill and return no news whatsoever**, because the flag is
+> inert and the adapter is gone. Do not do it. To add a source now, add a feed to
+> `rssAggregatorAdapter.ts`; `/v3/news` is not involved.
+>
+> **`COINGECKO_API_KEY` still matters** and must stay set — it drives price via
+> `COINGECKO_ENVIRONMENT: key ? "pro" : "demo"`, which is unchanged and unrelated to news.
+>
+> The seven dead keys are still present in the env files and composes. Harmless, but they read as
+> live configuration; removing them is a separate change (the two `.env.*` files are gitignored,
+> so it cannot be done from a PR alone). The two dead API keys are still valid credentials at the
+> vendors and should be revoked there rather than merely deleted locally.
+>
+> §2 below is kept as the historical record of what was applied on 2026-08-24.
+
+
 **Applied:** `COINGECKO_NEWS_ENABLED=false` **in `sense-ai-core` only**. **`COINGECKO_API_KEY`
 stays set** in both.
 
@@ -239,8 +277,10 @@ on the deploy machine. base-mainnet is not provisioned, so the line is inert. De
 base-mainnet is provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
 
 Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
-`coinGeckoAdapter.ts` constructor reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts`, the adapter loop (`if (!adapter.enabled) continue`)
-skips disabled adapters, so only the news fetch stops.
+`sense-ai-brain`'s `coinGeckoAdapter.ts` constructor reads `COINGECKO_NEWS_ENABLED !== "false"`, and
+its `marketNewsEngine.ts` adapter loop (`if (!adapter.enabled) continue`) skips disabled adapters,
+so only the news fetch stops. **Neither file exists in this repo** — they live in the Brain, which
+this repo consumes as a submodule, so do not go looking for them here.
 
 **What still works.** News continues from CoinDesk, CryptoPanic and CryptoRank (3 of 4 adapters).
 CoinGecko price data is unaffected.
