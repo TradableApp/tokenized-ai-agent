@@ -40,10 +40,26 @@ failures=""
 # placeholder check or mask a real one. Bounding the scan removes that whole class.
 in_config_block=false
 
+# FAIL CLOSED if the marker is missing. Without it the bounded scan never opens, nothing is
+# examined, and this script reported a clean pass — a bypass where a hand-edited or truncated
+# compose sails into an ORC bundle unvalidated, which is the exact hole it exists to close.
+# Verified before the fix: a compose whose only config line was `0xYourAIAgentAddressHere`
+# passed with exit 0. Found by review on the sense-ai-core port of this file (#103) and applied
+# to both copies so they do not diverge.
+if ! grep -q "ORC BUNDLE CONFIGURATION" "$COMPOSE_FILE"; then
+  echo "❌ Preflight: '$COMPOSE_FILE' has no '# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===' marker."
+  echo "   The plaintext block cannot be located, so nothing can be validated. Regenerate the"
+  echo "   compose with \`bun run rofl:set:<env>\` rather than editing it by hand."
+  exit 1
+fi
+
 while IFS= read -r line; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
   case "$trimmed" in *"ORC BUNDLE CONFIGURATION"*) in_config_block=true; continue ;; esac
-  $in_config_block || continue
+  # Explicit string test rather than `$in_config_block || continue`: that idiom only works
+  # because `true`/`false` happen to be executable builtins, so any other value would be run as
+  # a command. No live bug, but a trap for whoever patches this next.
+  [[ "$in_config_block" == "true" ]] || continue
   [[ "$trimmed" != "- "* ]] && continue
 
   key="${trimmed#- }"; key="${key%%=*}"

@@ -211,13 +211,32 @@ COINGECKO_PRO_API_KEY: process.env.COINGECKO_API_KEY || "",
 COINGECKO_ENVIRONMENT: process.env.COINGECKO_API_KEY ? "pro" : "demo",
 ```
 
-**`COINGECKO_PRO_API_KEY` is NOT an env var you set — setting it does nothing.** The snippet above
-is the trap: `COINGECKO_PRO_API_KEY` is the name of the *ElizaOS setting*, and it is populated from
-`process.env.COINGECKO_API_KEY`. Nothing in either body ever reads `process.env.COINGECKO_PRO_API_KEY`.
-A stray `COINGECKO_PRO_API_KEY=` line is currently sitting in `oracle/.env.oracle.base-mainnet`
-(that environment is not provisioned yet, so it is inert) — it looks like configuration, is
-documented in no `.env.oracle.example`, and has no effect. Delete it when base-mainnet is
-provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
+**`COINGECKO_PRO_API_KEY` is NOT an env var you set — setting it changes nothing at runtime.** The
+snippet above is the trap: `COINGECKO_PRO_API_KEY` is the name of the *ElizaOS setting*, and it is
+populated from `process.env.COINGECKO_API_KEY`. **No code path that runs** reads
+`process.env.COINGECKO_PRO_API_KEY`.
+
+**Where it came from.** `oracle/src/aiAgentOracle.js:384-388` holds a commented-out
+`plugin-coingecko` loader that *did* read it:
+
+```js
+// We use the @elizaos/plugin-mcp to connect to Coingecko MCP server instead
+// ...(process.env.COINGECKO_API_KEY?.trim() &&
+// process.env.COINGECKO_PRO_API_KEY?.trim()
+//   ? ['@elizaos/plugin-coingecko']
+//   : []),
+```
+
+That code does not run. It is almost certainly why the env var was set in the first place: the
+plugin was replaced with the MCP approach, the check was commented out, and the env entry
+survived. Recorded so a reader tracing only `character.js:58` does not conclude they have missed a
+consumer — and so the var is not re-added if anyone un-comments that loader, which would need only
+`COINGECKO_API_KEY` anyway.
+
+A stray `COINGECKO_PRO_API_KEY=` line is sitting in `oracle/.env.oracle.base-mainnet` right now.
+That file is **gitignored and not in this repo**, so you will not find it in a fresh clone — look
+on the deploy machine. base-mainnet is not provisioned, so the line is inert. Delete it when
+base-mainnet is provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
 
 Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
 `coinGeckoAdapter.ts` constructor reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts`, the adapter loop (`if (!adapter.enabled) continue`)
@@ -360,12 +379,15 @@ re-enabling.**
 
 ## Verification checklist (either direction)
 
-- [ ] **`bun run rofl:build:<env>` passes its preflight.** This repo has gated the build path
-      on `scripts/rofl-preflight.sh` since the compose-validation work; `sense-ai-core` was
-      NOT gated until CU-86d44ewwa and now mirrors it, sharing the same
-      `rofl-config-patterns.sh` shape. It refuses a bundle carrying a placeholder or a QUOTED
-      value — `SANTIMENT_TIER="MAX"` reaches the container as five characters and silently
-      takes the FREE-tier branch, which is a §1 setting, not a hypothetical.
+- [ ] **`bun run rofl:build:<env>` passes its preflight.** `scripts/rofl-preflight.sh` refuses to
+      build an ORC bundle whose plaintext block holds a placeholder or a quoted value. It refuses
+      quoted values *because* docker-compose does not strip the quotes: `SANTIMENT_TIER="MAX"`
+      reaches the container as the five characters `"MAX"`, an exact comparison fails, and the
+      FREE-tier branch is taken silently. That is a §1 setting, so this is the failure mode of
+      this very runbook, not a hypothetical. It also now refuses a compose with **no ORC marker**
+      at all, which previously passed as clean because the scan never opened.
+      This repo has been gated since the compose-validation work; `sense-ai-core` was not gated
+      until CU-86d44ewwa and now mirrors it, sharing the same `rofl-config-patterns.sh` shape.
 - [ ] **Brain gates actually live** — `SENTIMENT_MAX_STALE_DAYS` is a silent no-op until the
       submodule is bumped AND `bun install --force` has run. Check the INSTALLED dist, not the
       submodule log, because a bumped submodule with stale `node_modules` reports a false green:
