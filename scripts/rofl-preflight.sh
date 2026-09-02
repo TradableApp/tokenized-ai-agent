@@ -117,9 +117,14 @@ while IFS= read -r line; do
   # `-  KEY=value` with two spaces, so requiring exactly one narrowed the scan and let a
   # hand-edited double-space entry through unvalidated — in the one scenario this gate exists
   # for. Latent (generated composes use one space), fixed anyway.
-  [[ "$trimmed" =~ ^-[[:space:]]+[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+  # One source of truth for the key: capture it from the SAME regex that admits the line.
+  # Previously the regex accepted `-[[:space:]]+` while extraction stripped exactly `"- "`, so a
+  # hand-edited `-  mcp=#` (two spaces) was admitted and then yielded key=" mcp" — bypassing the
+  # mcp rule and every keyed check below it. Widening the regex without widening the extraction
+  # created that gap; deriving both from one match closes the class rather than the instance.
+  [[ "$trimmed" =~ ^-[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
 
-  key="${trimmed#- }"; key="${key%%=*}"
+  key="${BASH_REMATCH[1]}"
   val="${trimmed#*=}"
   # Trailing whitespace off, so a hand-edited `- KEY="MAX"   ` is still seen as quoted: without
   # it, rofl_is_quoted fails its `'"'*'"'` pattern because the value does not END in a quote.
