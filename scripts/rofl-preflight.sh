@@ -46,7 +46,14 @@ failures=""
 # sense-ai-core#103.
 env_name="$(basename "$COMPOSE_FILE" .yaml)"; env_name="${env_name#compose.}"
 env_file="$(dirname "$COMPOSE_FILE")/oracle/.env.oracle.${env_name}"
-if [ -f "$env_file" ] && [ "$env_file" -nt "$COMPOSE_FILE" ]; then
+if [ ! -f "$env_file" ]; then
+  # Say so rather than skipping quietly. A guard that disappears without comment is worse than
+  # one that is absent: the ✅ below would then attest to a check that never ran. Not fatal,
+  # because a fresh clone legitimately has no .env (they are gitignored) and the compose is
+  # tracked. Anchored to the COMPOSE's directory, not the caller's cwd, so a relative or absolute
+  # compose path resolves its sibling env file consistently either way.
+  echo "⚠️  Preflight: '$env_file' not found — staleness check SKIPPED for '$COMPOSE_FILE'."
+elif [ "$env_file" -nt "$COMPOSE_FILE" ]; then
   echo "❌ Preflight: '$COMPOSE_FILE' is older than '$env_file'."
   echo "   The compose is generated FROM that file, so it is stale and would bake outdated"
   echo "   config into the bundle. Run \`bun run rofl:set:${env_name}\` first. No bundle was built."
@@ -106,7 +113,11 @@ while IFS= read -r line; do
   # where `- "3000:3000"` really was being scanned and escaped a quoted-value report only
   # because, with no `=` in the line, `${trimmed#*=}` returns the whole string including `- `.
   # Fixed in both copies rather than only where it currently bites.
-  [[ "$trimmed" =~ ^-[[:space:]][A-Za-z_][A-Za-z0-9_]*= ]] || continue
+  # [[:space:]]+ not a single [[:space:]]: the glob this replaced (`- `*) still scanned
+  # `-  KEY=value` with two spaces, so requiring exactly one narrowed the scan and let a
+  # hand-edited double-space entry through unvalidated — in the one scenario this gate exists
+  # for. Latent (generated composes use one space), fixed anyway.
+  [[ "$trimmed" =~ ^-[[:space:]]+[A-Za-z_][A-Za-z0-9_]*= ]] || continue
 
   key="${trimmed#- }"; key="${key%%=*}"
   val="${trimmed#*=}"
