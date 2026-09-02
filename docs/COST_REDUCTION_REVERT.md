@@ -12,6 +12,19 @@ document exists so the change can be reversed at mainnet without re-deriving any
 | CoinGecko | Analyst US$129/mo | Basic US$35/mo | US$94/mo |
 | X API | ~US$100/mo | <US$10/mo | ~US$90/mo |
 
+> **This file and `sense-ai-core/docs/cost-reduction-revert.md` are near-identical copies, and
+> they have already diverged.** Which matters, because drift between two records of the same
+> config is the failure this whole ticket exists to fix.
+>
+> | Section | Authoritative copy | Why |
+> |---|---|---|
+> | §1 Santiment, §1b staleness gates | **either** — both bodies construct `SentimentEngine` | the flags genuinely apply in both |
+> | §2 CoinGecko news | **either**, but the *applied* change is core-only | the oracle runs no news adapters (see §2) |
+> | §3 X API | **`sense-ai-core`** | the oracle never posts to X; core's copy additionally carries the X Premium ↔ `TWITTER_MAX_TWEET_LENGTH` dependency and the mainnet budget deviations, which have no oracle equivalent |
+> | Deploy/verification checklist | **per repo** | different build paths and different guards |
+>
+> When editing a shared section, edit both. When editing §3, edit core's only.
+
 ---
 
 ## TL;DR — full revert
@@ -198,6 +211,14 @@ COINGECKO_PRO_API_KEY: process.env.COINGECKO_API_KEY || "",
 COINGECKO_ENVIRONMENT: process.env.COINGECKO_API_KEY ? "pro" : "demo",
 ```
 
+**`COINGECKO_PRO_API_KEY` is NOT an env var you set — setting it does nothing.** The snippet above
+is the trap: `COINGECKO_PRO_API_KEY` is the name of the *ElizaOS setting*, and it is populated from
+`process.env.COINGECKO_API_KEY`. Nothing in either body ever reads `process.env.COINGECKO_PRO_API_KEY`.
+A stray `COINGECKO_PRO_API_KEY=` line is currently sitting in `oracle/.env.oracle.base-mainnet`
+(that environment is not provisioned yet, so it is inert) — it looks like configuration, is
+documented in no `.env.oracle.example`, and has no effect. Delete it when base-mainnet is
+provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
+
 Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
 `coinGeckoAdapter.ts` constructor reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts`, the adapter loop (`if (!adapter.enabled) continue`)
 skips disabled adapters, so only the news fetch stops.
@@ -339,6 +360,12 @@ re-enabling.**
 
 ## Verification checklist (either direction)
 
+- [ ] **`bun run rofl:build:<env>` passes its preflight.** This repo has gated the build path
+      on `scripts/rofl-preflight.sh` since the compose-validation work; `sense-ai-core` was
+      NOT gated until CU-86d44ewwa and now mirrors it, sharing the same
+      `rofl-config-patterns.sh` shape. It refuses a bundle carrying a placeholder or a QUOTED
+      value — `SANTIMENT_TIER="MAX"` reaches the container as five characters and silently
+      takes the FREE-tier branch, which is a §1 setting, not a hypothetical.
 - [ ] **Brain gates actually live** — `SENTIMENT_MAX_STALE_DAYS` is a silent no-op until the
       submodule is bumped AND `bun install --force` has run. Check the INSTALLED dist, not the
       submodule log, because a bumped submodule with stale `node_modules` reports a false green:
