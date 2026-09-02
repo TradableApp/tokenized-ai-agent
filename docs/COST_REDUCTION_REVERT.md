@@ -276,7 +276,9 @@ That file is **gitignored and not in this repo**, so you will not find it in a f
 on the deploy machine. base-mainnet is not provisioned, so the line is inert. Delete it when
 base-mainnet is provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
 
-Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
+Unsetting the key would silently demote **price** to the demo tier — which is why it stays set.
+The rest of this subsection is historical: the news flag it points at is inert (see the §2
+warning). For the record, at the time it worked like this:
 `sense-ai-brain`'s `coinGeckoAdapter.ts` constructor read `COINGECKO_NEWS_ENABLED !== "false"`, and
 its `marketNewsEngine.ts` adapter loop (`if (!adapter.enabled) continue`) skipped disabled
 adapters, so only the news fetch stopped.
@@ -296,11 +298,19 @@ sources either, and their `*_ENABLED` flags and API keys have no readers.
 Defiant, Protos, Decrypt, Cointelegraph, …). CoinGecko **price** data is unaffected, which is why
 `COINGECKO_API_KEY` must stay set.
 
-**Revert — order matters here too.** **Upgrade the plan to Analyst FIRST, then set
-`COINGECKO_NEWS_ENABLED=true`** (or unset it). Same rule as §1: a live adapter with a dead
-entitlement means 4xx errors in the news fetch loop, just as a live Santiment adapter with a dead
-key means 401s. The flag alone is not enough either way — on Basic the `/v3/news` endpoint 4xxs
-regardless of the flag.
+**Revert — DO NOT follow the instruction below.** It is kept only as the record of what applied
+on 2026-08-24, and it no longer works: `COINGECKO_NEWS_ENABLED` has no reader and CoinGecko is not
+a news source in any form, so upgrading the plan costs **US$94/mo and returns nothing**. See the
+§2 warning at the top. To add a news source now, add a feed to `rssAggregatorAdapter.ts`.
+
+> *Historical (2026-08-24):* "Upgrade the plan to Analyst FIRST, then set
+> `COINGECKO_NEWS_ENABLED=true` (or unset it). Same rule as §1: a live adapter with a dead
+> entitlement means 4xx errors in the news fetch loop, just as a live Santiment adapter with a
+> dead key means 401s. The flag alone is not enough either way — on Basic the `/v3/news` endpoint
+> 4xxs regardless of the flag."
+>
+> The ordering rule itself still holds for **§1 Santiment**, which is live: re-subscribe before
+> re-enabling.
 
 ---
 

@@ -52,11 +52,14 @@ in_config_block=false
 # with the error message below, which quotes the full marker. -F because it is a fixed string.
 ORC_MARKER='# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ==='
 
-# A whole LINE equal to the marker, not a substring anywhere in the file. `grep -qF` succeeded
-# when the marker text merely appeared inside some other line while the real marker line was
-# absent — the scan then never opened and the script exited 0, reinstating the very bypass this
-# check was added to close. awk trims each line and compares exactly, so presence and scan-open
-# now test the same thing.
+# A whole LINE equal to the marker, not a substring anywhere in the file.
+#
+# History, because this has now been wrong twice. First a loose `grep -q "ORC BUNDLE
+# CONFIGURATION"` matched a comment merely mentioning the phrase. Then `grep -qF` on the full
+# marker still matched that text appearing INSIDE another line while the real marker line was
+# absent — in both cases the scan never opened, `failures` stayed empty and the script exited 0.
+# awk compares each line to the marker after trimming both ends; the loop below trims both ends
+# too, which is what actually makes presence and scan-open test the same thing.
 if ! awk -v m="$ORC_MARKER" '{ line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line); if (line == m) found = 1 } END { exit !found }' "$COMPOSE_FILE"; then
   echo "❌ Preflight: '$COMPOSE_FILE' has no '$ORC_MARKER' marker."
   echo "   The plaintext block cannot be located, so nothing can be validated. Regenerate the"
@@ -66,6 +69,12 @@ fi
 
 while IFS= read -r line; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
+  # Trailing whitespace too. The awk presence check trims BOTH ends, this stripped only the
+  # leading end — so a marker line carrying trailing spaces (an ordinary editor artefact, and
+  # precisely the hand-edited case this gate exists for) satisfied awk while never opening the
+  # scan. The file was then read to EOF with `failures` empty and the script exited 0: the
+  # silent pass this whole check was added to close, reintroduced by the fix for it.
+  trimmed="${trimmed%"${trimmed##*[^[:space:]]}"}"
   if [[ "$trimmed" == "$ORC_MARKER" ]]; then in_config_block=true; continue; fi
   # Explicit string test rather than `$in_config_block || continue`: that idiom only works
   # because `true`/`false` happen to be executable builtins, so any other value would be run as
