@@ -213,7 +213,17 @@ while IFS= read -r cfg_line; do
   cfg_val="${cfg_line#*=}"
 
   # `mcp` is intentionally emitted bare-empty — see the plugin-mcp null-deref workaround.
-  [ "$cfg_key" = "mcp" ] && continue
+  # `mcp` is exempt from the quote and placeholder rules — bare-empty is its CORRECT form — but
+  # exempting it outright also exempted it from validation, so `mcp=""` (the v0.3.3 TEE
+  # regression) or `mcp=#` (which broke callbacks across v0.3.0-v0.3.2) could be written into the
+  # tracked compose unchallenged. Reachable directly, or with SKIP_ENV_PARITY_CHECK=1. It gets its
+  # own rule: any value at all is wrong, since anything truthy registers ZERO MCP servers.
+  if [ "$cfg_key" = "mcp" ]; then
+    if [ -n "$cfg_val" ]; then
+      preflight_failures+="  ✗ mcp=${cfg_val}\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
+    fi
+    continue
+  fi
   [ -z "$cfg_val" ] && continue
 
   if printf '%s' "$cfg_val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then

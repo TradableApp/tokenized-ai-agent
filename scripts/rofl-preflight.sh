@@ -38,6 +38,21 @@ failures=""
 # matches ports:, volumes: and any future service list, so a volume like
 # `- /data/store?x=1:/container` would be parsed as a key/value pair and could trip the
 # placeholder check or mask a real one. Bounding the scan removes that whole class.
+# The compose must not PREDATE the .env it is generated from. env:parity validates the env files
+# and the scan below validates this compose, but nothing tied the two together: a stale compose
+# containing no placeholder or quoted value passed both guards and was baked into the ORC with
+# missing or outdated config. That is the same class of bypass this gate exists to close,
+# reachable through a standalone `rofl:build:*` run after an env file changed. Raised in review of
+# sense-ai-core#103.
+env_name="$(basename "$COMPOSE_FILE" .yaml)"; env_name="${env_name#compose.}"
+env_file="$(dirname "$COMPOSE_FILE")/oracle/.env.oracle.${env_name}"
+if [ -f "$env_file" ] && [ "$env_file" -nt "$COMPOSE_FILE" ]; then
+  echo "❌ Preflight: '$COMPOSE_FILE' is older than '$env_file'."
+  echo "   The compose is generated FROM that file, so it is stale and would bake outdated"
+  echo "   config into the bundle. Run \`bun run rofl:set:${env_name}\` first. No bundle was built."
+  exit 1
+fi
+
 in_config_block=false
 
 # FAIL CLOSED if the marker is missing. Without it the bounded scan never opens, nothing is
@@ -60,7 +75,11 @@ ORC_MARKER='# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ==='
 # absent — in both cases the scan never opened, `failures` stayed empty and the script exited 0.
 # awk compares each line to the marker after trimming both ends; the loop below trims both ends
 # too, which is what actually makes presence and scan-open test the same thing.
-if ! awk -v m="$ORC_MARKER" '{ line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line); if (line == m) found = 1 } END { exit !found }' "$COMPOSE_FILE"; then
+# [[:space:]], not [ \t]: POSIX includes carriage return, and the shell trim below uses
+# [[:space:]] too. On a CRLF compose file awk kept the \r, so `line == m` was false for every
+# line, `found` was never set, and a VALID file was rejected with "no ORC marker" — fails closed,
+# but it broke the very invariant the comment above asserts.
+if ! awk -v m="$ORC_MARKER" '{ line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line); if (line == m) found = 1 } END { exit !found }' "$COMPOSE_FILE"; then
   echo "❌ Preflight: '$COMPOSE_FILE' has no '$ORC_MARKER' marker."
   echo "   The plaintext block cannot be located, so nothing can be validated. Regenerate the"
   echo "   compose with \`bun run rofl:set:<env>\` rather than editing it by hand."
@@ -124,7 +143,6 @@ if [ -n "$failures" ]; then
   echo ""
   echo "❌ Preflight failed for '$COMPOSE_FILE' — refusing to build an ORC bundle."
   printf '%b' "$failures"
-  env_name="$(basename "$COMPOSE_FILE" .yaml)"; env_name="${env_name#compose.}"
   echo "   These come from oracle/.env.oracle.${env_name} (NOT this file — it is regenerated)."
   echo "   Fix them there, then \`bun run rofl:set:${env_name}\`. No bundle was built."
   exit 1
