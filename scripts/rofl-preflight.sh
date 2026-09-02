@@ -97,7 +97,18 @@ while IFS= read -r line; do
   # exactly the hand-edited case this gate exists for.
   val="${val%"${val##*[^[:space:]]}"}"
 
-  [ "$key" = "mcp" ] && continue          # deliberately bare-empty
+  # `mcp` is exempt from the quote and placeholder rules because bare-empty is its CORRECT
+  # form — but exempting it outright also exempted it from every check, so a hand-edited compose
+  # carrying `mcp=""` (the v0.3.3 TEE regression) or `mcp=#` (which broke callbacks across
+  # v0.3.0-v0.3.2) passed clean. It has its own rule instead: any value at all is wrong, because
+  # plugin-mcp reads this setting first and only falls back to character.settings.mcp when it is
+  # falsy, so anything truthy registers ZERO MCP servers.
+  if [ "$key" = "mcp" ]; then
+    if [ -n "$val" ]; then
+      failures+="  ✗ mcp=${val}\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
+    fi
+    continue
+  fi
   [ -z "$val" ] && continue
   [[ "$val" == '${'* ]] && continue        # runtime-injected secret
 
