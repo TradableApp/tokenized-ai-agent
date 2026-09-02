@@ -52,7 +52,12 @@ in_config_block=false
 # with the error message below, which quotes the full marker. -F because it is a fixed string.
 ORC_MARKER='# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ==='
 
-if ! grep -qF "$ORC_MARKER" "$COMPOSE_FILE"; then
+# A whole LINE equal to the marker, not a substring anywhere in the file. `grep -qF` succeeded
+# when the marker text merely appeared inside some other line while the real marker line was
+# absent — the scan then never opened and the script exited 0, reinstating the very bypass this
+# check was added to close. awk trims each line and compares exactly, so presence and scan-open
+# now test the same thing.
+if ! awk -v m="$ORC_MARKER" '{ line = $0; gsub(/^[ \t]+|[ \t]+$/, "", line); if (line == m) found = 1 } END { exit !found }' "$COMPOSE_FILE"; then
   echo "❌ Preflight: '$COMPOSE_FILE' has no '$ORC_MARKER' marker."
   echo "   The plaintext block cannot be located, so nothing can be validated. Regenerate the"
   echo "   compose with \`bun run rofl:set:<env>\` rather than editing it by hand."
@@ -61,7 +66,7 @@ fi
 
 while IFS= read -r line; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
-  if [[ "$trimmed" == "$ORC_MARKER"* ]]; then in_config_block=true; continue; fi
+  if [[ "$trimmed" == "$ORC_MARKER" ]]; then in_config_block=true; continue; fi
   # Explicit string test rather than `$in_config_block || continue`: that idiom only works
   # because `true`/`false` happen to be executable builtins, so any other value would be run as
   # a command. No live bug, but a trap for whoever patches this next.
@@ -77,6 +82,11 @@ while IFS= read -r line; do
 
   key="${trimmed#- }"; key="${key%%=*}"
   val="${trimmed#*=}"
+  # Trailing whitespace off, so a hand-edited `- KEY="MAX"   ` is still seen as quoted: without
+  # it, rofl_is_quoted fails its `'"'*'"'` pattern because the value does not END in a quote.
+  # sense-ai-core's TypeScript parseEnvFile already trimmed, so the two validators disagreed on
+  # exactly the hand-edited case this gate exists for.
+  val="${val%"${val##*[^[:space:]]}"}"
 
   [ "$key" = "mcp" ] && continue          # deliberately bare-empty
   [ -z "$val" ] && continue

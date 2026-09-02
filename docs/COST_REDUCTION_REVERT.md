@@ -277,13 +277,24 @@ on the deploy machine. base-mainnet is not provisioned, so the line is inert. De
 base-mainnet is provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
 
 Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
-`sense-ai-brain`'s `coinGeckoAdapter.ts` constructor reads `COINGECKO_NEWS_ENABLED !== "false"`, and
-its `marketNewsEngine.ts` adapter loop (`if (!adapter.enabled) continue`) skips disabled adapters,
-so only the news fetch stops. **Neither file exists in this repo** — they live in the Brain, which
-this repo consumes as a submodule, so do not go looking for them here.
+`sense-ai-brain`'s `coinGeckoAdapter.ts` constructor read `COINGECKO_NEWS_ENABLED !== "false"`, and
+its `marketNewsEngine.ts` adapter loop (`if (!adapter.enabled) continue`) skipped disabled
+adapters, so only the news fetch stopped.
 
-**What still works.** News continues from CoinDesk, CryptoPanic and CryptoRank (3 of 4 adapters).
-CoinGecko price data is unaffected.
+**Where to find these now.** `marketNewsEngine.ts` still exists and IS in this repo, at
+`oracle/packages/sense-ai-brain/src/engines/marketNewsEngine.ts` — `sense-ai-brain` is a git
+submodule here (see `.gitmodules`), consumed as the path dependency
+`@tradableapp/sense-ai-brain`, so it is both a submodule and an npm-named package.
+`coinGeckoAdapter.ts` **no longer exists in any repo**; see the §2 warning above.
+
+**What was working, as at 2026-08-24 (historical — see the §2 warning above).** News continued
+from CoinDesk, CryptoPanic and CryptoRank, 3 of the 4 adapters. **All four adapters are gone as of
+CU-86d44xyev**, replaced by `rssAggregatorAdapter.ts`; CryptoPanic and CryptoRank are no longer
+sources either, and their `*_ENABLED` flags and API keys have no readers.
+
+**What still works today.** News flows from the RSS feed set (CoinDesk, The Block, Bankless, The
+Defiant, Protos, Decrypt, Cointelegraph, …). CoinGecko **price** data is unaffected, which is why
+`COINGECKO_API_KEY` must stay set.
 
 **Revert — order matters here too.** **Upgrade the plan to Analyst FIRST, then set
 `COINGECKO_NEWS_ENABLED=true`** (or unset it). Same rule as §1: a live adapter with a dead
