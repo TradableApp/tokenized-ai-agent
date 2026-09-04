@@ -219,6 +219,10 @@ while IFS= read -r cfg_line; do
   # tracked compose unchallenged. Reachable directly, or with SKIP_ENV_PARITY_CHECK=1. It gets its
   # own rule: any value at all is wrong, since anything truthy registers ZERO MCP servers.
   if [ "$cfg_key" = "mcp" ]; then
+    # Trailing whitespace off first, matching the parallel check in rofl-preflight.sh. Without it
+    # `mcp=   ` reads as non-empty and fails as though it carried a value. Latent for generated
+    # content, reachable by hand-editing — which SKIP_ENV_PARITY_CHECK=1 leaves unguarded.
+    cfg_val="${cfg_val%"${cfg_val##*[^[:space:]]}"}"
     if [ -n "$cfg_val" ]; then
       preflight_failures+="  ✗ mcp=${cfg_val}\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
     fi

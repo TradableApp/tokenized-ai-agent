@@ -53,6 +53,7 @@ if [ ! -f "$env_file" ]; then
   # tracked. Anchored to the COMPOSE's directory, not the caller's cwd, so a relative or absolute
   # compose path resolves its sibling env file consistently either way.
   echo "⚠️  Preflight: '$env_file' not found — staleness check SKIPPED for '$COMPOSE_FILE'."
+  staleness_skipped=1
 elif [ "$env_file" -nt "$COMPOSE_FILE" ]; then
   echo "❌ Preflight: '$COMPOSE_FILE' is older than '$env_file'."
   echo "   The compose is generated FROM that file, so it is stale and would bake outdated"
@@ -153,6 +154,15 @@ while IFS= read -r line; do
   if rofl_is_quoted "$val"; then
     failures+="  ✗ ${key}=${val}\n      quoted — docker-compose keeps the quotes, so the container sees them in the value\n"
   fi
+  # Parity with checkParity's INLINE_COMMENT. Without it the two guards disagreed on what counts
+  # as unusable config, and SKIP_ENV_PARITY_CHECK=1 skips the parity half at BOTH rofl:set:* and
+  # rofl:build:* — so nothing was left to catch `KEY=home # Or 'latest'`, which the bundle then
+  # delivers to the container verbatim. Same narrowing as the TypeScript side: the '#' must be
+  # preceded by whitespace and followed by whitespace or end-of-value, so `#DeFi` in a topic list
+  # stays content rather than being read as a comment.
+  if printf '%s' "$val" | grep -qE '[[:space:]]#([[:space:]]|$)'; then
+    failures+="  ✗ ${key}=${val}\n      inline comment — baked in verbatim; move it to its own '#' line above the key\n"
+  fi
 done < "$COMPOSE_FILE"
 
 if [ -n "$failures" ]; then
@@ -163,4 +173,11 @@ if [ -n "$failures" ]; then
   echo "   Fix them there, then \`bun run rofl:set:${env_name}\`. No bundle was built."
   exit 1
 fi
-echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder or quoted values."
+# The ✅ carries the caveat rather than leaving it to a ⚠️ several lines up: in CI output the
+# success line is what gets read, so an unconditional ✅ made a run where the staleness guard
+# never executed look fully verified.
+if [ "${staleness_skipped:-0}" = "1" ]; then
+  echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder, quoted or inline-comment values (⚠️ staleness check skipped — env file absent)."
+else
+  echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder, quoted or inline-comment values."
+fi
