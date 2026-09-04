@@ -38,18 +38,113 @@ failures=""
 # matches ports:, volumes: and any future service list, so a volume like
 # `- /data/store?x=1:/container` would be parsed as a key/value pair and could trip the
 # placeholder check or mask a real one. Bounding the scan removes that whole class.
+# The compose must not PREDATE the .env it is generated from. env:parity validates the env files
+# and the scan below validates this compose, but nothing tied the two together: a stale compose
+# containing no placeholder or quoted value passed both guards and was baked into the ORC with
+# missing or outdated config. That is the same class of bypass this gate exists to close,
+# reachable through a standalone `rofl:build:*` run after an env file changed. Raised in review of
+# sense-ai-core#103.
+env_name="$(basename "$COMPOSE_FILE" .yaml)"; env_name="${env_name#compose.}"
+env_file="$(dirname "$COMPOSE_FILE")/oracle/.env.oracle.${env_name}"
+if [ ! -f "$env_file" ]; then
+  # Say so rather than skipping quietly. A guard that disappears without comment is worse than
+  # one that is absent: the ✅ below would then attest to a check that never ran. Not fatal,
+  # because a fresh clone legitimately has no .env (they are gitignored) and the compose is
+  # tracked. Anchored to the COMPOSE's directory, not the caller's cwd, so a relative or absolute
+  # compose path resolves its sibling env file consistently either way.
+  echo "⚠️  Preflight: '$env_file' not found — staleness check SKIPPED for '$COMPOSE_FILE'."
+  staleness_skipped=1
+elif [ "$env_file" -nt "$COMPOSE_FILE" ]; then
+  echo "❌ Preflight: '$COMPOSE_FILE' is older than '$env_file'."
+  echo "   The compose is generated FROM that file, so it is stale and would bake outdated"
+  echo "   config into the bundle. Run \`bun run rofl:set:${env_name}\` first. No bundle was built."
+  exit 1
+fi
+
 in_config_block=false
+
+# FAIL CLOSED if the marker is missing. Without it the bounded scan never opens, nothing is
+# examined, and this script reported a clean pass — a bypass where a hand-edited or truncated
+# compose sails into an ORC bundle unvalidated, which is the exact hole it exists to close.
+# Verified before the fix: a compose whose only config line was `0xYourAIAgentAddressHere`
+# passed with exit 0. Found by review on the sense-ai-core port of this file (#103) and applied
+# to both copies so they do not diverge.
+# The one marker string, matched EXACTLY. A loose substring also hits a comment such as
+# `# see the ORC BUNDLE CONFIGURATION block below`, which would open the scan early over the
+# secrets half, where quoted values are legitimate and deliberately unchecked. It also disagreed
+# with the error message below, which quotes the full marker. -F because it is a fixed string.
+ORC_MARKER='# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ==='
+
+# A whole LINE equal to the marker, not a substring anywhere in the file.
+#
+# History, because this has now been wrong twice. First a loose `grep -q "ORC BUNDLE
+# CONFIGURATION"` matched a comment merely mentioning the phrase. Then `grep -qF` on the full
+# marker still matched that text appearing INSIDE another line while the real marker line was
+# absent — in both cases the scan never opened, `failures` stayed empty and the script exited 0.
+# awk compares each line to the marker after trimming both ends; the loop below trims both ends
+# too, which is what actually makes presence and scan-open test the same thing.
+# [[:space:]], not [ \t]: POSIX includes carriage return, and the shell trim below uses
+# [[:space:]] too. On a CRLF compose file awk kept the \r, so `line == m` was false for every
+# line, `found` was never set, and a VALID file was rejected with "no ORC marker" — fails closed,
+# but it broke the very invariant the comment above asserts.
+if ! awk -v m="$ORC_MARKER" '{ line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line); if (line == m) found = 1 } END { exit !found }' "$COMPOSE_FILE"; then
+  echo "❌ Preflight: '$COMPOSE_FILE' has no '$ORC_MARKER' marker."
+  echo "   The plaintext block cannot be located, so nothing can be validated. Regenerate the"
+  echo "   compose with \`bun run rofl:set:<env>\` rather than editing it by hand."
+  exit 1
+fi
 
 while IFS= read -r line; do
   trimmed="${line#"${line%%[![:space:]]*}"}"
-  case "$trimmed" in *"ORC BUNDLE CONFIGURATION"*) in_config_block=true; continue ;; esac
-  $in_config_block || continue
-  [[ "$trimmed" != "- "* ]] && continue
+  # Trailing whitespace too. The awk presence check trims BOTH ends, this stripped only the
+  # leading end — so a marker line carrying trailing spaces (an ordinary editor artefact, and
+  # precisely the hand-edited case this gate exists for) satisfied awk while never opening the
+  # scan. The file was then read to EOF with `failures` empty and the script exited 0: the
+  # silent pass this whole check was added to close, reintroduced by the fix for it.
+  trimmed="${trimmed%"${trimmed##*[^[:space:]]}"}"
+  if [[ "$trimmed" == "$ORC_MARKER" ]]; then in_config_block=true; continue; fi
+  # Explicit string test rather than `$in_config_block || continue`: that idiom only works
+  # because `true`/`false` happen to be executable builtins, so any other value would be run as
+  # a command. No live bug, but a trap for whoever patches this next.
+  [[ "$in_config_block" == "true" ]] || continue
+  # Only real assignments. `- ` alone also matches ports: and volumes:, and in_config_block is
+  # never reset — so any such list appearing AFTER the environment block falls inside the scan
+  # and is parsed as a key/value pair. This repo's generated composes happen to put ports: and
+  # volumes: BEFORE the environment block, so it is latent here; sense-ai-core's put them after,
+  # where `- "3000:3000"` really was being scanned and escaped a quoted-value report only
+  # because, with no `=` in the line, `${trimmed#*=}` returns the whole string including `- `.
+  # Fixed in both copies rather than only where it currently bites.
+  # [[:space:]]+ not a single [[:space:]]: the glob this replaced (`- `*) still scanned
+  # `-  KEY=value` with two spaces, so requiring exactly one narrowed the scan and let a
+  # hand-edited double-space entry through unvalidated — in the one scenario this gate exists
+  # for. Latent (generated composes use one space), fixed anyway.
+  # One source of truth for the key: capture it from the SAME regex that admits the line.
+  # Previously the regex accepted `-[[:space:]]+` while extraction stripped exactly `"- "`, so a
+  # hand-edited `-  mcp=#` (two spaces) was admitted and then yielded key=" mcp" — bypassing the
+  # mcp rule and every keyed check below it. Widening the regex without widening the extraction
+  # created that gap; deriving both from one match closes the class rather than the instance.
+  [[ "$trimmed" =~ ^-[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
 
-  key="${trimmed#- }"; key="${key%%=*}"
+  key="${BASH_REMATCH[1]}"
   val="${trimmed#*=}"
+  # Trailing whitespace off, so a hand-edited `- KEY="MAX"   ` is still seen as quoted: without
+  # it, rofl_is_quoted fails its `'"'*'"'` pattern because the value does not END in a quote.
+  # sense-ai-core's TypeScript parseEnvFile already trimmed, so the two validators disagreed on
+  # exactly the hand-edited case this gate exists for.
+  val="${val%"${val##*[^[:space:]]}"}"
 
-  [ "$key" = "mcp" ] && continue          # deliberately bare-empty
+  # `mcp` is exempt from the quote and placeholder rules because bare-empty is its CORRECT
+  # form — but exempting it outright also exempted it from every check, so a hand-edited compose
+  # carrying `mcp=""` (the v0.3.3 TEE regression) or `mcp=#` (which broke callbacks across
+  # v0.3.0-v0.3.2) passed clean. It has its own rule instead: any value at all is wrong, because
+  # plugin-mcp reads this setting first and only falls back to character.settings.mcp when it is
+  # falsy, so anything truthy registers ZERO MCP servers.
+  if [ "$key" = "mcp" ]; then
+    if [ -n "$val" ]; then
+      failures+="  ✗ mcp=${val}\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
+    fi
+    continue
+  fi
   [ -z "$val" ] && continue
   [[ "$val" == '${'* ]] && continue        # runtime-injected secret
 
@@ -59,15 +154,30 @@ while IFS= read -r line; do
   if rofl_is_quoted "$val"; then
     failures+="  ✗ ${key}=${val}\n      quoted — docker-compose keeps the quotes, so the container sees them in the value\n"
   fi
+  # Parity with checkParity's INLINE_COMMENT. Without it the two guards disagreed on what counts
+  # as unusable config, and SKIP_ENV_PARITY_CHECK=1 skips the parity half at BOTH rofl:set:* and
+  # rofl:build:* — so nothing was left to catch `KEY=home # Or 'latest'`, which the bundle then
+  # delivers to the container verbatim. Same narrowing as the TypeScript side: the '#' must be
+  # preceded by whitespace and followed by whitespace or end-of-value, so `#DeFi` in a topic list
+  # stays content rather than being read as a comment.
+  if printf '%s' "$val" | grep -qE '[[:space:]]#([[:space:]]|$)'; then
+    failures+="  ✗ ${key}=${val}\n      inline comment — baked in verbatim; move it to its own '#' line above the key\n"
+  fi
 done < "$COMPOSE_FILE"
 
 if [ -n "$failures" ]; then
   echo ""
   echo "❌ Preflight failed for '$COMPOSE_FILE' — refusing to build an ORC bundle."
   printf '%b' "$failures"
-  env_name="$(basename "$COMPOSE_FILE" .yaml)"; env_name="${env_name#compose.}"
   echo "   These come from oracle/.env.oracle.${env_name} (NOT this file — it is regenerated)."
   echo "   Fix them there, then \`bun run rofl:set:${env_name}\`. No bundle was built."
   exit 1
 fi
-echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder or quoted values."
+# The ✅ carries the caveat rather than leaving it to a ⚠️ several lines up: in CI output the
+# success line is what gets read, so an unconditional ✅ made a run where the staleness guard
+# never executed look fully verified.
+if [ "${staleness_skipped:-0}" = "1" ]; then
+  echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder, quoted or inline-comment values (⚠️ staleness check skipped — env file absent)."
+else
+  echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder, quoted or inline-comment values."
+fi

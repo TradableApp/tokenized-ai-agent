@@ -12,6 +12,19 @@ document exists so the change can be reversed at mainnet without re-deriving any
 | CoinGecko | Analyst US$129/mo | Basic US$35/mo | US$94/mo |
 | X API | ~US$100/mo | <US$10/mo | ~US$90/mo |
 
+> **This file and `sense-ai-core/docs/cost-reduction-revert.md` are near-identical copies, and
+> they have already diverged.** Which matters, because drift between two records of the same
+> config is the failure this whole ticket exists to fix.
+>
+> | Section | Authoritative copy | Why |
+> |---|---|---|
+> | §1 Santiment, §1b staleness gates | **either** — both bodies construct `SentimentEngine` | the flags genuinely apply in both |
+> | §2 CoinGecko news | **either**, but the *applied* change is core-only | the oracle runs no news adapters (see §2) |
+> | §3 X API | **`sense-ai-core`** | the oracle never posts to X; core's copy additionally carries the X Premium ↔ `TWITTER_MAX_TWEET_LENGTH` dependency and the mainnet budget deviations, which have no oracle equivalent |
+> | Deploy/verification checklist | **per repo** | different build paths and different guards |
+>
+> When editing a shared section, edit both. When editing §3, edit core's only.
+
 ---
 
 ## TL;DR — full revert
@@ -40,7 +53,10 @@ unset SENTIMENT_MAX_STALE_DAYS    # restores the 45-day default
 
 # sense-ai-core ONLY — the oracle never runs the news adapters (see §2), so setting
 # this in the oracle env is a no-op.
-COINGECKO_NEWS_ENABLED=true       # or unset entirely
+# ⚠️  DO NOT — this flag has had NO READER since the CU-86d44xyev news rebuild, and CoinGecko
+# is no longer a news source in any form. Re-upgrading to Analyst to pair with it costs
+# US$94/mo and returns nothing. See the warning at the top of §2.
+# COINGECKO_NEWS_ENABLED=true     # inert — kept commented as the historical record
 
 # sense-ai-core only — restore the previous cadence.
 # In a shell/deploy script these are real commands; in a .env file, DELETE the matching lines.
@@ -179,6 +195,41 @@ on the stale path is rarely reached anyway.
 
 ## 2. CoinGecko news
 
+> ### ⚠️ §2 IS SUPERSEDED — `COINGECKO_NEWS_ENABLED` NO LONGER HAS A READER
+>
+> The news pipeline was rebuilt under **CU-86d44xyev**, after this runbook was written. All four
+> per-provider adapters were replaced by a single `rssAggregatorAdapter.ts` reading ~8 RSS feeds
+> (CoinDesk, The Block, Bankless, The Defiant, Protos, Decrypt, Cointelegraph, …). **CoinGecko is
+> not a news source any more, in any form.**
+>
+> Verified 2026-09-01 — zero readers in `sense-ai-brain/src`, `sense-ai-core/src`,
+> `oracle/src`, **or either installed `@tradableapp/sense-ai-brain/dist`**:
+>
+> | key | readers |
+> |---|---|
+> | `COINGECKO_NEWS_ENABLED` | **0** |
+> | `COINGECKO_NEWS_FETCH_INTERVAL` | **0** |
+> | `CRYPTOPANIC_ENABLED` · `CRYPTOPANIC_API_KEY` · `CRYPTOPANIC_FETCH_INTERVAL` | **0** |
+> | `CRYPTORANK_ENABLED` · `CRYPTORANK_API_KEY` | **0** |
+> | `SANTIMENT_ENABLED` | 4 source files + dist — **§1 is still live** |
+>
+> **What this means for the revert, and why it matters in money.** Following §2 as written —
+> "upgrade the plan to Analyst FIRST, then set `COINGECKO_NEWS_ENABLED=true`" — would put
+> **US$94/mo back on the CoinGecko bill and return no news whatsoever**, because the flag is
+> inert and the adapter is gone. Do not do it. To add a source now, add a feed to
+> `rssAggregatorAdapter.ts`; `/v3/news` is not involved.
+>
+> **`COINGECKO_API_KEY` still matters** and must stay set — it drives price via
+> `COINGECKO_ENVIRONMENT: key ? "pro" : "demo"`, which is unchanged and unrelated to news.
+>
+> The seven dead keys are still present in the env files and composes. Harmless, but they read as
+> live configuration; removing them is a separate change (the two `.env.*` files are gitignored,
+> so it cannot be done from a PR alone). The two dead API keys are still valid credentials at the
+> vendors and should be revoked there rather than merely deleted locally.
+>
+> §2 below is kept as the historical record of what was applied on 2026-08-24.
+
+
 **Applied:** `COINGECKO_NEWS_ENABLED=false` **in `sense-ai-core` only**. **`COINGECKO_API_KEY`
 stays set** in both.
 
@@ -198,18 +249,68 @@ COINGECKO_PRO_API_KEY: process.env.COINGECKO_API_KEY || "",
 COINGECKO_ENVIRONMENT: process.env.COINGECKO_API_KEY ? "pro" : "demo",
 ```
 
-Unsetting the key would silently demote **price** to the demo tier. Use the news flag instead:
-`coinGeckoAdapter.ts` constructor reads `COINGECKO_NEWS_ENABLED !== "false"` and `marketNewsEngine.ts`, the adapter loop (`if (!adapter.enabled) continue`)
-skips disabled adapters, so only the news fetch stops.
+**`COINGECKO_PRO_API_KEY` is NOT an env var you set — setting it changes nothing at runtime.** The
+snippet above is the trap: `COINGECKO_PRO_API_KEY` is the name of the *ElizaOS setting*, and it is
+populated from `process.env.COINGECKO_API_KEY`. **No code path that runs** reads
+`process.env.COINGECKO_PRO_API_KEY`.
 
-**What still works.** News continues from CoinDesk, CryptoPanic and CryptoRank (3 of 4 adapters).
-CoinGecko price data is unaffected.
+**Where it came from.** `oracle/src/aiAgentOracle.js:384-388` holds a commented-out
+`plugin-coingecko` loader that *did* read it:
 
-**Revert — order matters here too.** **Upgrade the plan to Analyst FIRST, then set
-`COINGECKO_NEWS_ENABLED=true`** (or unset it). Same rule as §1: a live adapter with a dead
-entitlement means 4xx errors in the news fetch loop, just as a live Santiment adapter with a dead
-key means 401s. The flag alone is not enough either way — on Basic the `/v3/news` endpoint 4xxs
-regardless of the flag.
+```js
+// We use the @elizaos/plugin-mcp to connect to Coingecko MCP server instead
+// ...(process.env.COINGECKO_API_KEY?.trim() &&
+// process.env.COINGECKO_PRO_API_KEY?.trim()
+//   ? ['@elizaos/plugin-coingecko']
+//   : []),
+```
+
+That code does not run. It is almost certainly why the env var was set in the first place: the
+plugin was replaced with the MCP approach, the check was commented out, and the env entry
+survived. Recorded so a reader tracing only `character.js:58` does not conclude they have missed a
+consumer — and so the var is not re-added if anyone un-comments that loader, which would need only
+`COINGECKO_API_KEY` anyway.
+
+A stray `COINGECKO_PRO_API_KEY=` line is sitting in `oracle/.env.oracle.base-mainnet` right now.
+That file is **gitignored and not in this repo**, so you will not find it in a fresh clone — look
+on the deploy machine. base-mainnet is not provisioned, so the line is inert. Delete it when
+base-mainnet is provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
+
+Unsetting the key would silently demote **price** to the demo tier — which is why it stays set.
+The rest of this subsection is historical: the news flag it points at is inert (see the §2
+warning). For the record, at the time it worked like this:
+`sense-ai-brain`'s `coinGeckoAdapter.ts` constructor read `COINGECKO_NEWS_ENABLED !== "false"`, and
+its `marketNewsEngine.ts` adapter loop (`if (!adapter.enabled) continue`) skipped disabled
+adapters, so only the news fetch stopped.
+
+**Where to find these now.** `marketNewsEngine.ts` still exists and IS in this repo, at
+`oracle/packages/sense-ai-brain/src/engines/marketNewsEngine.ts` — `sense-ai-brain` is a git
+submodule here (see `.gitmodules`), consumed as the path dependency
+`@tradableapp/sense-ai-brain`, so it is both a submodule and an npm-named package.
+`coinGeckoAdapter.ts` **no longer exists in any repo**; see the §2 warning above.
+
+**What was working, as at 2026-08-24 (historical — see the §2 warning above).** News continued
+from CoinDesk, CryptoPanic and CryptoRank, 3 of the 4 adapters. **All four adapters are gone as of
+CU-86d44xyev**, replaced by `rssAggregatorAdapter.ts`; CryptoPanic and CryptoRank are no longer
+sources either, and their `*_ENABLED` flags and API keys have no readers.
+
+**What still works today.** News flows from the RSS feed set (CoinDesk, The Block, Bankless, The
+Defiant, Protos, Decrypt, Cointelegraph, …). CoinGecko **price** data is unaffected, which is why
+`COINGECKO_API_KEY` must stay set.
+
+**Revert — DO NOT follow the instruction below.** It is kept only as the record of what applied
+on 2026-08-24, and it no longer works: `COINGECKO_NEWS_ENABLED` has no reader and CoinGecko is not
+a news source in any form, so upgrading the plan costs **US$94/mo and returns nothing**. See the
+§2 warning at the top. To add a news source now, add a feed to `rssAggregatorAdapter.ts`.
+
+> *Historical (2026-08-24):* "Upgrade the plan to Analyst FIRST, then set
+> `COINGECKO_NEWS_ENABLED=true` (or unset it). Same rule as §1: a live adapter with a dead
+> entitlement means 4xx errors in the news fetch loop, just as a live Santiment adapter with a
+> dead key means 401s. The flag alone is not enough either way — on Basic the `/v3/news` endpoint
+> 4xxs regardless of the flag."
+>
+> The ordering rule itself still holds for **§1 Santiment**, which is live: re-subscribe before
+> re-enabling.
 
 ---
 
@@ -339,6 +440,15 @@ re-enabling.**
 
 ## Verification checklist (either direction)
 
+- [ ] **`bun run rofl:build:<env>` passes its preflight.** `scripts/rofl-preflight.sh` refuses to
+      build an ORC bundle whose plaintext block holds a placeholder or a quoted value. It refuses
+      quoted values *because* docker-compose does not strip the quotes: `SANTIMENT_TIER="MAX"`
+      reaches the container as the five characters `"MAX"`, an exact comparison fails, and the
+      FREE-tier branch is taken silently. That is a §1 setting, so this is the failure mode of
+      this very runbook, not a hypothetical. It also now refuses a compose with **no ORC marker**
+      at all, which previously passed as clean because the scan never opened.
+      This repo has been gated since the compose-validation work; `sense-ai-core` was not gated
+      until CU-86d44ewwa and now mirrors it, sharing the same `rofl-config-patterns.sh` shape.
 - [ ] **Brain gates actually live** — `SENTIMENT_MAX_STALE_DAYS` is a silent no-op until the
       submodule is bumped AND `bun install --force` has run. Check the INSTALLED dist, not the
       submodule log, because a bumped submodule with stale `node_modules` reports a false green:
