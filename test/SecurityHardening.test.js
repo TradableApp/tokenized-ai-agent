@@ -97,8 +97,9 @@ describe("Security hardening", function () {
       expect(observed, "token callback never fired").to.not.equal("0x");
       const decoded = escrow.interface.decodeFunctionResult("escrows", observed);
 
-      // EscrowStatus: 0 NONE, 1 PENDING, 2 COMPLETE, 3 REFUNDED.
-      expect(decoded.status).to.equal(3);
+      // EscrowStatus has no NONE member: PENDING = 0, COMPLETE = 1, REFUNDED = 2. Before the
+      // reorder this read 0 — the token was called while the escrow still said PENDING.
+      expect(decoded.status).to.equal(2);
     });
 
     it("still refunds exactly once, and does not underflow the pending count", async function () {

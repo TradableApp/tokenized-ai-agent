@@ -2,6 +2,7 @@
 pragma solidity ^0.8.21;
 
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { IEVMAIAgent } from "./interfaces/IEVMAIAgent.sol";
 import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -14,6 +15,12 @@ import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils
  * @dev It is upgradeable using the UUPS proxy pattern.
  */
 contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+  // Raw transfer/transferFrom discard the boolean return, so a token that signals failure by
+  // returning false — rather than reverting — lets this contract book a settlement that never
+  // moved anything. $ABLE reverts, so today this is defence in depth; the escrow should not
+  // depend on a property of the particular token it was initialised with.
+  using SafeERC20 for IERC20;
+
   // --- Constants ---
 
   /// @notice The time after which a user can cancel their own pending prompt to prevent mis-clicks.
@@ -517,13 +524,16 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
 
     sub.spentAmount += cancellationFee;
-    ableToken.transferFrom(msg.sender, treasury, cancellationFee);
 
+    // EFFECTS BEFORE INTERACTIONS. Both state writes now land before any external call, matching
+    // finalizePayment and processRefund. Previously they sat between the two token calls, so an
+    // observer re-entering mid-cancel saw an escrow that still read PENDING.
     --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
 
+    ableToken.safeTransferFrom(msg.sender, treasury, cancellationFee);
     evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
-    ableToken.transfer(escrow.user, escrow.amount);
+    ableToken.safeTransfer(escrow.user, escrow.amount);
     emit PromptCancelled(msg.sender, _answerMessageId);
   }
 
@@ -569,7 +579,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.COMPLETE;
     emit PaymentFinalized(_escrowId);
-    ableToken.transfer(treasury, escrow.amount);
+    ableToken.safeTransfer(treasury, escrow.amount);
   }
 
   /**
@@ -596,7 +606,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     spendingLimits[escrow.user].spentAmount -= escrow.amount;
 
     emit PaymentRefunded(escrowId);
-    ableToken.transfer(escrow.user, escrow.amount);
+    ableToken.safeTransfer(escrow.user, escrow.amount);
   }
 
   // --- Internal Helper Functions ---
@@ -623,7 +633,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
     sub.spentAmount += _fee;
     ++pendingEscrowCount[_user];
-    ableToken.transferFrom(_user, address(this), _fee);
+    ableToken.safeTransferFrom(_user, address(this), _fee);
   }
 
   /**
@@ -647,7 +657,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
 
     sub.spentAmount += _fee;
-    ableToken.transferFrom(_user, treasury, _fee);
+    ableToken.safeTransferFrom(_user, treasury, _fee);
   }
 
   // --- Upgradability ---

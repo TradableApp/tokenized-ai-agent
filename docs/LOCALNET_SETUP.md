@@ -461,7 +461,7 @@ If you also restart Docker (wiping the Graph node), re-run Steps 9–10 (`docker
 
 ## Notes
 
-- **`scripts/interact.js`** is not compatible with the current ECIES encryption — it uses the legacy `eth-crypto` format. Use the dApp UI for end-to-end prompt testing.
+- **End-to-end prompt testing** goes through the dApp UI. (`scripts/interact.js` used to be the alternative and was removed in the 2026-09-22 security pass — it had been stuck on the legacy `eth-crypto` format since the move to ECIES, so it could not complete a prompt.)
 - **Irys/Autonomys storage** will fail on localnet (no funded devnet wallet). These failures are captured by Sentry, which is useful for testing error capture.
 - **Slack alerts** are filtered to `mainnet`/`testnet` environments. Localnet events appear in the Sentry dashboard only.
 - **The Graph on localnet** is optional for Sentry testing but required for conversation history to display in the dApp.
