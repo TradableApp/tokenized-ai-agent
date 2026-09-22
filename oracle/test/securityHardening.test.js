@@ -116,8 +116,7 @@ describe('security hardening — bad-input classification', () => {
   // "Unexpected token" is the dangerous one. JSON.parse throws it anywhere — including on a
   // gateway or RPC that answers with an HTML error page during an outage. That is a transient,
   // retryable failure, and it was being classified as malicious input and dropped.
-  const { BadInputError } = require('../src/errors');
-  const { isBadInputError } = require('../src/aiAgentOracle');
+  const { BadInputError, isBadInputError } = require('../src/errors');
 
   it('classifies a typed BadInputError as bad input', () => {
     expect(isBadInputError(new BadInputError('Validation Failed for PromptSubmitted'))).to.be.true;

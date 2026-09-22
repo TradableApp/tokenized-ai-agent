@@ -1,4 +1,5 @@
 const { z } = require("zod");
+const { BadInputError } = require("./errors");
 
 // --- Global Constants (Aligned with Frontend) ---
 const MAX_PROMPT_LENGTH = 5000; // Matches Chat.jsx
@@ -72,8 +73,11 @@ function validatePayload(input, eventName) {
     // .strip() removes unknown keys to prevent pollution
     return schema.strip().parse(obj);
   } catch (error) {
-    // We throw a standardized error that handleAndRecord can detect
-    throw new Error(`Validation Failed for ${eventName}: ${error.message}`);
+    // TYPED so handleAndRecord can detect it without matching on message text. A schema mismatch
+    // is the one case where dropping the event permanently is correct.
+    throw new BadInputError(`Validation Failed for ${eventName}: ${error.message}`, {
+      cause: error,
+    });
   }
 }
 

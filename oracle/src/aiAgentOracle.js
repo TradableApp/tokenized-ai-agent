@@ -35,6 +35,7 @@ const {
   createSearchIndexDeltaFile,
   jsonReplacer,
 } = require("./formatters");
+const { BadInputError, isBadInputError } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { validatePayload } = require("./payloadValidator");
@@ -480,7 +481,7 @@ function decryptSymmetrically(encryptedString, key) {
   // Check for the correct two-part format.
   const parts = encryptedString.split(".");
   if (parts.length !== 2) {
-    throw new Error('Invalid encrypted data format. Expected "iv.encryptedData".');
+    throw new BadInputError('Invalid encrypted data format. Expected "iv.encryptedData".');
   }
 
   const iv = Buffer.from(parts[0], "base64");
@@ -509,7 +510,18 @@ function decryptSymmetrically(encryptedString, key) {
 async function getSessionKey(payload, roflEncryptedKey, conversationId) {
   console.log(`[Crypto] Resolving session key for conversation: ${conversationId}...`);
   if (isSapphire) {
-    const parsedPayload = JSON.parse(payload);
+    // The ONLY JSON.parse whose failure genuinely means "the caller sent us rubbish". Typed here
+    // so the drop decision is made about THIS parse, rather than by pattern-matching every
+    // SyntaxError in the process — which is how a gateway's HTML error page used to get a prompt
+    // discarded.
+    let parsedPayload;
+    try {
+      parsedPayload = JSON.parse(payload);
+    } catch (error) {
+      throw new BadInputError(`Event payload is not valid JSON: ${error.message}`, {
+        cause: error,
+      });
+    }
     if (parsedPayload.sessionKey) {
       return Buffer.from(strip0xPrefix(parsedPayload.sessionKey), "hex");
     }
@@ -1394,16 +1406,6 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
  * Known to over-match: "Unexpected token" is a stock SyntaxError string, so an AI endpoint's HTML
  * 502 matches it. Narrowing changes handleAndRecord's drop behaviour — tracked as CU-86d41hquj.
  */
-function isBadInputError(error) {
-  const message = error?.message ?? "";
-
-  return (
-    message.includes("Validation Failed") ||
-    message.includes("Invalid encrypted data format") ||
-    message.includes("Unexpected token") // JSON parse error
-  );
-}
-
 // Helper to check for specific contract errors using Ethers v6 Interface
 function isContractError(error, errorName) {
   try {
@@ -2762,6 +2764,7 @@ async function start() {
 
 module.exports = {
   readFailedJobsList,
+  isBadInputError,
   start,
   queryElizaOS,
   initForTest,
