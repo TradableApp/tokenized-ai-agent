@@ -141,11 +141,29 @@ function createSearchIndexDeltaFile({ conversationId, messageId, userMessageCont
   };
 }
 
+/**
+ * `JSON.stringify` replacer that renders BigInt as its decimal string.
+ *
+ * Ethers v6 returns BigInt for every uint256, so anything holding a raw `event.args` — the
+ * failed-jobs queue above all — cannot be stringified without one: `JSON.stringify` THROWS on a
+ * BigInt rather than skipping it. That throw landed inside the error handler that was trying to
+ * queue a retryable job, so the job was never queued and the block cursor never advanced. A
+ * recoverable failure became a silent loss.
+ *
+ * Decimal STRING, never Number. Conversation and message ids routinely exceed
+ * Number.MAX_SAFE_INTEGER, so `Number(bigint)` would round them into a different id — the kind
+ * of corruption that reads as a mystery rather than an error.
+ */
+function jsonReplacer(_key, value) {
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
 module.exports = {
   createConversationFile,
   createConversationMetadataFile,
   createMessageFile,
   createSearchIndexDeltaFile,
+  jsonReplacer,
   // also export for testing or direct use if needed
   generateKeywords,
 };

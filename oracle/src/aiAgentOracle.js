@@ -33,6 +33,7 @@ const {
   createConversationMetadataFile,
   createMessageFile,
   createSearchIndexDeltaFile,
+  jsonReplacer,
 } = require("./formatters");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
@@ -2263,10 +2264,18 @@ async function handleAndRecord(eventName, handler, ...args) {
         nextAttemptAt: Date.now() + BASE_RETRY_DELAY_MS,
       });
 
-      await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(failedJobs, null, 2));
+      // jsonReplacer is REQUIRED here, not defensive: `event.args` is an ethers v6 Result whose
+      // uint256 fields are BigInt, and JSON.stringify throws on those. Without it this write
+      // threw, so neither the queue write nor the persistCursor below ever ran.
+      await fs.writeFile(
+        FAILED_JOBS_FILE_PATH,
+        JSON.stringify(failedJobs, jsonReplacer, 2),
+      );
 
-      // Still save the block progress, because we have successfully QUEUED the failed job.
-      // This prevents it from being picked up again by the catch-up scanner.
+      // Only NOW is the block progress safe to save: the job is durably queued, so advancing the
+      // cursor hands responsibility to the retry loop rather than dropping the event. If the
+      // write above throws, this is correctly skipped and the catch-up scanner sees the event
+      // again — which is why the write must come first.
       await persistCursor(event.blockNumber);
     } else {
       const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
@@ -2414,7 +2423,12 @@ async function retryFailedJobs() {
   // If we processed any jobs, this means the queue has changed (either by removing a job
   // or by updating its retry count), so we must write the new state back to the file.
   if (processed) {
-    await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(remainingJobs, null, 2));
+    // Same replacer as the enqueue path. These jobs were read back from JSON so are already
+    // BigInt-free today, but the two writes must not disagree about how a job serialises.
+    await fs.writeFile(
+      FAILED_JOBS_FILE_PATH,
+      JSON.stringify(remainingJobs, jsonReplacer, 2),
+    );
   }
 }
 

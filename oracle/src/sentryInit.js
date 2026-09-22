@@ -8,24 +8,67 @@ const TRACE_RATES = {
   'base-mainnet': 0.05,
 };
 
+/**
+ * Substrings that mark a field as secret, matched against a NORMALISED key.
+ *
+ * Normalisation is the fix, not the list. The previous matcher compared the raw lowercased key
+ * against these entries, so `"private_key".includes("privatekey")` was false and PRIVATE_KEY —
+ * the exact name the TEE's own signing secret carries in rofl.yaml — was sent to Sentry in the
+ * clear. Every screaming-snake secret missed for the same reason. Stripping separators first
+ * makes PRIVATE_KEY, privateKey and private-key one thing.
+ *
+ * Entries are deliberately specific ("privatekey", "apikey") rather than a bare "key", which
+ * would also redact publicKey, keywords and anything ending in -key, hollowing out reports for
+ * no gain. Where the choice is genuinely close, over-redaction wins: a redacted field costs one
+ * debugging round-trip, a leaked one costs a key rotation.
+ */
 const SENSITIVE_KEYS = [
-  "AI_AGENT_PRIVATE_KEY",
-  "AUTONOMYS_MNEMONIC",
-  "IRYS_KEY",
-  "privateKey",
+  "privatekey",
+  "apikey",
+  "clientkey",
+  "iryskey",
+  "roflencryptedkey",
+  "encryptedpayload",
   "mnemonic",
-  "encryptedPayload",
-  "roflEncryptedKey",
+  "passphrase",
+  "password",
+  "passwd",
+  "secret",
+  "token",
+  "credential",
+  "authorization",
+  "cookie",
 ];
 
-function scrubSensitiveData(obj) {
+/** Collapse case and separators so PRIVATE_KEY, privateKey and private-key all compare equal. */
+function normaliseKey(key) {
+  return String(key).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isSensitiveKey(key) {
+  const normalised = normaliseKey(key);
+  return SENSITIVE_KEYS.some((s) => normalised.includes(s));
+}
+
+/**
+ * Recursively redact secret-looking fields from a Sentry event.
+ *
+ * `seen` guards against cycles. Sentry events legitimately contain them (a captured error whose
+ * `cause` chain loops, a DOM-ish or request object referencing itself), and the unguarded version
+ * recursed to RangeError. Thrown out of `beforeSend`, that drops the event — so a cycle blinded
+ * ALL error monitoring, which is strictly worse than whatever was being reported.
+ */
+function scrubSensitiveData(obj, seen = new WeakSet()) {
   if (!obj || typeof obj !== "object") return obj;
+  if (seen.has(obj)) return "[CIRCULAR]";
+  seen.add(obj);
+
   const result = Array.isArray(obj) ? [...obj] : { ...obj };
   for (const key of Object.keys(result)) {
-    if (SENSITIVE_KEYS.some((s) => key.toLowerCase().includes(s.toLowerCase()))) {
+    if (isSensitiveKey(key)) {
       result[key] = "[REDACTED]";
     } else if (typeof result[key] === "object") {
-      result[key] = scrubSensitiveData(result[key]);
+      result[key] = scrubSensitiveData(result[key], seen);
     }
   }
   return result;
