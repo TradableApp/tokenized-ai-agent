@@ -192,6 +192,33 @@ describe('security hardening — Sentry scrubbing', () => {
     expect(result.ableToken).to.equal('0xABLE');
   });
 
+  it("redacts this project's own secret-bearing field names", () => {
+    // sessionKey is not a generic guess: it is a declared field in payloadValidator's schemas
+    // and is read off the prompt path, so it is the single most likely secret to be attached
+    // to a Sentry `extra`. The list was rebuilt without it.
+    const result = scrubSensitiveData({
+      sessionKey: 'a',
+      SESSION_KEY: 'b',
+      signingKey: 'c',
+      ENCRYPTION_KEY: 'd',
+      seedPhrase: 'e',
+    });
+
+    for (const k of Object.keys(result)) {
+      expect(result[k], k).to.equal('[REDACTED]');
+    }
+  });
+
+  it('keeps benign seed fields, which are not credentials', () => {
+    // The same trap as the bare "token" entry: this codebase carries contentSeed, numericSeed
+    // and initialRandomSeed, so the entry is "seedphrase" rather than "seed".
+    const result = scrubSensitiveData({ contentSeed: 1, numericSeed: 2, initialRandomSeed: 3 });
+
+    expect(result.contentSeed).to.equal(1);
+    expect(result.numericSeed).to.equal(2);
+    expect(result.initialRandomSeed).to.equal(3);
+  });
+
   it('still redacts the credential-shaped token names', () => {
     const result = scrubSensitiveData({
       SLACK_ACCESS_TOKEN: 'a',

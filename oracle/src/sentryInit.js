@@ -31,6 +31,15 @@ const SENSITIVE_KEYS = [
   "privatekey",
   "apikey",
   "clientkey",
+  // Declared fields in payloadValidator's schemas and read off the prompt path — the likeliest
+  // secret in this codebase to be attached to a Sentry `extra`, and missed by a list rebuilt
+  // without consulting the project's own schema.
+  "sessionkey",
+  "signingkey",
+  "encryptionkey",
+  // "seedphrase", not a bare "seed": this codebase carries contentSeed, numericSeed and
+  // initialRandomSeed, none of which are credentials. Same trap as the bare "token" entry.
+  "seedphrase",
   "iryskey",
   "roflencryptedkey",
   "encryptedpayload",
