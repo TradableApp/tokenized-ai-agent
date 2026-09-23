@@ -205,13 +205,23 @@ function validateConfig(env = process.env) {
   // the variable that caused it. ADR-0001 chose managed Postgres and rejected PGLite as
   // brittle; this is that decision enforced rather than assumed.
   const agentDb = env.POSTGRES_AGENT_DATABASE;
-  if (isBlank(agentDb)) {
+  // A directly-supplied POSTGRES_URL is the legacy alternative, and initializeEliza still
+  // implements it: it migrates against that url and derives its expectDatabase guard from the
+  // url's own path. Rejecting it here would make that branch unreachable through index.js —
+  // a guard contradicting a path the same change documents as supported. What matters is that
+  // SOME Postgres is named; PGLite is what must be impossible.
+  const legacyUrl = env.POSTGRES_URL;
+  if (isBlank(agentDb) && isBlank(legacyUrl)) {
     problems.push(
       'POSTGRES_AGENT_DATABASE is missing or empty — the oracle needs a dedicated Postgres ' +
-        'agent database (e.g. "oracle_agent"). There is no working fallback: plugin-sql would ' +
-        'use PGLite, whose schema is never created on this boot path, and the runtime would ' +
-        'die on `relation "agents" does not exist` about thirty seconds in',
+        'agent database (e.g. "oracle_agent"), or a POSTGRES_URL naming one directly. There is ' +
+        'no working fallback: plugin-sql would use PGLite, whose schema is never created on ' +
+        'this boot path, and the runtime would die on `relation "agents" does not exist` about ' +
+        'thirty seconds in',
     );
+  } else if (isBlank(agentDb)) {
+    // Legacy path: the connection config below is bootstrapped from the url itself, so the
+    // per-key checks do not apply. initializeEliza warns about the missing isolation at boot.
   } else {
     // Only once a database is named, for the same one-mistake-one-problem reason as the
     // address and key above. The lists come from postgresBootstrap so this cannot approve a

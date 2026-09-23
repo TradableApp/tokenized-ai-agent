@@ -56,12 +56,29 @@ describe("startup config validation", () => {
   // `relation "agents" does not exist`, nowhere near the variable at fault.
   it("refuses a configuration with no POSTGRES_AGENT_DATABASE", () => {
     try {
-      validateConfig(baseEnv({ POSTGRES_AGENT_DATABASE: undefined }));
+      validateConfig(
+        baseEnv({ POSTGRES_AGENT_DATABASE: undefined, POSTGRES_URL: undefined }),
+      );
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.name).to.equal("ConfigError");
       expect(err.message).to.match(/POSTGRES_AGENT_DATABASE/);
     }
+  });
+
+  // initializeEliza still implements the legacy path: given POSTGRES_URL it migrates against
+  // that url and derives its expectDatabase guard from the url's own path. Rejecting it here
+  // would leave a guard contradicting a branch the same change documents as supported. The
+  // invariant is that SOME Postgres is named — PGLite is the thing that must be impossible.
+  it("accepts a directly-supplied POSTGRES_URL in place of the agent DB", () => {
+    expect(() =>
+      validateConfig(
+        baseEnv({
+          POSTGRES_AGENT_DATABASE: undefined,
+          POSTGRES_URL: "postgresql://u:p@db.internal:5432/oracle_agent",
+        }),
+      ),
+    ).to.not.throw();
   });
 
   // A database NAME with no credentials is what the committed .env.oracle.example carries, so

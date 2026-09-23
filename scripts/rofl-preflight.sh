@@ -127,10 +127,6 @@ while IFS= read -r line; do
   [[ "$trimmed" =~ ^-[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
 
   key="${BASH_REMATCH[1]}"
-  # Recorded for the presence assertions after the loop. Delimited on BOTH sides so a
-  # substring match cannot pass — `POSTGRES_AGENT_DATABASE_EXTRA` must not satisfy a check
-  # for `POSTGRES_AGENT_DATABASE`.
-  config_keys_seen+="|${key}|"
   val="${trimmed#*=}"
   # Trailing whitespace off, so a hand-edited `- KEY="MAX"   ` is still seen as quoted: without
   # it, rofl_is_quoted fails its `'"'*'"'` pattern because the value does not END in a quote.
@@ -151,6 +147,15 @@ while IFS= read -r line; do
     continue
   fi
   [ -z "$val" ] && continue
+
+  # Recorded for the presence assertions after the loop, and recorded HERE rather than beside
+  # the key match so an empty value does not count as configured — the assert below claims
+  # "present and non-empty", and `- POSTGRES_AGENT_DATABASE=` used to satisfy it. Empty values
+  # genuinely reach generated composes: `mcp=` is one by design, so this is not hypothetical.
+  # Delimited on BOTH sides so a substring cannot pass — `POSTGRES_AGENT_DATABASE_EXTRA` must
+  # not satisfy a check for `POSTGRES_AGENT_DATABASE`.
+  config_keys_seen+="|${key}|"
+
   [[ "$val" == '${'* ]] && continue        # runtime-injected secret
 
   if printf '%s' "$val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then

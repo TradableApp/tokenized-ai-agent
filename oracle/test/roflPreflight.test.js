@@ -169,6 +169,19 @@ describe("rofl-preflight.sh", function () {
       expect(out).to.include("POSTGRES_AGENT_DATABASE");
     });
 
+    it("rejects a compose that declares the key with an empty value", function () {
+      // The assert's own comment says "present and non-empty". A bare `- POSTGRES_AGENT_DATABASE=`
+      // is exactly the shape a half-finished regeneration leaves behind, and an empty value is no
+      // more usable than an absent one — plugin-sql falls through to PGLite either way. Empty
+      // values demonstrably do reach generated composes: `mcp=` is one, by design.
+      const { code, out } = runPreflight(
+        composeFixture(["- POSTGRES_AGENT_DATABASE=", "- LOG_LEVEL=warn"], { omitAgentDb: true }),
+      );
+
+      expect(code).to.equal(1);
+      expect(out).to.include("POSTGRES_AGENT_DATABASE");
+    });
+
     it("is not satisfied by a key that merely starts with the same name", function () {
       // The check matches on a both-sides-delimited record precisely so this cannot pass.
       const { code, out } = runPreflight(
