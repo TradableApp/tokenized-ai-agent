@@ -21,6 +21,7 @@
  */
 
 const { SUPPORTED_NETWORKS } = require("./contractUtility");
+const { REQUIRED_BASE_KEYS, CERT_KEY_PAIRS } = require("./postgresBootstrap");
 
 /** Thrown when the process must not continue. Typed so callers can distinguish it from bugs. */
 class ConfigError extends Error {
@@ -188,6 +189,42 @@ function validateConfig(env = process.env) {
         `AI_AGENT_CONTRACT_ADDRESS "${address}" is not a valid address (0x + 40 hex characters, ` +
           `no surrounding whitespace) — ethers treats a non-address as an ENS name and fails ` +
           `asynchronously on first call`,
+      );
+    }
+  }
+
+  // Postgres is MANDATORY for the ElizaOS agent runtime, and this is the only place that
+  // can enforce it. The wiring in aiAgentOracle.js cannot: it runs inside initializeEliza,
+  // which the prompt path re-enters behind the ElizaOS→ChainGPT failover, so a throw there
+  // is caught and silently downgrades every answer to the fallback provider instead of
+  // stopping the process.
+  //
+  // What the missing config actually costs: plugin-sql falls through to PGLite, the
+  // programmatic boot skips its server-level migration, and the runtime dies ~30s later on
+  // `relation "agents" does not exist` while every service registration times out — far from
+  // the variable that caused it. ADR-0001 chose managed Postgres and rejected PGLite as
+  // brittle; this is that decision enforced rather than assumed.
+  const agentDb = env.POSTGRES_AGENT_DATABASE;
+  if (isBlank(agentDb)) {
+    problems.push(
+      'POSTGRES_AGENT_DATABASE is missing or empty — the oracle needs a dedicated Postgres ' +
+        'agent database (e.g. "oracle_agent"). There is no working fallback: plugin-sql would ' +
+        'use PGLite, whose schema is never created on this boot path, and the runtime would ' +
+        'die on `relation "agents" does not exist` about thirty seconds in',
+    );
+  } else {
+    // Only once a database is named, for the same one-mistake-one-problem reason as the
+    // address and key above. The lists come from postgresBootstrap so this cannot approve a
+    // configuration that module would then reject.
+    const missing = REQUIRED_BASE_KEYS.filter((key) => isBlank(env[key]));
+    for (const [inlineKey, pathKey] of CERT_KEY_PAIRS) {
+      if (isBlank(env[inlineKey]) && isBlank(env[pathKey])) missing.push(`${inlineKey} (or ${pathKey})`);
+    }
+    if (missing.length > 0) {
+      problems.push(
+        `POSTGRES_AGENT_DATABASE is set to "${agentDb.trim()}" but the Postgres connection ` +
+          `config is incomplete — missing: ${missing.join(", ")}. A database name alone is not ` +
+          `enough to connect, and the oracle will not fall back`,
       );
     }
   }

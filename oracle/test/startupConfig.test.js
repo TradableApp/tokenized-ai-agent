@@ -30,6 +30,18 @@ function baseEnv(overrides = {}) {
     PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
     AI_AGENT_CONTRACT_ADDRESS: "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
     USE_MOCK_STORAGE: "true",
+    // Postgres is part of a complete configuration now — the agent runtime has no working
+    // fallback. Kept in the shared fixture rather than added per-test so every existing case
+    // keeps testing the thing it was written to test.
+    POSTGRES_AGENT_DATABASE: "oracle_agent",
+    POSTGRES_HOST: "10.0.0.5",
+    POSTGRES_PORT: "5432",
+    POSTGRES_DATABASE: "senseai",
+    POSTGRES_USER: "senseai",
+    POSTGRES_PASSWORD: "not-a-real-password",
+    POSTGRES_CLIENT_CERT_PATH: "/certs/client.crt",
+    POSTGRES_CLIENT_KEY_PATH: "/certs/client.key",
+    POSTGRES_SERVER_CA_CERT_PATH: "/certs/ca.crt",
     ...overrides,
   };
 }
@@ -37,6 +49,49 @@ function baseEnv(overrides = {}) {
 describe("startup config validation", () => {
   it("accepts a complete configuration", () => {
     expect(() => validateConfig(baseEnv())).to.not.throw();
+  });
+
+  // ADR-0001 chose managed Postgres and rejected PGLite as brittle; without this guard that
+  // decision was never enforced, and the cost of missing it is paid ~30s into the boot on
+  // `relation "agents" does not exist`, nowhere near the variable at fault.
+  it("refuses a configuration with no POSTGRES_AGENT_DATABASE", () => {
+    try {
+      validateConfig(baseEnv({ POSTGRES_AGENT_DATABASE: undefined }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.name).to.equal("ConfigError");
+      expect(err.message).to.match(/POSTGRES_AGENT_DATABASE/);
+    }
+  });
+
+  // A database NAME with no credentials is what the committed .env.oracle.example carries, so
+  // it is the shape someone gets by copying the example — it must be rejected, not accepted
+  // and then failed on at connect time.
+  it("refuses a named agent DB whose connection config is incomplete", () => {
+    try {
+      validateConfig(baseEnv({ POSTGRES_PASSWORD: undefined, POSTGRES_HOST: undefined }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.match(/POSTGRES_HOST/);
+      expect(err.message).to.match(/POSTGRES_PASSWORD/);
+    }
+  });
+
+  // Either form satisfies the cert requirement; postgresBootstrap accepts inline PEM as well
+  // as a path, and the guard reuses ITS lists, so it must accept whatever that module does.
+  it("accepts inline cert PEM in place of the *_PATH form", () => {
+    expect(() =>
+      validateConfig(
+        baseEnv({
+          POSTGRES_CLIENT_CERT_PATH: undefined,
+          POSTGRES_CLIENT_KEY_PATH: undefined,
+          POSTGRES_SERVER_CA_CERT_PATH: undefined,
+          POSTGRES_CLIENT_CERT: "-----BEGIN CERTIFICATE-----",
+          POSTGRES_CLIENT_KEY: "-----BEGIN PRIVATE KEY-----",
+          POSTGRES_SERVER_CA_CERT: "-----BEGIN CERTIFICATE-----",
+        }),
+      ),
+    ).to.not.throw();
   });
 
   it("names the variable that is missing", () => {
