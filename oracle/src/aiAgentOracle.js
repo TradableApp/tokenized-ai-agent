@@ -495,7 +495,20 @@ function decryptSymmetrically(encryptedString, key) {
   decipher.setAuthTag(authTag);
 
   const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
-  return JSON.parse(decrypted.toString("utf-8"));
+
+  // Typed for the same reason as the payload parse below. A user holds their own session key,
+  // so they can seal arbitrary bytes that authenticate correctly and still are not JSON. Left
+  // untyped, that plain SyntaxError is neither bad input nor retryable and lands in the FATAL
+  // branch: Sentry, a Slack "CRITICAL: Oracle Fatal Error" and an answer_failed metric, one per
+  // malformed prompt — attacker-driven alert and metric inflation, which is precisely what the
+  // !isBadInputError gates exist to prevent.
+  try {
+    return JSON.parse(decrypted.toString("utf-8"));
+  } catch (error) {
+    throw new BadInputError(`Decrypted payload is not valid JSON: ${error.message}`, {
+      cause: error,
+    });
+  }
 }
 
 /**
@@ -510,10 +523,10 @@ function decryptSymmetrically(encryptedString, key) {
 async function getSessionKey(payload, roflEncryptedKey, conversationId) {
   console.log(`[Crypto] Resolving session key for conversation: ${conversationId}...`);
   if (isSapphire) {
-    // The ONLY JSON.parse whose failure genuinely means "the caller sent us rubbish". Typed here
-    // so the drop decision is made about THIS parse, rather than by pattern-matching every
-    // SyntaxError in the process — which is how a gateway's HTML error page used to get a prompt
-    // discarded.
+    // One of two parses whose failure genuinely means "the caller sent us rubbish" — the other
+    // is in decryptSymmetrically. Typed here so the drop decision is made about THIS parse,
+    // rather than by pattern-matching every SyntaxError in the process — which is how a
+    // gateway's HTML error page used to get a prompt discarded.
     let parsedPayload;
     try {
       parsedPayload = JSON.parse(payload);
@@ -1395,17 +1408,6 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
 // --- Event Handlers ---
 
-/**
- * Malformed / malicious input, as opposed to a failure on our side.
- *
- * ONE predicate, TWO consumers: `handleAndRecord` drops these events silently (no retry, no
- * Sentry) and the answer-path telemetry declines to record them as `answer_failed`. Those
- * decisions must agree — an event the system has decided is not its problem must not appear in
- * the daily summary as an oracle failure, especially since the input is attacker-controlled.
- *
- * Known to over-match: "Unexpected token" is a stock SyntaxError string, so an AI endpoint's HTML
- * 502 matches it. Narrowing changes handleAndRecord's drop behaviour — tracked as CU-86d41hquj.
- */
 // Helper to check for specific contract errors using Ethers v6 Interface
 function isContractError(error, errorName) {
   try {
@@ -2211,7 +2213,9 @@ async function handleAndRecord(eventName, handler, ...args) {
     await persistCursor(event.blockNumber);
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
-    // "Validation Failed" covers all schema mismatches from payloadValidator.js
+    // Membership is by TYPE now, not by message text: payloadValidator raises BadInputError on a
+    // schema mismatch, and so do the two payload parses. Nothing else qualifies, which is the
+    // point — a transient failure whose message merely reads like a parse error is retried.
     if (isBadInputError(error)) {
       console.warn(
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${error.message}`,

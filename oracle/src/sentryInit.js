@@ -21,6 +21,11 @@ const TRACE_RATES = {
  * would also redact publicKey, keywords and anything ending in -key, hollowing out reports for
  * no gain. Where the choice is genuinely close, over-redaction wins: a redacted field costs one
  * debugging round-trip, a leaked one costs a key rotation.
+ *
+ * "token" is qualified for the same reason, and it matters more here than the -key case. A bare
+ * entry redacts tokenAddress, tokenId, ableToken, promptTokens and totalTokens — in a
+ * token-gated AI agent that is most of the telemetry you debug with, and none of it is a
+ * credential. The credential-shaped names are enumerated instead.
  */
 const SENSITIVE_KEYS = [
   "privatekey",
@@ -34,7 +39,12 @@ const SENSITIVE_KEYS = [
   "password",
   "passwd",
   "secret",
-  "token",
+  "accesstoken",
+  "authtoken",
+  "bearertoken",
+  "refreshtoken",
+  "idtoken",
+  "sessiontoken",
   "credential",
   "authorization",
   "cookie",
@@ -50,28 +60,71 @@ function isSensitiveKey(key) {
   return SENSITIVE_KEYS.some((s) => normalised.includes(s));
 }
 
+/** Deeper than any real Sentry event; past this the shape is pathological, not informative. */
+const MAX_SCRUB_DEPTH = 200;
+
 /**
  * Recursively redact secret-looking fields from a Sentry event.
  *
- * `seen` guards against cycles. Sentry events legitimately contain them (a captured error whose
- * `cause` chain loops, a DOM-ish or request object referencing itself), and the unguarded version
- * recursed to RangeError. Thrown out of `beforeSend`, that drops the event — so a cycle blinded
- * ALL error monitoring, which is strictly worse than whatever was being reported.
+ * EVERYTHING HERE IS ABOUT NOT THROWING. A throw out of `beforeSend` is not a crash anyone
+ * sees: Sentry's `processBeforeSend` feeds the result into a promise chain, so the rejection
+ * simply drops the event. The scrubber failing therefore blinds ALL error monitoring at exactly
+ * the moment something is going wrong — strictly worse than whatever was being reported. Four
+ * separate inputs were verified to do it:
+ *
+ *   - a cycle (`cause` chains, self-referencing request objects) → RangeError;
+ *   - DEEP ACYCLIC nesting, which the cycle guard does nothing for → RangeError, hence the
+ *     depth cap;
+ *   - a property whose getter throws, because spreading an object INVOKES its getters;
+ *   - a Proxy whose `ownKeys` trap throws.
+ *
+ * `path` rather than a global seen-set: a shared sub-object is a DIAMOND, not a cycle, and
+ * Sentry events share sub-objects between contexts routinely. Marking the second visit
+ * `[CIRCULAR]` silently deletes real data. Entries are removed on unwind so only genuine
+ * ancestors count.
+ *
+ * Keys are read with `Reflect.ownKeys` so symbol-keyed properties are checked too — the spread
+ * copies them, but `Object.keys` cannot see them, so `Symbol("PRIVATE_KEY")` used to survive
+ * into the event with its value intact.
  */
-function scrubSensitiveData(obj, seen = new WeakSet()) {
+function scrubSensitiveData(obj, path = new Set(), depth = 0) {
   if (!obj || typeof obj !== "object") return obj;
-  if (seen.has(obj)) return "[CIRCULAR]";
-  seen.add(obj);
+  if (path.has(obj)) return "[CIRCULAR]";
+  if (depth >= MAX_SCRUB_DEPTH) return "[TRUNCATED]";
 
-  const result = Array.isArray(obj) ? [...obj] : { ...obj };
-  for (const key of Object.keys(result)) {
-    if (isSensitiveKey(key)) {
-      result[key] = "[REDACTED]";
-    } else if (typeof result[key] === "object") {
-      result[key] = scrubSensitiveData(result[key], seen);
-    }
+  let keys;
+  try {
+    keys = Reflect.ownKeys(obj);
+  } catch {
+    // A Proxy that refuses to enumerate. Nothing can be read safely, so report the shape.
+    return "[UNREADABLE]";
   }
-  return result;
+
+  path.add(obj);
+  try {
+    const result = Array.isArray(obj) ? [] : {};
+    for (const key of keys) {
+      if (isSensitiveKey(typeof key === "symbol" ? (key.description ?? "") : key)) {
+        result[key] = "[REDACTED]";
+        continue;
+      }
+
+      let value;
+      try {
+        value = obj[key];
+      } catch {
+        // A throwing getter. One unreadable field must not cost the whole event.
+        result[key] = "[UNREADABLE]";
+        continue;
+      }
+
+      result[key] =
+        value && typeof value === "object" ? scrubSensitiveData(value, path, depth + 1) : value;
+    }
+    return result;
+  } finally {
+    path.delete(obj);
+  }
 }
 
 function initSentry() {
@@ -89,7 +142,21 @@ function initSentry() {
     environment,
     tracesSampleRate,
     beforeSend(event) {
-      return scrubSensitiveData(event);
+      // Last line of defence. scrubSensitiveData is written not to throw, but if it ever does,
+      // Sentry drops the event and monitoring goes dark without a word. Send a minimal
+      // stand-in instead: never the unscrubbed original, which is the one thing that could
+      // leak, but enough to show that something failed and roughly where.
+      try {
+        return scrubSensitiveData(event);
+      } catch (error) {
+        console.error("[Sentry] Scrubbing failed; sending a redacted stand-in.", error);
+        return {
+          event_id: event?.event_id,
+          timestamp: event?.timestamp,
+          level: "error",
+          message: `Sentry scrubbing failed (${error?.message ?? "unknown"}); original event withheld.`,
+        };
+      }
     },
   });
 

@@ -106,6 +106,105 @@ describe('security hardening — Sentry scrubbing', () => {
     expect(result.extra.PRIVATE_KEY).to.equal('[REDACTED]');
     expect(result.extra.ok).to.equal('y');
   });
+
+  it('keeps publicKey, which is the case the specific-entry list exists to protect', () => {
+    // Asserted explicitly: the fixture above contained publicKey but never checked it, so the
+    // docstring's central claim -- that entries are specific rather than a bare "key" -- was
+    // untested.
+    expect(scrubSensitiveData({ publicKey: '0x04abc' }).publicKey).to.equal('0x04abc');
+  });
+
+  // Everything below is a way the scrubber THROWS or LOSES DATA. A throw out of beforeSend is
+  // not a crash you see -- Sentry drops the event silently, so the failure mode is total
+  // blindness at exactly the moment something is going wrong.
+
+  it('survives nesting deeper than the stack, which is not circular at all', () => {
+    // The WeakSet guards cycles only. A deep ACYCLIC object -- a long cause chain, a big
+    // decoded payload -- recursed to RangeError with no cycle anywhere in it.
+    let deep = { leaf: true };
+    for (let i = 0; i < 50_000; i += 1) deep = { nested: deep };
+
+    expect(() => scrubSensitiveData(deep)).to.not.throw();
+  });
+
+  it('survives a property whose getter throws', () => {
+    // Spreading an object INVOKES its getters. Error objects from third-party libraries do
+    // carry lazy accessors, and one that throws took the whole event with it.
+    const hostile = { safe: 1 };
+    Object.defineProperty(hostile, 'boom', {
+      enumerable: true,
+      get() {
+        throw new Error('getter exploded');
+      },
+    });
+
+    expect(() => scrubSensitiveData(hostile)).to.not.throw();
+  });
+
+  it('survives a proxy that refuses to enumerate', () => {
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('no keys for you');
+        },
+      },
+    );
+
+    expect(() => scrubSensitiveData({ payload: hostile })).to.not.throw();
+  });
+
+  it('does not report shared references as circular', () => {
+    // A diamond is not a cycle. Sentry events routinely share sub-objects between contexts, and
+    // a global seen-set marks the second visit as [CIRCULAR] -- silently deleting real data
+    // from the report.
+    const shared = { detail: 'kept' };
+
+    const result = scrubSensitiveData({ a: shared, b: shared });
+
+    expect(result.a).to.deep.equal({ detail: 'kept' });
+    expect(result.b).to.deep.equal({ detail: 'kept' });
+  });
+
+  it('redacts a symbol-keyed secret', () => {
+    // Object.keys does not see symbols, but the spread COPIES them -- so the value survived
+    // into the event untouched.
+    const key = Symbol('PRIVATE_KEY');
+
+    expect(scrubSensitiveData({ [key]: 'sk-leak' })[key]).to.equal('[REDACTED]');
+  });
+
+  it('keeps token telemetry, which is not a credential', () => {
+    // A bare "token" entry redacts exactly the fields you debug a token-gated agent with. The
+    // list's own docstring argues against bare matches; this holds it to that.
+    const result = scrubSensitiveData({
+      tokenAddress: '0xABLE',
+      tokenId: 7,
+      promptTokens: 120,
+      totalTokens: 340,
+      ableToken: '0xABLE',
+    });
+
+    expect(result.tokenAddress).to.equal('0xABLE');
+    expect(result.tokenId).to.equal(7);
+    expect(result.promptTokens).to.equal(120);
+    expect(result.totalTokens).to.equal(340);
+    expect(result.ableToken).to.equal('0xABLE');
+  });
+
+  it('still redacts the credential-shaped token names', () => {
+    const result = scrubSensitiveData({
+      SLACK_ACCESS_TOKEN: 'a',
+      authToken: 'b',
+      bearerToken: 'c',
+      refreshToken: 'd',
+      TRADABLE_API_ACCESS_TOKEN: 'e',
+    });
+
+    for (const k of Object.keys(result)) {
+      expect(result[k], k).to.equal('[REDACTED]');
+    }
+  });
 });
 
 describe('security hardening — bad-input classification', () => {
@@ -148,6 +247,75 @@ describe('security hardening — bad-input classification', () => {
     expect(isBadInputError(null)).to.be.false;
     expect(isBadInputError(undefined)).to.be.false;
     expect(isBadInputError({})).to.be.false;
+  });
+
+  // decryptSymmetrically parses the DECRYPTED payload. A user holds their own session key, so
+  // they can encrypt arbitrary bytes that pass AES-GCM authentication and still aren't JSON.
+  //
+  // Before this predicate was typed, the old message match on "Unexpected token" covered this
+  // parse by accident and the event was dropped quietly — correct behaviour. Typing it without
+  // typing this site regresses that: a plain SyntaxError is no longer bad input, isn't retryable
+  // either, and falls through to the FATAL branch — Sentry, a Slack "CRITICAL: Oracle Fatal
+  // Error", and an answer_failed metric, one per malformed prompt. Exactly the attacker-driven
+  // inflation the !isBadInputError gates exist to prevent.
+  const crypto = require('node:crypto');
+  const { ethers } = require('ethers');
+
+  // aiAgentOracle initialises a wallet at module load, so it needs a usable PRIVATE_KEY and is
+  // required fresh here rather than at file scope — same pattern as failedJobsProbe.test.js,
+  // including restoring whatever another suite left in the environment.
+  let decryptSymmetrically;
+  let savedEnv;
+
+  before(() => {
+    const wallet = ethers.Wallet.createRandom();
+    savedEnv = {
+      pk: process.env.PRIVATE_KEY,
+      addr: process.env.AI_AGENT_CONTRACT_ADDRESS,
+    };
+    process.env.PRIVATE_KEY = wallet.privateKey;
+    process.env.AI_AGENT_CONTRACT_ADDRESS = wallet.address;
+    delete require.cache[require.resolve('../src/aiAgentOracle')];
+    ({ decryptSymmetrically } = require('../src/aiAgentOracle'));
+  });
+
+  after(() => {
+    if (savedEnv.pk === undefined) delete process.env.PRIVATE_KEY;
+    else process.env.PRIVATE_KEY = savedEnv.pk;
+    if (savedEnv.addr === undefined) delete process.env.AI_AGENT_CONTRACT_ADDRESS;
+    else process.env.AI_AGENT_CONTRACT_ADDRESS = savedEnv.addr;
+    delete require.cache[require.resolve('../src/aiAgentOracle')];
+  });
+
+  /** Encrypts arbitrary bytes the way a client would, so the auth tag is valid. */
+  function sealForOracle(plaintext, key) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const body = Buffer.concat([cipher.update(Buffer.from(plaintext)), cipher.final()]);
+    const combined = Buffer.concat([body, cipher.getAuthTag()]);
+    return `${iv.toString('base64')}.${combined.toString('base64')}`;
+  }
+
+  it('treats a well-encrypted payload that is not JSON as bad input', () => {
+    const key = crypto.randomBytes(32);
+    const sealed = sealForOracle('this decrypts cleanly but is not JSON', key);
+
+    let thrown;
+    try {
+      decryptSymmetrically(sealed, key);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown, 'expected a throw').to.exist;
+    expect(isBadInputError(thrown)).to.be.true;
+  });
+
+  it('still decrypts a valid JSON payload unchanged', () => {
+    const key = crypto.randomBytes(32);
+    const sealed = sealForOracle(JSON.stringify({ sessionKey: '0xabc', n: 1 }), key);
+
+    expect(decryptSymmetrically(sealed, key)).to.deep.equal({ sessionKey: '0xabc', n: 1 });
   });
 });
 
