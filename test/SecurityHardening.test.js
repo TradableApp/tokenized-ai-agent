@@ -102,23 +102,38 @@ describe("Security hardening", function () {
       expect(decoded.status).to.equal(2);
     });
 
-    it("still refunds exactly once, and does not underflow the pending count", async function () {
-      // The behavioural guard that must survive the reordering.
+    // A REAL re-entrant call, not a staticcall. The observing variant above cannot SSTORE, so an
+    // "attack" armed with it is inert by construction — this test previously used it and stayed
+    // GREEN under a mutation that moved the effects back after the first token call, while
+    // claiming in its own comment to be "the behavioural guard that must survive the reordering".
+    //
+    // What it is guarding: with two or more pending escrows the pre-fix underflow does NOT save
+    // us. spentAmount is large enough that `processRefund` completes, and `cancelPrompt` then
+    // resumes and pays `escrow.amount` a SECOND time — a double refund drawn from other users'
+    // escrowed funds. The reorder closes it because the re-entrant call now finds status
+    // REFUNDED and reverts.
+    it("refuses a real re-entrant refund, so the user is paid exactly once", async function () {
       const { escrow, token, user } = await loadFixture(reentrantFixture);
       const answerMessageId = 1;
 
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
+      // TWO pending escrows: with only one, an underflow reverts the re-entrant call for an
+      // unrelated reason and the test would pass without the ordering being responsible.
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
       await escrow.connect(user).initiatePrompt(0, "0x", "0x");
       await time.increase(3601);
 
       const reentry = escrow.interface.encodeFunctionData("processRefund", [answerMessageId]);
-      await token.arm(await escrow.getAddress(), reentry);
+      await token.armCall(await escrow.getAddress(), reentry);
 
       const before = await token.balanceOf(user.address);
       await escrow.connect(user).cancelPrompt(answerMessageId);
 
+      expect(await token.reentrySucceeded(), "the re-entrant refund must be rejected").to.equal(
+        false,
+      );
       expect((await token.balanceOf(user.address)) - before).to.equal(PROMPT_FEE - CANCELLATION_FEE);
-      expect(await escrow.pendingEscrowCount(user.address)).to.equal(0);
+      expect(await escrow.pendingEscrowCount(user.address)).to.equal(1);
     });
   });
 
