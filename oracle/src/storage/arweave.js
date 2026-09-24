@@ -153,12 +153,53 @@ async function fetchData(cid) {
  * @param {Array<{name: string, value: string}>} tags The tags to search for.
  * @returns {Promise<string|null>} The first matching transaction ID, or null.
  */
-async function queryTransactionByTags(tags) {
-  const query = `
+/**
+ * Render a string as a GraphQL string literal, escaped.
+ *
+ * `JSON.stringify` is the escaper on purpose: GraphQL's string-literal syntax is a subset of
+ * JSON's — same double quotes, same backslash escapes, same \uXXXX form — so its output is a
+ * valid GraphQL literal, quotes included. Using it beats hand-rolling a replace chain that
+ * forgets control characters.
+ *
+ * Non-strings are REJECTED rather than coerced. `String({})` yields "[object Object]", which
+ * would quietly query for the wrong thing instead of reporting a caller's mistake.
+ */
+function gqlString(value, field) {
+  if (typeof value !== "string") {
+    throw new TypeError(`GraphQL tag ${field} must be a string, received ${typeof value}`);
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Build the tag-filter query document.
+ *
+ * Separated from the fetch so the escaping is directly testable — the injection risk lives
+ * entirely in how this string is assembled, and a test that has to stub the network to reach it
+ * is a test nobody trusts.
+ *
+ * Today's callers pass `${chainId}-${conversationId}`, both chain-derived, so unescaped
+ * interpolation was latent rather than exploitable. That is an accident of the current call
+ * sites, not a property of this function, which accepts arbitrary tags.
+ *
+ * GraphQL VARIABLES would be the textbook fix and remove the class outright. Not used here only
+ * because it needs the remote schema's input type name (`TagFilter`) confirmed against the live
+ * Irys gateway, and getting that wrong breaks conversation-key lookup — a worse outcome than the
+ * latent flaw. Worth upgrading next time someone can run it against the real endpoint.
+ */
+function buildTagQuery(tags) {
+  const filters = tags
+    .map(
+      (tag) =>
+        `{ name: ${gqlString(tag.name, "name")}, values: [${gqlString(tag.value, "value")}] }`,
+    )
+    .join(",\n                    ");
+
+  return `
         query {
             transactions(
                 tags: [
-                    ${tags.map((tag) => `{ name: "${tag.name}", values: ["${tag.value}"] }`).join(",\n")}
+                    ${filters}
                 ],
                 first: 1,
                 order: DESC
@@ -171,6 +212,10 @@ async function queryTransactionByTags(tags) {
             }
         }
     `;
+}
+
+async function queryTransactionByTags(tags) {
+  const query = buildTagQuery(tags);
   try {
     const response = await fetch(graphqlEndpoint, {
       method: "POST",
@@ -197,4 +242,5 @@ module.exports = {
   uploadData,
   fetchData,
   queryTransactionByTags,
+  buildTagQuery,
 };

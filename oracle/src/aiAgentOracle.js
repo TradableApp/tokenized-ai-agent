@@ -33,7 +33,9 @@ const {
   createConversationMetadataFile,
   createMessageFile,
   createSearchIndexDeltaFile,
+  jsonReplacer,
 } = require("./formatters");
+const { BadInputError, isBadInputError } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { validatePayload } = require("./payloadValidator");
@@ -449,6 +451,9 @@ function strip0xPrefix(hexString) {
   return hexString.startsWith("0x") ? hexString.slice(2) : hexString;
 }
 
+const GCM_IV_BYTES = 12;
+const GCM_AUTH_TAG_BYTES = 16;
+
 /**
  * Symmetrically encrypts a data object using AES-256-GCM.
  * @param {object} dataObject The object to encrypt.
@@ -456,7 +461,7 @@ function strip0xPrefix(hexString) {
  * @returns {string} A string containing "iv.authTag.encryptedData".
  */
 function encryptSymmetrically(dataObject, key) {
-  const iv = crypto.randomBytes(12);
+  const iv = crypto.randomBytes(GCM_IV_BYTES);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const dataBuffer = Buffer.from(JSON.stringify(dataObject));
 
@@ -479,21 +484,50 @@ function decryptSymmetrically(encryptedString, key) {
   // Check for the correct two-part format.
   const parts = encryptedString.split(".");
   if (parts.length !== 2) {
-    throw new Error('Invalid encrypted data format. Expected "iv.encryptedData".');
+    throw new BadInputError('Invalid encrypted data format. Expected "iv.encryptedData".');
   }
 
   const iv = Buffer.from(parts[0], "base64");
   const combinedBuffer = Buffer.from(parts[1], "base64");
 
   // The auth tag is the final 16 bytes of the combined buffer.
-  const authTag = combinedBuffer.slice(-16);
-  const encryptedData = combinedBuffer.slice(0, -16);
+  // Length-checked before the decipher is built, because both fields are attacker-supplied and a
+  // bad length throws out of createDecipheriv/setAuthTag rather than out of the guarded block
+  // below. Checking here also keeps createDecipheriv's one remaining failure mode — a
+  // wrong-length KEY, which is ours, not theirs — correctly fatal rather than silently dropped.
+  if (iv.length !== GCM_IV_BYTES || combinedBuffer.length <= GCM_AUTH_TAG_BYTES) {
+    throw new BadInputError("Invalid encrypted data: malformed IV or ciphertext length.");
+  }
+
+  const authTag = combinedBuffer.slice(-GCM_AUTH_TAG_BYTES);
+  const encryptedData = combinedBuffer.slice(0, -GCM_AUTH_TAG_BYTES);
 
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(authTag);
 
-  const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
-  return JSON.parse(decrypted.toString("utf-8"));
+  // Both remaining failures are things a user can produce at will: a forged auth tag throws in
+  // final(), and bytes that authenticate correctly but are not JSON throw in the parse — they
+  // hold their own session key, so they can seal anything. Left untyped, neither is bad input
+  // nor retryable, so both land in the FATAL branch: Sentry, a Slack "CRITICAL: Oracle Fatal
+  // Error", an answer_failed metric and a cursor that does not advance, one per malformed
+  // prompt. That is the attacker-driven inflation the !isBadInputError gates exist to prevent.
+  try {
+    const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
+
+    return JSON.parse(decrypted.toString("utf-8"));
+  } catch (error) {
+    // Not everything in that block is the user's doing: Buffer.concat can fail to allocate, and
+    // the crypto binding can raise its own errors. Typed as bad input, those would be dropped
+    // permanently with no alert and no retry — our own outage, silently charged to the prompt.
+    //
+    // A forged tag cannot be identified positively: Node throws a bare Error with no `code`, and
+    // matching its message is the classification this module abandoned. So discriminate the
+    // other way — a RangeError is an allocation failure and a `code` marks a runtime error, both
+    // ours to surface. What is left, the bare auth failure and SyntaxError, is the user's.
+    if (error instanceof RangeError || error?.code) throw error;
+
+    throw new BadInputError(`Could not decrypt payload: ${error.message}`, { cause: error });
+  }
 }
 
 /**
@@ -508,7 +542,18 @@ function decryptSymmetrically(encryptedString, key) {
 async function getSessionKey(payload, roflEncryptedKey, conversationId) {
   console.log(`[Crypto] Resolving session key for conversation: ${conversationId}...`);
   if (isSapphire) {
-    const parsedPayload = JSON.parse(payload);
+    // One of two parses whose failure genuinely means "the caller sent us rubbish" — the other
+    // is in decryptSymmetrically. Typed here so the drop decision is made about THIS parse,
+    // rather than by pattern-matching every SyntaxError in the process — which is how a
+    // gateway's HTML error page used to get a prompt discarded.
+    let parsedPayload;
+    try {
+      parsedPayload = JSON.parse(payload);
+    } catch (error) {
+      throw new BadInputError(`Event payload is not valid JSON: ${error.message}`, {
+        cause: error,
+      });
+    }
     if (parsedPayload.sessionKey) {
       return Buffer.from(strip0xPrefix(parsedPayload.sessionKey), "hex");
     }
@@ -1382,27 +1427,6 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
 // --- Event Handlers ---
 
-/**
- * Malformed / malicious input, as opposed to a failure on our side.
- *
- * ONE predicate, TWO consumers: `handleAndRecord` drops these events silently (no retry, no
- * Sentry) and the answer-path telemetry declines to record them as `answer_failed`. Those
- * decisions must agree — an event the system has decided is not its problem must not appear in
- * the daily summary as an oracle failure, especially since the input is attacker-controlled.
- *
- * Known to over-match: "Unexpected token" is a stock SyntaxError string, so an AI endpoint's HTML
- * 502 matches it. Narrowing changes handleAndRecord's drop behaviour — tracked as CU-86d41hquj.
- */
-function isBadInputError(error) {
-  const message = error?.message ?? "";
-
-  return (
-    message.includes("Validation Failed") ||
-    message.includes("Invalid encrypted data format") ||
-    message.includes("Unexpected token") // JSON parse error
-  );
-}
-
 // Helper to check for specific contract errors using Ethers v6 Interface
 function isContractError(error, errorName) {
   try {
@@ -2208,7 +2232,9 @@ async function handleAndRecord(eventName, handler, ...args) {
     await persistCursor(event.blockNumber);
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
-    // "Validation Failed" covers all schema mismatches from payloadValidator.js
+    // Membership is by TYPE now, not by message text: payloadValidator raises BadInputError on a
+    // schema mismatch, and so do the two payload parses. Nothing else qualifies, which is the
+    // point — a transient failure whose message merely reads like a parse error is retried.
     if (isBadInputError(error)) {
       console.warn(
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${error.message}`,
@@ -2263,10 +2289,18 @@ async function handleAndRecord(eventName, handler, ...args) {
         nextAttemptAt: Date.now() + BASE_RETRY_DELAY_MS,
       });
 
-      await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(failedJobs, null, 2));
+      // jsonReplacer is REQUIRED here, not defensive: `event.args` is an ethers v6 Result whose
+      // uint256 fields are BigInt, and JSON.stringify throws on those. Without it this write
+      // threw, so neither the queue write nor the persistCursor below ever ran.
+      await fs.writeFile(
+        FAILED_JOBS_FILE_PATH,
+        JSON.stringify(failedJobs, jsonReplacer, 2),
+      );
 
-      // Still save the block progress, because we have successfully QUEUED the failed job.
-      // This prevents it from being picked up again by the catch-up scanner.
+      // Only NOW is the block progress safe to save: the job is durably queued, so advancing the
+      // cursor hands responsibility to the retry loop rather than dropping the event. If the
+      // write above throws, this is correctly skipped and the catch-up scanner sees the event
+      // again — which is why the write must come first.
       await persistCursor(event.blockNumber);
     } else {
       const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
@@ -2414,7 +2448,12 @@ async function retryFailedJobs() {
   // If we processed any jobs, this means the queue has changed (either by removing a job
   // or by updating its retry count), so we must write the new state back to the file.
   if (processed) {
-    await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(remainingJobs, null, 2));
+    // Same replacer as the enqueue path. These jobs were read back from JSON so are already
+    // BigInt-free today, but the two writes must not disagree about how a job serialises.
+    await fs.writeFile(
+      FAILED_JOBS_FILE_PATH,
+      JSON.stringify(remainingJobs, jsonReplacer, 2),
+    );
   }
 }
 

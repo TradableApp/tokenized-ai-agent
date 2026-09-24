@@ -2,6 +2,7 @@
 pragma solidity ^0.8.21;
 
 import { ISapphireAIAgent } from "./interfaces/ISapphireAIAgent.sol";
+import { Address } from "@openzeppelin/contracts/utils/Address.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
@@ -12,6 +13,15 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
  *      It holds funds in escrow while a prompt is being processed by the off-chain oracle.
  */
 contract SapphireAIAgentEscrow is Ownable {
+  // `payable(x).transfer(v)` forwards a fixed 2300 gas stipend. That is enough for an EOA and
+  // not enough for a contract recipient with any receive() logic — a Safe multisig treasury being
+  // the obvious case, and one this project plans for. It is also a hard-coded assumption about
+  // opcode pricing, which has already been changed once by EIP-1884 and can be again.
+  //
+  // Address.sendValue forwards all remaining gas and bubbles the revert reason, so a failed
+  // payout says why instead of silently reverting with nothing.
+  using Address for address payable;
+
   // --- Constants ---
 
   /// @notice The time after which a user can cancel their own pending prompt to prevent mis-clicks.
@@ -288,7 +298,7 @@ contract SapphireAIAgentEscrow is Ownable {
     }
     deposits[msg.sender] -= _amount;
     emit Withdrawal(msg.sender, _amount);
-    payable(msg.sender).transfer(_amount);
+    payable(msg.sender).sendValue(_amount);
   }
 
   /**
@@ -319,7 +329,7 @@ contract SapphireAIAgentEscrow is Ownable {
     emit SpendingLimitCancelled(msg.sender);
     if (depositAmount > 0) {
       emit Withdrawal(msg.sender, depositAmount);
-      payable(msg.sender).transfer(depositAmount);
+      payable(msg.sender).sendValue(depositAmount);
     }
   }
 
@@ -481,7 +491,7 @@ contract SapphireAIAgentEscrow is Ownable {
     // Charge cancellation fee and refund original prompt fee in one operation.
     deposits[msg.sender] = deposits[msg.sender] + escrow.amount - cancellationFee;
 
-    payable(treasury).transfer(cancellationFee);
+    payable(treasury).sendValue(cancellationFee);
     sapphireAIAgent.recordCancellation(msg.sender, _answerMessageId);
 
     emit PromptCancelled(msg.sender, _answerMessageId);
@@ -519,7 +529,7 @@ contract SapphireAIAgentEscrow is Ownable {
     --pendingEscrowCount[escrow.user];
     escrow.status = EscrowStatus.COMPLETE;
     emit PaymentFinalized(_escrowId);
-    payable(treasury).transfer(escrow.amount);
+    payable(treasury).sendValue(escrow.amount);
   }
 
   /**
@@ -596,6 +606,6 @@ contract SapphireAIAgentEscrow is Ownable {
     }
 
     deposits[_user] -= _fee;
-    payable(treasury).transfer(_fee);
+    payable(treasury).sendValue(_fee);
   }
 }

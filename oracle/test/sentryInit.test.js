@@ -1,7 +1,7 @@
 'use strict';
 
 const { expect } = require('chai');
-const { scrubSensitiveData } = require('../src/sentryInit');
+const { scrubSensitiveData, redactedStandIn } = require('../src/sentryInit');
 
 describe('sentryInit', () => {
   describe('scrubSensitiveData', () => {
@@ -65,6 +65,69 @@ describe('sentryInit', () => {
     it('handles empty objects and arrays without throwing', () => {
       expect(scrubSensitiveData({})).to.deep.equal({});
       expect(scrubSensitiveData([])).to.deep.equal([]);
+    });
+  });
+
+  describe('a Proxy whose descriptor trap throws', () => {
+    // The last Proxy hook that ran outside a guard. It fires before the getter, so an unguarded
+    // throw here unwound the whole scrub and cost the entire event — the opposite of the
+    // per-field degradation the scrubber is built for.
+    function hostile() {
+      return new Proxy(
+        { a: 1 },
+        {
+          getOwnPropertyDescriptor() {
+            throw new Error('descriptor trap');
+          },
+        },
+      );
+    }
+
+    it('degrades the hostile field rather than the whole event', () => {
+      const result = scrubSensitiveData({ safe: 'kept', payload: hostile() });
+
+      expect(result.safe).to.equal('kept');
+      expect(result.payload.a).to.equal('[UNREADABLE]');
+    });
+
+    it('does not throw out of the scrubber at any depth', () => {
+      expect(() => scrubSensitiveData({ a: { b: { c: hostile() } } })).to.not.throw();
+    });
+  });
+
+  describe('redactedStandIn', () => {
+    // The scrubber is written not to throw, and with the descriptor trap guarded there is no
+    // input that makes it. This is the last line of defence behind that, so it is exercised
+    // directly rather than through an input that can no longer reach it.
+    function capture(error) {
+      const savedError = console.error;
+      const logged = [];
+      console.error = (...args) => logged.push(args);
+
+      try {
+        return { result: redactedStandIn({ event_id: 'e1', timestamp: 1 }, error), logged };
+      } finally {
+        console.error = savedError;
+      }
+    }
+
+    it('logs the frames without the message, which can carry the secret', () => {
+      const secret = 'MNEMONIC-abandon-abandon-ability';
+      const { logged } = capture(new Error(`context dump: ${secret}`));
+
+      expect(logged).to.have.lengthOf(1);
+      const [, errorName, frames] = logged[0];
+      expect(errorName).to.equal('Error');
+      expect(frames).to.match(/^\s*at /, 'expected frames, starting past the message line');
+      expect(JSON.stringify(logged)).to.not.include(secret);
+    });
+
+    it('returns a stand-in carrying no part of the original event', () => {
+      const { result } = capture(new Error('whatever'));
+
+      expect(result.event_id).to.equal('e1');
+      expect(result.message).to.include('withheld');
+      expect(result).to.not.have.property('extra');
     });
   });
 });
