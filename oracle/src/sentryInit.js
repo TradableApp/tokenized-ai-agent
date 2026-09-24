@@ -117,7 +117,16 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
       // assigns result.length, which densifies a sparse array: length 1e6 with no elements
       // serialised to a 5MB payload out of the scrubber that runs on every event. Symbols are
       // kept regardless, since the spread copies enumerable ones and they may be sensitive.
-      const descriptor = Object.getOwnPropertyDescriptor(obj, key);
+      let descriptor;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(obj, key);
+      } catch {
+        // A Proxy whose descriptor trap throws. Guarded for the same reason as the getter below:
+        // one hostile field must not cost the whole event, and this hook runs before the getter
+        // so it would otherwise escape every inner guard and unwind the entire scrub.
+        result[key] = "[UNREADABLE]";
+        continue;
+      }
       if (descriptor && !descriptor.enumerable && typeof key !== "symbol") continue;
 
       if (isSensitiveKey(typeof key === "symbol" ? (key.description ?? "") : key)) {
@@ -143,6 +152,28 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
   }
 }
 
+/**
+ * The stand-in sent when scrubbing fails: enough to show something broke, none of the payload.
+ *
+ * Constructor name and stack frames only. An error message can carry the very data the scrubber
+ * exists to remove — a throwing getter is free to build one out of a key — and this is the one
+ * path that would put it in Sentry unscrubbed. V8 opens `stack` with "<Type>: <message>", so the
+ * frames are taken without their first line; logging the stack whole would reinstate the message
+ * suppressed one line above.
+ */
+function redactedStandIn(event, error) {
+  const errorName = error?.constructor?.name ?? "unknown error";
+  const frames = error?.stack?.split("\n").slice(1).join("\n");
+  console.error("[Sentry] Scrubbing failed; sending a redacted stand-in.", errorName, frames);
+
+  return {
+    event_id: event?.event_id,
+    timestamp: event?.timestamp,
+    level: "error",
+    message: `Sentry scrubbing failed (${errorName}); original event withheld.`,
+  };
+}
+
 function initSentry() {
   const dsn = process.env.SENTRY_DSN;
   if (!dsn) {
@@ -165,20 +196,7 @@ function initSentry() {
       try {
         return scrubSensitiveData(event);
       } catch (error) {
-        // Constructor name and stack only. An error message can carry the very data the
-        // scrubber exists to remove — a throwing getter is free to build one out of a key —
-        // and this is the one path that would put it in Sentry unscrubbed.
-        const errorName = error?.constructor?.name ?? "unknown error";
-        // V8 opens `stack` with "<Type>: <message>", so the frames are taken without their first
-        // line. Logging the stack whole would reinstate the message suppressed just above.
-        const frames = error?.stack?.split("\n").slice(1).join("\n");
-        console.error("[Sentry] Scrubbing failed; sending a redacted stand-in.", errorName, frames);
-        return {
-          event_id: event?.event_id,
-          timestamp: event?.timestamp,
-          level: "error",
-          message: `Sentry scrubbing failed (${errorName}); original event withheld.`,
-        };
+        return redactedStandIn(event, error);
       }
     },
   });
@@ -186,4 +204,4 @@ function initSentry() {
   console.log(`[Sentry] Initialized for environment: ${environment}`);
 }
 
-module.exports = { initSentry, scrubSensitiveData };
+module.exports = { initSentry, scrubSensitiveData, redactedStandIn };
