@@ -5,7 +5,7 @@ const { scrubSensitiveData } = require('../src/sentryInit');
 const { jsonReplacer } = require('../src/formatters');
 
 /**
- * Code-level security findings from the cross-repo review, 2026-09-22 (CU-14ym9bv73e5).
+ * Code-level security findings from the cross-repo review, 2026-09-22.
  */
 
 describe('security hardening — BigInt-safe JSON serialisation', () => {

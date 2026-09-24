@@ -113,6 +113,13 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
   try {
     const result = Array.isArray(obj) ? [] : {};
     for (const key of keys) {
+      // Reflect.ownKeys also returns non-enumerable own keys — on an array, `length`. Copying it
+      // assigns result.length, which densifies a sparse array: length 1e6 with no elements
+      // serialised to a 5MB payload out of the scrubber that runs on every event. Symbols are
+      // kept regardless, since the spread copies enumerable ones and they may be sensitive.
+      const descriptor = Object.getOwnPropertyDescriptor(obj, key);
+      if (descriptor && !descriptor.enumerable && typeof key !== "symbol") continue;
+
       if (isSensitiveKey(typeof key === "symbol" ? (key.description ?? "") : key)) {
         result[key] = "[REDACTED]";
         continue;
@@ -158,12 +165,16 @@ function initSentry() {
       try {
         return scrubSensitiveData(event);
       } catch (error) {
-        console.error("[Sentry] Scrubbing failed; sending a redacted stand-in.", error);
+        // Constructor name and stack only. An error message can carry the very data the
+        // scrubber exists to remove — a throwing getter is free to build one out of a key —
+        // and this is the one path that would put it in Sentry unscrubbed.
+        const errorName = error?.constructor?.name ?? "unknown error";
+        console.error("[Sentry] Scrubbing failed; sending a redacted stand-in.", errorName, error?.stack);
         return {
           event_id: event?.event_id,
           timestamp: event?.timestamp,
           level: "error",
-          message: `Sentry scrubbing failed (${error?.message ?? "unknown"}); original event withheld.`,
+          message: `Sentry scrubbing failed (${errorName}); original event withheld.`,
         };
       }
     },

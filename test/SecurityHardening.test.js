@@ -3,7 +3,7 @@ const { ethers, upgrades } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
- * Contract-level findings from the cross-repo security review, 2026-09-22 (CU-14ym9bv73e5).
+ * Contract-level findings from the cross-repo security review, 2026-09-22.
  */
 describe("Security hardening", function () {
   const INITIAL_ALLOWANCE = ethers.parseEther("100");

@@ -2768,7 +2768,6 @@ async function start() {
 
 module.exports = {
   readFailedJobsList,
-  isBadInputError,
   start,
   queryElizaOS,
   initForTest,
