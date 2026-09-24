@@ -169,7 +169,10 @@ function initSentry() {
         // scrubber exists to remove — a throwing getter is free to build one out of a key —
         // and this is the one path that would put it in Sentry unscrubbed.
         const errorName = error?.constructor?.name ?? "unknown error";
-        console.error("[Sentry] Scrubbing failed; sending a redacted stand-in.", errorName, error?.stack);
+        // V8 opens `stack` with "<Type>: <message>", so the frames are taken without their first
+        // line. Logging the stack whole would reinstate the message suppressed just above.
+        const frames = error?.stack?.split("\n").slice(1).join("\n");
+        console.error("[Sentry] Scrubbing failed; sending a redacted stand-in.", errorName, frames);
         return {
           event_id: event?.event_id,
           timestamp: event?.timestamp,

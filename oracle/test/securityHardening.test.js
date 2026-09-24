@@ -323,19 +323,50 @@ describe('security hardening — bad-input classification', () => {
     return `${iv.toString('base64')}.${combined.toString('base64')}`;
   }
 
+  /** Returns the error `fn` throws, failing the test if it does not throw at all. */
+  function captureThrow(fn) {
+    try {
+      fn();
+    } catch (error) {
+      return error;
+    }
+
+    expect.fail('expected a throw');
+  }
+
   it('treats a well-encrypted payload that is not JSON as bad input', () => {
     const key = crypto.randomBytes(32);
     const sealed = sealForOracle('this decrypts cleanly but is not JSON', key);
 
-    let thrown;
-    try {
-      decryptSymmetrically(sealed, key);
-    } catch (error) {
-      thrown = error;
-    }
+    expect(isBadInputError(captureThrow(() => decryptSymmetrically(sealed, key)))).to.be.true;
+  });
 
-    expect(thrown, 'expected a throw').to.exist;
-    expect(isBadInputError(thrown)).to.be.true;
+  // The same reasoning covers every other failure a user can provoke, and they are cheaper to
+  // provoke than the parse above: these need no valid key at all. Each throws from a different
+  // call — final(), setAuthTag and createDecipheriv — so one guard does not cover all three.
+  it('treats a forged auth tag as bad input', () => {
+    const key = crypto.randomBytes(32);
+    const [ivPart, bodyPart] = sealForOracle(JSON.stringify({ n: 1 }), key).split('.');
+    const body = Buffer.from(bodyPart, 'base64');
+    body[body.length - 1] ^= 0xff;
+    const forged = `${ivPart}.${body.toString('base64')}`;
+
+    expect(isBadInputError(captureThrow(() => decryptSymmetrically(forged, key)))).to.be.true;
+  });
+
+  it('treats a wrong-length IV as bad input', () => {
+    const key = crypto.randomBytes(32);
+    const bodyPart = sealForOracle(JSON.stringify({ n: 1 }), key).split('.')[1];
+    const shortIv = `${crypto.randomBytes(8).toString('base64')}.${bodyPart}`;
+
+    expect(isBadInputError(captureThrow(() => decryptSymmetrically(shortIv, key)))).to.be.true;
+  });
+
+  it('treats a ciphertext no longer than the auth tag as bad input', () => {
+    const key = crypto.randomBytes(32);
+    const runt = `${crypto.randomBytes(12).toString('base64')}.${crypto.randomBytes(16).toString('base64')}`;
+
+    expect(isBadInputError(captureThrow(() => decryptSymmetrically(runt, key)))).to.be.true;
   });
 
   it('still decrypts a valid JSON payload unchanged', () => {

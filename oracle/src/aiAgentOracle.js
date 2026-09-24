@@ -451,6 +451,9 @@ function strip0xPrefix(hexString) {
   return hexString.startsWith("0x") ? hexString.slice(2) : hexString;
 }
 
+const GCM_IV_BYTES = 12;
+const GCM_AUTH_TAG_BYTES = 16;
+
 /**
  * Symmetrically encrypts a data object using AES-256-GCM.
  * @param {object} dataObject The object to encrypt.
@@ -458,7 +461,7 @@ function strip0xPrefix(hexString) {
  * @returns {string} A string containing "iv.authTag.encryptedData".
  */
 function encryptSymmetrically(dataObject, key) {
-  const iv = crypto.randomBytes(12);
+  const iv = crypto.randomBytes(GCM_IV_BYTES);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const dataBuffer = Buffer.from(JSON.stringify(dataObject));
 
@@ -488,26 +491,32 @@ function decryptSymmetrically(encryptedString, key) {
   const combinedBuffer = Buffer.from(parts[1], "base64");
 
   // The auth tag is the final 16 bytes of the combined buffer.
-  const authTag = combinedBuffer.slice(-16);
-  const encryptedData = combinedBuffer.slice(0, -16);
+  // Length-checked before the decipher is built, because both fields are attacker-supplied and a
+  // bad length throws out of createDecipheriv/setAuthTag rather than out of the guarded block
+  // below. Checking here also keeps createDecipheriv's one remaining failure mode — a
+  // wrong-length KEY, which is ours, not theirs — correctly fatal rather than silently dropped.
+  if (iv.length !== GCM_IV_BYTES || combinedBuffer.length <= GCM_AUTH_TAG_BYTES) {
+    throw new BadInputError("Invalid encrypted data: malformed IV or ciphertext length.");
+  }
+
+  const authTag = combinedBuffer.slice(-GCM_AUTH_TAG_BYTES);
+  const encryptedData = combinedBuffer.slice(0, -GCM_AUTH_TAG_BYTES);
 
   const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(authTag);
 
-  const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
-
-  // Typed for the same reason as the payload parse below. A user holds their own session key,
-  // so they can seal arbitrary bytes that authenticate correctly and still are not JSON. Left
-  // untyped, that plain SyntaxError is neither bad input nor retryable and lands in the FATAL
-  // branch: Sentry, a Slack "CRITICAL: Oracle Fatal Error" and an answer_failed metric, one per
-  // malformed prompt — attacker-driven alert and metric inflation, which is precisely what the
-  // !isBadInputError gates exist to prevent.
+  // Both remaining failures are things a user can produce at will: a forged auth tag throws in
+  // final(), and bytes that authenticate correctly but are not JSON throw in the parse — they
+  // hold their own session key, so they can seal anything. Left untyped, neither is bad input
+  // nor retryable, so both land in the FATAL branch: Sentry, a Slack "CRITICAL: Oracle Fatal
+  // Error", an answer_failed metric and a cursor that does not advance, one per malformed
+  // prompt. That is the attacker-driven inflation the !isBadInputError gates exist to prevent.
   try {
+    const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()]);
+
     return JSON.parse(decrypted.toString("utf-8"));
   } catch (error) {
-    throw new BadInputError(`Decrypted payload is not valid JSON: ${error.message}`, {
-      cause: error,
-    });
+    throw new BadInputError(`Could not decrypt payload: ${error.message}`, { cause: error });
   }
 }
 
