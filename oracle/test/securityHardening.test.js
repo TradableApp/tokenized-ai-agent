@@ -286,6 +286,7 @@ describe('security hardening — bad-input classification', () => {
   // Error", and an answer_failed metric, one per malformed prompt. Exactly the attacker-driven
   // inflation the !isBadInputError gates exist to prevent.
   const crypto = require('node:crypto');
+  const sinon = require('sinon');
   const { ethers } = require('ethers');
 
   // aiAgentOracle initialises a wallet at module load, so it needs a usable PRIVATE_KEY and is
@@ -367,6 +368,31 @@ describe('security hardening — bad-input classification', () => {
     const runt = `${crypto.randomBytes(12).toString('base64')}.${crypto.randomBytes(16).toString('base64')}`;
 
     expect(isBadInputError(captureThrow(() => decryptSymmetrically(runt, key)))).to.be.true;
+  });
+
+  // The other half of the guard: the catch must not promote OUR failures to bad input, which
+  // would drop the prompt permanently with no alert. createDecipheriv is stubbed because an
+  // allocation failure cannot be provoked honestly.
+  it('lets an infrastructure failure surface instead of dropping the prompt', () => {
+    const key = crypto.randomBytes(32);
+    const sealed = sealForOracle(JSON.stringify({ n: 1 }), key);
+    const stub = sinon.stub(crypto, 'createDecipheriv').returns({
+      setAuthTag() {},
+      update: () => Buffer.alloc(0),
+      final() {
+        throw new RangeError('Array buffer allocation failed');
+      },
+    });
+
+    try {
+      const thrown = captureThrow(() => decryptSymmetrically(sealed, key));
+
+      expect(isBadInputError(thrown), 'an allocation failure is not the caller\'s fault').to.be
+        .false;
+      expect(thrown).to.be.instanceOf(RangeError);
+    } finally {
+      stub.restore();
+    }
   });
 
   it('still decrypts a valid JSON payload unchanged', () => {

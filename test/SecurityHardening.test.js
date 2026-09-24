@@ -55,32 +55,21 @@ describe("Security hardening", function () {
 
   describe("cancelPrompt — checks-effects-interactions", function () {
     // cancelPrompt wrote `escrow.status = REFUNDED` and decremented pendingEscrowCount AFTER
-    // calling ableToken.transferFrom. A token that calls back re-entered while the escrow still
-    // read PENDING and still had `escrow.user == msg.sender`, so every guard passed a second
-    // time and the refund could be taken twice.
+    // calling ableToken.transferFrom, where its two siblings — finalizePayment and processRefund
+    // — both write state first. So this was an inconsistency inside one file as much as a
+    // security finding.
     //
-    // NOT a live attack path — $ABLE is a plain OZ ERC-20 that never calls back, and the escrow
-    // fixes its token at initialize with no setter. This asserts the ordering as a property of
-    // the ESCROW rather than of the token it happens to be paired with, which is what makes it
-    // still true after an upgrade or a redeploy against a different token.
-    //
-    // Its two siblings, finalizePayment and processRefund, already ordered this correctly, so
-    // this was an inconsistency within one file as much as a security finding.
-    // WHAT THIS IS, PRECISELY. cancelPrompt wrote `escrow.status = REFUNDED` and decremented
-    // pendingEscrowCount AFTER calling ableToken.transferFrom, where its two siblings —
-    // finalizePayment and processRefund — both write state first. So this was an inconsistency
-    // inside one file as much as a security finding.
-    //
-    // IT IS NOT CURRENTLY EXPLOITABLE, and saying otherwise would be overstating it. Two
-    // accidents stop it: a token cannot spoof msg.sender, so re-entering cancelPrompt itself
-    // trips NotPromptOwner; and re-entering the permissionless processRefund underflows
-    // `spentAmount -= escrow.amount` and reverts, because cancelPrompt has already decremented
-    // it. Both are luck rather than design — the second in particular depends on the relative
+    // IT IS NOT CURRENTLY EXPLOITABLE, and saying otherwise would overstate it. $ABLE is a plain
+    // OZ ERC-20 that never calls back, and the escrow fixes its token at initialize with no
+    // setter. Beyond that, two accidents stop it: a token cannot spoof msg.sender, so re-entering
+    // cancelPrompt trips NotPromptOwner, and re-entering the permissionless processRefund
+    // underflows `spentAmount -= escrow.amount` and reverts because cancelPrompt has already
+    // decremented it. Both are luck rather than design — the second depends on the relative
     // values of promptFee and cancellationFee, which are owner-settable at runtime.
     //
-    // So the test asserts the ORDERING, which is the property CEI actually guarantees and the
-    // thing that stays true when those fee values change. The token records what the escrow
-    // looked like at the instant it was called.
+    // So the test asserts the ORDERING: the property CEI actually guarantees, and the one that
+    // stays true across an upgrade, a redeploy against a different token, or a change to those
+    // fee values. The token records what the escrow looked like at the instant it was called.
     it("has already written REFUNDED before it calls out to the token", async function () {
       const { escrow, token, user } = await loadFixture(reentrantFixture);
       const answerMessageId = 1;

@@ -516,6 +516,16 @@ function decryptSymmetrically(encryptedString, key) {
 
     return JSON.parse(decrypted.toString("utf-8"));
   } catch (error) {
+    // Not everything in that block is the user's doing: Buffer.concat can fail to allocate, and
+    // the crypto binding can raise its own errors. Typed as bad input, those would be dropped
+    // permanently with no alert and no retry — our own outage, silently charged to the prompt.
+    //
+    // A forged tag cannot be identified positively: Node throws a bare Error with no `code`, and
+    // matching its message is the classification this module abandoned. So discriminate the
+    // other way — a RangeError is an allocation failure and a `code` marks a runtime error, both
+    // ours to surface. What is left, the bare auth failure and SyntaxError, is the user's.
+    if (error instanceof RangeError || error?.code) throw error;
+
     throw new BadInputError(`Could not decrypt payload: ${error.message}`, { cause: error });
   }
 }
