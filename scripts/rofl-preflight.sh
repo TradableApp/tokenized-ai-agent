@@ -188,6 +188,14 @@ done < "$COMPOSE_FILE"
 # Catching it at startup means discovering it from inside a TEE after an ORC has been built,
 # signed and deployed.
 #
+# Deliberately NARROWER than validateConfig, which also accepts a POSTGRES_URL naming the
+# database directly. That legacy path is a runtime one: the url arrives as an injected secret,
+# so it is invisible to a check that reads the plaintext compose, and accepting it here would
+# mean accepting its ABSENCE too. ORC bundles must carry POSTGRES_AGENT_DATABASE as plaintext.
+# The two gates therefore disagree by design, and this is the note that says so — without it,
+# a developer who takes the legacy path sees the runtime validator pass and this one fail with
+# no way to tell which is wrong.
+#
 # The case this actually catches is a compose that was never regenerated since Postgres was
 # added to the env files — `compose.testnet.yaml` and `compose.mainnet.yaml` were both in
 # exactly that state when this check was written, carrying no POSTGRES_* keys at all while
