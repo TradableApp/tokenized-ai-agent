@@ -115,3 +115,37 @@ jobs:
 
       - name: Test (oracle)
         run: cd oracle && bun run test
+
+  # The leg that would have caught ta#64: that change was merged HERE and broke
+  # sense-ai-e2e's bring-up, but no PR was ever opened against that repo, so nothing there
+  # fired and it sat broken for six weeks. A PR-triggered workflow in sense-ai-e2e cannot
+  # see this class of break; only the consumer telling it can.
+  notify-e2e:
+    name: Notify e2e
+    needs: CI
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Talks only to sense-ai-e2e, with its own PAT. Needs nothing from GITHUB_TOKEN.
+    permissions: {}
+    steps:
+      - name: Dispatch e2e smoke
+        env:
+          E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
+        run: |
+          # An absent secret expands to the empty string and the POST returns 401, which reads
+          # as a broken endpoint rather than a missing secret — the same confusion that broke
+          # the e2e workflow's own first run. Name the actual cause instead.
+          if [ -z "$E2E_DISPATCH_TOKEN" ]; then
+            echo "::error::E2E_DISPATCH_TOKEN is not available to this repository. If it is an org secret, add this repo to its selected-repositories list."
+            exit 1
+          fi
+
+          # Values reach the shell through env:, never interpolated into run: as an inline
+          # workflow expression. Neither is exploitable today, but this block lives in four
+          # repos and the obvious extension — putting a commit message or branch name in the
+          # payload — would be.
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $E2E_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/TradableApp/sense-ai-e2e/dispatches \
+            -d "{\"event_type\":\"e2e-smoke\",\"client_payload\":{\"source\":\"$GITHUB_REPOSITORY\"}}"
