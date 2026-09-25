@@ -210,8 +210,14 @@ function validateConfig(env = process.env) {
   // url's own path. Rejecting it here would make that branch unreachable through index.js —
   // a guard contradicting a path the same change documents as supported. What matters is that
   // SOME Postgres is named; PGLite is what must be impossible.
+  //
+  // Runtime only: rofl-preflight.sh requires POSTGRES_AGENT_DATABASE as a plaintext compose
+  // value and does not accept a url in its place, because an injected secret is invisible to
+  // a build-time reader of the compose. A legacy-path config starts but cannot be bundled.
+  // Placeholder-checked rather than merely blank-checked, like every other credential here: a
+  // guard whose purpose is catching config copied but never filled must not exempt one key.
   const legacyUrl = env.POSTGRES_URL;
-  if (isBlank(agentDb) && isBlank(legacyUrl)) {
+  if (isBlank(agentDb) && isMissingOrPlaceholder(legacyUrl)) {
     problems.push(
       'POSTGRES_AGENT_DATABASE is missing or empty — the oracle needs a dedicated Postgres ' +
         'agent database (e.g. "oracle_agent"), or a POSTGRES_URL naming one directly. There is ' +

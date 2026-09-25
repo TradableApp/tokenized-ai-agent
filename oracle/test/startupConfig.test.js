@@ -70,15 +70,46 @@ describe("startup config validation", () => {
   // that url and derives its expectDatabase guard from the url's own path. Rejecting it here
   // would leave a guard contradicting a branch the same change documents as supported. The
   // invariant is that SOME Postgres is named — PGLite is the thing that must be impossible.
+  // Every individual POSTGRES_* key is stripped, not just the agent DB name: with baseEnv's
+  // host/user/password still present the assertion passes even if the branch wrongly demanded
+  // them, so it would prove nothing about the path it names. The url carries its own connection
+  // details — that is the whole point of the legacy path — so the per-key checks must be skipped.
   it("accepts a directly-supplied POSTGRES_URL in place of the agent DB", () => {
     expect(() =>
       validateConfig(
         baseEnv({
           POSTGRES_AGENT_DATABASE: undefined,
+          POSTGRES_HOST: undefined,
+          POSTGRES_PORT: undefined,
+          POSTGRES_DATABASE: undefined,
+          POSTGRES_USER: undefined,
+          POSTGRES_PASSWORD: undefined,
+          POSTGRES_CLIENT_CERT_PATH: undefined,
+          POSTGRES_CLIENT_KEY_PATH: undefined,
+          POSTGRES_SERVER_CA_CERT_PATH: undefined,
           POSTGRES_URL: "postgresql://u:p@db.internal:5432/oracle_agent",
         }),
       ),
     ).to.not.throw();
+  });
+
+  // The legacy url was the one credential in this module checked with isBlank rather than
+  // isMissingOrPlaceholder, so `POSTGRES_URL=your_postgres_url_here` satisfied the guard and
+  // the oracle started toward an unusable url. Nothing ships that placeholder today — but a
+  // guard whose whole job is catching unfilled config must not have one key it exempts.
+  it("refuses a placeholder POSTGRES_URL standing in for the agent DB", () => {
+    try {
+      validateConfig(
+        baseEnv({
+          POSTGRES_AGENT_DATABASE: undefined,
+          POSTGRES_URL: "your_postgres_url_here",
+        }),
+      );
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.name).to.equal("ConfigError");
+      expect(err.message).to.match(/POSTGRES_AGENT_DATABASE/);
+    }
   });
 
   // A database NAME with no credentials is what the committed .env.oracle.example carries, so

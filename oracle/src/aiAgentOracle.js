@@ -259,6 +259,15 @@ let senseAiAgentId = null;
 function wireAgentDbForPluginSql() {
   const agentDb = process.env.POSTGRES_AGENT_DATABASE;
   if (!agentDb || !agentDb.trim()) {
+    // Except on the legacy path, which validateConfig deliberately allows: a POSTGRES_URL
+    // naming the database directly. initializeEliza handles it a few lines below this call —
+    // it migrates against that url and derives its expectDatabase guard from the url's own
+    // path — and plugin-sql reads POSTGRES_URL from the env itself, so there is nothing to
+    // wire here. Crying wolf on it was worse than saying nothing: the error claimed the
+    // process "should have been stopped by validateConfig" about a configuration
+    // validateConfig had just approved, and the legacy warning printed straight afterwards
+    // contradicted it.
+    if ((process.env.POSTGRES_URL || "").trim()) return null;
     // NOT a supported degradation, and the log must not read like one. validateConfig
     // refuses to start the process without this, so reaching here means the guard was
     // bypassed (a direct start() call, a test, a wrapper importing start()). PGLite
