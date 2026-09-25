@@ -112,6 +112,36 @@ describe("startup config validation", () => {
     }
   });
 
+  // Not reachable by copying .env.oracle.example, which ships a real `oracle_agent` — but a
+  // named database is the one the runtime USES: wireAgentDbForPluginSql bootstraps against
+  // whatever is here the moment it is non-blank, so a placeholder is not "unset with a hint",
+  // it is a live connection to a database that does not exist.
+  it("refuses a placeholder agent DB name", () => {
+    try {
+      validateConfig(baseEnv({ POSTGRES_AGENT_DATABASE: "your_agent_db_here" }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.name).to.equal("ConfigError");
+      expect(err.message).to.match(/placeholder/);
+    }
+  });
+
+  // ...and a url alongside it does not excuse it, because the runtime prefers the name: the
+  // legacy branch is only taken when no database is named at all.
+  it("refuses a placeholder agent DB name even when a POSTGRES_URL is supplied", () => {
+    try {
+      validateConfig(
+        baseEnv({
+          POSTGRES_AGENT_DATABASE: "your_agent_db_here",
+          POSTGRES_URL: "postgresql://u:p@db.internal:5432/oracle_agent",
+        }),
+      );
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.match(/placeholder/);
+    }
+  });
+
   // A database NAME with no credentials is what the committed .env.oracle.example carries, so
   // it is the shape someone gets by copying the example — it must be rejected, not accepted
   // and then failed on at connect time.

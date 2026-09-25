@@ -217,7 +217,37 @@ function validateConfig(env = process.env) {
   // Placeholder-checked rather than merely blank-checked, like every other credential here: a
   // guard whose purpose is catching config copied but never filled must not exempt one key.
   const legacyUrl = env.POSTGRES_URL;
-  if (isBlank(agentDb) && isMissingOrPlaceholder(legacyUrl)) {
+  // Branched on the NAME first, because that is the order the runtime resolves them in:
+  // wireAgentDbForPluginSql bootstraps against POSTGRES_AGENT_DATABASE the moment it is
+  // non-blank and only leaves the url to initializeEliza when it is not. A guard that let a
+  // url excuse a bad name would approve a configuration the runtime resolves differently.
+  if (!isBlank(agentDb)) {
+    // Same shape as the address check above, and for the same reason: a placeholder is one
+    // mistake, an incomplete connection is another, and reporting both for a single edit makes
+    // the report harder to act on. A placeholder name is not "unset with a hint" — it is a
+    // live connection attempt against a database that does not exist.
+    if (PLAIN_PLACEHOLDER.test(agentDb.trim())) {
+      problems.push(
+        `POSTGRES_AGENT_DATABASE is still the placeholder "${agentDb.trim()}" — plugin-sql ` +
+          `would be pointed at a database nobody created, and the boot fails on connect`,
+      );
+    } else {
+      // The lists come from postgresBootstrap so this cannot approve a configuration that
+      // module would then reject.
+      const missing = REQUIRED_BASE_KEYS.filter((key) => isBlank(env[key]));
+      for (const [inlineKey, pathKey] of CERT_KEY_PAIRS) {
+        if (isBlank(env[inlineKey]) && isBlank(env[pathKey]))
+          missing.push(`${inlineKey} (or ${pathKey})`);
+      }
+      if (missing.length > 0) {
+        problems.push(
+          `POSTGRES_AGENT_DATABASE is set to "${agentDb.trim()}" but the Postgres connection ` +
+            `config is incomplete — missing: ${missing.join(", ")}. A database name alone is not ` +
+            `enough to connect, and the oracle will not fall back`,
+        );
+      }
+    }
+  } else if (isMissingOrPlaceholder(legacyUrl)) {
     problems.push(
       'POSTGRES_AGENT_DATABASE is missing or empty — the oracle needs a dedicated Postgres ' +
         'agent database (e.g. "oracle_agent"), or a POSTGRES_URL naming one directly. There is ' +
@@ -225,24 +255,9 @@ function validateConfig(env = process.env) {
         'this boot path, and the runtime would die on `relation "agents" does not exist` about ' +
         'thirty seconds in',
     );
-  } else if (isBlank(agentDb)) {
-    // Legacy path: the connection config below is bootstrapped from the url itself, so the
-    // per-key checks do not apply. initializeEliza warns about the missing isolation at boot.
   } else {
-    // Only once a database is named, for the same one-mistake-one-problem reason as the
-    // address and key above. The lists come from postgresBootstrap so this cannot approve a
-    // configuration that module would then reject.
-    const missing = REQUIRED_BASE_KEYS.filter((key) => isBlank(env[key]));
-    for (const [inlineKey, pathKey] of CERT_KEY_PAIRS) {
-      if (isBlank(env[inlineKey]) && isBlank(env[pathKey])) missing.push(`${inlineKey} (or ${pathKey})`);
-    }
-    if (missing.length > 0) {
-      problems.push(
-        `POSTGRES_AGENT_DATABASE is set to "${agentDb.trim()}" but the Postgres connection ` +
-          `config is incomplete — missing: ${missing.join(", ")}. A database name alone is not ` +
-          `enough to connect, and the oracle will not fall back`,
-      );
-    }
+    // Legacy path: the connection config above is bootstrapped from the url itself, so the
+    // per-key checks do not apply. initializeEliza warns about the missing isolation at boot.
   }
 
   // Both of storage.js's early returns, mirrored. Mock storage never touches a credential

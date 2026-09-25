@@ -129,9 +129,14 @@ describe("wireAgentDbForPluginSql (agent-DB isolation guard)", () => {
     expect(errors.join("\n")).to.match(/PGLite/);
   });
 
-  it("skips (PGLite) when the agent DB is named but the connection config is absent", () => {
-    // The committed .env.oracle.example, localnet and e2e all run in exactly this
-    // shape: a DB *name* with no host/credentials. Must degrade quietly, not throw.
+  it("reports, rather than absorbs, a named agent DB with no connection config", () => {
+    // The committed .env.oracle.example carries exactly this shape: a DB *name* with no
+    // host/credentials. It must not throw — this runs inside initializeEliza, which the
+    // prompt path re-enters behind the ElizaOS→ChainGPT failover, so a throw is caught and
+    // silently downgrades every answer. But "does not throw" is not "says nothing": the
+    // configuration cannot work, and before this PR the log read like a supported
+    // degradation. Asserting the error is what keeps the return-null quiet from drifting
+    // back into being quiet all the way down.
     let called = 0;
     const wire = loadWithBootstrapStub({
       bootstrapPostgresFromEnv: () => {
@@ -141,8 +146,12 @@ describe("wireAgentDbForPluginSql (agent-DB isolation guard)", () => {
     });
     process.env.POSTGRES_AGENT_DATABASE = "oracle_agent";
 
-    expect(wire()).to.equal(null);
+    const errors = captureConsoleError(() => {
+      expect(wire()).to.equal(null);
+    });
+
     expect(called).to.equal(0);
+    expect(errors.join("\n")).to.match(/CANNOT work/);
   });
 
   it("bootstraps with the agent DB name when both the name and the config are present", () => {
