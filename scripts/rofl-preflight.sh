@@ -148,15 +148,21 @@ while IFS= read -r line; do
   fi
   [ -z "$val" ] && continue
 
-  # Recorded for the presence assertions after the loop, and recorded HERE rather than beside
-  # the key match so an empty value does not count as configured — the assert below claims
-  # "present and non-empty", and `- POSTGRES_AGENT_DATABASE=` used to satisfy it. Empty values
-  # genuinely reach generated composes: `mcp=` is one by design, so this is not hypothetical.
+  [[ "$val" == '${'* ]] && continue        # runtime-injected secret
+
+  # Recorded for the presence assertions after the loop, and recorded HERE — after BOTH the
+  # empty-value and runtime-injection guards — because the assert below claims the key is
+  # present as a usable PLAINTEXT value, and neither of those shapes is one.
+  #   `- POSTGRES_AGENT_DATABASE=`                    used to satisfy it; empty values genuinely
+  #                                                   reach generated composes (`mcp=`, by design)
+  #   `- POSTGRES_AGENT_DATABASE=${POSTGRES_…:-}`     is the SECRET section's form, injected by
+  #                                                   rofl-appd at run time and EMPTY when the
+  #                                                   secret is unset — the one case a reader of
+  #                                                   the plaintext compose cannot verify, and the
+  #                                                   one whose cost is paid inside a signed TEE
   # Delimited on BOTH sides so a substring cannot pass — `POSTGRES_AGENT_DATABASE_EXTRA` must
   # not satisfy a check for `POSTGRES_AGENT_DATABASE`.
   config_keys_seen+="|${key}|"
-
-  [[ "$val" == '${'* ]] && continue        # runtime-injected secret
 
   if printf '%s' "$val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then
     failures+="  ✗ ${key}=${val}\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"

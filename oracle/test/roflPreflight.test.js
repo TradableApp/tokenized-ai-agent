@@ -182,6 +182,24 @@ describe("rofl-preflight.sh", function () {
       expect(out).to.include("POSTGRES_AGENT_DATABASE");
     });
 
+    it("is not satisfied by a secret-form reference to the key", function () {
+      // `${POSTGRES_AGENT_DATABASE:-}` is how the SECRET section carries a key: the value is
+      // injected by rofl-appd at run time, and the `:-` default means an unset secret arrives
+      // EMPTY. Every generated compose puts this key in the plaintext CONFIG section instead
+      // (`- POSTGRES_AGENT_DATABASE=oracle_agent`), which is what the gate is asserting — so a
+      // key that migrated to the secret section must reopen the gate, not slip through it.
+      // Runtime injection is exactly the case this gate cannot verify, and the cost of being
+      // wrong is paid from inside a TEE after the bundle is signed.
+      const { code, out } = runPreflight(
+        composeFixture(["- POSTGRES_AGENT_DATABASE=${POSTGRES_AGENT_DATABASE:-}"], {
+          omitAgentDb: true,
+        }),
+      );
+
+      expect(code).to.equal(1);
+      expect(out).to.include("POSTGRES_AGENT_DATABASE");
+    });
+
     it("is not satisfied by a key that merely starts with the same name", function () {
       // The check matches on a both-sides-delimited record precisely so this cannot pass.
       const { code, out } = runPreflight(
