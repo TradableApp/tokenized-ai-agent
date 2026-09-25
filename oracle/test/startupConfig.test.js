@@ -30,6 +30,18 @@ function baseEnv(overrides = {}) {
     PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
     AI_AGENT_CONTRACT_ADDRESS: "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
     USE_MOCK_STORAGE: "true",
+    // Postgres is part of a complete configuration now — the agent runtime has no working
+    // fallback. Kept in the shared fixture rather than added per-test so every existing case
+    // keeps testing the thing it was written to test.
+    POSTGRES_AGENT_DATABASE: "oracle_agent",
+    POSTGRES_HOST: "10.0.0.5",
+    POSTGRES_PORT: "5432",
+    POSTGRES_DATABASE: "senseai",
+    POSTGRES_USER: "senseai",
+    POSTGRES_PASSWORD: "not-a-real-password",
+    POSTGRES_CLIENT_CERT_PATH: "/certs/client.crt",
+    POSTGRES_CLIENT_KEY_PATH: "/certs/client.key",
+    POSTGRES_SERVER_CA_CERT_PATH: "/certs/ca.crt",
     ...overrides,
   };
 }
@@ -37,6 +49,127 @@ function baseEnv(overrides = {}) {
 describe("startup config validation", () => {
   it("accepts a complete configuration", () => {
     expect(() => validateConfig(baseEnv())).to.not.throw();
+  });
+
+  // ADR-0001 chose managed Postgres and rejected PGLite as brittle; without this guard that
+  // decision was never enforced, and the cost of missing it is paid ~30s into the boot on
+  // `relation "agents" does not exist`, nowhere near the variable at fault.
+  it("refuses a configuration with no POSTGRES_AGENT_DATABASE", () => {
+    try {
+      validateConfig(
+        baseEnv({ POSTGRES_AGENT_DATABASE: undefined, POSTGRES_URL: undefined }),
+      );
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.name).to.equal("ConfigError");
+      expect(err.message).to.match(/POSTGRES_AGENT_DATABASE/);
+    }
+  });
+
+  // initializeEliza still implements the legacy path: given POSTGRES_URL it migrates against
+  // that url and derives its expectDatabase guard from the url's own path. Rejecting it here
+  // would leave a guard contradicting a branch the same change documents as supported. The
+  // invariant is that SOME Postgres is named — PGLite is the thing that must be impossible.
+  // Every individual POSTGRES_* key is stripped, not just the agent DB name: with baseEnv's
+  // host/user/password still present the assertion passes even if the branch wrongly demanded
+  // them, so it would prove nothing about the path it names. The url carries its own connection
+  // details — that is the whole point of the legacy path — so the per-key checks must be skipped.
+  it("accepts a directly-supplied POSTGRES_URL in place of the agent DB", () => {
+    expect(() =>
+      validateConfig(
+        baseEnv({
+          POSTGRES_AGENT_DATABASE: undefined,
+          POSTGRES_HOST: undefined,
+          POSTGRES_PORT: undefined,
+          POSTGRES_DATABASE: undefined,
+          POSTGRES_USER: undefined,
+          POSTGRES_PASSWORD: undefined,
+          POSTGRES_CLIENT_CERT_PATH: undefined,
+          POSTGRES_CLIENT_KEY_PATH: undefined,
+          POSTGRES_SERVER_CA_CERT_PATH: undefined,
+          POSTGRES_URL: "postgresql://u:p@db.internal:5432/oracle_agent",
+        }),
+      ),
+    ).to.not.throw();
+  });
+
+  // The legacy url was the one credential in this module checked with isBlank rather than
+  // isMissingOrPlaceholder, so `POSTGRES_URL=your_postgres_url_here` satisfied the guard and
+  // the oracle started toward an unusable url. Nothing ships that placeholder today — but a
+  // guard whose whole job is catching unfilled config must not have one key it exempts.
+  it("refuses a placeholder POSTGRES_URL standing in for the agent DB", () => {
+    try {
+      validateConfig(
+        baseEnv({
+          POSTGRES_AGENT_DATABASE: undefined,
+          POSTGRES_URL: "your_postgres_url_here",
+        }),
+      );
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.name).to.equal("ConfigError");
+      expect(err.message).to.match(/POSTGRES_AGENT_DATABASE/);
+    }
+  });
+
+  // Not reachable by copying .env.oracle.example, which ships a real `oracle_agent` — but a
+  // named database is the one the runtime USES: wireAgentDbForPluginSql bootstraps against
+  // whatever is here the moment it is non-blank, so a placeholder is not "unset with a hint",
+  // it is a live connection to a database that does not exist.
+  it("refuses a placeholder agent DB name", () => {
+    try {
+      validateConfig(baseEnv({ POSTGRES_AGENT_DATABASE: "your_agent_db_here" }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.name).to.equal("ConfigError");
+      expect(err.message).to.match(/placeholder/);
+    }
+  });
+
+  // ...and a url alongside it does not excuse it, because the runtime prefers the name: the
+  // legacy branch is only taken when no database is named at all.
+  it("refuses a placeholder agent DB name even when a POSTGRES_URL is supplied", () => {
+    try {
+      validateConfig(
+        baseEnv({
+          POSTGRES_AGENT_DATABASE: "your_agent_db_here",
+          POSTGRES_URL: "postgresql://u:p@db.internal:5432/oracle_agent",
+        }),
+      );
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.match(/placeholder/);
+    }
+  });
+
+  // A database NAME with no credentials is what the committed .env.oracle.example carries, so
+  // it is the shape someone gets by copying the example — it must be rejected, not accepted
+  // and then failed on at connect time.
+  it("refuses a named agent DB whose connection config is incomplete", () => {
+    try {
+      validateConfig(baseEnv({ POSTGRES_PASSWORD: undefined, POSTGRES_HOST: undefined }));
+      expect.fail("expected a ConfigError");
+    } catch (err) {
+      expect(err.message).to.match(/POSTGRES_HOST/);
+      expect(err.message).to.match(/POSTGRES_PASSWORD/);
+    }
+  });
+
+  // Either form satisfies the cert requirement; postgresBootstrap accepts inline PEM as well
+  // as a path, and the guard reuses ITS lists, so it must accept whatever that module does.
+  it("accepts inline cert PEM in place of the *_PATH form", () => {
+    expect(() =>
+      validateConfig(
+        baseEnv({
+          POSTGRES_CLIENT_CERT_PATH: undefined,
+          POSTGRES_CLIENT_KEY_PATH: undefined,
+          POSTGRES_SERVER_CA_CERT_PATH: undefined,
+          POSTGRES_CLIENT_CERT: "-----BEGIN CERTIFICATE-----",
+          POSTGRES_CLIENT_KEY: "-----BEGIN PRIVATE KEY-----",
+          POSTGRES_SERVER_CA_CERT: "-----BEGIN CERTIFICATE-----",
+        }),
+      ),
+    ).to.not.throw();
   });
 
   it("names the variable that is missing", () => {

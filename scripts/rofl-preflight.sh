@@ -62,6 +62,7 @@ elif [ "$env_file" -nt "$COMPOSE_FILE" ]; then
 fi
 
 in_config_block=false
+config_keys_seen=""
 
 # FAIL CLOSED if the marker is missing. Without it the bounded scan never opens, nothing is
 # examined, and this script reported a clean pass — a bypass where a hand-edited or truncated
@@ -146,7 +147,22 @@ while IFS= read -r line; do
     continue
   fi
   [ -z "$val" ] && continue
+
   [[ "$val" == '${'* ]] && continue        # runtime-injected secret
+
+  # Recorded for the presence assertions after the loop, and recorded HERE — after BOTH the
+  # empty-value and runtime-injection guards — because the assert below claims the key is
+  # present as a usable PLAINTEXT value, and neither of those shapes is one.
+  #   `- POSTGRES_AGENT_DATABASE=`                    used to satisfy it; empty values genuinely
+  #                                                   reach generated composes (`mcp=`, by design)
+  #   `- POSTGRES_AGENT_DATABASE=${POSTGRES_…:-}`     is the SECRET section's form, injected by
+  #                                                   rofl-appd at run time and EMPTY when the
+  #                                                   secret is unset — the one case a reader of
+  #                                                   the plaintext compose cannot verify, and the
+  #                                                   one whose cost is paid inside a signed TEE
+  # Delimited on BOTH sides so a substring cannot pass — `POSTGRES_AGENT_DATABASE_EXTRA` must
+  # not satisfy a check for `POSTGRES_AGENT_DATABASE`.
+  config_keys_seen+="|${key}|"
 
   if printf '%s' "$val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then
     failures+="  ✗ ${key}=${val}\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
@@ -164,6 +180,35 @@ while IFS= read -r line; do
     failures+="  ✗ ${key}=${val}\n      inline comment — baked in verbatim; move it to its own '#' line above the key\n"
   fi
 done < "$COMPOSE_FILE"
+
+# POSTGRES_AGENT_DATABASE must be present and non-empty in the bundled config.
+#
+# It is load-bearing: without it plugin-sql falls through to PGLite, whose schema is never
+# created on the oracle's programmatic boot path, and the runtime dies ~30s in on
+# `relation "agents" does not exist` with every service registration timing out. ADR-0001
+# chose managed Postgres and rejected PGLite as brittle.
+#
+# validateConfig refuses to START a container without it, so this gate is not the last line
+# of defence — but it is the EARLY one, and the difference matters: catching it here fails
+# the build in seconds on a developer's machine, where the fix is `bun run rofl:set:<env>`.
+# Catching it at startup means discovering it from inside a TEE after an ORC has been built,
+# signed and deployed.
+#
+# Deliberately NARROWER than validateConfig, which also accepts a POSTGRES_URL naming the
+# database directly. That legacy path is a runtime one: the url arrives as an injected secret,
+# so it is invisible to a check that reads the plaintext compose, and accepting it here would
+# mean accepting its ABSENCE too. ORC bundles must carry POSTGRES_AGENT_DATABASE as plaintext.
+# The two gates therefore disagree by design, and this is the note that says so — without it,
+# a developer who takes the legacy path sees the runtime validator pass and this one fail with
+# no way to tell which is wrong.
+#
+# The case this actually catches is a compose that was never regenerated since Postgres was
+# added to the env files — `compose.testnet.yaml` and `compose.mainnet.yaml` were both in
+# exactly that state when this check was written, carrying no POSTGRES_* keys at all while
+# their base-* siblings had the full block.
+if ! printf '%s' "$config_keys_seen" | grep -q '|POSTGRES_AGENT_DATABASE|'; then
+  failures+="  ✗ POSTGRES_AGENT_DATABASE is absent from the plaintext config\n      the oracle cannot run without a Postgres agent database — plugin-sql would fall\n      through to PGLite and die on \`relation \"agents\" does not exist\`\n"
+fi
 
 if [ -n "$failures" ]; then
   echo ""

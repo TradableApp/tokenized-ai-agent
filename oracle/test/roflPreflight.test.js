@@ -21,8 +21,14 @@ const REPO_ROOT = path.join(__dirname, "..", "..");
 const PREFLIGHT = path.join(REPO_ROOT, "scripts", "rofl-preflight.sh");
 const MARKER = "# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===";
 
+// Every real compose carries this, and preflight now fails without it. It is injected into
+// the fixture rather than repeated in each case so the parsing tests below keep testing
+// parsing — a test about CRLF handling should not also have to assert a Postgres key. The
+// gate itself is covered by its own case, which omits it via `omitAgentDb`.
+const AGENT_DB_LINE = "- POSTGRES_AGENT_DATABASE=oracle_agent";
+
 /** Wraps config lines in enough compose shape to exercise the bounded scan, not a stub. */
-function composeFixture(configLines, { marker = MARKER } = {}) {
+function composeFixture(configLines, { marker = MARKER, omitAgentDb = false } = {}) {
   return [
     "services:",
     "  oracle:",
@@ -31,6 +37,7 @@ function composeFixture(configLines, { marker = MARKER } = {}) {
     "      # === 🔐 ROFL SECRETS ===",
     "      - PRIVATE_KEY=${PRIVATE_KEY:-}",
     `      ${marker}`,
+    ...(omitAgentDb ? [] : [`      ${AGENT_DB_LINE}`]),
     ...configLines.map((l) => `      ${l}`),
     // ports:/volumes: after the environment block: in_config_block is never reset, so these
     // fall inside the scan and must not be parsed as key/value pairs.
@@ -145,6 +152,63 @@ describe("rofl-preflight.sh", function () {
     const { code } = runPreflight(composeFixture(["- LOG_LEVEL=warn"]).replace(/\n/g, "\r\n"));
 
     expect(code).to.equal(0);
+  });
+
+  describe("POSTGRES_AGENT_DATABASE gate", function () {
+    it("rejects a compose that declares no agent database", function () {
+      // The real case: compose.testnet.yaml and compose.mainnet.yaml were both regenerated
+      // before Postgres was added to the env files, so they carried no POSTGRES_* keys while
+      // their base-* siblings had the full block. Without the key plugin-sql falls through to
+      // PGLite, whose schema the oracle's programmatic boot never creates, and the runtime
+      // dies ~30s in on `relation "agents" does not exist`.
+      const { code, out } = runPreflight(
+        composeFixture(["- LOG_LEVEL=warn"], { omitAgentDb: true }),
+      );
+
+      expect(code).to.equal(1);
+      expect(out).to.include("POSTGRES_AGENT_DATABASE");
+    });
+
+    it("rejects a compose that declares the key with an empty value", function () {
+      // The assert's own comment says "present and non-empty". A bare `- POSTGRES_AGENT_DATABASE=`
+      // is exactly the shape a half-finished regeneration leaves behind, and an empty value is no
+      // more usable than an absent one — plugin-sql falls through to PGLite either way. Empty
+      // values demonstrably do reach generated composes: `mcp=` is one, by design.
+      const { code, out } = runPreflight(
+        composeFixture(["- POSTGRES_AGENT_DATABASE=", "- LOG_LEVEL=warn"], { omitAgentDb: true }),
+      );
+
+      expect(code).to.equal(1);
+      expect(out).to.include("POSTGRES_AGENT_DATABASE");
+    });
+
+    it("is not satisfied by a secret-form reference to the key", function () {
+      // `${POSTGRES_AGENT_DATABASE:-}` is how the SECRET section carries a key: the value is
+      // injected by rofl-appd at run time, and the `:-` default means an unset secret arrives
+      // EMPTY. Every generated compose puts this key in the plaintext CONFIG section instead
+      // (`- POSTGRES_AGENT_DATABASE=oracle_agent`), which is what the gate is asserting — so a
+      // key that migrated to the secret section must reopen the gate, not slip through it.
+      // Runtime injection is exactly the case this gate cannot verify, and the cost of being
+      // wrong is paid from inside a TEE after the bundle is signed.
+      const { code, out } = runPreflight(
+        composeFixture(["- POSTGRES_AGENT_DATABASE=${POSTGRES_AGENT_DATABASE:-}"], {
+          omitAgentDb: true,
+        }),
+      );
+
+      expect(code).to.equal(1);
+      expect(out).to.include("POSTGRES_AGENT_DATABASE");
+    });
+
+    it("is not satisfied by a key that merely starts with the same name", function () {
+      // The check matches on a both-sides-delimited record precisely so this cannot pass.
+      const { code, out } = runPreflight(
+        composeFixture(["- POSTGRES_AGENT_DATABASE_EXTRA=oracle_agent"], { omitAgentDb: true }),
+      );
+
+      expect(code).to.equal(1);
+      expect(out).to.include("POSTGRES_AGENT_DATABASE");
+    });
   });
 
   it("says on the ✅ line when the staleness check was skipped", function () {

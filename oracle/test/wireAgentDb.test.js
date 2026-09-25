@@ -39,6 +39,19 @@ function loadWithBootstrapStub(stub) {
   return mod.wireAgentDbForPluginSql;
 }
 
+/** Runs `fn` with console.error captured, and returns what it wrote. */
+function captureConsoleError(fn) {
+  const written = [];
+  const original = console.error;
+  console.error = (...args) => written.push(args.join(" "));
+  try {
+    fn();
+  } finally {
+    console.error = original;
+  }
+  return written;
+}
+
 describe("wireAgentDbForPluginSql (agent-DB isolation guard)", () => {
   const saved = {};
   let savedPrivateKey;
@@ -80,9 +93,50 @@ describe("wireAgentDbForPluginSql (agent-DB isolation guard)", () => {
     expect(called).to.equal(0);
   });
 
-  it("skips (PGLite) when the agent DB is named but the connection config is absent", () => {
-    // The committed .env.oracle.example, localnet and e2e all run in exactly this
-    // shape: a DB *name* with no host/credentials. Must degrade quietly, not throw.
+  // The POSTGRES_URL-only shape is one validateConfig DELIBERATELY allows, and initializeEliza
+  // implements it a few lines below this call (legacy warning, then migration against that url).
+  // This function runs before that branch, so an unconditional error here announced that the
+  // process "should have been stopped by validateConfig" about a configuration validateConfig
+  // had just approved — a red log contradicting the warning printed immediately after it.
+  it("stays quiet on the POSTGRES_URL-only path validateConfig allows", () => {
+    const wire = loadWithBootstrapStub({
+      bootstrapPostgresFromEnv: () => {
+        throw new Error("bootstrap must not run on the legacy path");
+      },
+      isPostgresConfigured: () => true,
+    });
+    process.env.POSTGRES_URL = "postgresql://u:p@db.internal:5432/oracle_agent";
+
+    const errors = captureConsoleError(() => {
+      expect(wire()).to.equal(null); // still null — initializeEliza migrates against the url
+    });
+
+    expect(errors).to.deep.equal([]);
+  });
+
+  // The complement, so the quiet above cannot be achieved by silencing the branch outright:
+  // with no url either, this IS the unguarded start the message describes.
+  it("still reports the PGLite fall-through when neither the agent DB nor a url is named", () => {
+    const wire = loadWithBootstrapStub({
+      bootstrapPostgresFromEnv: () => {},
+      isPostgresConfigured: () => true,
+    });
+
+    const errors = captureConsoleError(() => {
+      expect(wire()).to.equal(null);
+    });
+
+    expect(errors.join("\n")).to.match(/PGLite/);
+  });
+
+  it("reports, rather than absorbs, a named agent DB with no connection config", () => {
+    // The committed .env.oracle.example carries exactly this shape: a DB *name* with no
+    // host/credentials. It must not throw — this runs inside initializeEliza, which the
+    // prompt path re-enters behind the ElizaOS→ChainGPT failover, so a throw is caught and
+    // silently downgrades every answer. But "does not throw" is not "says nothing": the
+    // configuration cannot work, and before this PR the log read like a supported
+    // degradation. Asserting the error is what keeps the return-null quiet from drifting
+    // back into being quiet all the way down.
     let called = 0;
     const wire = loadWithBootstrapStub({
       bootstrapPostgresFromEnv: () => {
@@ -92,8 +146,12 @@ describe("wireAgentDbForPluginSql (agent-DB isolation guard)", () => {
     });
     process.env.POSTGRES_AGENT_DATABASE = "oracle_agent";
 
-    expect(wire()).to.equal(null);
+    const errors = captureConsoleError(() => {
+      expect(wire()).to.equal(null);
+    });
+
     expect(called).to.equal(0);
+    expect(errors.join("\n")).to.match(/CANNOT work/);
   });
 
   it("bootstraps with the agent DB name when both the name and the config are present", () => {

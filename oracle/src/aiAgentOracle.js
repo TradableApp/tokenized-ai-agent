@@ -244,26 +244,55 @@ let senseAiAgentId = null;
  * shared agent DB would collide with sense-ai-core's agent tables; a dedicated DB
  * on the same instance (same client cert) keeps the oracle's agent state isolated
  * + concurrency-safe. MUST run before `addAgents()` — plugin-sql reads POSTGRES_URL
- * at init. If the agent DB / certs aren't configured (e.g. localnet e2e), skip and
- * let plugin-sql fall back to PGLite.
+ * at init.
+ *
+ * Postgres is REQUIRED; the PGLite fallback below is a dead end kept only so the failure
+ * is legible. It never worked: the programmatic boot skips plugin-sql's server-level
+ * migration and PgliteDatabaseAdapter.init() creates no schema, so the runtime died on
+ * `relation "agents" does not exist` ~30s later with every service registration timing
+ * out. ADR-0001 had already chosen managed Postgres and rejected PGLite as brittle.
+ *
+ * The enforcing guard is `validateConfig` in startupConfig.js, NOT this function. It has
+ * to be: this runs inside `initializeEliza`, and the prompt path re-enters it behind the
+ * ElizaOS→ChainGPT failover — so a throw here would be caught and silently downgrade
+ * every answer to the fallback provider instead of stopping the process. A config error
+ * has to be refused before anything can catch it.
  */
 function wireAgentDbForPluginSql() {
   const agentDb = process.env.POSTGRES_AGENT_DATABASE;
   if (!agentDb || !agentDb.trim()) {
-    console.log(
-      "[ElizaOS] POSTGRES_AGENT_DATABASE unset — plugin-sql uses its local PGLite fallback.",
+    // Except on the legacy path, which validateConfig deliberately allows: a POSTGRES_URL
+    // naming the database directly. initializeEliza handles it a few lines below this call —
+    // it migrates against that url and derives its expectDatabase guard from the url's own
+    // path — and plugin-sql reads POSTGRES_URL from the env itself, so there is nothing to
+    // wire here. Crying wolf on it was worse than saying nothing: the error claimed the
+    // process "should have been stopped by validateConfig" about a configuration
+    // validateConfig had just approved, and the legacy warning printed straight afterwards
+    // contradicted it.
+    if ((process.env.POSTGRES_URL || "").trim()) return null;
+    // NOT a supported degradation, and the log must not read like one. validateConfig
+    // refuses to start the process without this, so reaching here means the guard was
+    // bypassed (a direct start() call, a test, a wrapper importing start()). PGLite
+    // cannot serve the agent runtime — see the note above — so what follows will die
+    // on `relation "agents" does not exist` about thirty seconds from now.
+    console.error(
+      "[ElizaOS] POSTGRES_AGENT_DATABASE unset — falling through to plugin-sql's PGLite " +
+        "store, which CANNOT work (no server-level migration on this boot path). " +
+        "Expect `relation \"agents\" does not exist`. This process should have been " +
+        "stopped by validateConfig; it was started without that guard.",
     );
     return null;
   }
   const { bootstrapPostgresFromEnv, isPostgresConfigured } = require("./postgresBootstrap");
 
   // A bare DB *name* isn't enough to mean "use Postgres" — the committed
-  // .env.oracle.example carries the name with no credentials, and localnet/e2e run
-  // that way. Only treat Postgres as intended when the connection config is actually
-  // present (shared with brainContext so the two checks can't drift).
+  // .env.oracle.example carries the name with no credentials, so this is the shape
+  // someone gets by copying the example and running it unedited.
   if (!isPostgresConfigured()) {
-    console.log(
-      "[ElizaOS] Postgres connection config absent — plugin-sql uses its local PGLite fallback.",
+    console.error(
+      `[ElizaOS] POSTGRES_AGENT_DATABASE is "${agentDb}" but the Postgres connection ` +
+        "config is absent, so plugin-sql falls through to PGLite, which CANNOT work. " +
+        "This process should have been stopped by validateConfig.",
     );
     return null;
   }

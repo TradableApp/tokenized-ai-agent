@@ -220,4 +220,13 @@ function bootstrapPostgresFromEnv(options = {}) {
   return connectionString;
 }
 
-module.exports = { bootstrapPostgresFromEnv, isPostgresConfigured };
+// REQUIRED_BASE_KEYS / CERT_KEY_PAIRS are exported so startupConfig's guard checks the
+// SAME set this module requires. isPostgresConfigured() itself reads process.env directly,
+// and validateConfig is given an env to validate, so it cannot reuse the function — but it
+// can and must reuse the lists, or the two definitions of "configured" drift apart.
+module.exports = {
+  bootstrapPostgresFromEnv,
+  isPostgresConfigured,
+  REQUIRED_BASE_KEYS,
+  CERT_KEY_PAIRS,
+};
