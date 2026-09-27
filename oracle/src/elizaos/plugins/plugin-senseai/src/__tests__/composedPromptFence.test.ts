@@ -131,7 +131,15 @@ describe("the prompt the three packages produce together", () => {
 
   it("states one notice, after BOTH untrusted regions", async () => {
     const blob = await composedBlob();
-    const news = blob.indexOf("<untrusted_news>");
+    // The CLOSING tag, not the opening one. The claim is that the news region has ENDED before the
+    // notice is read; the opening tag's position cannot say that, and an unclosed region would have
+    // satisfied the old assertion while the notice sat inside it.
+    const news = blob.indexOf("</untrusted_news>");
+
+    expect(
+      news,
+      "the news region must actually close, or the ordering claim is vacuous",
+    ).toBeGreaterThan(-1);
     const conversationClose = blob.indexOf("</untrusted_conversation>");
     const notice = blob.indexOf(UNTRUSTED_REGION_NOTICE);
 

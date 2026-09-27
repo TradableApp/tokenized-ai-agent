@@ -131,7 +131,29 @@ describe("inboundPrompt — the Brain is resolved at startup, not per prompt", (
       inboundPrompt.initInboundPrompt({
         loadBrain: async () => ({ stripFenceTags: (t) => t }),
       }),
-    ).to.be.rejectedWith(/does not strip/i);
+      // Which probe catches a total no-op first is an implementation detail; that it refuses to start
+      // is the contract. The orphan-specific message is pinned by the test above.
+    ).to.be.rejectedWith(/Refusing to start/i);
+  });
+
+  /**
+   * The probe has to test the ATTACK, not a well-formed pair.
+   *
+   * A balanced `<untrusted_x>…</untrusted_x>` pair is not what arrives. What arrives is a lone
+   * CLOSING tag, which ends the region early and puts the rest of the prompt in the instruction
+   * region — the module header calls removing it "the whole job". A strip that only collapses
+   * matched pairs satisfies a paired probe completely and leaves the orphan untouched, so a paired
+   * probe would report a vulnerable Brain as healthy. Verified: the stub below returns "probe" for
+   * the pair and leaves `before</untrusted_conversation>after` byte-identical.
+   */
+  it("refuses a Brain whose strip removes pairs but leaves an orphaned closing tag", async () => {
+    await expect(
+      inboundPrompt.initInboundPrompt({
+        loadBrain: async () => ({
+          stripFenceTags: (t) => t.replace(/<untrusted_([a-z_]+)>([\s\S]*?)<\/untrusted_\1>/g, "$2"),
+        }),
+      }),
+    ).to.be.rejectedWith(/orphan/i);
   });
 
   it("refuses a Brain whose strip mangles clean text", async () => {
