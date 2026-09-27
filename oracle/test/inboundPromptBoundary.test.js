@@ -49,16 +49,72 @@ function codeOnly(text) {
 
 const CODE = codeOnly(ORACLE);
 
+/**
+ * EVERY decrypted payload, and whether its user-written fields reach a prompt.
+ *
+ * The first version of this file asserted "exactly one place a new prompt is decrypted" and scoped that
+ * to `PromptSubmitted`. It passed, and it was wrong: there are FOUR `validatePayload` calls, and one of
+ * the others carries a user-written string straight into the conversation history. The guard was
+ * checking the site it already knew about — which is the whole failure mode every ingestion boundary in
+ * these repos was written to prevent, reproduced in the guard itself.
+ *
+ * So the types are enumerated with the decision recorded per type, and a new type fails the scan until
+ * someone makes that decision explicitly.
+ */
+const PAYLOADS = [
+  {
+    type: "PromptSubmitted",
+    field: "promptText",
+    // The prompt itself. Also becomes the conversation title via `.substring(0, 40)`, already stripped
+    // by the time it gets there.
+    reachesAPrompt: true,
+  },
+  {
+    type: "RegenerationRequested",
+    field: "instructions",
+    // Interpolated into a history message — `Please regenerate your previous response. Make it ${...}`
+    // — which RECENT_MESSAGES renders at position 100, INSIDE the fence. So a tag here closes the
+    // region and puts the rest in the instruction region. 1000 characters allowed; the escape needs
+    // about 48.
+    reachesAPrompt: true,
+  },
+  {
+    type: "BranchRequested",
+    field: "originalTitle",
+    // `Branch of ${originalTitle}` → a conversation metadata file. Never composed into a prompt, so a
+    // fence tag in it cannot close a region that it is never inside. Rendered in the dApp, where a
+    // stray tag is cosmetic rather than an injection.
+    reachesAPrompt: false,
+  },
+  {
+    type: "MetadataUpdateRequested",
+    field: "title",
+    // Conversation metadata only, same as above.
+    reachesAPrompt: false,
+  },
+];
+
 describe("the inbound prompt fence is wired, not merely written", () => {
-  it("has exactly one place a new prompt is decrypted and validated", () => {
-    // The scan below assumes one entry. If a second appears, this fails FIRST and names the
-    // assumption, rather than the next assertion silently checking only the site it knew about.
-    const entries = CODE.match(/validatePayload\([^)]*"PromptSubmitted"\)/g) ?? [];
+  it("accounts for every decrypted payload, so a new one cannot arrive unconsidered", () => {
+    const found = [...CODE.matchAll(/validatePayload\([^,]*,\s*"([A-Za-z]+)"\)/g)].map((m) => m[1]);
+    const declared = PAYLOADS.map((p) => p.type);
 
     expect(
-      entries.length,
-      "a second prompt entry point appeared — it needs the strip too, and this scan needs widening",
-    ).to.equal(1);
+      found.slice().sort(),
+      "a payload type appeared or vanished — decide whether its fields reach a prompt and record it " +
+        "in PAYLOADS above",
+    ).to.deep.equal(declared.slice().sort());
+  });
+
+  it("strips every payload field that reaches a prompt", () => {
+    const unstripped = PAYLOADS.filter((p) => p.reachesAPrompt).filter(
+      (p) => !new RegExp(`stripInboundPrompt\\(\\s*[\\w.]*\\b${p.field}\\b`).test(CODE),
+    );
+
+    expect(
+      unstripped.map((p) => `${p.type}.${p.field}`),
+      "these reach a prompt without being fence-stripped — a tag in them closes the region they sit in",
+    ).to.deep.equal([]);
   });
 
   it("strips the prompt at that entry", () => {

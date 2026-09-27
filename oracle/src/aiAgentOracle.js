@@ -1896,7 +1896,16 @@ async function handleRegeneration(
 
     const clientPayload = validatePayload(decryptedData, "RegenerationRequested");
 
-    const { instructions, promptMessageCID, originalAnswerMessageCID } = clientPayload;
+    const { promptMessageCID, originalAnswerMessageCID } = clientPayload;
+
+    // Fence-stripped for exactly the reason promptText is. This string is interpolated into a history
+    // message a few lines down, and RECENT_MESSAGES renders history INSIDE the untrusted_conversation
+    // fence — so a closing tag here would end the region early and leave the remainder sitting where
+    // the model reads instructions. Produced BY the strip rather than destructured and then
+    // reassigned, so there is no raw binding in scope to reach for by mistake.
+    const instructions = clientPayload.instructions
+      ? stripInboundPrompt(clientPayload.instructions)
+      : clientPayload.instructions;
 
     console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(originalAnswerMessageCID, sessionKey);
