@@ -4,6 +4,10 @@ import { analyzeAssetSentimentAction } from "./actions/analyzeAssetSentiment";
 import { getNewsDetailsAction } from "./actions/getNewsDetails";
 import { macroSentimentProvider } from "./providers/macroSentiment";
 import { marketIntelligenceProvider } from "./providers/marketIntelligence";
+import {
+  untrustedConversationCloseProvider,
+  untrustedConversationOpenProvider,
+} from "./providers/untrustedConversationFence";
 import { BrainService } from "./services/brain";
 
 // Host injection seam: the oracle owns the Brain connection (mTLS certs, drizzle, timeouts)
@@ -100,7 +104,16 @@ const senseaiPlugin: Plugin = {
   // The Brain-backed pair sense-ai-core injects, from the same shared Brain so both bodies
   // see identical context. Oracle-only capabilities go here later; anything shared with the
   // Social body belongs in the Brain instead, so both get it.
-  providers: [macroSentimentProvider, marketIntelligenceProvider],
+  // The fence pair brackets bootstrap's RECENT_MESSAGES (position 100) from 99 and 101, so the user's
+  // own prompt reaches the model inside `<untrusted_conversation>` with the notice that says the
+  // region is data. Listed after the market pair for readability only — composeState sorts by
+  // position, not by this array's order.
+  providers: [
+    macroSentimentProvider,
+    marketIntelligenceProvider,
+    untrustedConversationOpenProvider,
+    untrustedConversationCloseProvider,
+  ],
   // Owns this body's read access to the shared warm cache — see services/brain.ts for why it
   // cannot derive a BrainContext from the runtime the way core does.
   //

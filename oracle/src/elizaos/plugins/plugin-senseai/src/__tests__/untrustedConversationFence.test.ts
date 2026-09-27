@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import bootstrap from "@elizaos/plugin-bootstrap";
 import { UNTRUSTED_REGION_NOTICE } from "@tradableapp/sense-ai-brain";
 
-import { senseAIPlugin } from "../index";
+import senseaiPlugin from "../index";
 import {
   untrustedConversationCloseProvider,
   untrustedConversationOpenProvider,
@@ -70,7 +70,7 @@ describe("the untrusted conversation fence", () => {
   });
 
   it("is registered on the plugin, or it never runs at all", () => {
-    const names = (senseAIPlugin.providers ?? []).map((p) => p.name);
+    const names = (senseaiPlugin.providers ?? []).map((p) => p.name);
 
     expect(names).toContain("UNTRUSTED_CONVERSATION_OPEN");
     expect(names).toContain("UNTRUSTED_CONVERSATION_CLOSE");
