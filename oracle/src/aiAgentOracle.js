@@ -38,6 +38,7 @@ const {
 const { BadInputError, isBadInputError } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
+const { initInboundPrompt, stripInboundPrompt } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { reconcileCursor } = require("./blockCursor");
 
@@ -1529,7 +1530,17 @@ async function handlePrompt(
 
     const clientPayload = validatePayload(decryptedData, "PromptSubmitted");
 
-    const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
+    // FENCE STRIP, at the only point a new prompt enters. `promptText` fans out from here to the
+    // reconstructed history, the model, the stored MessageFile, the conversation title and the CID —
+    // stripping once here leaves every one of them clean without enumerating them, and an enumeration
+    // is what left doors open on both social surfaces.
+    //
+    // Removes fence tags and NOTHING else. A forged `### SYSTEM DIRECTIVE:` reaches the model exactly
+    // as the user sent it, on purpose: the fence is what strips it of authority, and the user paid for
+    // this prompt on-chain. What a prompt must not carry is a tag that CLOSES the region around it,
+    // because that puts the rest of the prompt in the instruction region. See src/inboundPrompt.js.
+    const { isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
+    const promptText = stripInboundPrompt(clientPayload.promptText);
 
     // E2E only: a "__E2E_DROP__" marker makes the oracle never answer this prompt, leaving
     // the on-chain job pending so a test can deterministically exercise the refund flow
@@ -2747,6 +2758,12 @@ async function start() {
   // a Sentry incident — exactly what index.js's ConfigError-specific catch exists to prevent.
   // Unreachable in production (index.js has already exited), but reachable from tests and from
   // any wrapper importing start() directly.
+
+  // BEFORE anything that can serve a prompt. Resolves the Brain's fence strip once and throws if it
+  // cannot, so a stale submodule or a partial dist stops the process here rather than letting prompts
+  // through unstripped with one log line as the only signal — the same call aiAgentOracle already
+  // makes for degraded market context.
+  await initInboundPrompt();
 
   // Initialize the connection to the decentralised storage provider.
   await initializeStorage();
