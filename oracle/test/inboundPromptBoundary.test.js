@@ -90,6 +90,22 @@ describe("the inbound prompt fence is wired, not merely written", () => {
     ).to.deep.equal(declared.slice().sort());
   });
 
+  it("does not gate a strip on the field's own truthiness", () => {
+    // `field ? strip(field) : field` looks equivalent and is not. `stripInboundPrompt` coerces with
+    // `String(text ?? "")`, so the only thing a truthy gate buys is that `""` skips the strip — and
+    // skipping it also skips the throw that fires when startup never wired the strip up. That throw
+    // is the single signal distinguishing a working strip from a no-op, so narrowing which values
+    // reach it narrows the only evidence there is. `!= null` passes `""` through and keeps it.
+    const gated = PAYLOADS.filter((p) => p.reachesAPrompt).filter((p) =>
+      new RegExp(`\\b${p.field}\\s*\\?\\s*stripInboundPrompt`).test(CODE),
+    );
+
+    expect(
+      gated.map((p) => `${p.type}.${p.field}`),
+      "these gate the strip on truthiness, so an empty value skips the uninitialised-throw too",
+    ).to.deep.equal([]);
+  });
+
   it("strips every payload field that reaches a prompt", () => {
     const unstripped = PAYLOADS.filter((p) => p.reachesAPrompt).filter(
       (p) => !new RegExp(`stripInboundPrompt\\(\\s*[\\w.]*\\b${p.field}\\b`).test(CODE),

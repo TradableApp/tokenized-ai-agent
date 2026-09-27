@@ -112,6 +112,40 @@ describe("inboundPrompt — the Brain is resolved at startup, not per prompt", (
     ).to.be.rejectedWith(/fence/i);
   });
 
+  /**
+   * A `typeof === "function"` check cannot tell a working strip from a broken one.
+   *
+   * The two halves of the fence come from DIFFERENT copies of the Brain. The plugin bundles the tag
+   * strings and the notice into its dist at BUILD time; this module resolves `stripFenceTags` by
+   * dynamic `import()` at RUN time. Bun copies path dependencies into `node_modules` at install time,
+   * so those two can disagree — the documented trap that has already produced one false green in this
+   * stack, where a suite passed against a pre-fencing Brain.
+   *
+   * When they disagree the provider still emits a syntactically perfect fence and the strip still
+   * exports a function, so every structural check passes while tags the provider emits sail through.
+   * The only check that catches it is a behavioural one: strip the exact tags the bundled provider
+   * writes and see whether they are gone.
+   */
+  it("refuses a Brain whose strip does not remove the tags the fence providers emit", async () => {
+    await expect(
+      inboundPrompt.initInboundPrompt({
+        loadBrain: async () => ({ stripFenceTags: (t) => t }),
+      }),
+    ).to.be.rejectedWith(/does not strip/i);
+  });
+
+  it("refuses a Brain whose strip mangles clean text", async () => {
+    await expect(
+      inboundPrompt.initInboundPrompt({
+        loadBrain: async () => ({
+          // Strips the tags correctly, so the first probe passes — then rewrites text that carried
+          // none, which is the half a tag-only probe cannot see.
+          stripFenceTags: (t) => (/untrusted_/.test(t) ? t.replace(/<\/?untrusted_[a-z_]*>/g, "") : t.toUpperCase()),
+        }),
+      }),
+    ).to.be.rejectedWith(/altered a clean probe/i);
+  });
+
   it("throws at initialisation when the Brain loads but the export is gone", async () => {
     // The silent case: a stale or partial build whose module resolves and whose function does not.
     await expect(
@@ -125,7 +159,9 @@ describe("inboundPrompt — the Brain is resolved at startup, not per prompt", (
       loadBrain: async () => {
         imports += 1;
 
-        return { stripFenceTags: (s) => s.toUpperCase() };
+        // A real strip, because startup now probes it. The double that used to live here
+        // upper-cased its input, which the new behavioural check correctly refuses.
+        return { stripFenceTags: (s) => s.replace(/<\/?untrusted_[a-z_]*>/g, "") };
       },
     });
 

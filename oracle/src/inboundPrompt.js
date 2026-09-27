@@ -73,6 +73,35 @@ async function initInboundPrompt(overrides = {}) {
     );
   }
 
+  // A function that EXISTS is not a function that WORKS, and the difference is reachable here.
+  //
+  // The two halves of the fence come from different copies of the Brain: the plugin bundles the tag
+  // strings and the notice into its dist at BUILD time, while this module resolves the strip by
+  // dynamic import at RUN time. Bun copies path dependencies into node_modules at install time, so
+  // those two can disagree — the trap the Brain's own CLAUDE.md documents, which has already produced
+  // one false green in this stack. When they disagree, the provider still emits a syntactically
+  // perfect fence and the strip still exports a function; the tags simply pass through. Nothing
+  // structural catches that, so the check is behavioural: strip the exact tags the bundled provider
+  // writes and look.
+  const PROBE_INNER = "probe";
+  const tagged = `<untrusted_conversation>${PROBE_INNER}</untrusted_conversation>`;
+
+  if (brain.stripFenceTags(tagged) !== PROBE_INNER) {
+    throw new Error(
+      "The Brain's stripFenceTags does not strip the fence tags the conversation providers emit. " +
+        "The resolved Brain and the Brain bundled into the plugin dist disagree — usually a stale " +
+        "node_modules copy of a path dependency. Refusing to start: the fence would look intact and " +
+        "hold nothing.",
+    );
+  }
+
+  if (brain.stripFenceTags(PROBE_INNER) !== PROBE_INNER) {
+    throw new Error(
+      "The Brain's stripFenceTags altered a clean probe string. Refusing to start: a strip that " +
+        "rewrites text carrying no fence tag would silently edit prompts the user paid for.",
+    );
+  }
+
   stripFenceTags = brain.stripFenceTags;
 }
 

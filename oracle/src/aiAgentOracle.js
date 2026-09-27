@@ -1903,9 +1903,14 @@ async function handleRegeneration(
     // fence — so a closing tag here would end the region early and leave the remainder sitting where
     // the model reads instructions. Produced BY the strip rather than destructured and then
     // reassigned, so there is no raw binding in scope to reach for by mistake.
-    const instructions = clientPayload.instructions
-      ? stripInboundPrompt(clientPayload.instructions)
-      : clientPayload.instructions;
+    // `!= null` rather than truthy: `stripInboundPrompt` coerces with `String(text ?? "")`, so an
+    // empty string is safe to pass, and passing it means the uninitialised-throw fires for every
+    // value that is actually present. A truthy check would let `""` skip the strip entirely, which
+    // is harmless for injection but narrows the one signal that says the strip is wired at all.
+    const instructions =
+      clientPayload.instructions != null
+        ? stripInboundPrompt(clientPayload.instructions)
+        : clientPayload.instructions;
 
     console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(originalAnswerMessageCID, sessionKey);
