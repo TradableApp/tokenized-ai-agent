@@ -52,14 +52,28 @@ const { expect } = require("chai");
 // vulnerability at 9, price commentary at 3); only the cut-off was wrong.
 //
 // Carries brain #19/#20/#22 forward: self-hosted extraction, curated multi-feed RSS, the
-// cwd-coupled test fix. sense-ai-core bumps to the same SHA in the same change-set — no
-// divergence declared.
+// cwd-coupled test fix.
 //
 // Still nothing here executes it. The oracle never constructs MarketNewsEngine and never runs an
 // enrichment cycle, so it never computes a score; it only READS rows via getLatestEnrichedNews,
 // formatNewsTicker and searchNewsDetails. A stricter threshold changes WHICH rows core writes,
 // not any path the oracle runs. Verified nothing here reads metadata.isSignal or alphaScore.
-const EXPECTED_BRAIN_SHA = "cd5bf82d5367defefb176c281075da7de3223400";
+//
+// Brain #27 (CU-14ym9bv73e5) — the shared prompt-fencing surface, and this bump RECONVERGES the pin.
+//
+// THIS BODY DELIBERATELY BUMPED SECOND, and the ordering was the point rather than a delay. Brain #27
+// makes `formatNewsTicker` emit `<untrusted_news>`, and a fence tag means nothing until the consuming
+// prompt states the notice — so bumping here before this body had its own fence would have put fence
+// XML into a PAID prompt with nothing explaining it. An inert control and pure noise, charged to the
+// user. sense-ai-core bumped together with its fence providers and declared the divergence in its own
+// `brain-pin.test.ts`, time-boxed to this task.
+//
+// This change-set is the other half: the fence provider pair (`UNTRUSTED_CONVERSATION_OPEN` / `_CLOSE`
+// in the plugin) and the inbound strip (`src/inboundPrompt.js`) land WITH the bump, so no commit here
+// ever has the tags without the notice. The two bodies now share one Brain again, and core's divergence
+// declaration is stale from this commit onward — removing it is a one-line follow-up there, tracked
+// with this task.
+const EXPECTED_BRAIN_SHA = "e77076c0ebbf390ebc04a6234ba4c5520d8bf992";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
