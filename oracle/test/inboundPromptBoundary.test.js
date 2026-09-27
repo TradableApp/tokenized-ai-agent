@@ -2,6 +2,8 @@ const { expect } = require("chai");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
+const { stripCommentLines } = require("./helpers/stripCommentLines");
+
 /**
  * The strip has to be WIRED, and `inboundPrompt.test.js` cannot tell whether it is.
  *
@@ -18,36 +20,18 @@ const { join } = require("node:path");
 const SRC = join(__dirname, "..", "src");
 const ORACLE = readFileSync(join(SRC, "aiAgentOracle.js"), "utf8");
 
-/** Comment TEXT removed, line numbering kept, so a comment is neither evidence nor a hiding place. */
-function codeOnly(text) {
-  let inBlock = false;
-
-  return text
-    .split("\n")
-    .map((line) => {
-      if (inBlock) {
-        const close = line.indexOf("*/");
-        if (close === -1) return "";
-        inBlock = false;
-
-        return " ".repeat(close + 2) + line.slice(close + 2);
-      }
-
-      const open = line.indexOf("/*");
-      if (open !== -1 && line.indexOf("*/", open) === -1) {
-        inBlock = true;
-
-        return line.slice(0, open);
-      }
-
-      const lineComment = line.indexOf("//");
-
-      return lineComment === -1 ? line : line.slice(0, lineComment);
-    })
-    .join("\n");
-}
-
-const CODE = codeOnly(ORACLE);
+// The comment stripper is the repo's, not a second one written here.
+//
+// A stripper local to this file cut each line at the first `//`, which also cut `"https://…"` down to
+// `"https:` — the very fault `stripCommentLines` was extracted and unit-tested for after it
+// shipped three times. Writing a second stripper meant a second place for the fourth one to
+// happen, so this scan uses the shared helper and inherits its cases.
+//
+// Its contract is LINE-based: comment-only lines go, a trailing comment stays and reads as code.
+// That is a loud false positive rather than a silent false negative, and it costs this file
+// nothing — every assertion below is about a call shape that no comment here contains. Relative
+// order survives because kept lines stay in order, which is all the ordering assertion compares.
+const CODE = stripCommentLines(ORACLE);
 
 /**
  * EVERY decrypted payload, and whether its user-written fields reach a prompt.
