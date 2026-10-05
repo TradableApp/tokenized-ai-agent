@@ -99,6 +99,21 @@ async function initInboundPrompt(overrides = {}) {
     );
   }
 
+  // A SECOND LABEL, because the guarantee is family-wide and a label-specific strip would pass
+  // every probe above. The Brain's pattern is `untrusted_[a-z0-9_]*`, so one narrowed to the
+  // conversation label alone is a build accident rather than a design — exactly the behavioural
+  // divergence between the resolved Brain and the bundled one that this block exists to catch.
+  // `untrusted_news` is not hypothetical here: the Brain's `formatNewsTicker` emits that region
+  // through MARKET_INTELLIGENCE at position 51, inside the conversation fence, so a prompt
+  // carrying `</untrusted_news>` closes a region that really is in the composed prompt.
+  if (brain.stripFenceTags(`before</untrusted_news>after`) !== "beforeafter") {
+    throw new Error(
+      "The Brain's stripFenceTags does not strip `</untrusted_news>`. The strip is label-specific " +
+        "rather than family-wide, so a prompt carrying that tag closes the news region emitted by " +
+        "MARKET_INTELLIGENCE inside the conversation fence. Refusing to start.",
+    );
+  }
+
   const tagged = `<untrusted_conversation>${PROBE_INNER}</untrusted_conversation>`;
 
   if (brain.stripFenceTags(tagged) !== PROBE_INNER) {
