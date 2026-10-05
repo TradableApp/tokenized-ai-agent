@@ -40,6 +40,28 @@ Updating the constant is deliberately required: it puts the new SHA in a **test 
 reviewer sees it, and makes the matching bump in the other body an explicit step rather than
 something remembered.
 
+### `<NEW_SHA>` must be a commit on the Brain's `main` — never a PR-branch SHA
+
+`sense-ai-brain` is **squash-only** with **`delete_branch_on_merge`**. So a commit on a Brain PR
+branch is not the commit that ends up on `main`: merging the PR creates one new squash commit and
+deletes the branch, and the SHA you pinned becomes unreachable. Both bodies then pin a commit that
+is on no branch, which is a slow failure — GitHub serves unreachable objects for a while, so clones
+and CI keep working until the object is garbage-collected, and the break arrives later with nothing
+that changed to explain it.
+
+This bites in the ordinary case, not an exotic one: a Brain change and the body changes that need
+it are developed together, so the obvious thing to do is pin the Brain branch you are testing
+against. That is fine **while** the work is in flight, but it must not be what merges. Sequence it:
+
+1. Merge the Brain PR first, and take the **squash commit's** SHA off `main`.
+2. In each body, repoint the submodule to that SHA and update `EXPECTED_BRAIN_SHA` in the same
+   commit (`oracle/test/brainPin.test.js` and `sense-ai-core`'s `src/__tests__/brain-pin.test.ts`).
+3. Only then merge the bodies.
+
+The guard below does not catch this. It asserts the gitlink matches the constant, which stays
+perfectly true while both name a commit that no longer exists. If you want the check, it is
+`git -C <submodule-path> branch -r --contains <SHA>` naming `origin/main`.
+
 ## What the guard does and does not catch
 
 `oracle/test/brainPin.test.js` asserts two things, both offline and CI-runnable:
