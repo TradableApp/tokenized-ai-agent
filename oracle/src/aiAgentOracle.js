@@ -38,6 +38,11 @@ const {
 const { BadInputError, isBadInputError } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
+const {
+  initInboundPrompt,
+  stripInboundPrompt,
+  stripStoredAnswer,
+} = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { reconcileCursor } = require("./blockCursor");
 
@@ -1529,7 +1534,17 @@ async function handlePrompt(
 
     const clientPayload = validatePayload(decryptedData, "PromptSubmitted");
 
-    const { promptText, isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
+    // FENCE STRIP, at the only point a new prompt enters. `promptText` fans out from here to the
+    // reconstructed history, the model, the stored MessageFile, the conversation title and the CID —
+    // stripping once here leaves every one of them clean without enumerating them, and an enumeration
+    // is what left doors open on both social surfaces.
+    //
+    // Removes fence tags and NOTHING else. A forged `### SYSTEM DIRECTIVE:` reaches the model exactly
+    // as the user sent it, on purpose: the fence is what strips it of authority, and the user paid for
+    // this prompt on-chain. What a prompt must not carry is a tag that CLOSES the region around it,
+    // because that puts the rest of the prompt in the instruction region. See src/inboundPrompt.js.
+    const { isNewConversation, previousMessageId, previousMessageCID } = clientPayload;
+    const promptText = stripInboundPrompt(clientPayload.promptText);
 
     // E2E only: a "__E2E_DROP__" marker makes the oracle never answer this prompt, leaving
     // the on-chain job pending so a test can deterministically exercise the refund flow
@@ -1559,7 +1574,13 @@ async function handlePrompt(
     history.push({ role: "user", content: promptText, createdAt: Date.now() });
 
     const answer = await queryAIModel(history, conversationId.toString(), user);
-    const answerText = answer.text;
+    // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
+    // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
+    // in the same fenced region — stored verbatim, then replayed by `reconstructHistory` inside
+    // `untrusted_conversation` on every later turn. A prompt that asks the model to echo
+    // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
+    // see it. Storage is immutable, so this has to happen before the upload, not at the read.
+    const answerText = stripStoredAnswer(answer.text);
     // Real reasoning/sources from the answer path (empty on string-only
     // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
     // so mock runs stay deterministic.
@@ -1885,7 +1906,21 @@ async function handleRegeneration(
 
     const clientPayload = validatePayload(decryptedData, "RegenerationRequested");
 
-    const { instructions, promptMessageCID, originalAnswerMessageCID } = clientPayload;
+    const { promptMessageCID, originalAnswerMessageCID } = clientPayload;
+
+    // Fence-stripped for exactly the reason promptText is. This string is interpolated into a history
+    // message a few lines down, and RECENT_MESSAGES renders history INSIDE the untrusted_conversation
+    // fence — so a closing tag here would end the region early and leave the remainder sitting where
+    // the model reads instructions. Produced BY the strip rather than destructured and then
+    // reassigned, so there is no raw binding in scope to reach for by mistake.
+    // `!= null` rather than truthy: `stripInboundPrompt` coerces with `String(text ?? "")`, so an
+    // empty string is safe to pass, and passing it means the uninitialised-throw fires for every
+    // value that is actually present. A truthy check would let `""` skip the strip entirely, which
+    // is harmless for injection but narrows the one signal that says the strip is wired at all.
+    const instructions =
+      clientPayload.instructions != null
+        ? stripInboundPrompt(clientPayload.instructions)
+        : clientPayload.instructions;
 
     console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(originalAnswerMessageCID, sessionKey);
@@ -1898,7 +1933,13 @@ async function handleRegeneration(
     }
 
     const answer = await queryAIModel(history, conversationId.toString(), user);
-    const answerText = answer.text;
+    // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
+    // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
+    // in the same fenced region — stored verbatim, then replayed by `reconstructHistory` inside
+    // `untrusted_conversation` on every later turn. A prompt that asks the model to echo
+    // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
+    // see it. Storage is immutable, so this has to happen before the upload, not at the read.
+    const answerText = stripStoredAnswer(answer.text);
     // Real reasoning/sources from the answer path (empty on string-only
     // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
     // so mock runs stay deterministic.
@@ -2747,6 +2788,12 @@ async function start() {
   // a Sentry incident — exactly what index.js's ConfigError-specific catch exists to prevent.
   // Unreachable in production (index.js has already exited), but reachable from tests and from
   // any wrapper importing start() directly.
+
+  // BEFORE anything that can serve a prompt. Resolves the Brain's fence strip once and throws if it
+  // cannot, so a stale submodule or a partial dist stops the process here rather than letting prompts
+  // through unstripped with one log line as the only signal — the same call aiAgentOracle already
+  // makes for degraded market context.
+  await initInboundPrompt();
 
   // Initialize the connection to the decentralised storage provider.
   await initializeStorage();
