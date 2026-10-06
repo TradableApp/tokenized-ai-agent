@@ -73,7 +73,7 @@ const { expect } = require("chai");
 // ever has the tags without the notice. The two bodies now share one Brain again, and core's divergence
 // declaration is stale from this commit onward — removing it is a one-line follow-up there, tracked
 // with this task.
-const EXPECTED_BRAIN_SHA = "e77076c0ebbf390ebc04a6234ba4c5520d8bf992";
+const EXPECTED_BRAIN_SHA = "90264b67a1a5f7b90e01666d28c3aad587fead9b";
 const SUBMODULE_PATH = "oracle/packages/sense-ai-brain";
 const CANONICAL_BRAIN_URL = "https://github.com/TradableApp/sense-ai-brain";
 
