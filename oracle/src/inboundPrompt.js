@@ -22,6 +22,28 @@
  * and the CID; stripping once at the entry means all of them are clean without being enumerated. That
  * is the same choice the Telegram and X surfaces made, and on both of those the enumerate-each-read
  * approach had already left doors open.
+ *
+ * AND AT THE STORAGE BOUNDARY, because the fan-out argument above covers only values DERIVED from
+ * `promptText`. The model's ANSWER is not one of them, and it lands in the same fenced region: it is
+ * stored verbatim into an immutable MessageFile, and `reconstructHistory` reads it back on every later
+ * turn, where RECENT_MESSAGES renders it at position 100 INSIDE `untrusted_conversation`. A prompt that
+ * talks the model into echoing `</untrusted_conversation>` therefore escapes the fence on the NEXT
+ * turn, past a strip that only ever saw the prompt. Nothing else removes it — `sanitizeOutboundText`
+ * strips `<thought>` blocks and unescapes, and knows nothing about the tag family.
+ *
+ * So the invariant this module actually owns is not "the inbound prompt" but: ANY text that will be
+ * composed inside a fenced region must be unable to close it. Two texts qualify, and the module is
+ * named after the first one only for historical reasons.
+ *
+ * WHY THE STORAGE BOUNDARY AND NOT THE READ. On-chain storage is immutable, so an answer that already
+ * landed carrying a tag has no cleanup path; stripping at the read would leave every historical answer
+ * permanently dependent on the reader remembering. It also keeps both strips on the same side of the
+ * same seam, where one `initInboundPrompt` covers them.
+ *
+ * WHY NOT IN `outboundSanitizer.js`, which is otherwise the right home by name. That module degrades
+ * on load failure — it returns the answer unsanitised and logs — which is correct for formatting on a
+ * pre-paid answer and wrong for a security control, for the reasons `initInboundPrompt` sets out
+ * below. A fence strip living there would inherit the wrong failure mode.
  */
 
 /**
@@ -136,20 +158,49 @@ async function initInboundPrompt(overrides = {}) {
 }
 
 /**
- * Remove any fence tag from a decrypted prompt.
+ * Remove any fence tag from text destined for a fenced region.
  *
  * Throws when uninitialised rather than returning the input. Returning it would make a missing
- * `initInboundPrompt` call look exactly like a prompt that had nothing to strip.
+ * `initInboundPrompt` call look exactly like text that had nothing to strip — and a strip that
+ * silently becomes a no-op is the one failure nothing downstream would look different for.
+ *
+ * `what` names the caller in that error, because the two call sites fail for the same reason at very
+ * different costs: an unstripped prompt is this turn's problem, an unstripped answer is every later
+ * turn's, on storage that cannot be rewritten.
  */
-function stripInboundPrompt(text) {
+function stripForFence(text, what) {
   if (!stripFenceTags) {
     throw new Error(
-      "inboundPrompt is not initialised — call initInboundPrompt() during startup. Refusing to " +
-        "return the prompt unstripped, because that is indistinguishable from a clean prompt.",
+      `inboundPrompt is not initialised — call initInboundPrompt() during startup. Refusing to ` +
+        `return the ${what} unstripped, because that is indistinguishable from a clean one.`,
     );
   }
 
   return stripFenceTags(String(text ?? ""));
+}
+
+/**
+ * Remove any fence tag from a decrypted prompt, at the single point one enters.
+ */
+function stripInboundPrompt(text) {
+  return stripForFence(text, "prompt");
+}
+
+/**
+ * Remove any fence tag from the model's own answer, before it is stored.
+ *
+ * NOT covered by `stripInboundPrompt`. The answer is not derived from `promptText`, so the fan-out
+ * argument that justifies stripping the prompt once says nothing about it — see this module's header.
+ * The tag does not exist when the prompt is stripped: the user asks the model to echo it, and the
+ * model obliges.
+ *
+ * Applied at the `answer.text` binding rather than at the `createMessageFile` calls, so that a storage
+ * site added later inherits the strip instead of needing to remember it. That is the same property the
+ * inbound side gets from stripping at the entry, and `inboundPromptBoundary.test.js` asserts it about
+ * the binding for the same reason.
+ */
+function stripStoredAnswer(text) {
+  return stripForFence(text, "answer");
 }
 
 /** Test seam. Clears the resolved function so the uninitialised path can be exercised. */
@@ -157,4 +208,4 @@ function _resetForTests() {
   stripFenceTags = null;
 }
 
-module.exports = { initInboundPrompt, stripInboundPrompt, _resetForTests };
+module.exports = { initInboundPrompt, stripInboundPrompt, stripStoredAnswer, _resetForTests };

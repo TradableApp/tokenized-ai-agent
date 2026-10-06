@@ -38,7 +38,11 @@ const {
 const { BadInputError, isBadInputError } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
-const { initInboundPrompt, stripInboundPrompt } = require("./inboundPrompt");
+const {
+  initInboundPrompt,
+  stripInboundPrompt,
+  stripStoredAnswer,
+} = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { reconcileCursor } = require("./blockCursor");
 
@@ -1570,7 +1574,13 @@ async function handlePrompt(
     history.push({ role: "user", content: promptText, createdAt: Date.now() });
 
     const answer = await queryAIModel(history, conversationId.toString(), user);
-    const answerText = answer.text;
+    // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
+    // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
+    // in the same fenced region — stored verbatim, then replayed by `reconstructHistory` inside
+    // `untrusted_conversation` on every later turn. A prompt that asks the model to echo
+    // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
+    // see it. Storage is immutable, so this has to happen before the upload, not at the read.
+    const answerText = stripStoredAnswer(answer.text);
     // Real reasoning/sources from the answer path (empty on string-only
     // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
     // so mock runs stay deterministic.
@@ -1923,7 +1933,13 @@ async function handleRegeneration(
     }
 
     const answer = await queryAIModel(history, conversationId.toString(), user);
-    const answerText = answer.text;
+    // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
+    // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
+    // in the same fenced region — stored verbatim, then replayed by `reconstructHistory` inside
+    // `untrusted_conversation` on every later turn. A prompt that asks the model to echo
+    // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
+    // see it. Storage is immutable, so this has to happen before the upload, not at the read.
+    const answerText = stripStoredAnswer(answer.text);
     // Real reasoning/sources from the answer path (empty on string-only
     // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
     // so mock runs stay deterministic.

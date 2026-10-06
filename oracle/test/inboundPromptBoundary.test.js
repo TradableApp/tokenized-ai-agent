@@ -156,3 +156,49 @@ describe("the inbound prompt fence is wired, not merely written", () => {
     expect(init, "the fence must resolve before the model is initialised").to.be.lessThan(eliza);
   });
 });
+
+/**
+ * THE ANSWER, which the enumeration above is structurally blind to.
+ *
+ * `PAYLOADS` enumerates decrypted payload FIELDS — text the user sent. The model's own answer is
+ * none of them, so every assertion in the block above can be green while the answer reaches storage
+ * carrying a tag that closes the fence it will later be replayed inside. That is the same fault this
+ * file's own header describes catching one level down ("the guard was checking the site it already
+ * knew about"), reproduced in the guard itself: the enumeration is honest about user-written fields
+ * and silent about everything else that lands in a fenced region.
+ *
+ * Stated about the binding rather than the three storage sites it feeds. `answerText` is bound twice
+ * — once in the prompt handler, once in the regeneration handler — and those two bindings reach three
+ * `createMessageFile({ ..., content: answerText })` calls. Asserting the binding means a fourth
+ * storage site added later inherits the strip instead of needing its own assertion, which is the
+ * property the inbound side gets from stripping at the entry.
+ *
+ * `queryChainGPT`'s local `const answerText = (await res.text()).trim()` is deliberately NOT in
+ * scope: it is a provider's raw response on its way to becoming `answer.text`, not a value on its
+ * way to storage. So the scan keys on `answer.text` specifically.
+ */
+describe("the stored answer is fence-stripped, not merely the prompt", () => {
+  it("binds every answer.text through the strip", () => {
+    const bindings = [...CODE.matchAll(/const answerText = (.+?);/g)].map((m) => m[1].trim());
+    const fromAnswer = bindings.filter((b) => /\banswer\.text\b/.test(b));
+
+    expect(
+      fromAnswer.length,
+      "answerText is no longer bound from answer.text — this scan has lost its subject",
+    ).to.be.greaterThan(0);
+
+    expect(
+      fromAnswer.filter((b) => !/stripStoredAnswer\(/.test(b)),
+      "these store the model's answer unstripped; a tag it emits closes the fence its own replay " +
+        "sits inside on every later turn, and on-chain storage has no cleanup path",
+    ).to.deep.equal([]);
+  });
+
+  it("stores only the stripped binding, never answer.text directly", () => {
+    // A second storage site that reaches past the binding would be invisible to the assertion above.
+    expect(
+      CODE,
+      "content must come from the stripped answerText binding, not straight off the answer object",
+    ).to.not.match(/content:\s*answer\.text\b/);
+  });
+});
