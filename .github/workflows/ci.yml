@@ -124,28 +124,15 @@ jobs:
     name: Notify e2e
     needs: CI
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    # Talks only to sense-ai-e2e, with its own PAT. Needs nothing from GITHUB_TOKEN.
+    # The dispatch job itself lives in TradableApp/.github so one edit reaches every consumer;
+    # it used to be ~25 identical lines in each of four ci.yml files, which is how a known-wrong
+    # 401 message survived in all four (fixing one string cost four PRs).
+    #
+    # Pinned to a SHA, not @main, and that is not pedantry here: SECRETS PASSED TO A REUSABLE
+    # WORKFLOW ARE READABLE BY IT, so a floating ref would hand this repo's App private key to
+    # whatever that branch contained at run time. Dependabot bumps the pin.
+    uses: TradableApp/.github/.github/workflows/notify-e2e.yml@94a1c5fc6193b14699cc19ec3fe47b042d4d233b # v1.0.1
     permissions: {}
-    steps:
-      - name: Dispatch e2e smoke
-        env:
-          E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
-        run: |
-          # An absent secret expands to the empty string and the POST returns 401, which reads
-          # as a broken endpoint rather than a missing secret — the same confusion that broke
-          # the e2e workflow's own first run. Name the actual cause instead.
-          if [ -z "$E2E_DISPATCH_TOKEN" ]; then
-            echo "::error::E2E_DISPATCH_TOKEN is not available to this repository. If it is an org secret, add this repo to its selected-repositories list."
-            exit 1
-          fi
-
-          # Values reach the shell through env:, never interpolated into run: as an inline
-          # workflow expression. Neither is exploitable today, but this block lives in four
-          # repos and the obvious extension — putting a commit message or branch name in the
-          # payload — would be.
-          curl -fsSL -X POST \
-            -H "Authorization: Bearer $E2E_DISPATCH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/TradableApp/sense-ai-e2e/dispatches \
-            -d "{\"event_type\":\"e2e-smoke\",\"client_payload\":{\"source\":\"$GITHUB_REPOSITORY\"}}"
+    secrets:
+      app-id: ${{ secrets.E2E_DISPATCH_APP_ID }}
+      app-private-key: ${{ secrets.E2E_DISPATCH_APP_PRIVATE_KEY }}
