@@ -52,6 +52,11 @@
     "rofl:build:base-mainnet": "bash scripts/rofl-preflight.sh compose.base-mainnet.yaml && cp compose.base-mainnet.yaml compose.yaml && oasis rofl build --deployment base-mainnet",
     "rofl:update:base-mainnet": "bun run rofl:set:base-mainnet && oasis rofl update --deployment base-mainnet --account oasis_mainnet --gas-limit 200000",
     "rofl:deploy:base-mainnet": "oasis rofl deploy --deployment base-mainnet --account oasis_mainnet --offer medium",
+    "// --- ROFL: BASE-SEPOLIA ORACLE ON THE BASE-MAINNET APP (verification run) ---": "---",
+    "rofl:init:cloud-sql:sepolia-on-mainnet": "ROFL_DEPLOYMENT=base-mainnet bash scripts/rofl-init-cloud-sql.sh base-testnet",
+    "rofl:set:sepolia-on-mainnet": "ROFL_DEPLOYMENT=base-mainnet ./scripts/rofl-set-secrets.sh base-testnet",
+    "rofl:build:sepolia-on-mainnet": "bash scripts/rofl-preflight.sh compose.base-testnet.yaml && cp compose.base-testnet.yaml compose.yaml && oasis rofl build --deployment base-mainnet",
+    "rofl:update:sepolia-on-mainnet": "bun run rofl:set:sepolia-on-mainnet && oasis rofl update --deployment base-mainnet --account oasis_mainnet --gas-limit 200000",
     "prepare:brain": "cd oracle/packages/sense-ai-brain && bun install --frozen-lockfile && bun run build && rm -rf node_modules",
     "logs:base-testnet": "expect scripts/rofl-logs.exp --deployment base-testnet",
     "logs:base-mainnet": "expect scripts/rofl-logs.exp --deployment base-mainnet"

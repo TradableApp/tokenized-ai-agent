@@ -45,7 +45,13 @@ if [ -z "$ENV" ]; then
   exit 1
 fi
 
-DEPLOYMENT_TARGET="$ENV"
+# ROFL_DEPLOYMENT moves ONLY the --deployment flags. Config, compose and the Secret Manager
+# project still follow ENV. This is how the Base-Sepolia oracle runs on a mainnet machine:
+# ROFL_DEPLOYMENT=base-mainnet with ENV=base-testnet.
+DEPLOYMENT_TARGET="${ROFL_DEPLOYMENT:-$ENV}"
+if [ "$DEPLOYMENT_TARGET" != "$ENV" ]; then
+  echo "↪️  ROFL_DEPLOYMENT override: config from '$ENV', secrets to deployment '$DEPLOYMENT_TARGET'."
+fi
 BASE_ENV_FILE="./oracle/.env.oracle"
 ENV_FILE="./oracle/.env.oracle.${ENV}"
 COMPOSE_TEMPLATE="compose.${ENV}.yaml"

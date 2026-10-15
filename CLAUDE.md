@@ -92,6 +92,10 @@ Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.or
 | `bun run rofl:deploy:base-testnet` | Full ROFL deploy workflow (Base testnet) |
 | `bun run rofl:create:base-mainnet` | Create ROFL app on Base mainnet |
 | `bun run rofl:deploy:base-mainnet` | Full ROFL deploy workflow (Base mainnet) |
+| `bun run rofl:init:cloud-sql:sepolia-on-mainnet` | Verification run: Cloud SQL cert for the `base-mainnet` app on the testnet instance |
+| `bun run rofl:set:sepolia-on-mainnet` | Verification run: push `base-testnet` config/secrets to the `base-mainnet` app |
+| `bun run rofl:build:sepolia-on-mainnet` | Verification run: bundle the `base-testnet` compose for the `base-mainnet` app |
+| `bun run rofl:update:sepolia-on-mainnet` | Verification run: set + commit the manifest for the `base-mainnet` app |
 
 ## Architecture
 
