@@ -6,7 +6,7 @@ const chalk = require("chalk");
 
 const { ethers } = hre;
 
-const DEFAULT_REHEARSAL_PROMPT_FEE = ethers.parseEther("2");
+const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
 const PHASES = new Set(["forward", "confirm"]);
 
 const CONTRACT_KEYS = { agent: "aiAgent", escrow: "escrow" };
@@ -162,8 +162,15 @@ async function runPlan({ plan, contracts, signer, dryRun, log }) {
       continue;
     }
 
-    const tx = await target[stepDef.method](...stepDef.args);
-    const receipt = await tx.wait();
+    let receipt;
+    try {
+      const tx = await target[stepDef.method](...stepDef.args);
+      receipt = await tx.wait();
+    } catch (error) {
+      throw new Error(
+        `[${stepDef.id}] ${stepDef.contract}.${stepDef.method} failed: ${error.message}`,
+      );
+    }
     findEvent(receipt, target, stepDef);
     await verifyGetter(target, stepDef);
     log(`  tx:       ${receipt.hash} (block ${receipt.blockNumber})`);
@@ -193,16 +200,14 @@ function snapshotPath() {
   return path.resolve(__dirname, `../cache/admin-rehearsal.${hre.network.name}.json`);
 }
 
-function writeSnapshot(state) {
-  const file = snapshotPath();
+function writeSnapshot(state, file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const serialisable = Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]));
   fs.writeFileSync(file, JSON.stringify(serialisable, null, 2));
   return file;
 }
 
-function readSnapshot() {
-  const file = snapshotPath();
+function readSnapshot(file) {
   if (!fs.existsSync(file)) {
     throw new Error(`No forward-phase snapshot at ${file}; run REHEARSAL_PHASE=forward first`);
   }
@@ -229,20 +234,33 @@ async function attachContracts() {
   };
 }
 
-async function forwardPhase({ contracts, signer, dryRun, log }) {
-  const safeAddress = process.env.REHEARSAL_SAFE_ADDRESS;
+function parseRehearsalFee(raw) {
+  return ethers.parseEther(raw || DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS);
+}
+
+async function forwardPhase({
+  contracts,
+  signer,
+  dryRun,
+  log,
+  safeAddress,
+  rehearsalPromptFee,
+  snapshotFile,
+}) {
   if (!safeAddress) {
     throw new Error("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
   }
-  const rehearsalPromptFee = process.env.REHEARSAL_PROMPT_FEE
-    ? BigInt(process.env.REHEARSAL_PROMPT_FEE)
-    : DEFAULT_REHEARSAL_PROMPT_FEE;
 
   const state = await readState(contracts);
   log(
     `Live state: ${JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)])))}`,
   );
   const plan = buildPlan({ state, safeAddress, rehearsalPromptFee });
+
+  if (!dryRun) {
+    writeSnapshot(state, snapshotFile);
+    log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
+  }
 
   const results = await runPlan({ plan, contracts, signer, dryRun, log });
 
@@ -251,8 +269,7 @@ async function forwardPhase({ contracts, signer, dryRun, log }) {
     return;
   }
 
-  const file = writeSnapshot(state);
-  log(chalk.green(`\nForward phase complete; pre-rehearsal state saved to ${file}`));
+  log(chalk.green("\nForward phase complete."));
   const returnTxs = await buildSafeReturnTxs({ contracts, returnTo: signer.address });
   log(
     "\nQueue these two transactions from the Safe (Transaction Builder → custom data), then run REHEARSAL_PHASE=confirm:",
@@ -260,8 +277,8 @@ async function forwardPhase({ contracts, signer, dryRun, log }) {
   log(JSON.stringify(returnTxs, null, 2));
 }
 
-async function confirmPhase({ contracts, log }) {
-  const state = readSnapshot();
+async function confirmPhase({ contracts, log, snapshotFile }) {
+  const state = readSnapshot(snapshotFile);
   const { ok, mismatches } = await verifyReturned({ contracts, state });
   if (!ok) {
     for (const m of mismatches) {
@@ -291,14 +308,32 @@ async function main() {
     `--- Admin rehearsal on ${chalk.bold(hre.network.name)} · phase=${phase} · signer=${signer.address}${dryRun ? " · DRY RUN" : ""} ---`,
   );
 
+  const snapshotFile = snapshotPath();
   if (phase === "forward") {
-    await forwardPhase({ contracts, signer, dryRun, log });
+    await forwardPhase({
+      contracts,
+      signer,
+      dryRun,
+      log,
+      safeAddress: process.env.REHEARSAL_SAFE_ADDRESS,
+      rehearsalPromptFee: parseRehearsalFee(process.env.REHEARSAL_PROMPT_FEE),
+      snapshotFile,
+    });
   } else {
-    await confirmPhase({ contracts, log });
+    await confirmPhase({ contracts, log, snapshotFile });
   }
 }
 
-module.exports = { readState, buildPlan, runPlan, buildSafeReturnTxs, verifyReturned, main };
+module.exports = {
+  readState,
+  buildPlan,
+  runPlan,
+  buildSafeReturnTxs,
+  verifyReturned,
+  parseRehearsalFee,
+  forwardPhase,
+  main,
+};
 
 if (require.main === module) {
   main().catch((error) => {

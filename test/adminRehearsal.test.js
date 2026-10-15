@@ -1,6 +1,9 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const {
   readState,
@@ -8,6 +11,8 @@ const {
   runPlan,
   buildSafeReturnTxs,
   verifyReturned,
+  parseRehearsalFee,
+  forwardPhase,
 } = require("../scripts/admin-rehearsal");
 
 describe("scripts/admin-rehearsal", function () {
@@ -256,6 +261,64 @@ describe("scripts/admin-rehearsal", function () {
 
       const after = await verifyReturned({ contracts, state });
       expect(after).to.deep.equal({ ok: true, mismatches: [] });
+    });
+  });
+
+  describe("parseRehearsalFee", function () {
+    it("reads a human token amount and defaults to 2 tokens", function () {
+      expect(parseRehearsalFee("3")).to.equal(ethers.parseEther("3"));
+      expect(parseRehearsalFee("0.5")).to.equal(ethers.parseEther("0.5"));
+      expect(parseRehearsalFee(undefined)).to.equal(ethers.parseEther("2"));
+      expect(parseRehearsalFee("")).to.equal(ethers.parseEther("2"));
+    });
+  });
+
+  describe("forwardPhase", function () {
+    function scratchSnapshot() {
+      return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")), "snapshot.json");
+    }
+
+    it("writes the pre-rehearsal snapshot before the first transaction is sent", async function () {
+      const { contracts, state, log, stranger, safe } = await loadFixture(deployFixture);
+      const snapshotFile = scratchSnapshot();
+
+      await expect(
+        forwardPhase({
+          contracts,
+          signer: stranger,
+          dryRun: false,
+          log,
+          safeAddress: safe.address,
+          rehearsalPromptFee: REHEARSAL_FEE,
+          snapshotFile,
+        }),
+      ).to.be.rejectedWith(/fee-set/);
+
+      const saved = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(saved).to.deep.equal({
+        agentOwner: state.agentOwner,
+        escrowOwner: state.escrowOwner,
+        oracle: state.oracle,
+        treasury: state.treasury,
+        promptFee: String(state.promptFee),
+      });
+    });
+
+    it("writes no snapshot on a dry run", async function () {
+      const { contracts, log, deployer, safe } = await loadFixture(deployFixture);
+      const snapshotFile = scratchSnapshot();
+
+      await forwardPhase({
+        contracts,
+        signer: deployer,
+        dryRun: true,
+        log,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        snapshotFile,
+      });
+
+      expect(fs.existsSync(snapshotFile)).to.equal(false);
     });
   });
 });
