@@ -30,7 +30,10 @@ function assertSafeAddress(safeAddress, state) {
     throw new Error(`Safe address is not a usable address: ${safeAddress}`);
   }
   const safe = ethers.getAddress(safeAddress);
-  if (safe === state.agentOwner || safe === state.escrowOwner) {
+  if (
+    safe === ethers.getAddress(state.agentOwner) ||
+    safe === ethers.getAddress(state.escrowOwner)
+  ) {
     throw new Error(`Safe ${safe} already owns a proxy; the transfer would rehearse nothing`);
   }
   return safe;
@@ -150,7 +153,10 @@ function describeStep(stepDef, target, log) {
 
 function findEvent(receipt, target, stepDef) {
   const topicHash = target.interface.getEvent(stepDef.event.name).topicHash;
-  const raw = receipt.logs.find((l) => l.topics[0] === topicHash);
+  const emitter = String(target.target).toLowerCase();
+  const raw = receipt.logs.find(
+    (l) => l.topics[0] === topicHash && String(l.address).toLowerCase() === emitter,
+  );
   if (!raw) {
     throw new Error(`[${stepDef.id}] ${stepDef.event.name} was not emitted`);
   }
@@ -267,7 +273,13 @@ async function attachContracts() {
 }
 
 function parseRehearsalFee(raw) {
-  return ethers.parseEther(raw || DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS);
+  try {
+    return ethers.parseEther(raw || DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS);
+  } catch {
+    throw new Error(
+      `REHEARSAL_PROMPT_FEE="${raw}" is not a token amount; give a decimal in whole tokens (for example 2), not wei`,
+    );
+  }
 }
 
 async function forwardPhase({
@@ -278,6 +290,7 @@ async function forwardPhase({
   safeAddress,
   rehearsalPromptFee,
   snapshotFile,
+  execute = runPlan,
 }) {
   if (!safeAddress) {
     throw new Error("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
@@ -289,14 +302,14 @@ async function forwardPhase({
   );
   assertSignerOwnsBoth(signer.address, state);
   const plan = buildPlan({ state, safeAddress, rehearsalPromptFee });
-  await assertSafeHasCode(plan[6].args[0]);
+  await assertSafeHasCode(ethers.getAddress(safeAddress));
 
   if (!dryRun) {
     writeSnapshot(state, snapshotFile);
     log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
 
-  const results = await runPlan({ plan, contracts, signer, dryRun, log });
+  const results = await execute({ plan, contracts, signer, dryRun, log });
 
   if (dryRun) {
     log(chalk.green(`\nDry run complete: ${results.length} calls simulated, nothing sent.`));
@@ -373,6 +386,7 @@ module.exports = {
   forwardPhase,
   confirmPhase,
   assertMainnetConfirmed,
+  findEvent,
   main,
 };
 

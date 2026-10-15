@@ -15,6 +15,7 @@ const {
   forwardPhase,
   confirmPhase,
   assertMainnetConfirmed,
+  findEvent,
 } = require("../scripts/admin-rehearsal");
 
 describe("scripts/admin-rehearsal", function () {
@@ -202,6 +203,25 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("runPlan (live)", function () {
+    it("names the failed step and the recovery path when a live call reverts", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const plan = buildPlan({
+        state: fixture.state,
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+
+      await expect(
+        runPlan({
+          plan,
+          contracts: fixture.contracts,
+          signer: fixture.stranger,
+          dryRun: false,
+          log: fixture.log,
+        }),
+      ).to.be.rejectedWith(/\[fee-set\][\s\S]*REHEARSAL_PHASE=confirm/);
+    });
+
     it("executes, proves each event and getter, and leaves fees restored and ownership with the Safe", async function () {
       const { contracts, state, log, deployer, oracle, treasury, safe } =
         await loadFixture(deployFixture);
@@ -288,6 +308,10 @@ describe("scripts/admin-rehearsal", function () {
       expect(parseRehearsalFee(undefined)).to.equal(ethers.parseEther("2"));
       expect(parseRehearsalFee("")).to.equal(ethers.parseEther("2"));
     });
+
+    it("rejects a value that is not a token amount with an operator-facing message", function () {
+      expect(() => parseRehearsalFee("2ABLE")).to.throw(/REHEARSAL_PROMPT_FEE.*whole tokens/);
+    });
   });
 
   describe("forwardPhase", function () {
@@ -359,24 +383,61 @@ describe("scripts/admin-rehearsal", function () {
         /no contract code/,
       );
     });
+  });
 
-    it("names the failed step and the recovery path when a live call reverts", async function () {
+  describe("forwardPhase failure path", function () {
+    it("keeps the snapshot and surfaces the step error when a transaction fails mid-run", async function () {
       const fixture = await loadFixture(deployFixture);
-      const plan = buildPlan({
-        state: fixture.state,
-        safeAddress: fixture.safeContractAddress,
-        rehearsalPromptFee: REHEARSAL_FEE,
-      });
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      let snapshotExistedWhenPlanRan = null;
+      const execute = async () => {
+        snapshotExistedWhenPlanRan = fs.existsSync(snapshotFile);
+        throw new Error("[treasury-set] escrow.setTreasury failed: boom");
+      };
 
       await expect(
-        runPlan({
-          plan,
+        forwardPhase({
           contracts: fixture.contracts,
-          signer: fixture.stranger,
+          signer: fixture.deployer,
           dryRun: false,
           log: fixture.log,
+          safeAddress: fixture.safeContractAddress,
+          rehearsalPromptFee: REHEARSAL_FEE,
+          snapshotFile,
+          execute,
         }),
-      ).to.be.rejectedWith(/\[fee-set\][\s\S]*REHEARSAL_PHASE=confirm/);
+      ).to.be.rejectedWith(/\[treasury-set\]/);
+
+      expect(snapshotExistedWhenPlanRan).to.equal(true);
+      expect(fs.existsSync(snapshotFile)).to.equal(true);
+    });
+  });
+
+  describe("findEvent", function () {
+    it("ignores a matching event emitted by another contract", async function () {
+      const { contracts, safe, deployer } = await loadFixture(deployFixture);
+      const target = contracts.aiAgent;
+      const iface = target.interface;
+      const topicHash = iface.getEvent("OwnershipTransferred").topicHash;
+      const encode = (from, to) => ({
+        topics: [topicHash, ethers.zeroPadValue(from, 32), ethers.zeroPadValue(to, 32)],
+        data: "0x",
+      });
+      const stepDef = {
+        id: "agent-owner-to-safe",
+        event: { name: "OwnershipTransferred", args: [deployer.address, safe.address] },
+      };
+      const foreign = {
+        address: await contracts.escrow.getAddress(),
+        ...encode(safe.address, deployer.address),
+      };
+      const own = { address: target.target, ...encode(deployer.address, safe.address) };
+
+      expect(() => findEvent({ logs: [foreign, own] }, target, stepDef)).to.not.throw();
+      expect(() => findEvent({ logs: [foreign] }, target, stepDef)).to.throw(/was not emitted/);
     });
   });
 
