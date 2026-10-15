@@ -6,11 +6,9 @@
 #   - Cert name is "rofl-oracle-<env>" — the SOCIAL body already owns
 #     "rofl-<env>" on the SAME shared Cloud SQL instance; each body gets its
 #     own client cert so rotation never couples them.
-#   - Also fetches POSTGRES_PASSWORD + POSTGRES_SERVER_CA_CERT from GCP
-#     Secret Manager and pushes them: unlike core, this repo's
-#     rofl-set-secrets.sh has no Secret Manager stage, and these values are
-#     one-time/rotation-rare — folding them here keeps the per-release flow
-#     untouched.
+#   - Pushes ONLY the minted POSTGRES_CLIENT_CERT + POSTGRES_CLIENT_KEY.
+#     POSTGRES_PASSWORD + POSTGRES_SERVER_CA_CERT come from GCP Secret Manager
+#     via scripts/rofl-set-secrets.sh (PART 3), matching core's ownership split.
 #
 # Multi-line PEMs bypass the .env pipeline entirely (docker-compose env
 # substitution truncates at the first newline): everything is base64-encoded
@@ -56,6 +54,10 @@ esac
 DEPLOYMENT="${ROFL_DEPLOYMENT:-$ENV}"
 CERT_NAME="rofl-oracle-${DEPLOYMENT}"
 ENV_FILE="oracle/.env.oracle.${ENV}"
+# shellcheck source=scripts/rofl-deployment.sh
+. "$(dirname "$0")/rofl-deployment.sh"
+require_deployment_in_manifest "$DEPLOYMENT" || exit 1
+OASIS_ACCOUNT="$(oasis_account_for_deployment "$DEPLOYMENT")"
 
 echo "🔍 Checking for existing client cert '$CERT_NAME' on $INSTANCE ($GCP_PROJECT)..."
 EXISTING=$(gcloud sql ssl client-certs list \
@@ -154,5 +156,5 @@ echo "Next steps:"
 OVERRIDE_PREFIX=""
 [ "$DEPLOYMENT" != "$ENV" ] && OVERRIDE_PREFIX="ROFL_DEPLOYMENT=$DEPLOYMENT "
 echo "  1. ${OVERRIDE_PREFIX}bash scripts/rofl-set-secrets.sh $ENV       # sync the .env-driven secrets/config"
-echo "  2. oasis rofl update --deployment $DEPLOYMENT          # commit manifest on-chain"
+echo "  2. oasis rofl update --deployment $DEPLOYMENT --account $OASIS_ACCOUNT --gas-limit 200000   # commit manifest on-chain"
 echo "  3. bun run rofl:deploy:$DEPLOYMENT                     # apply to the machine"

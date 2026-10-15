@@ -52,6 +52,10 @@ DEPLOYMENT_TARGET="${ROFL_DEPLOYMENT:-$ENV}"
 if [ "$DEPLOYMENT_TARGET" != "$ENV" ]; then
   echo "↪️  ROFL_DEPLOYMENT override: config from '$ENV', secrets to deployment '$DEPLOYMENT_TARGET'."
 fi
+# shellcheck source=scripts/rofl-deployment.sh
+. "$(dirname "$0")/rofl-deployment.sh"
+require_deployment_in_manifest "$DEPLOYMENT_TARGET" || exit 1
+OASIS_ACCOUNT="$(oasis_account_for_deployment "$DEPLOYMENT_TARGET")"
 BASE_ENV_FILE="./oracle/.env.oracle"
 ENV_FILE="./oracle/.env.oracle.${ENV}"
 COMPOSE_TEMPLATE="compose.${ENV}.yaml"
@@ -438,4 +442,4 @@ done
 
 echo "✅ Done: secrets synced + compose regenerated for '$ENV'."
 echo "   (POSTGRES_CLIENT_CERT/KEY owned by rofl-init-cloud-sql.sh — not pushed here.)"
-echo "⚠️  REMINDER: run \`oasis rofl update --deployment $DEPLOYMENT_TARGET\` to commit on-chain."
+echo "⚠️  REMINDER: run \`oasis rofl update --deployment $DEPLOYMENT_TARGET --account $OASIS_ACCOUNT --gas-limit 200000\` to commit on-chain."

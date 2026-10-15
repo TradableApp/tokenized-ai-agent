@@ -111,10 +111,16 @@ const readLog = (ws) => (fs.existsSync(ws.log) ? fs.readFileSync(ws.log, "utf8")
 
 describe("ROFL_DEPLOYMENT override", function () {
   this.timeout(20000);
+  let ws;
+  beforeEach(function () {
+    ws = makeWorkspace();
+  });
+  afterEach(function () {
+    fs.rmSync(ws.dir, { recursive: true, force: true });
+  });
 
   describe("rofl-set-secrets.sh", function () {
     it("without the override, every --deployment follows ENV (control)", function () {
-      const ws = makeWorkspace();
       const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
       expect(code, out).to.equal(0);
       const log = readLog(ws);
@@ -123,7 +129,6 @@ describe("ROFL_DEPLOYMENT override", function () {
     });
 
     it("with ROFL_DEPLOYMENT, secrets go to that deployment while config still comes from ENV", function () {
-      const ws = makeWorkspace();
       const { code, out } = run(SET_SECRETS, ["base-testnet"], {
         ...ws,
         env: { ROFL_DEPLOYMENT: "base-mainnet" },
@@ -138,13 +143,26 @@ describe("ROFL_DEPLOYMENT override", function () {
       expect(compose).to.include("- PRIVATE_KEY=${PRIVATE_KEY:-}");
       expect(compose).to.not.include("STALE=1");
       // And the operator is told which deployment to commit.
-      expect(out).to.include("oasis rofl update --deployment base-mainnet");
+      expect(out).to.include("oasis rofl update --deployment base-mainnet --account oasis_mainnet");
+    });
+
+    it("refuses a deployment that is not in rofl.yaml before rewriting anything", function () {
+      const { code, out } = run(SET_SECRETS, ["base-testnet"], {
+        ...ws,
+        env: { ROFL_DEPLOYMENT: "base-mainnnet" },
+      });
+      expect(code, out).to.not.equal(0);
+      expect(out).to.include("base-mainnnet");
+      expect(out).to.include("rofl.yaml");
+      expect(readLog(ws)).to.not.include("secret set");
+      // The compose template is untouched: the guard runs before the rewrite.
+      const compose = fs.readFileSync(path.join(ws.dir, "compose.base-testnet.yaml"), "utf8");
+      expect(compose).to.include("STALE=1");
     });
   });
 
   describe("rofl-init-cloud-sql.sh", function () {
     it("with ROFL_DEPLOYMENT, the cert is named for the deployment, pushed to it, on ENV's instance", function () {
-      const ws = makeWorkspace();
       const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], {
         ...ws,
         env: { ROFL_DEPLOYMENT: "base-mainnet" },
@@ -160,15 +178,31 @@ describe("ROFL_DEPLOYMENT override", function () {
       // POSTGRES_HOST is stamped into ENV's env file, which is what rofl:set reads next.
       const envFile = fs.readFileSync(path.join(ws.dir, "oracle", ".env.oracle.base-testnet"), "utf8");
       expect(envFile).to.include("POSTGRES_HOST=10.9.9.9");
+      // The next-steps hint names the deployment's signing account: the CLI default on an
+      // operator machine is the testnet account, which is wrong for base-mainnet.
+      expect(out).to.include("oasis rofl update --deployment base-mainnet --account oasis_mainnet");
+    });
+
+    it("refuses a deployment that is not in rofl.yaml before minting a cert", function () {
+      const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], {
+        ...ws,
+        env: { ROFL_DEPLOYMENT: "base-mainnnet" },
+      });
+      expect(code, out).to.not.equal(0);
+      expect(out).to.include("base-mainnnet");
+      expect(out).to.include("rofl.yaml");
+      // A cert's private key is emitted exactly once and the slot is consumed on creation,
+      // so a typo must fail before gcloud is ever called.
+      expect(readLog(ws)).to.not.include("client-certs create");
     });
 
     it("without the override, cert name and deployment follow ENV (control)", function () {
-      const ws = makeWorkspace();
       const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
       expect(code, out).to.equal(0);
       const log = readLog(ws);
       expect(log).to.include("client-certs create rofl-oracle-base-testnet");
       expect(log).to.include("secret set POSTGRES_CLIENT_CERT --deployment base-testnet");
+      expect(out).to.include("oasis rofl update --deployment base-testnet --account oasis_testnet");
     });
   });
 });
