@@ -20,6 +20,25 @@ artifacts:
     runtime: https://github.com/oasisprotocol/oasis-sdk/releases/download/rofl-containers%2Fv0.8.6/rofl-containers#5aa26a3c5a7e1d284e217959d89b7a620ea7b7fc5079909e25042124ffb384e8
     compose: compose.yaml
 deployments:
+  base-mainnet:
+    app_id: rofl1qpnn6gc0tlr3hwj7z5ad5jgduqwj0h2vkqdwu68p
+    network: mainnet
+    paratime: sapphire
+    admin: oasis_mainnet
+    trust_root:
+      height: 32260663
+      hash: bc45b9406f9c94ca33eca937044402978798b1aeb8fb078f9d8de7816aa2564b
+    policy:
+      quotes:
+        pcs:
+          tcb_validity_period: 30
+          min_tcb_evaluation_data_number: 18
+          tdx: {}
+      enclaves: []
+      endorsements:
+        - any: {}
+      fees: endorsing_node
+      max_expiration: 3
   base-testnet:
     app_id: rofl1qppl3qnsxzxz4el8uuyfr4fsjn30gpn2fy3ne8qs
     network: testnet
@@ -71,11 +90,6 @@ deployments:
         value: pGJwa1ggNC7++8MvmDFx7/qi6iDkMFI2ayr5qj7px+emncKe5DFkbmFtZVghVWNTmnbVkO1mvy+yzwVF27ZG5Bu7Hcqq1ZILqzIB9mZfZW5vbmNlT3vJWppBWS8NEHs5dB4H5GV2YWx1ZVgwyd4O0MSZfevpvzKUCdftXjQem2g+pP9hIjJ746v/TtabHMk9FGwlcc1qxDlF6sxC
       - name: POSTGRES_SERVER_CA_CERT
         value: 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
-    machines:
-      default:
-        provider: oasis1qp2ens0hsp7gh23wajxa4hpetkdek3swyyulyrmz
-        offer: playground_short
-        id: "0000000000000695"
   testnet:
     app_id: rofl1qqpuk4ke7d2nk5tx736tcpxm6kjtstndyu79pk2g
     network: testnet
@@ -127,10 +141,5 @@ deployments:
         value: pGJwa1ggiGpOZpB3Z/QTzIF5oukrd50zydfXVq8Nu0oQZ1oDvRFkbmFtZVghXyHBlqKv0ekkS71vBp7e5kaTL2EYlCWe+oSKukaknfomZW5vbmNlT2KL/nfM8qLje9RkBjysmWV2YWx1ZVg0jmcu+tJqMfuKrzLrWk+hV2T8lq7SUpVR1NHAcTpjW1WZKf0nBJvZgtTVVDjgroboFS85CA==
       - name: OLLAMA_URL
         value: pGJwa1gg98wwbKwp62reY9sze0oP7BVn00dsbfyQkJf6i7rxpVxkbmFtZVgatCAbf6r5QZYEIlw8BGy08JRSupoERzYb+TBlbm9uY2VPwb9H5oArapo57Z49SrtKZXZhbHVlWCPWXOsf1fRID31gC9PXUKEdp8veJG/xI4lloRQK12X+Yp4IKA==
-    machines:
-      default:
-        provider: oasis1qp2ens0hsp7gh23wajxa4hpetkdek3swyyulyrmz
-        offer: playground_short
-        id: "0000000000000243"
 tooling:
   version: 0.18.5
