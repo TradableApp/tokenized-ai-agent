@@ -54,7 +54,7 @@ Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-sc
 | `bun run rehearse:base-testnet:dry` | Admin rehearsal dry run on Base testnet: simulates every owner call, sends nothing (needs `REHEARSAL_SAFE_ADDRESS`; optional `REHEARSAL_PROMPT_FEE` in whole tokens, default 2) |
 | `bun run rehearse:base-testnet` | Admin rehearsal forward phase: fee/treasury/oracle set-and-restore, then ownership of both proxies to the Safe; prints the Safe return txs |
 | `bun run rehearse:base-testnet:confirm` | Verifies ownership, fees, treasury and oracle match the pre-rehearsal snapshot after the Safe returns ownership |
-| `bun run rehearse:base-mainnet[:dry|:confirm]` | Same three phases against Base mainnet |
+| `bun run rehearse:base-mainnet[:dry|:confirm]` | Same three phases against Base mainnet; the live phase refuses unless `REHEARSAL_MAINNET_CONFIRMED=1` is set explicitly |
 
 ### Oracle (run from `oracle/`)
 | Command | Purpose |

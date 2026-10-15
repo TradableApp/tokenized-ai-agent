@@ -8,6 +8,9 @@ const { ethers } = hre;
 
 const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
 const PHASES = new Set(["forward", "confirm"]);
+const MAINNET_NETWORK = "base";
+const RECOVERY_HINT =
+  "Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; any proxy already owned by the Safe is returned with transferOwnership(<deploy wallet>) queued from the Safe.";
 
 const CONTRACT_KEYS = { agent: "aiAgent", escrow: "escrow" };
 
@@ -31,6 +34,33 @@ function assertSafeAddress(safeAddress, state) {
     throw new Error(`Safe ${safe} already owns a proxy; the transfer would rehearse nothing`);
   }
   return safe;
+}
+
+function assertSignerOwnsBoth(signerAddress, state) {
+  const signer = ethers.getAddress(signerAddress);
+  if (
+    signer !== ethers.getAddress(state.agentOwner) ||
+    signer !== ethers.getAddress(state.escrowOwner)
+  ) {
+    throw new Error(
+      `Signer ${signer} does not own both proxies (agentOwner=${state.agentOwner}, escrowOwner=${state.escrowOwner})`,
+    );
+  }
+}
+
+async function assertSafeHasCode(safe) {
+  const code = await ethers.provider.getCode(safe);
+  if (code === "0x") {
+    throw new Error(`Safe ${safe} has no contract code; an EOA cannot stand in for the Safe`);
+  }
+}
+
+function assertMainnetConfirmed({ networkName, dryRun, confirmed }) {
+  if (networkName === MAINNET_NETWORK && !dryRun && confirmed !== "1") {
+    throw new Error(
+      `Live run on ${networkName} refused: set REHEARSAL_MAINNET_CONFIRMED=1 to send owner transactions on Base mainnet`,
+    );
+  }
 }
 
 function step(id, contract, method, args, event, verify) {
@@ -168,7 +198,7 @@ async function runPlan({ plan, contracts, signer, dryRun, log }) {
       receipt = await tx.wait();
     } catch (error) {
       throw new Error(
-        `[${stepDef.id}] ${stepDef.contract}.${stepDef.method} failed: ${error.message}`,
+        `[${stepDef.id}] ${stepDef.contract}.${stepDef.method} failed: ${error.message}\n${RECOVERY_HINT}`,
       );
     }
     findEvent(receipt, target, stepDef);
@@ -209,7 +239,9 @@ function writeSnapshot(state, file) {
 
 function readSnapshot(file) {
   if (!fs.existsSync(file)) {
-    throw new Error(`No forward-phase snapshot at ${file}; run REHEARSAL_PHASE=forward first`);
+    throw new Error(
+      `No snapshot at ${file}; run the forward phase first (for example bun run rehearse:base-testnet)`,
+    );
   }
   const raw = JSON.parse(fs.readFileSync(file, "utf8"));
   return { ...raw, promptFee: BigInt(raw.promptFee) };
@@ -255,7 +287,9 @@ async function forwardPhase({
   log(
     `Live state: ${JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)])))}`,
   );
+  assertSignerOwnsBoth(signer.address, state);
   const plan = buildPlan({ state, safeAddress, rehearsalPromptFee });
+  await assertSafeHasCode(plan[6].args[0]);
 
   if (!dryRun) {
     writeSnapshot(state, snapshotFile);
@@ -300,6 +334,11 @@ async function main() {
     throw new Error(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
   }
   const dryRun = process.env.DRY_RUN === "1";
+  assertMainnetConfirmed({
+    networkName: hre.network.name,
+    dryRun,
+    confirmed: process.env.REHEARSAL_MAINNET_CONFIRMED,
+  });
   const log = (line) => console.log(line);
 
   const [signer] = await ethers.getSigners();
@@ -332,6 +371,8 @@ module.exports = {
   verifyReturned,
   parseRehearsalFee,
   forwardPhase,
+  confirmPhase,
+  assertMainnetConfirmed,
   main,
 };
 

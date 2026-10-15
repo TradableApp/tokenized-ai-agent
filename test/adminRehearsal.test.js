@@ -13,6 +13,8 @@ const {
   verifyReturned,
   parseRehearsalFee,
   forwardPhase,
+  confirmPhase,
+  assertMainnetConfirmed,
 } = require("../scripts/admin-rehearsal");
 
 describe("scripts/admin-rehearsal", function () {
@@ -50,11 +52,26 @@ describe("scripts/admin-rehearsal", function () {
     await escrow.waitForDeployment();
     await aiAgent.connect(deployer).setAgentEscrow(await escrow.getAddress());
 
+    const safeContract = await (await ethers.getContractFactory("MockAbleToken")).deploy();
+    await safeContract.waitForDeployment();
+    const safeContractAddress = await safeContract.getAddress();
+
     const contracts = { aiAgent, escrow };
     const state = await readState(contracts);
     const lines = [];
     const log = (line) => lines.push(String(line));
-    return { contracts, state, lines, log, deployer, oracle, treasury, safe, stranger };
+    return {
+      contracts,
+      state,
+      lines,
+      log,
+      deployer,
+      oracle,
+      treasury,
+      safe,
+      safeContractAddress,
+      stranger,
+    };
   }
 
   describe("readState", function () {
@@ -278,47 +295,119 @@ describe("scripts/admin-rehearsal", function () {
       return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")), "snapshot.json");
     }
 
+    function run(fixture, overrides) {
+      fixture.lines = [];
+      return forwardPhase({
+        contracts: fixture.contracts,
+        signer: fixture.deployer,
+        dryRun: false,
+        log: (line) => fixture.lines.push(String(line)),
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        snapshotFile: scratchSnapshot(),
+        ...overrides,
+      });
+    }
+
     it("writes the pre-rehearsal snapshot before the first transaction is sent", async function () {
-      const { contracts, state, log, stranger, safe } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratchSnapshot();
 
-      await expect(
-        forwardPhase({
-          contracts,
-          signer: stranger,
-          dryRun: false,
-          log,
-          safeAddress: safe.address,
-          rehearsalPromptFee: REHEARSAL_FEE,
-          snapshotFile,
-        }),
-      ).to.be.rejectedWith(/fee-set/);
+      await run(fixture, { snapshotFile });
 
+      const savedAt = fixture.lines.findIndex((l) => l.includes("Pre-rehearsal state saved"));
+      const firstStepAt = fixture.lines.findIndex((l) => l.includes("[fee-set]"));
+      expect(savedAt).to.be.greaterThan(-1);
+      expect(savedAt).to.be.lessThan(firstStepAt);
       const saved = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
       expect(saved).to.deep.equal({
-        agentOwner: state.agentOwner,
-        escrowOwner: state.escrowOwner,
-        oracle: state.oracle,
-        treasury: state.treasury,
-        promptFee: String(state.promptFee),
+        agentOwner: fixture.state.agentOwner,
+        escrowOwner: fixture.state.escrowOwner,
+        oracle: fixture.state.oracle,
+        treasury: fixture.state.treasury,
+        promptFee: String(fixture.state.promptFee),
       });
+      expect(await fixture.contracts.aiAgent.owner()).to.equal(fixture.safeContractAddress);
     });
 
     it("writes no snapshot on a dry run", async function () {
-      const { contracts, log, deployer, safe } = await loadFixture(deployFixture);
+      const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratchSnapshot();
 
-      await forwardPhase({
-        contracts,
-        signer: deployer,
-        dryRun: true,
-        log,
-        safeAddress: safe.address,
-        rehearsalPromptFee: REHEARSAL_FEE,
-        snapshotFile,
-      });
+      await run(fixture, { dryRun: true, snapshotFile });
 
       expect(fs.existsSync(snapshotFile)).to.equal(false);
+    });
+
+    it("refuses before any transaction when the signer does not own both proxies", async function () {
+      const fixture = await loadFixture(deployFixture);
+      await fixture.contracts.escrow
+        .connect(fixture.deployer)
+        .transferOwnership(fixture.stranger.address);
+      const snapshotFile = scratchSnapshot();
+
+      await expect(run(fixture, { snapshotFile })).to.be.rejectedWith(/does not own both/);
+
+      expect(fs.existsSync(snapshotFile)).to.equal(false);
+      expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
+    });
+
+    it("refuses an address with no contract code as the Safe", async function () {
+      const fixture = await loadFixture(deployFixture);
+
+      await expect(run(fixture, { safeAddress: fixture.safe.address })).to.be.rejectedWith(
+        /no contract code/,
+      );
+    });
+
+    it("names the failed step and the recovery path when a live call reverts", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const plan = buildPlan({
+        state: fixture.state,
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+
+      await expect(
+        runPlan({
+          plan,
+          contracts: fixture.contracts,
+          signer: fixture.stranger,
+          dryRun: false,
+          log: fixture.log,
+        }),
+      ).to.be.rejectedWith(/\[fee-set\][\s\S]*REHEARSAL_PHASE=confirm/);
+    });
+  });
+
+  describe("confirmPhase", function () {
+    it("explains how to produce a missing snapshot", async function () {
+      const { contracts, log } = await loadFixture(deployFixture);
+      const missing = path.join(os.tmpdir(), "rehearsal-missing", "snapshot.json");
+
+      await expect(confirmPhase({ contracts, log, snapshotFile: missing })).to.be.rejectedWith(
+        /run the forward phase first/,
+      );
+    });
+  });
+
+  describe("assertMainnetConfirmed", function () {
+    it("blocks live Base mainnet runs unless explicitly confirmed", function () {
+      expect(() =>
+        assertMainnetConfirmed({ networkName: "base", dryRun: false, confirmed: undefined }),
+      ).to.throw(/REHEARSAL_MAINNET_CONFIRMED=1/);
+      expect(() =>
+        assertMainnetConfirmed({ networkName: "base", dryRun: false, confirmed: "yes" }),
+      ).to.throw(/REHEARSAL_MAINNET_CONFIRMED=1/);
+      expect(() =>
+        assertMainnetConfirmed({ networkName: "base", dryRun: false, confirmed: "1" }),
+      ).to.not.throw();
+      expect(() =>
+        assertMainnetConfirmed({ networkName: "base", dryRun: true, confirmed: undefined }),
+      ).to.not.throw();
+      expect(() =>
+        assertMainnetConfirmed({ networkName: "baseSepolia", dryRun: false, confirmed: undefined }),
+      ).to.not.throw();
     });
   });
 });
