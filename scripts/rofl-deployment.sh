@@ -10,7 +10,8 @@
 # slot or rewrite config for a target the CLI will later reject.
 require_deployment_in_manifest() {
   local deployment="$1" manifest="${2:-rofl.yaml}"
-  if ! grep -qE "^  ${deployment}:[[:space:]]*$" "$manifest" 2>/dev/null; then
+  # Fixed-string, whole-line: the name is operator input and must never be read as a pattern.
+  if ! grep -qxF "  ${deployment}:" "$manifest" 2>/dev/null; then
     echo "❌ Deployment '$deployment' is not in $manifest."
     echo "   Create it first (bun run rofl:create:<deployment>) or fix ROFL_DEPLOYMENT."
     return 1

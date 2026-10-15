@@ -183,6 +183,17 @@ describe("ROFL_DEPLOYMENT override", function () {
       expect(out).to.include("oasis rofl update --deployment base-mainnet --account oasis_mainnet");
     });
 
+    it("matches the manifest key literally, so a metacharacter typo cannot pass as a real deployment", function () {
+      // Under a regex match `base.mainnet` would satisfy `base-mainnet`; the guard must treat
+      // the name as literal bytes or this exact typo class walks straight through it.
+      const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], {
+        ...ws,
+        env: { ROFL_DEPLOYMENT: "base.mainnet" },
+      });
+      expect(code, out).to.not.equal(0);
+      expect(readLog(ws)).to.not.include("client-certs create");
+    });
+
     it("refuses a deployment that is not in rofl.yaml before minting a cert", function () {
       const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], {
         ...ws,
