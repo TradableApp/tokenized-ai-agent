@@ -6,11 +6,9 @@
 #   - Cert name is "rofl-oracle-<env>" — the SOCIAL body already owns
 #     "rofl-<env>" on the SAME shared Cloud SQL instance; each body gets its
 #     own client cert so rotation never couples them.
-#   - Also fetches POSTGRES_PASSWORD + POSTGRES_SERVER_CA_CERT from GCP
-#     Secret Manager and pushes them: unlike core, this repo's
-#     rofl-set-secrets.sh has no Secret Manager stage, and these values are
-#     one-time/rotation-rare — folding them here keeps the per-release flow
-#     untouched.
+#   - Pushes ONLY the minted POSTGRES_CLIENT_CERT + POSTGRES_CLIENT_KEY.
+#     POSTGRES_PASSWORD + POSTGRES_SERVER_CA_CERT come from GCP Secret Manager
+#     via scripts/rofl-set-secrets.sh (PART 3), matching core's ownership split.
 #
 # Multi-line PEMs bypass the .env pipeline entirely (docker-compose env
 # substitution truncates at the first newline): everything is base64-encoded
@@ -49,8 +47,17 @@ case "$ENV" in
     ;;
 esac
 
-CERT_NAME="rofl-oracle-${ENV}"
+# ROFL_DEPLOYMENT moves the deployment the secrets land on and the cert identity with it.
+# The instance, project and env file still follow ENV. A cert's private key is emitted once,
+# so the name MUST be per deployment or a re-run for a second deployment finds the first
+# deployment's cert, skips creation, and pushes nothing.
+DEPLOYMENT="${ROFL_DEPLOYMENT:-$ENV}"
+CERT_NAME="rofl-oracle-${DEPLOYMENT}"
 ENV_FILE="oracle/.env.oracle.${ENV}"
+# shellcheck source=scripts/rofl-deployment.sh
+. "$(dirname "$0")/rofl-deployment.sh"
+require_deployment_in_manifest "$DEPLOYMENT" || exit 1
+OASIS_ACCOUNT="$(oasis_account_for_deployment "$DEPLOYMENT")"
 
 echo "🔍 Checking for existing client cert '$CERT_NAME' on $INSTANCE ($GCP_PROJECT)..."
 EXISTING=$(gcloud sql ssl client-certs list \
@@ -103,11 +110,11 @@ fi
 push_b64_secret() {
   local name="$1" src="$2" b64="$TMP_DIR/$1.b64"
   ( umask 077; base64 -i "$src" | tr -d '\n' > "$b64" )
-  oasis rofl secret set "$name" --deployment "$ENV" "$b64"
+  oasis rofl secret set "$name" --deployment "$DEPLOYMENT" "$b64"
 }
 
 if [ "$CREATE_CERT" -eq 1 ]; then
-  echo "🛰️  Pushing POSTGRES_CLIENT_CERT / POSTGRES_CLIENT_KEY to deployment '$ENV' (base64)..."
+  echo "🛰️  Pushing POSTGRES_CLIENT_CERT / POSTGRES_CLIENT_KEY to deployment '$DEPLOYMENT' (base64)..."
   push_b64_secret POSTGRES_CLIENT_CERT "$TMP_CERT"
   push_b64_secret POSTGRES_CLIENT_KEY "$TMP_KEY"
 fi
@@ -146,6 +153,8 @@ echo "   minted cert, valid ~10 years). POSTGRES_PASSWORD + SERVER_CA come from"
 echo "   Secret Manager via rofl-set-secrets.sh in the next step."
 echo ""
 echo "Next steps:"
-echo "  1. bash scripts/rofl-set-secrets.sh $ENV       # sync the .env-driven secrets/config"
-echo "  2. oasis rofl update --deployment $ENV          # commit manifest on-chain"
-echo "  3. bun run rofl:deploy:$ENV                     # apply to the machine"
+OVERRIDE_PREFIX=""
+[ "$DEPLOYMENT" != "$ENV" ] && OVERRIDE_PREFIX="ROFL_DEPLOYMENT=$DEPLOYMENT "
+echo "  1. ${OVERRIDE_PREFIX}bash scripts/rofl-set-secrets.sh $ENV       # sync the .env-driven secrets/config"
+echo "  2. oasis rofl update --deployment $DEPLOYMENT --account $OASIS_ACCOUNT --gas-limit 200000   # commit manifest on-chain"
+echo "  3. bun run rofl:deploy:$DEPLOYMENT                     # apply to the machine"
