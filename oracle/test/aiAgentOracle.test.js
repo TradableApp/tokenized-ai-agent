@@ -267,7 +267,7 @@ describe("aiAgentOracle", function () {
 
       const geminiCalls = stubs["node-fetch"]
         .getCalls()
-        .filter((c) => String(c.args[0]).includes("generativelanguage.googleapis.com"));
+        .filter((c) => String(c.args[0]).startsWith("https://generativelanguage.googleapis.com/"));
       // One routing call (small model) + one answer call (large model), in that order.
       expect(geminiCalls.map((c) => c.args[0])).to.deep.equal([
         `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GOOGLE_SMALL_MODEL}:generateContent`,
