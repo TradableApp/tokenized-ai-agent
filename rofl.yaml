@@ -10,7 +10,7 @@ resources:
   cpus: 2
   storage:
     kind: disk-persistent
-    size: 8192
+    size: 7168
 artifacts:
   builder: ghcr.io/oasisprotocol/rofl-container-builder:0.0.1@sha256:913ef97ab07dde31f08ce873f825bf3d4f32ad4102ff5797d7c3050c121c4dce
   firmware: https://github.com/oasisprotocol/oasis-boot/releases/download/v0.6.2/ovmf.tdx.fd#db47100a7d6a0c1f6983be224137c3f8d7cb09b63bb1c7a5ee7829d8e994a42f
@@ -36,8 +36,8 @@ deployments:
           min_tcb_evaluation_data_number: 18
           tdx: {}
       enclaves:
-        - id: 0Dib+N8dbgAk/l7VPses7weY/YQ+r4+lbEitF9W3XIMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
-        - id: 4/iifAMvmxUfHqJKDDVI0Wm5uaQo8wisb9N1dly8i5gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: xyN+HukOGSlBe5DwxkYNCm5UtF/LsbPk5jX0UNXAzdkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: oQpR5e4OjN/pSsjEyFBjj0H19O3F7HrGBpDc3cJusQMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
       endorsements:
         - any: {}
       fees: endorsing_node
