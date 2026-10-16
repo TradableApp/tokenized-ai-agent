@@ -49,7 +49,6 @@ describe("aiAgentOracle", function () {
     // here rather than the example being weakened to a valid-but-wrong address.
     originalAgentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
     process.env.AI_AGENT_CONTRACT_ADDRESS = randomWallet.address;
-    process.env.OLLAMA_URL = "http://fake-ollama";
 
     // Define mocked oracle components once for easy reference across tests.
     const mockedOracleComponents = {
@@ -113,7 +112,13 @@ describe("aiAgentOracle", function () {
       },
       "node-fetch": sinon.stub().resolves({
         ok: true,
-        json: () => Promise.resolve({ message: { content: "Mocked AI Response" } }),
+        // One generic "any AI provider answered" body: `message.content` is the ChainGPT-style
+        // shape, `candidates` is Gemini's generateContent shape (direct routing + fallback tier).
+        json: () =>
+          Promise.resolve({
+            message: { content: "Mocked AI Response" },
+            candidates: [{ content: { parts: [{ text: "Mocked AI Response" }] } }],
+          }),
         text: () => Promise.resolve("Mocked AI Response"),
       }),
       "fs/promises": {
@@ -169,7 +174,7 @@ describe("aiAgentOracle", function () {
     sinon.stub(global, "fetch").callsFake((...args) => stubs["node-fetch"](...args));
 
     // The example env file sets CHAIN_GPT_API_KEY to a placeholder which causes ChainGPT
-    // to succeed via the stub, bypassing DeepSeek. Clear it so tests that need it
+    // to succeed via the stub, bypassing the direct-Gemini tier. Clear it so tests that need it
     // can set their own explicit value.
     delete process.env.CHAIN_GPT_API_KEY;
   });
@@ -179,7 +184,6 @@ describe("aiAgentOracle", function () {
     // Clean up environment variables to ensure test isolation
     delete process.env.AI_PROVIDER;
     delete process.env.PRIVATE_KEY;
-    delete process.env.OLLAMA_URL;
     delete process.env.CHAIN_GPT_API_KEY;
     // RESTORED, not deleted — contractUtility reads this at MODULE LOAD, so clearing it starves
     // any later file that requires aiAgentOracle fresh. Same pattern as e2e/helpers.js.
@@ -241,7 +245,10 @@ describe("aiAgentOracle", function () {
     const FAKE_ANSWER_MESSAGE_ID = 3;
     const FAKE_ROFL_KEY = "0xkey";
 
-    it("should default to the local model (gemma3:1b) if AI_PROVIDER is not set", async () => {
+    it("falls through to the direct Gemini tier when AI_PROVIDER is unset and the upper tiers fail", async () => {
+      // Routing: the generic stub's text is not JSON, so classification defaults to MARKET.
+      // ElizaOS has no agent and ChainGPT has no key, so the dispatcher must land on the direct
+      // Gemini call.
       const clientPayload = { promptText: "test", isNewConversation: false };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -258,10 +265,20 @@ describe("aiAgentOracle", function () {
         fakeEvent,
       );
 
-      const fetchCall = stubs["node-fetch"].getCalls().find((c) => c.args[0].includes("/api/chat"));
-      expect(fetchCall).to.exist;
-      const body = JSON.parse(fetchCall.args[1].body);
-      expect(body.model).to.equal("gemma3:1b");
+      const geminiCalls = stubs["node-fetch"]
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes("generativelanguage.googleapis.com"));
+      // One routing call (small model) + one answer call (large model), in that order.
+      expect(geminiCalls.map((c) => c.args[0])).to.deep.equal([
+        `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GOOGLE_SMALL_MODEL}:generateContent`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GOOGLE_LARGE_MODEL}:generateContent`,
+      ]);
+      for (const call of geminiCalls) {
+        expect(call.args[1].headers["x-goog-api-key"]).to.equal(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
+        expect(String(call.args[0])).to.not.include(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
+      }
+      // Nothing may still try to reach an Ollama sidecar.
+      expect(stubs["node-fetch"].getCalls().some((c) => String(c.args[0]).includes("11434"))).to.be.false;
     });
 
     it("should call queryChainGPT if AI_PROVIDER is 'ChainGPT'", async () => {

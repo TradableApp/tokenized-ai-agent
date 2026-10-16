@@ -29,7 +29,7 @@
  * would show as zeros across the board — indistinguishable from an hour in which nobody asked
  * anything. Those two must not look the same.
  */
-const TIERS = ["tradable", "elizaos", "chaingpt", "deepseek", "mock", "none"];
+const TIERS = ["tradable", "elizaos", "chaingpt", "gemini", "mock", "none"];
 
 function createTally() {
   const counts = Object.fromEntries(TIERS.map((t) => [t, 0]));

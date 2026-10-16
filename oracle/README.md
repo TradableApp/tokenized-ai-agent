@@ -1,6 +1,6 @@
 # Tokenized AI Agent - Oracle Service (Node.js)
 
-This service listens for on-chain requests from the deployed Oracle smart contract on the Oasis Sapphire network. It queries an AI model (Ollama) for responses, then submits the result back on-chain via the ROFL app and your ERC-20 token payment flow.
+This service listens for on-chain requests from the deployed Oracle smart contract on the Oasis Sapphire network. It routes each prompt to an AI tier (Tradable assistant, ElizaOS/Gemini, ChainGPT, direct Gemini fallback), then submits the result back on-chain via the ROFL app and your ERC-20 token payment flow.
 
 ---
 

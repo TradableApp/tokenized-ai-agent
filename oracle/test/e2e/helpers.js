@@ -76,7 +76,13 @@ function createStubs(sessionKey) {
     },
     "node-fetch": sinon.stub().resolves({
       ok: true,
-      json: () => Promise.resolve({ message: { content: "Mocked AI Response" } }),
+      // Generic "any AI provider answered" body: ChainGPT-style `message.content` plus Gemini's
+      // `candidates` shape, so routing and the direct fallback tier resolve like the other tiers.
+      json: () =>
+        Promise.resolve({
+          message: { content: "Mocked AI Response" },
+          candidates: [{ content: { parts: [{ text: "Mocked AI Response" }] } }],
+        }),
       text: () => Promise.resolve("Mocked AI Response"),
     }),
     "fs/promises": {
@@ -146,7 +152,6 @@ function setupOracleTestEnv(sessionKey) {
   // fixture supplies a well-formed address instead.
   originalAgentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
   process.env.AI_AGENT_CONTRACT_ADDRESS = randomWallet.address;
-  process.env.OLLAMA_URL = "http://fake-ollama";
 
   const mockedOracleComponents = createMockedOracleComponents();
   const stubs = createStubs(sessionKey);
@@ -171,7 +176,6 @@ function cleanupOracleTestEnv() {
   // per file) with "Missing required env variable" — a failure in a completely unrelated test.
   if (originalAgentAddress === undefined) delete process.env.AI_AGENT_CONTRACT_ADDRESS;
   else process.env.AI_AGENT_CONTRACT_ADDRESS = originalAgentAddress;
-  delete process.env.OLLAMA_URL;
   delete process.env.CHAIN_GPT_API_KEY;
   delete process.env.EVENT_BATCH_SIZE;
 }

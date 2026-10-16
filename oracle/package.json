@@ -1,7 +1,7 @@
 {
   "name": "oracle",
   "version": "1.0.0",
-  "description": "Node-based Oracle service for interacting with ROFL and off-chain inference providers like Ollama.",
+  "description": "Node-based Oracle service for interacting with ROFL and off-chain inference providers (Gemini, ChainGPT, Tradable assistant).",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -26,7 +26,7 @@
     "oracle",
     "ROFL",
     "Oasis",
-    "Ollama",
+    "Gemini",
     "TEE",
     "AI-agent"
   ],

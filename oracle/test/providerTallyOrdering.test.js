@@ -11,7 +11,7 @@ const path = require("node:path");
 //     providerTally.recordServed("chaingpt");
 //     return asAnswer(await queryChainGPT(...));      // <- throws
 //
-// which counts a chaingpt SUCCESS and then, from the catch, a `deepseek` or `none` as well. One
+// which counts a chaingpt SUCCESS and then, from the catch, a `gemini` or `none` as well. One
 // failed prompt increments two counters, and the mix — the whole reason the tally exists — is
 // quietly wrong in exactly the outage it was built to make visible.
 //
@@ -49,7 +49,7 @@ describe("providerTally call-site ordering in queryAIModel", () => {
     const body = lines.slice(start, end).join("\n");
     expect(body).to.include("providerTally.recordServed");
     expect(body).to.include("queryChainGPT");
-    expect(body).to.include("queryDeepSeek");
+    expect(body).to.include("queryGeminiDirect");
   });
 
   it("never records a tier on the line before a `return` that still has to await", () => {

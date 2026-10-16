@@ -135,6 +135,7 @@ const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 const { getHandles: getBrainHandles, isConfigured: isBrainConfigured } = require("./brainContext");
 const { startOracleHeartbeat } = require("./oracleHeartbeat");
 const { providerTally } = require("./providerTally");
+const { classifyIntent, queryGeminiDirect } = require("./geminiDirect");
 const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
@@ -412,9 +413,6 @@ async function initializeEliza() {
           ...(process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim()
             ? ["@elizaos/plugin-google-genai"]
             : []),
-
-          // Ollama as fallback (only if no main LLM providers are configured)
-          ...(process.env.OLLAMA_API_ENDPOINT?.trim() ? ["@elizaos/plugin-ollama"] : []),
 
           // We use the @elizaos/plugin-mcp to connect to Coingecko MCP server instead
           // ...(process.env.COINGECKO_API_KEY?.trim() &&
@@ -699,40 +697,6 @@ async function reconstructHistory(startMessageCID, sessionKey) {
 }
 
 // --- AI Model Query Functions ---
-
-/**
- * Query the DeepSeek model via a local Ollama server.
- * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
- * @returns {Promise<string>} The content of the AI's response.
- */
-async function queryDeepSeek(conversationHistory) {
-  console.log("[DeepSeek] Querying local DeepSeek-R1 via Ollama...");
-  if (!process.env.OLLAMA_URL) {
-    throw new Error("OLLAMA_URL is not set in the environment file.");
-  }
-
-  const messages = conversationHistory.map((turn) => ({
-    role: turn.role, // Assuming history objects have a 'role' property
-    content: turn.content,
-  }));
-
-  const res = await fetch(`${process.env.OLLAMA_URL}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "gemma3:1b",
-      messages,
-      stream: false,
-    }),
-  });
-
-  if (!res.ok) throw new Error(`Ollama server responded with status: ${res.status}`);
-  const json = await res.json();
-
-  const responseText = json.message?.content || "Error: Malformed response from DeepSeek.";
-  console.log(`[DeepSeek] Response received (${responseText.length} chars)`);
-  return responseText;
-}
 
 /**
  * Query the ChainGPT API for a response.
@@ -1166,76 +1130,6 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
 }
 
 /**
- * Classifies the user's latest query to determine routing.
- * @param {Array<object>} conversationHistory - The full conversation history with roles.
- * @returns {Promise<string>} The determined intent category: "TRADABLE" or "ELIZAOS".
- */
-async function routeQueryIntent(conversationHistory) {
-  const latestMessage = conversationHistory[conversationHistory.length - 1].content;
-  console.log(`[Routing] Classifying intent for message: "${latestMessage.substring(0, 50)}..."`);
-
-  // Explicitly define the schema and provide examples to the 1.5B model.
-  // We use a single key "category" with restricted values for maximum reliability.
-  const classificationPrompt = `
-    Task: Categorize the user query into "TRADABLE" or "ELIZAOS".
-    
-    Categories:
-    - TRADABLE: If the query is specifically about Tradable's app features, founders, pricing, or support.
-    - ELIZAOS: If the query is about anything else.
-
-    Examples:
-    - "Who are the founders of Tradable?" -> {"category": "TRADABLE"}
-    - "What is the price of Bitcoin?" -> {"category": "ELIZAOS"}
-    - "How much are Tradable's fees?" -> {"category": "TRADABLE"}
-    - "Analyze the current SOL sentiment" -> {"category": "ELIZAOS"}
-    - "How do I build a bot on Tradable?" -> {"category": "TRADABLE"}
-
-    Output only valid JSON. 
-    Query: "${latestMessage}"
-  `;
-
-  try {
-    const res = await fetch(`${process.env.OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "gemma3:1b",
-        prompt: classificationPrompt,
-        stream: false,
-        format: "json", // Forces Ollama to ensure the output is JSON
-        options: {
-          temperature: 0.1, // Low temperature for higher consistency
-          stop: ["<thought>", "</thought>"], // Attempt to prevent thought overflow
-        },
-      }),
-    });
-
-    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
-
-    const json = await res.json();
-    let responseText = json.response;
-
-    // Reasoning models (e.g. DeepSeek-R1) can emit <thought> blocks even in JSON
-    // mode; strip everything up to and including the closing tag. gemma3:1b
-    // (instruct) doesn't emit them, so this is a defensive no-op for the current
-    // model but keeps the router robust if the local model is ever swapped back.
-    if (responseText.includes("</thought>")) {
-      responseText = responseText.split("</thought>").pop().trim();
-    }
-
-    // Standardize the result
-    const result = JSON.parse(responseText);
-    const category = result.category === "TRADABLE" ? "TRADABLE" : "MARKET";
-
-    console.log(`[Routing] Decision: ${category}`);
-    return category;
-  } catch (err) {
-    console.error("[Routing] Classification failed, defaulting to MARKET path.", err);
-    return "MARKET";
-  }
-}
-
-/**
  * Parses the optional "__E2E_DELAY_MS__:<n>" marker from a prompt (mock-mode only).
  * @dev The marker is read from the LATEST user message of the reconstructed history. For
  *      handlePrompt that's the original prompt text. For handleRegeneration with non-empty
@@ -1322,7 +1216,7 @@ function shouldInitializeConversation({
 }
 
 /**
- * A dispatcher for querying the AI model specified by the routeQueryIntent.
+ * A dispatcher for querying the AI model chosen by `classifyIntent`, with the failover chain.
  * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} conversationId - The on-chain conversation ID.
  * @param {string} userWallet - The user's wallet address.
@@ -1378,25 +1272,25 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
       return asAnswer("Error: Could not generate a response from the ChainGPT service.");
     }
   }
-  if (aiProvider === "DeepSeek") {
+  if (aiProvider === "Gemini") {
     try {
-      const answer = asAnswer(await queryDeepSeek(conversationHistory));
+      const answer = asAnswer(await queryGeminiDirect(conversationHistory));
       // AFTER the await, never before: recording first means a throw is counted as both a
-      // deepseek success and a `none` failure from the catch below.
-      providerTally.recordServed("deepseek");
+      // gemini success and a `none` failure from the catch below.
+      providerTally.recordServed("gemini");
 
       return answer;
     } catch (err) {
-      console.error("[queryAIModel] DeepSeek provider failed.", err.message);
+      console.error("[queryAIModel] Direct Gemini provider failed.", err.message);
       // Bypass configured but the provider failed — no answer produced.
       providerTally.recordServed("none");
 
-      return asAnswer("Error: Could not generate a response from the DeepSeek service.");
+      return asAnswer("Error: Could not generate a response from the Gemini service.");
     }
   }
 
   // 1. Determine Intent
-  const intent = await routeQueryIntent(conversationHistory);
+  const intent = await classifyIntent(conversationHistory);
 
   // 2. Path A: 1st Party Tradable Backend
   if (intent === "TRADABLE") {
@@ -1430,19 +1324,20 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
     try {
       const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
       // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
-      // success AND as whatever the inner catch then records (deepseek or none).
+      // success AND as whatever the inner catch then records (gemini or none).
       providerTally.recordServed("chaingpt");
 
       return answer;
     } catch (err2) {
       console.error(
-        "[Failover] All external providers failed. Executing final local TEE fallback.",
+        "[Failover] ElizaOS and ChainGPT failed. Executing final direct-Gemini fallback.",
       );
 
-      // 5. Failover 2: Local TEE Model (DeepSeek)
+      // 5. Failover 2: direct Gemini call, no agent runtime (see geminiDirect.js for why
+      //    this is a different failure domain from the ElizaOS path above)
       try {
-        const answer = asAnswer(await queryDeepSeek(conversationHistory));
-        providerTally.recordServed("deepseek");
+        const answer = asAnswer(await queryGeminiDirect(conversationHistory));
+        providerTally.recordServed("gemini");
 
         return answer;
       } catch (err3) {
