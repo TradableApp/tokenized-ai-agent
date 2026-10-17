@@ -10,7 +10,12 @@ const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
 const PHASES = new Set(["forward", "confirm"]);
 const MAINNET_NETWORK = "base";
 const RECOVERY_HINT =
-  "Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; any proxy already owned by the Safe is returned with transferOwnership(<deploy wallet>) queued from the Safe.";
+  "Re-run the forward phase to resume: the existing snapshot stays the restore baseline and steps whose getter already holds the target are skipped. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; any proxy already owned by the Safe is returned with transferOwnership(<deploy wallet>) queued from the Safe.";
+// Public RPC endpoints are load-balanced; the node that answers the read-back may not have the
+// block the receipt came from yet. Read at that block and retry rather than fail a landed tx.
+const VERIFY_ATTEMPTS = 5;
+const VERIFY_RETRY_MS = 2000;
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const CONTRACT_KEYS = { agent: "aiAgent", escrow: "escrow" };
 
@@ -170,13 +175,38 @@ function findEvent(receipt, target, stepDef) {
   });
 }
 
-async function verifyGetter(target, stepDef) {
-  const actual = await target[stepDef.verify.getter]();
-  if (!sameValue(actual, stepDef.verify.expected)) {
-    throw new Error(
-      `[${stepDef.id}] ${stepDef.verify.getter}() is ${actual}, expected ${stepDef.verify.expected}`,
-    );
+/**
+ * Read the step's getter back at the block the receipt landed in, retrying a stale or lagging
+ * node. The first live run on Base Sepolia failed here with the fee correctly set on-chain:
+ * the public RPC answered the read from a node behind the receipt's block.
+ */
+async function verifyGetter(
+  target,
+  stepDef,
+  receipt,
+  { attempts = VERIFY_ATTEMPTS, sleep = defaultSleep } = {},
+) {
+  const { getter, expected } = stepDef.verify;
+  let last = "no response";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const actual = await target[getter]({ blockTag: receipt.blockNumber });
+      if (sameValue(actual, expected)) return;
+      last = String(actual);
+    } catch (error) {
+      last = `error: ${error.message}`;
+    }
+    if (attempt < attempts) await sleep(VERIFY_RETRY_MS);
   }
+  throw new Error(
+    `[${stepDef.id}] ${getter}() at block ${receipt.blockNumber} is ${last}, expected ${expected} after ${attempts} attempts`,
+  );
+}
+
+/** True when the chain already holds the step's target value (a step an earlier run completed). */
+async function alreadyApplied(target, stepDef) {
+  const actual = await target[stepDef.verify.getter]();
+  return sameValue(actual, stepDef.verify.expected);
 }
 
 async function runPlan({ plan, contracts, signer, dryRun, log }) {
@@ -198,6 +228,12 @@ async function runPlan({ plan, contracts, signer, dryRun, log }) {
       continue;
     }
 
+    if (await alreadyApplied(target, stepDef)) {
+      log(`  skip:     ${stepDef.verify.getter}() already == ${stepDef.verify.expected} (applied by an earlier run)`);
+      results.push({ id: stepDef.id, txHash: null, blockNumber: null, skipped: true });
+      continue;
+    }
+
     let receipt;
     try {
       const tx = await target[stepDef.method](...stepDef.args);
@@ -208,7 +244,7 @@ async function runPlan({ plan, contracts, signer, dryRun, log }) {
       );
     }
     findEvent(receipt, target, stepDef);
-    await verifyGetter(target, stepDef);
+    await verifyGetter(target, stepDef, receipt);
     log(`  tx:       ${receipt.hash} (block ${receipt.blockNumber})`);
     results.push({ id: stepDef.id, txHash: receipt.hash, blockNumber: receipt.blockNumber });
   }
@@ -296,15 +332,23 @@ async function forwardPhase({
     throw new Error("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
   }
 
-  const state = await readState(contracts);
-  log(
-    `Live state: ${JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)])))}`,
-  );
-  assertSignerOwnsBoth(signer.address, state);
+  const live = await readState(contracts);
+  const show = (st) => JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
+  log(`Live state: ${show(live)}`);
+  assertSignerOwnsBoth(signer.address, live);
+
+  // A snapshot left by an aborted live run is the ONLY record of the pre-rehearsal values; the
+  // live state may already carry rehearsal values (e.g. the fee). It stays the restore baseline
+  // and is never overwritten. To start over deliberately, delete the file first.
+  const resuming = !dryRun && fs.existsSync(snapshotFile);
+  const state = resuming ? readSnapshot(snapshotFile) : live;
+  if (resuming) {
+    log(`Resuming: ${snapshotFile} exists and stays the restore baseline: ${show(state)}`);
+  }
   const plan = buildPlan({ state, safeAddress, rehearsalPromptFee });
   await assertSafeHasCode(ethers.getAddress(safeAddress));
 
-  if (!dryRun) {
+  if (!dryRun && !resuming) {
     writeSnapshot(state, snapshotFile);
     log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
@@ -387,6 +431,7 @@ module.exports = {
   confirmPhase,
   assertMainnetConfirmed,
   findEvent,
+  verifyGetter,
   main,
 };
 

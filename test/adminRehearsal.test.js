@@ -16,6 +16,7 @@ const {
   confirmPhase,
   assertMainnetConfirmed,
   findEvent,
+  verifyGetter,
 } = require("../scripts/admin-rehearsal");
 
 describe("scripts/admin-rehearsal", function () {
@@ -255,6 +256,71 @@ describe("scripts/admin-rehearsal", function () {
         runPlan({ plan: tampered, contracts, signer: deployer, dryRun: false, log }),
       ).to.be.rejectedWith(/PromptFeeUpdated/);
     });
+
+    it("skips a step whose getter already holds its target, so a partial run can be resumed", async function () {
+      // The live run on Base Sepolia stopped after fee-set had landed (a lagging public RPC node
+      // served the read-back). Re-running from the SAME baseline must not re-prove fee-set and
+      // must still restore the fee and finish the ownership hand-over.
+      const { contracts, state, deployer, safe } = await loadFixture(deployFixture);
+      await contracts.escrow.connect(deployer).setPromptFee(REHEARSAL_FEE);
+      const lines = [];
+      const plan = buildPlan({ state, safeAddress: safe.address, rehearsalPromptFee: REHEARSAL_FEE });
+
+      const results = await runPlan({
+        plan,
+        contracts,
+        signer: deployer,
+        dryRun: false,
+        log: (l) => lines.push(String(l)),
+      });
+
+      const feeSet = results.find((r) => r.id === "fee-set");
+      expect(feeSet).to.deep.include({ txHash: null, skipped: true });
+      expect(lines.some((l) => l.includes("[fee-set]") || l.includes("already"))).to.equal(true);
+      expect(results.filter((r) => r.skipped)).to.have.length(1);
+      expect(await contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
+      expect(await contracts.aiAgent.owner()).to.equal(safe.address);
+      expect(await contracts.escrow.owner()).to.equal(safe.address);
+    });
+  });
+
+  describe("verifyGetter", function () {
+    const stepDef = {
+      id: "fee-set",
+      verify: { getter: "promptFee", expected: REHEARSAL_FEE },
+    };
+    const receipt = { blockNumber: 4242 };
+
+    it("reads at the receipt's block and retries past a stale node before failing", async function () {
+      // A load-balanced public RPC can answer the read-back from a node that has not seen the
+      // block the receipt came from. One stale answer must not fail a rehearsal whose tx landed.
+      const seen = [];
+      let calls = 0;
+      const target = {
+        promptFee: async (overrides) => {
+          seen.push(overrides);
+          calls += 1;
+          if (calls === 1) throw new Error("header not found");
+          if (calls === 2) return PROMPT_FEE; // stale
+          return REHEARSAL_FEE;
+        },
+      };
+      const naps = [];
+
+      await verifyGetter(target, stepDef, receipt, { attempts: 5, sleep: async (ms) => naps.push(ms) });
+
+      expect(calls).to.equal(3);
+      expect(seen[0]).to.deep.equal({ blockTag: 4242 });
+      expect(naps).to.have.length(2);
+    });
+
+    it("names the step and the attempts when every read disagrees", async function () {
+      const target = { promptFee: async () => PROMPT_FEE };
+
+      await expect(
+        verifyGetter(target, stepDef, receipt, { attempts: 3, sleep: async () => {} }),
+      ).to.be.rejectedWith(/\[fee-set\][\s\S]*3 attempts/);
+    });
   });
 
   describe("buildSafeReturnTxs", function () {
@@ -382,6 +448,30 @@ describe("scripts/admin-rehearsal", function () {
       await expect(run(fixture, { safeAddress: fixture.safe.address })).to.be.rejectedWith(
         /no contract code/,
       );
+    });
+
+    it("resumes from an existing snapshot as the restore baseline instead of overwriting it", async function () {
+      // Mid-run abort: the snapshot (fee 1) exists and the live fee is already 2. A re-run must
+      // keep the ORIGINAL baseline, otherwise the confirm phase would bless the rehearsal value.
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratchSnapshot();
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify(
+          Object.fromEntries(Object.entries(fixture.state).map(([k, v]) => [k, String(v)])),
+        ),
+      );
+      const before = fs.readFileSync(snapshotFile, "utf8");
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+
+      await run(fixture, { snapshotFile });
+
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+      expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(true);
+      expect(fixture.lines.some((l) => l.includes("Pre-rehearsal state saved"))).to.equal(false);
+      expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
+      expect(await fixture.contracts.aiAgent.owner()).to.equal(fixture.safeContractAddress);
+      expect(await fixture.contracts.escrow.owner()).to.equal(fixture.safeContractAddress);
     });
   });
 
