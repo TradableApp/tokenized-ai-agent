@@ -160,6 +160,30 @@ stays open: prove it against the live oracle first.
 
 ## Mainnet is not deployed yet — builds are blocked on purpose
 
+### Verification run: Sepolia config on the mainnet ROFL app (`sepolia-on-mainnet`)
+
+Sapphire **testnet** machines are `playground_short` (~1 h) and cannot host a multi-day
+soak, so the full-stack verification runs the **Base Sepolia** oracle config on a **Sapphire
+mainnet** machine under the `base-mainnet` deployment. The `*:sepolia-on-mainnet` scripts
+exist for exactly this: they read `.env.base-testnet` / `compose.base-testnet.yaml` but
+target the `base-mainnet` app. Rules that fell out of doing it:
+
+- **Build with `rofl:build:sepolia-on-mainnet`, never `rofl:build:base-mainnet`** for this
+  run. The latter bundles `compose.base-mainnet.yaml`, which is still a placeholder
+  template, so its preflight fails on purpose (see below).
+- Every on-chain step (`rofl update`, `rofl deploy`, `machine logs`) needs the
+  `oasis_mainnet` passphrase. Run them through the keychain wrapper
+  `cache/oasis-unlock.exp` (`expect cache/oasis-unlock.exp rofl update --deployment base-mainnet --account oasis_mainnet --gas-limit 200000`).
+- `rofl deploy` **reuses `deployments.base-mainnet.machines.default.id`** when it is set, so a
+  rebuild + update + deploy cycle costs gas only, no new rental. Commit the write-back
+  (`rofl.yaml` enclave IDs and machine id) on a manifest branch after every cycle.
+- Medium offer on the mainnet provider: 2 ROSE/h, 1,000 ROSE/month, **10000 MiB storage**.
+  Note the lease expiry from `oasis rofl machine show` (paid-until) and top up before it lapses.
+- Switch-over for the real mainnet: re-run `rofl:init:cloud-sql:base-mainnet` and
+  `rofl:set:base-mainnet` WITHOUT the override so the deployment picks up `tradable-app`
+  and a dedicated oracle key.
+
+
 `oracle/.env.oracle.base-mainnet` still carries placeholder contract addresses and
 `PUBLIC_KEY`, so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
 bundle**. That is the intended state, not a broken checkout: `ethers` accepts a
@@ -172,6 +196,44 @@ To unblock it when Base mainnet contracts exist: fill the real values into
 regenerated), then `bun run rofl:set:base-mainnet`. The preflight failure message names
 both the file and the command.
 
+## Lessons learned — Base Sepolia full-stack verification
+
+Everything below cost real time once. Each row is symptom → cause → what to do, so the
+mainnet run can check for it up front instead of rediscovering it.
+
+### ROFL deploy and boot
+
+| Symptom | Cause | Do this |
+|---|---|---|
+| `rofl deploy` "succeeds", machine is `accepted`, but `oasis rofl show` lists **0 Replicas** and `oasis rofl machine logs` returns **404** for days | The ORC was larger than the offer allows. Stage2 qcow2 virtual size = `resources.storage.size` **+ 2048 MiB**, and it must be ≤ the offer's storage (medium = 10000 MiB). 9216 and 8192 MiB both overflowed; 7168 fits (9216 MiB image) | **Before every deploy** run `oasis rofl machine show --deployment <name>` and read `net.oasis.error` — `ORC exceeds instance storage resources` is the only place the failure surfaces. Check the image size locally: `unzip -p <bundle>.orc stage2.img \| head -c 512 \| python3 -c "import sys,struct;b=sys.stdin.buffer.read(512);print(struct.unpack('>Q',b[24:32])[0]/1048576)"` |
+| `rofl deploy` fails on-chain with `accounts: insufficient balance` and burns the fee | No `--term` defaults to a **monthly** rental (1,000 ROSE on medium) | Always pass `--term hour` (the `rofl:deploy:*mainnet` scripts do). Check the balance in the **ParaTime "Amount" block**, not consensus Total/Available |
+| `rofl deploy` is rejected because the machine cannot be found | Stale `machines.default.id` in `rofl.yaml` from an expired machine | Drop the `machines:` block for that deployment in the manifest PR, deploy, then commit the write-back |
+| CLI prints `Error: instance not found` immediately after creating a machine | Cosmetic write-back failure; the machine exists | Ignore it; confirm with `machine show`, then commit the id by hand if the CLI did not |
+| Monitoring for instances never fires | `oasis rofl show` reports **Replicas**, not `instances` | Watch the Replicas count, or `machine show` status |
+| No `heartbeat` rows in `senseai.daily_activity` right after boot | The oracle's first beat fires after a **full** `ORACLE_HEARTBEAT_INTERVAL_MS` (15 min default); answers write kind `answer` separately | Wait one full interval before calling boot a failure |
+| A sidecar in the TEE fails with HTTP **412** pulling its model at boot | The registry refused the pinned client for a re-published manifest; every newer image was >3 GiB compressed and could not fit the offer | Nothing the TEE needs may depend on a runtime download. Ollama was removed for this reason; intent routing and the last-resort tier call Gemini directly. Bake everything into the image or use a network API with a key |
+
+### Admin operations and the Safe
+
+| Symptom | Cause | Do this |
+|---|---|---|
+| Rehearsal script aborts `promptFee() is 1e18, expected 2e18` although the tx mined with the new value | The public RPC is load-balanced; the read-back hit a node behind the one that mined the tx | `scripts/admin-rehearsal.js` now reads at `receipt.blockNumber` with retries and resumes from the existing snapshot. For mainnet admin ops use a dedicated RPC endpoint, not the public one |
+| Safe Transaction Builder loads only a thin ERC1967 proxy ABI for a proxy | The **implementation** is Basescan-verified but **not on Sourcify**; the builder only detects implementations through Sourcify | Verify every implementation on Sourcify (exact match) before the real ownership transfer. Fallback: toggle Custom data and paste the raw calldata (`transferOwnership(address)` selector `0xf2fde38b` + 32-byte padded address) |
+| Builder does not offer "Use the Implementation ABI?" after pasting an address | The address field validates on blur and the ABI box keeps the previous contract's ABI | Click out of the field; if the ABI box still holds the old ABI, clear it and re-paste the address |
+| Builder asks for address-book permission | It is the Safe Apps permission model | Reject. Accepting is harmless and revocable under Settings → Safe Apps |
+| Review screen shows `delegate call` to `MultiSendCallOnly` | That is how a Transaction Builder batch is executed | Expected. Simulate (Tenderly) first; only then Send Batch → Execute |
+| Basescan API returns `NOTOK` / deprecated | Etherscan V1 endpoints are gone | Use `https://api.etherscan.io/v2/api?chainid=<id>&…` with the Etherscan API key from the root `.env` |
+
+### Mainnet pre-flight additions (do before the first mainnet `rofl deploy`)
+
+- [ ] `resources.storage.size` + 2048 ≤ chosen offer storage, with ≥ 1 GiB headroom; confirm the qcow2 size from the built bundle.
+- [ ] `--term hour` on the deploy command; ROSE balance read from the ParaTime block covers rental + registration deposit.
+- [ ] No stale `machines:` id for the target deployment.
+- [ ] Agent **and** escrow implementations verified on Sourcify as well as Basescan.
+- [ ] Dedicated RPC endpoint configured for the admin script; rehearse forward + confirm phases against the mainnet Safe with dust values first.
+- [ ] Safe threshold and signer set confirmed; Tenderly simulation green before any batch is sent.
+- [ ] Wait one heartbeat interval before judging boot; read `machine show` → `net.oasis.error` before reading logs.
+
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.
 - Cert name `rofl-oracle-base-testnet` — never reuse the social `rofl-<env>` on the shared instance.
@@ -179,3 +241,8 @@ both the file and the command.
 - ROFL deploy = `build → update → deploy`, never `restart`/`release`. **Never `oasis rofl machine release`.**
 - The oracle wallet (`0x0DEC…9a12`) needs Base Sepolia ETH for **every answer** — if it runs dry, prompts submit but never get answered (smoke times out → exit 1).
 - Testnet TEE lives ~1 h (`playground_short`) — run the smoke promptly after boot.
+- Storage math: qcow2 = `storage.size` + 2048 MiB ≤ offer storage, or the app never registers a replica and `machine logs` 404s. Read `machine show` → `net.oasis.error` first.
+- `rofl deploy` without `--term hour` rents monthly.
+- Nothing in the TEE may depend on a runtime download (the Ollama model pull broke the whole bundle).
+- Public load-balanced RPCs serve stale reads; verify at the receipt block.
+- Sourcify-verify implementations or the Safe builder cannot decode proxy calls.
