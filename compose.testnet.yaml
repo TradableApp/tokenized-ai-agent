@@ -1,13 +1,4 @@
 services:
-  ollama:
-    image: "docker.io/ollama/ollama:0.9.6"
-    ports:
-      - "11434:11434"
-    volumes:
-      - /storage/ollama:/root/.ollama
-    entrypoint:
-      ["/usr/bin/bash", "-c", "/bin/ollama serve & sleep 5; ollama pull deepseek-r1:1.5b; wait"]
-
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
@@ -51,7 +42,6 @@ services:
 
       # --- AI Inference Providers ---
       - AI_PROVIDER=${AI_PROVIDER}
-      - OLLAMA_URL=${OLLAMA_URL}
       - CHAIN_GPT_API_KEY=${CHAIN_GPT_API_KEY}
       - TRADABLE_ASSISTANT_URL=${TRADABLE_ASSISTANT_URL}
       - TRADABLE_API_ACCESS_TOKEN=${TRADABLE_API_ACCESS_TOKEN}

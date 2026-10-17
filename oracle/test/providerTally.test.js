@@ -29,7 +29,7 @@ describe("providerTally", () => {
       tradable: 0,
       elizaos: 0,
       chaingpt: 0,
-      deepseek: 0,
+      gemini: 0,
       mock: 0,
       none: 0,
     });
@@ -45,7 +45,7 @@ describe("providerTally", () => {
     const s = t.snapshot();
     expect(s.elizaos).to.equal(2);
     expect(s.chaingpt).to.equal(1);
-    expect(s.deepseek).to.equal(0);
+    expect(s.gemini).to.equal(0);
   });
 
   it("is CUMULATIVE — reading does not reset it", () => {

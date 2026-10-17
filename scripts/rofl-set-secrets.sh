@@ -262,12 +262,12 @@ echo "✅ Preflight: no placeholder or quoted values in the plaintext config."
 # --- PART 1: REGENERATE THE COMPOSE environment: BLOCK ---
 echo "📄 Updating '${COMPOSE_TEMPLATE}' environment block..."
 # The rewrite below targets the FIRST `environment:` key in the file, which is only
-# correct while the oracle service owns the only one. `ollama` is declared ABOVE
-# `oracle`, so if it ever gains an `environment:` block the rewrite would inject the
-# oracle's secrets into the OLLAMA container and leave the oracle's block stale — a
-# silent misconfiguration that also leaks credentials into the wrong service. The drift
-# guard cannot catch this (it only detects "no environment: found"), so assert the
-# assumption; if this ever fires, anchor the awk on `/^  oracle:/` instead.
+# correct while the oracle service owns the only one. The compose used to carry an
+# `ollama` sidecar declared ABOVE `oracle` (removed in CU-14ym9bve42k); any future second
+# service with its own `environment:` block would receive the oracle's secrets and leave
+# the oracle's block stale — a silent misconfiguration that also leaks credentials into
+# the wrong service. The drift guard cannot catch this (it only detects "no environment:
+# found"), so assert the assumption; if this ever fires, anchor the awk on `/^  oracle:/`.
 ENV_BLOCK_COUNT=$(grep -c '^[[:space:]]*environment:' "$COMPOSE_TEMPLATE" || true)
 if [ "${ENV_BLOCK_COUNT:-0}" -ne 1 ]; then
   echo "❌ $COMPOSE_TEMPLATE has $ENV_BLOCK_COUNT 'environment:' blocks; this script"

@@ -17,39 +17,6 @@ describe('Oracle Edge Cases', () => {
     }
   });
 
-  describe('routeQueryIntent Classification Logic', () => {
-    it('TRADABLE keyword in response triggers Tradable path', () => {
-      const classifyResponse = 'TRADABLE';
-      const isTradable = classifyResponse.includes('TRADABLE');
-      expect(isTradable).to.be.true;
-    });
-
-    it('unrecognized response defaults to MARKET path', () => {
-      const classifyResponse = 'RANDOM_GIBBERISH';
-      const isTradable = classifyResponse.includes('TRADABLE');
-      const isElizaOS = classifyResponse.includes('ELIZAOS');
-      expect(!isTradable && !isElizaOS).to.be.true;
-    });
-
-    it('undefined Ollama response defaults to MARKET path', () => {
-      const classifyResponse = undefined;
-      const isTradable = classifyResponse?.includes?.('TRADABLE') ?? false;
-      const isElizaOS = classifyResponse?.includes?.('ELIZAOS') ?? false;
-      expect(!isTradable && !isElizaOS).to.be.true;
-    });
-
-    it('undefined response throws TypeError when accessed without optional chaining', () => {
-      const response = undefined;
-      expect(() => response.includes('TRADABLE')).to.throw(TypeError);
-    });
-
-    it('null response returns false with optional chaining', () => {
-      const response = null;
-      const isTradable = response?.includes?.('TRADABLE') ?? false;
-      expect(isTradable).to.be.false;
-    });
-  });
-
   describe('History Reconstruction Edge Cases', () => {
     it('AI_CONTEXT_MESSAGES_LIMIT=0 falls back to default 20 due to || operator', () => {
       process.env.AI_CONTEXT_MESSAGES_LIMIT = '0';

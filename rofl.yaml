@@ -176,7 +176,5 @@ deployments:
         value: pGJwa1ggO6R1/Qt2COaD7uwDgzxU5o5Q+6lFBaeXR6bxc6lvCWVkbmFtZVajELemxO6kUJJHBjURY6bBLq5Mv7efZW5vbmNlT3pvCOA5ajJnjPihl7PIFWV2YWx1ZVgkbVatVtGArnWLfPKoZfr0VY5ztvW8HP5QwUNOiAj6T/JS530G
       - name: CHAIN_GPT_API_KEY
         value: pGJwa1ggiGpOZpB3Z/QTzIF5oukrd50zydfXVq8Nu0oQZ1oDvRFkbmFtZVghXyHBlqKv0ekkS71vBp7e5kaTL2EYlCWe+oSKukaknfomZW5vbmNlT2KL/nfM8qLje9RkBjysmWV2YWx1ZVg0jmcu+tJqMfuKrzLrWk+hV2T8lq7SUpVR1NHAcTpjW1WZKf0nBJvZgtTVVDjgroboFS85CA==
-      - name: OLLAMA_URL
-        value: pGJwa1gg98wwbKwp62reY9sze0oP7BVn00dsbfyQkJf6i7rxpVxkbmFtZVgatCAbf6r5QZYEIlw8BGy08JRSupoERzYb+TBlbm9uY2VPwb9H5oArapo57Z49SrtKZXZhbHVlWCPWXOsf1fRID31gC9PXUKEdp8veJG/xI4lloRQK12X+Yp4IKA==
 tooling:
   version: 0.18.5

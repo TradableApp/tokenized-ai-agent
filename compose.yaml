@@ -1,13 +1,4 @@
 services:
-  ollama:
-    image: "docker.io/ollama/ollama:0.9.6"
-    ports:
-      - "11434:11434"
-    volumes:
-      - /storage/ollama:/root/.ollama
-    entrypoint:
-      ["/usr/bin/bash", "-c", "/bin/ollama serve & sleep 5; ollama pull gemma3:1b; wait"]
-
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
@@ -53,7 +44,6 @@ services:
       - AUTONOMYS_UPLOAD_CREDIT_THRESHOLD=10485760
       - AUTONOMYS_MIN_UPLOAD_CREDITS=102400
       - DOMAIN=testnet.tradable.app
-      - OLLAMA_URL=http://ollama:11434
       - TRADABLE_ASSISTANT_URL=https://tradableassistant-kadkjrl2wa-uc.a.run.app
       - EVENT_BATCH_SIZE=10
       - PGLITE_DATA_DIR=./.eliza/.elizadb

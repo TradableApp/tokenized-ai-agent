@@ -139,12 +139,12 @@ Sequential transaction submission is enforced by `txMutex` (async-mutex) to prev
 
 ### AI Routing Hierarchy
 
-`routeQueryIntent()` classifies the intent via a local Ollama/DeepSeek call, then dispatches:
+`classifyIntent()` (`oracle/src/geminiDirect.js`) classifies the intent with a direct Gemini small-model call (JSON-constrained; any failure routes to MARKET), then dispatches:
 
 1. **TRADABLE path** — `queryTradableAssistant()` calls the 1st-party Firebase Callable (SenseAI backend)
 2. **ELIZAOS path** — `queryElizaOS()` uses the ElizaOS character + senseai plugin defined in `oracle/src/elizaos/`
 3. **ChainGPT fallback** — `queryChainGPT()` if primary paths fail
-4. **Local DeepSeek final fallback** — `queryDeepSeek()` via Ollama if ChainGPT also fails
+4. **Direct Gemini final fallback** — `queryGeminiDirect()` calls Gemini without the agent runtime if ChainGPT also fails (a different failure domain from the ElizaOS path, which fronts Gemini through plugin-google-genai)
 
 ### Decentralized Storage Layer (`oracle/src/formatters.js`)
 

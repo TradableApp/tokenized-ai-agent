@@ -23,7 +23,7 @@ Smart Contract (Base) ◄─── Payment & Verification ───┐
 Oracle Node (Oasis ROFL / TEE) ──────────────────────┘
   │
   ├─► Decrypts Session Key (Private)
-  ├─► Queries AI Model (DeepSeek/ChainGPT)
+  ├─► Queries AI Model (Gemini/ChainGPT)
   ├─► Encrypts History & Metadata
   └─► Uploads to Arweave (via Irys)
 ```
@@ -76,8 +76,7 @@ cp oracle/.env.oracle.example oracle/.env.oracle.base-testnet
 # Edit oracle/.env.oracle.base-testnet:
 # - PRIVATE_KEY: Same as above (or the specific Oracle wallet)
 # - IRYS_PAYMENT_PRIVATE_KEY: Wallet with funds for Arweave uploads
-# - AI_PROVIDER: "DeepSeek" or "ChainGPT"
-# - OLLAMA_URL: http://host.docker.internal:11434 (if running local AI)
+# - AI_PROVIDER: "Gemini" or "ChainGPT" (optional bypass; unset = full routing hierarchy)
 ```
 
 ---
