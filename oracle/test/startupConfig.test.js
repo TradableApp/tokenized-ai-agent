@@ -376,6 +376,46 @@ describe("startup config validation", () => {
     }
   });
 
+  // The payload mirror is optional, but half-configured is the worst state: the oracle would
+  // boot, answer, and then fail every mirror write in the background — one alert, then silence,
+  // while the dApp quietly falls back to the flaky gateway it was meant to be shielded from.
+  // Same rule as the storage credentials: boot-time-knowable, so refuse to start and name it.
+  describe("payload mirror", () => {
+    const SA_KEY = JSON.stringify({ client_email: "w@p.iam.gserviceaccount.com", private_key: "-----KEY-----" });
+
+    it("accepts a deployment with the mirror unset", () => {
+      expect(() => validateConfig(baseEnv())).to.not.throw();
+    });
+
+    it("accepts a bucket paired with a well-formed service-account key", () => {
+      const env = baseEnv({ PAYLOAD_MIRROR_BUCKET: "tradable-app-garrick-senseai-payloads", PAYLOAD_MIRROR_SA_KEY: SA_KEY });
+
+      expect(() => validateConfig(env)).to.not.throw();
+    });
+
+    it("refuses a bucket with no service-account key", () => {
+      const env = baseEnv({ PAYLOAD_MIRROR_BUCKET: "tradable-app-garrick-senseai-payloads" });
+
+      expect(() => validateConfig(env)).to.throw(/PAYLOAD_MIRROR_SA_KEY/);
+    });
+
+    it("refuses a service-account key that is not JSON", () => {
+      const env = baseEnv({ PAYLOAD_MIRROR_BUCKET: "b", PAYLOAD_MIRROR_SA_KEY: "-----BEGIN PRIVATE KEY-----" });
+
+      expect(() => validateConfig(env)).to.throw(/PAYLOAD_MIRROR_SA_KEY.*JSON/);
+    });
+
+    it("refuses a service-account key missing client_email or private_key", () => {
+      const env = baseEnv({ PAYLOAD_MIRROR_BUCKET: "b", PAYLOAD_MIRROR_SA_KEY: '{"type":"service_account"}' });
+
+      expect(() => validateConfig(env)).to.throw(/PAYLOAD_MIRROR_SA_KEY.*client_email.*private_key/);
+    });
+
+    it("ignores a service-account key with no bucket — the mirror is simply disabled", () => {
+      expect(() => validateConfig(baseEnv({ PAYLOAD_MIRROR_SA_KEY: SA_KEY }))).to.not.throw();
+    });
+  });
+
   it("requires IRYS_PAYMENT_PRIVATE_KEY when Irys is the storage provider", () => {
     try {
       validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined, STORAGE_PROVIDER: "irys" }));
