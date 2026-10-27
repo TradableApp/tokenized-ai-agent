@@ -212,14 +212,20 @@ async function mirrorPayload(cid, data, fileName, deps = {}) {
   return recordFailure(cid, `${lastReason} (after ${MAX_ATTEMPTS} attempts)`, alert);
 }
 
-/** Fire-and-forget wrapper for uploadData: whatever happens, the caller's promise chain is safe. */
-async function mirrorInBackground(cid, data, fileName, deps) {
+/**
+ * Fire-and-forget wrapper for uploadData: whatever happens, the caller's promise chain is safe.
+ * A throw escaping mirrorPayload is the one failure its own retry loop cannot see, so it is
+ * routed through the same counter + one-alert path — otherwise the vitals would under-count
+ * and the alert would stay silent exactly when the module is misbehaving.
+ */
+async function mirrorInBackground(cid, data, fileName, deps = {}) {
   try {
     return await mirrorPayload(cid, data, fileName, deps);
   } catch (error) {
+    const reason = error && error.message ? error.message : String(error);
     console.error(`[Payload Mirror] Unexpected error mirroring ${cid}:`, error);
 
-    return { status: "failed", reason: error && error.message ? error.message : String(error) };
+    return recordFailure(cid, `unexpected: ${reason}`, deps.alert || sendAlert);
   }
 }
 

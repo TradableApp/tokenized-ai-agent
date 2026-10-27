@@ -97,6 +97,17 @@ async function backfillCid(cid, deps) {
   }
 }
 
+/**
+ * The original Auto Drive file name for `cid`, or null. Only an EXACT headCid match counts:
+ * a neighbour's name would be mirrored as metadata, fail CID verification on every dApp read,
+ * and cost a wasted round trip forever — strictly worse than leaving the CID unmirrored.
+ */
+function nameFromSearchResults(cid, results) {
+  const match = (results || []).find((r) => r && r.headCid === cid);
+
+  return match && match.name ? match.name : null;
+}
+
 async function queryPage(subgraphUrl, lastId, pageSize) {
   const response = await fetch(subgraphUrl, {
     method: "POST",
@@ -193,12 +204,8 @@ async function main() {
     headImpl: fetch,
     dryRun: options.dryRun,
     mirror: mirrorPayload,
-    lookupName: async (cid) => {
-      const results = await autoDrive.searchByNameOrCIDInMyFiles(cid);
-      const match = (results || []).find((r) => r.headCid === cid) || (results || [])[0];
-
-      return match && match.name ? match.name : null;
-    },
+    lookupName: async (cid) =>
+      nameFromSearchResults(cid, await autoDrive.searchByNameOrCIDInMyFiles(cid)),
     download: async (cid) => {
       const chunks = [];
       for await (const chunk of await autoDrive.downloadFile(cid)) chunks.push(chunk);
@@ -246,7 +253,14 @@ async function runBackfill({ subgraphUrl, options, deps, log = () => {} }) {
   return { scanned, tally, failures };
 }
 
-module.exports = { collectCids, backfillCid, iterateCids, parseArgs, runBackfill };
+module.exports = {
+  collectCids,
+  backfillCid,
+  iterateCids,
+  parseArgs,
+  runBackfill,
+  nameFromSearchResults,
+};
 
 if (require.main === module) {
   main().catch((error) => {

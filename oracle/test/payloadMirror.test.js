@@ -209,6 +209,32 @@ describe("payload mirror (storage/mirror.js)", function () {
   });
 
   describe("mirrorInBackground", () => {
+    it("counts and alerts when the mirror itself throws, not only when uploads fail", async () => {
+      // A throw escaping mirrorPayload is the one path its own retry loop cannot see. If this
+      // catch stayed silent, the vitals would under-count and the one alert per process would
+      // never fire — a monitoring gap exactly where monitoring is the point.
+      const mirror = load();
+      const alert = sinon.stub().resolves();
+      const explodingEnv = new Proxy(
+        {},
+        {
+          get() {
+            throw new Error("env exploded");
+          },
+        },
+      );
+
+      const outcome = await mirror.mirrorInBackground(CID, DATA, FILE_NAME, {
+        env: explodingEnv,
+        alert,
+      });
+
+      expect(outcome.status).to.equal("failed");
+      expect(outcome.reason).to.contain("env exploded");
+      expect(mirror.snapshot().failed).to.equal(1);
+      expect(alert.calledOnce).to.equal(true);
+    });
+
     it("never rejects, even when the mirror throws synchronously", async () => {
       const mirror = load();
       const deps = depsWith({

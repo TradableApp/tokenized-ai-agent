@@ -10,6 +10,7 @@ const {
   iterateCids,
   parseArgs,
   runBackfill,
+  nameFromSearchResults,
 } = require("../scripts/mirror-backfill");
 
 // One-off / resumable backfill of payload CIDs that pre-date the write-through mirror. The
@@ -52,6 +53,26 @@ describe("mirror backfill (scripts/mirror-backfill.js)", () => {
       ];
 
       expect(collectCids(page)).to.deep.equal([CID_A]);
+    });
+  });
+
+  describe("nameFromSearchResults", () => {
+    it("returns the name of the result whose headCid is the CID", () => {
+      const results = [
+        { headCid: CID_B, name: "other.json" },
+        { headCid: CID_A, name: "mine.json" },
+      ];
+
+      expect(nameFromSearchResults(CID_A, results)).to.equal("mine.json");
+    });
+
+    it("returns null — never a neighbour's name — when no result matches the CID", () => {
+      // A wrong name would be mirrored as metadata, fail CID verification on every dApp read,
+      // and cost a wasted round trip forever. No name means no object; the run reports it.
+      expect(nameFromSearchResults(CID_A, [{ headCid: CID_B, name: "other.json" }])).to.equal(null);
+      expect(nameFromSearchResults(CID_A, [])).to.equal(null);
+      expect(nameFromSearchResults(CID_A, undefined)).to.equal(null);
+      expect(nameFromSearchResults(CID_A, [{ headCid: CID_A }])).to.equal(null);
     });
   });
 
