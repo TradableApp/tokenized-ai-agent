@@ -2746,6 +2746,7 @@ async function start() {
     getLastProcessedBlock,
     readFailedJobs: readFailedJobsList,
     fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
+    mirrorSnapshot: () => require("./storage/mirror").snapshot(),
     diskPath: path.dirname(STATE_FILE_PATH),
   });
 

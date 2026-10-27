@@ -83,6 +83,7 @@ async function probeDisk(diskPath) {
  * @param {Function} [deps.readFailedJobs] - resolves the failed-jobs array
  * @param {Function} [deps.fetchAccountInfo] - Auto-Drive account info (upload/download credits)
  * @param {object} [deps.providerTally] - AI tier counters (`snapshot()`); see providerTally.js
+ * @param {Function} [deps.mirrorSnapshot] - payload-mirror counters; see storage/mirror.js
  * @param {string} [deps.diskPath] - a real path to measure
  * @returns {Promise<object>} vitals, every field either a value or null
  */
@@ -95,6 +96,7 @@ async function collectVitals(deps = {}) {
     readFailedJobs,
     fetchAccountInfo,
     providerTally,
+    mirrorSnapshot,
     diskPath,
   } = deps;
 
@@ -156,8 +158,7 @@ async function collectVitals(deps = {}) {
     chainHead,
     blockLag,
 
-    walletBalanceEth:
-      walletBalanceWei === null ? null : Number(walletBalanceWei) / WEI_PER_ETH,
+    walletBalanceEth: walletBalanceWei === null ? null : Number(walletBalanceWei) / WEI_PER_ETH,
 
     failedJobsCount: Array.isArray(failedJobs) ? failedJobs.length : null,
     queuePending: typeof queue?.pending === "number" ? queue.pending : null,
@@ -176,7 +177,24 @@ async function collectVitals(deps = {}) {
     // collapse of `elizaos` into `chaingpt` is the signature of the silent Gemini failover that
     // queryAIModel's comment warns about.
     providers: typeof providerTally?.snapshot === "function" ? providerTally.snapshot() : null,
+
+    // Cumulative write-through mirror counters ({ mirrored, failed, skipped }). The mirror
+    // alerts only on its FIRST failure per process; a climbing `failed` here is how the
+    // hundredth one stays visible without a hundred alerts.
+    payloadMirror: readMirrorSnapshot(mirrorSnapshot),
   };
+}
+
+/** Synchronous caller-supplied getter, guarded like the chain cursor: this collector never throws. */
+function readMirrorSnapshot(mirrorSnapshot) {
+  if (typeof mirrorSnapshot !== "function") return null;
+  try {
+    const value = mirrorSnapshot();
+
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 module.exports = { collectVitals };

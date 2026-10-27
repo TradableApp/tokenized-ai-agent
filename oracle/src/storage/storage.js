@@ -1,6 +1,7 @@
 const arweave = require("./arweave");
 const autonomys = require("./autonomys");
 const ipfs = require("./ipfs");
+const mirror = require("./mirror");
 const crypto = require("crypto");
 
 // Mock storage in-memory cache (for USE_MOCK_STORAGE mode)
@@ -122,7 +123,30 @@ async function uploadData(dataBuffer, tags = []) {
   if (process.env.STORAGE_PROVIDER === "irys") {
     return arweave.uploadData(dataBuffer, tags);
   }
-  return autonomys.uploadData(dataBuffer, tags);
+
+  // Pin the Auto Drive file name here rather than letting autonomys.uploadData default it:
+  // the name is part of the Auto Drive CID, and the mirror records it as object metadata so
+  // the dApp can recompute and verify the CID from mirrored bytes. Both sides must see the
+  // same name, so it is decided once, up front.
+  const taggedForAutonomys = ensureFileNameTag(tags);
+  const cid = await autonomys.uploadData(dataBuffer, taggedForAutonomys);
+
+  // Fire-and-forget by design: the mirror is a cache, never on the prompt's critical path.
+  // mirrorInBackground never rejects, so there is no dangling rejection to handle here.
+  const fileName = taggedForAutonomys.find((tag) => tag.name === FILE_NAME_TAG).value;
+  void mirror.mirrorInBackground(cid, dataBuffer, fileName);
+
+  return cid;
+}
+
+const FILE_NAME_TAG = "File-Name";
+
+/** Returns the tags with exactly one File-Name tag, adding the Auto Drive default when absent. */
+function ensureFileNameTag(tags) {
+  const list = Array.isArray(tags) ? tags : [];
+  if (list.some((tag) => tag && tag.name === FILE_NAME_TAG)) return list;
+
+  return [...list, { name: FILE_NAME_TAG, value: `file-${Date.now()}.json` }];
 }
 
 /**

@@ -34,7 +34,10 @@ function load(env = {}) {
 
 function depsWith(overrides = {}) {
   return {
-    env: { PAYLOAD_MIRROR_BUCKET: BUCKET, PAYLOAD_MIRROR_SA_KEY: '{"client_email":"x","private_key":"y"}' },
+    env: {
+      PAYLOAD_MIRROR_BUCKET: BUCKET,
+      PAYLOAD_MIRROR_SA_KEY: '{"client_email":"x","private_key":"y"}',
+    },
     getToken: sinon.stub().resolves("tok-123"),
     sleep: sinon.stub().resolves(),
     random: () => 0,
@@ -43,7 +46,11 @@ function depsWith(overrides = {}) {
   };
 }
 
-const response = (status, body = "") => ({ ok: status >= 200 && status < 300, status, text: async () => body });
+const response = (status, body = "") => ({
+  ok: status >= 200 && status < 300,
+  status,
+  text: async () => body,
+});
 
 describe("payload mirror (storage/mirror.js)", function () {
   afterEach(() => sinon.restore());
@@ -97,7 +104,12 @@ describe("payload mirror (storage/mirror.js)", function () {
       const mirror = load();
       const fetchImpl = sinon.stub();
 
-      const result = await mirror.mirrorPayload(CID, DATA, FILE_NAME, depsWith({ env: {}, fetchImpl }));
+      const result = await mirror.mirrorPayload(
+        CID,
+        DATA,
+        FILE_NAME,
+        depsWith({ env: {}, fetchImpl }),
+      );
 
       expect(result.status).to.equal("skipped");
       expect(fetchImpl.called).to.equal(false);
@@ -221,7 +233,10 @@ describe("payload mirror (storage/mirror.js)", function () {
       });
       const env = {
         PAYLOAD_MIRROR_BUCKET: BUCKET,
-        PAYLOAD_MIRROR_SA_KEY: JSON.stringify({ client_email: "w@p.iam", private_key: "-----KEY-----" }),
+        PAYLOAD_MIRROR_SA_KEY: JSON.stringify({
+          client_email: "w@p.iam",
+          private_key: "-----KEY-----",
+        }),
       };
 
       const token = await mirror.getAccessToken(env);
