@@ -11,10 +11,10 @@ const { collectCids, backfillCid } = require("../scripts/mirror-backfill");
 // bytes AND of the original file name (part of the CID, needed by the dApp to verify it).
 
 const BUCKET = "tradable-app-garrick-senseai-payloads";
-const CID_A = "bafkr6iaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const CID_B = "bafkr6ibbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const CID_C = "bafkr6icccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-const CID_D = "bafkr6idddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const CID_A = `bafkr6i${"a".repeat(52)}`;
+const CID_B = `bafkr6i${"b".repeat(52)}`;
+const CID_C = `bafkr6i${"c".repeat(52)}`;
+const CID_D = `bafkr6i${"d".repeat(52)}`;
 
 describe("mirror backfill (scripts/mirror-backfill.js)", () => {
   afterEach(() => sinon.restore());
@@ -69,7 +69,9 @@ describe("mirror backfill (scripts/mirror-backfill.js)", () => {
       const result = await backfillCid(CID_A, deps);
 
       expect(result.status).to.equal("present");
-      expect(deps.headImpl.firstCall.args[0]).to.equal(`https://storage.googleapis.com/${BUCKET}/${CID_A}`);
+      expect(deps.headImpl.firstCall.args[0]).to.equal(
+        `https://storage.googleapis.com/${BUCKET}/${CID_A}`,
+      );
       expect(deps.headImpl.firstCall.args[1].method).to.equal("HEAD");
       expect(deps.download.called).to.equal(false);
       expect(deps.mirror.called).to.equal(false);

@@ -56,9 +56,7 @@ describe("startup config validation", () => {
   // `relation "agents" does not exist`, nowhere near the variable at fault.
   it("refuses a configuration with no POSTGRES_AGENT_DATABASE", () => {
     try {
-      validateConfig(
-        baseEnv({ POSTGRES_AGENT_DATABASE: undefined, POSTGRES_URL: undefined }),
-      );
+      validateConfig(baseEnv({ POSTGRES_AGENT_DATABASE: undefined, POSTGRES_URL: undefined }));
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.name).to.equal("ConfigError");
@@ -224,7 +222,10 @@ describe("startup config validation", () => {
     const bare = "65de179c59e589cd6238" + "0".repeat(36) + "d28bf6ee";
 
     for (const key of [bare, `0x${bare}`]) {
-      expect(() => new ethers.Wallet(key), `ethers should accept ${key.slice(0, 6)}…`).to.not.throw();
+      expect(
+        () => new ethers.Wallet(key),
+        `ethers should accept ${key.slice(0, 6)}…`,
+      ).to.not.throw();
       expect(
         () => validateConfig(baseEnv({ PRIVATE_KEY: key })),
         `guard must accept what ethers accepts: ${key.slice(0, 6)}…`,
@@ -381,14 +382,20 @@ describe("startup config validation", () => {
   // while the dApp quietly falls back to the flaky gateway it was meant to be shielded from.
   // Same rule as the storage credentials: boot-time-knowable, so refuse to start and name it.
   describe("payload mirror", () => {
-    const SA_KEY = JSON.stringify({ client_email: "w@p.iam.gserviceaccount.com", private_key: "-----KEY-----" });
+    const SA_KEY = JSON.stringify({
+      client_email: "w@p.iam.gserviceaccount.com",
+      private_key: "-----KEY-----",
+    });
 
     it("accepts a deployment with the mirror unset", () => {
       expect(() => validateConfig(baseEnv())).to.not.throw();
     });
 
     it("accepts a bucket paired with a well-formed service-account key", () => {
-      const env = baseEnv({ PAYLOAD_MIRROR_BUCKET: "tradable-app-garrick-senseai-payloads", PAYLOAD_MIRROR_SA_KEY: SA_KEY });
+      const env = baseEnv({
+        PAYLOAD_MIRROR_BUCKET: "tradable-app-garrick-senseai-payloads",
+        PAYLOAD_MIRROR_SA_KEY: SA_KEY,
+      });
 
       expect(() => validateConfig(env)).to.not.throw();
     });
@@ -400,15 +407,23 @@ describe("startup config validation", () => {
     });
 
     it("refuses a service-account key that is not JSON", () => {
-      const env = baseEnv({ PAYLOAD_MIRROR_BUCKET: "b", PAYLOAD_MIRROR_SA_KEY: "-----BEGIN PRIVATE KEY-----" });
+      const env = baseEnv({
+        PAYLOAD_MIRROR_BUCKET: "b",
+        PAYLOAD_MIRROR_SA_KEY: "-----BEGIN PRIVATE KEY-----",
+      });
 
       expect(() => validateConfig(env)).to.throw(/PAYLOAD_MIRROR_SA_KEY.*JSON/);
     });
 
     it("refuses a service-account key missing client_email or private_key", () => {
-      const env = baseEnv({ PAYLOAD_MIRROR_BUCKET: "b", PAYLOAD_MIRROR_SA_KEY: '{"type":"service_account"}' });
+      const env = baseEnv({
+        PAYLOAD_MIRROR_BUCKET: "b",
+        PAYLOAD_MIRROR_SA_KEY: '{"type":"service_account"}',
+      });
 
-      expect(() => validateConfig(env)).to.throw(/PAYLOAD_MIRROR_SA_KEY.*client_email.*private_key/);
+      expect(() => validateConfig(env)).to.throw(
+        /PAYLOAD_MIRROR_SA_KEY.*client_email.*private_key/,
+      );
     });
 
     it("ignores a service-account key with no bucket — the mirror is simply disabled", () => {

@@ -335,4 +335,7 @@ module.exports = {
   // `checkAutoDriveCredits` is the wrong call there: it logs and fires `sendAlert` as side
   // effects, so sampling it every beat would turn a low-credit warning into a repeating alarm.
   fetchAccountInfo,
+  // Exported for scripts/mirror-backfill.js so a one-off Auto Drive client targets the SAME
+  // network as the oracle's uploads rather than re-deciding it.
+  getNetworkId,
 };
