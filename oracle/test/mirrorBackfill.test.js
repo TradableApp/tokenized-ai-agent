@@ -4,7 +4,13 @@ const chai = require("chai");
 const sinon = require("sinon");
 
 const { expect } = chai;
-const { collectCids, backfillCid } = require("../scripts/mirror-backfill");
+const {
+  collectCids,
+  backfillCid,
+  iterateCids,
+  parseArgs,
+  runBackfill,
+} = require("../scripts/mirror-backfill");
 
 // One-off / resumable backfill of payload CIDs that pre-date the write-through mirror. The
 // subgraph is the index of every CID the dApp will ever ask for; Auto Drive is the source of
@@ -46,6 +52,141 @@ describe("mirror backfill (scripts/mirror-backfill.js)", () => {
       ];
 
       expect(collectCids(page)).to.deep.equal([CID_A]);
+    });
+  });
+
+  describe("parseArgs", () => {
+    it("defaults to a live run, 100-row pages and four parallel CIDs", () => {
+      expect(parseArgs([])).to.deep.equal({ dryRun: false, pageSize: 100, concurrency: 4 });
+    });
+
+    it("reads --dry-run, --page-size and --concurrency", () => {
+      expect(parseArgs(["--dry-run", "--page-size", "25", "--concurrency", "2"])).to.deep.equal({
+        dryRun: true,
+        pageSize: 25,
+        concurrency: 2,
+      });
+    });
+
+    it("rejects a non-positive or non-integer page size instead of silently paging nothing", () => {
+      expect(() => parseArgs(["--page-size", "0"])).to.throw(/--page-size/);
+      expect(() => parseArgs(["--concurrency", "two"])).to.throw(/--concurrency/);
+    });
+  });
+
+  describe("iterateCids", () => {
+    const SUBGRAPH = "https://api.studio.thegraph.com/query/x/senseai/v1";
+
+    function graphResponse(conversations) {
+      return { ok: true, status: 200, json: async () => ({ data: { conversations } }) };
+    }
+
+    it("pages by id cursor until an empty page, yielding each page's CIDs", async () => {
+      const fetchStub = sinon.stub(globalThis, "fetch");
+      fetchStub.onCall(0).resolves(
+        graphResponse([
+          { id: "0x1", conversationCID: CID_A, conversationMetadataCID: CID_B, messages: [] },
+          { id: "0x2", conversationCID: CID_C, conversationMetadataCID: "", messages: [] },
+        ]),
+      );
+      fetchStub
+        .onCall(1)
+        .resolves(
+          graphResponse([
+            { id: "0x3", conversationCID: CID_D, conversationMetadataCID: "", messages: [] },
+          ]),
+        );
+      fetchStub.onCall(2).resolves(graphResponse([]));
+
+      const pages = [];
+      for await (const cids of iterateCids(SUBGRAPH, 2)) pages.push(cids);
+
+      expect(pages).to.deep.equal([[CID_A, CID_B, CID_C], [CID_D]]);
+      expect(fetchStub.callCount).to.equal(3);
+      const secondVariables = JSON.parse(fetchStub.secondCall.args[1].body).variables;
+      expect(secondVariables.lastId).to.equal("0x2");
+      expect(secondVariables.first).to.equal(2);
+    });
+
+    it("surfaces a subgraph HTTP failure rather than treating it as the end of the data", async () => {
+      sinon.stub(globalThis, "fetch").resolves({ ok: false, status: 502 });
+
+      let error;
+      try {
+        for await (const _ of iterateCids(SUBGRAPH, 10)) void _;
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error).to.be.an("error");
+      expect(error.message).to.contain("502");
+    });
+
+    it("surfaces GraphQL-level errors", async () => {
+      sinon.stub(globalThis, "fetch").resolves({
+        ok: true,
+        status: 200,
+        json: async () => ({ errors: [{ message: "indexing_error" }] }),
+      });
+
+      let error;
+      try {
+        for await (const _ of iterateCids(SUBGRAPH, 10)) void _;
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error.message).to.contain("indexing_error");
+    });
+  });
+
+  describe("runBackfill", () => {
+    it("tallies every outcome across pages and lists failures for the re-run", async () => {
+      const page = (rows) => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { conversations: rows } }),
+      });
+      const fetchStub = sinon.stub(globalThis, "fetch");
+      fetchStub.onCall(0).resolves(
+        page([
+          { id: "0x1", conversationCID: CID_A, conversationMetadataCID: CID_B, messages: [] },
+          { id: "0x2", conversationCID: CID_C, conversationMetadataCID: "", messages: [] },
+        ]),
+      );
+      fetchStub.onCall(1).resolves(page([]));
+      const headImpl = sinon.stub().resolves({ status: 404 });
+      headImpl.withArgs(sinon.match(CID_A)).resolves({ status: 200 });
+      const download = sinon.stub().resolves(Buffer.from("x"));
+      download.withArgs(CID_C).rejects(new Error("gateway 503"));
+      const logs = [];
+
+      const result = await runBackfill({
+        subgraphUrl: "https://subgraph.test/q",
+        options: { dryRun: false, pageSize: 10, concurrency: 2 },
+        deps: {
+          bucket: BUCKET,
+          env: {},
+          headImpl,
+          lookupName: sinon.stub().resolves("file-1.json"),
+          download,
+          mirror: sinon.stub().resolves({ status: "created" }),
+          dryRun: false,
+        },
+        log: (line) => logs.push(line),
+      });
+
+      expect(result.scanned).to.equal(3);
+      expect(result.tally).to.deep.equal({
+        present: 1,
+        pending: 0,
+        created: 1,
+        exists: 0,
+        failed: 1,
+      });
+      expect(result.failures).to.deep.equal([`${CID_C}: gateway 503`]);
+      expect(logs.some((l) => l.startsWith("created"))).to.equal(true);
+      expect(logs.some((l) => l.includes(CID_A))).to.equal(false); // present CIDs stay quiet
     });
   });
 

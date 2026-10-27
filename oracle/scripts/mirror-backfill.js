@@ -207,23 +207,12 @@ async function main() {
     },
   };
 
-  const tally = { present: 0, pending: 0, created: 0, exists: 0, failed: 0 };
-  const failures = [];
-  let scanned = 0;
-
-  console.log(
-    `${options.dryRun ? "[dry-run] " : ""}Backfilling ${PAYLOAD_MIRROR_BUCKET} from ${SUBGRAPH_URL}`,
-  );
-  for await (const cids of iterateCids(SUBGRAPH_URL, options.pageSize)) {
-    scanned += cids.length;
-    await runWithConcurrency(cids, options.concurrency, async (cid) => {
-      const result = await backfillCid(cid, deps);
-      tally[result.status] += 1;
-      if (result.status === "failed") failures.push(`${cid}: ${result.reason}`);
-      if (result.status !== "present") console.log(`${result.status.padEnd(8)} ${cid}`);
-    });
-    console.log(`… ${scanned} CIDs scanned`);
-  }
+  const { scanned, tally, failures } = await runBackfill({
+    subgraphUrl: SUBGRAPH_URL,
+    options,
+    deps,
+    log: console.log,
+  });
 
   console.log("\nSummary:", { scanned, ...tally });
   if (failures.length) {
@@ -233,7 +222,31 @@ async function main() {
   process.exit(failures.length ? 1 : 0);
 }
 
-module.exports = { collectCids, backfillCid, iterateCids, parseArgs };
+/**
+ * The whole run minus process wiring: walk the subgraph, mirror what is missing, tally.
+ * Pure enough to test with a stubbed fetch and stubbed deps.
+ */
+async function runBackfill({ subgraphUrl, options, deps, log = () => {} }) {
+  const tally = { present: 0, pending: 0, created: 0, exists: 0, failed: 0 };
+  const failures = [];
+  let scanned = 0;
+
+  log(`${options.dryRun ? "[dry-run] " : ""}Backfilling ${deps.bucket} from ${subgraphUrl}`);
+  for await (const cids of iterateCids(subgraphUrl, options.pageSize)) {
+    scanned += cids.length;
+    await runWithConcurrency(cids, options.concurrency, async (cid) => {
+      const result = await backfillCid(cid, deps);
+      tally[result.status] += 1;
+      if (result.status === "failed") failures.push(`${cid}: ${result.reason}`);
+      if (result.status !== "present") log(`${result.status.padEnd(8)} ${cid}`);
+    });
+    log(`… ${scanned} CIDs scanned`);
+  }
+
+  return { scanned, tally, failures };
+}
+
+module.exports = { collectCids, backfillCid, iterateCids, parseArgs, runBackfill };
 
 if (require.main === module) {
   main().catch((error) => {
