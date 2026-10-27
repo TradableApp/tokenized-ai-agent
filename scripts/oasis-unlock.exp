@@ -1,0 +1,56 @@
+#!/usr/bin/env expect -f
+# Run any `oasis` command non-interactively. The account passphrase comes from the macOS
+# login Keychain (item `oasis-passphrase-<account>`, taken from the `--account` flag, or
+# `OASIS_PASSPHRASE_SERVICE`), the ESC[6n terminal probe is answered, and y/N confirmations
+# are answered "y". Nothing secret is ever printed.
+#
+#   expect scripts/oasis-unlock.exp rofl update --deployment base-testnet --account oasis_testnet --gas-limit 200000
+#   bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short
+#
+# Exit codes: child's exit status · 1 timeout · 2 no Keychain item · 3 passphrase rejected.
+# See docs/BASE_TESTNET_DEPLOY_RUNBOOK.md § "Non-interactive Oasis CLI".
+set timeout 900
+match_max 200000
+set stty_init "rows 50 columns 200"
+# Usage check first, so misuse never touches the credential.
+if {[llength $argv] == 0} { send_user "usage: oasis-unlock.exp <oasis args...>\n"; exit 1 }
+# Keychain item is per CLI account: oasis-passphrase-<account> from the --account flag,
+# falling back to the shared oasis-passphrase item (the log wrapper's).
+if {![info exists env(USER)]} { send_user "error: USER is not set in the environment.\n"; exit 1 }
+set current_user $env(USER)
+set svc "oasis-passphrase"
+set i [lsearch -exact $argv "--account"]
+if {$i >= 0 && $i + 1 < [llength $argv]} { set svc "oasis-passphrase-[lindex $argv [expr {$i + 1}]]" }
+if {[info exists env(OASIS_PASSPHRASE_SERVICE)]} { set svc $env(OASIS_PASSPHRASE_SERVICE) }
+if {[catch {exec security find-generic-password -s $svc -a $current_user -w} pass]} {
+    send_user "error: no Keychain item '$svc' for user $current_user.\n"; exit 2
+}
+spawn -noecho oasis {*}$argv
+set sent 0
+expect {
+    # oasis prompts are survey-style: a "? " marker, colour codes, then "Passphrase: " and
+    # cursor-control codes (never a line end), so match the marker + word + colon. A second
+    # such prompt after we answered means the passphrase was rejected. The bare word in any
+    # log or help line has no "? " marker and matches nothing, so it cannot false-positive.
+    -nocase -re {\? [^\r\n]*passphrase[^\r\n]*:} {
+        if {$sent == 0} { send -- "$pass\r"; set sent 1; exp_continue }
+        send_user "\n\[oasis-unlock] passphrase rejected (re-prompted) — check the Keychain item '$svc'\n"; exit 3
+    }
+    # The y/N branch MUST precede the DSR-probe branch: a large transaction dump can deliver
+    # "Sign this transaction? (y/N)" and the probe in one read, and a match discards everything
+    # before it, so the probe matching first would swallow the prompt and the answer never fires.
+    -nocase -re "\\(y/n\\)|\\\[y/n\\\]|\\\[y/N\\\]|\\\[Y/n\\\]" {
+        # Log the question itself, not just the "(y/N)" token: the buffer holds everything
+        # received up to the match, so its tail is the prompt text. The passphrase is never
+        # in the buffer (oasis masks it), so this cannot leak it.
+        set prompt_ctx [string trim [string range $expect_out(buffer) end-150 end]]
+        regsub -all {\x1b\[[0-9;?]*[A-Za-z]} $prompt_ctx "" prompt_ctx
+        send_user "\n\[oasis-unlock] auto-confirming: $prompt_ctx\n"
+        send -- "y\r"; exp_continue
+    }
+    -re "\x1b\\\[6n" { send -- "\x1b\[50;200R"; exp_continue }
+    timeout { send_user "\n\[oasis-unlock] TIMEOUT after ${timeout}s (passphrase sent: $sent)\n"; exit 1 }
+    eof {}
+}
+catch wait result
+exit [lindex $result 3]

@@ -100,6 +100,7 @@ Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.or
 | `bun run rofl:set:sepolia-on-mainnet` | Verification run: push `base-testnet` config/secrets to the `base-mainnet` app |
 | `bun run rofl:build:sepolia-on-mainnet` | Verification run: bundle the `base-testnet` compose for the `base-mainnet` app |
 | `bun run rofl:update:sepolia-on-mainnet` | Verification run: set + commit the manifest for the `base-mainnet` app |
+| `bun run oasis:unlock <oasis args…>` | Run any `oasis` command non-interactively — passphrase from the macOS Keychain item `oasis-passphrase-<account>`; use it for every `rofl update` / `rofl deploy` instead of asking for the passphrase (runbook § Non-interactive Oasis CLI) |
 
 ## Architecture
 

@@ -64,6 +64,7 @@
     "rofl:build:sepolia-on-mainnet": "bash scripts/rofl-preflight.sh compose.base-testnet.yaml && cp compose.base-testnet.yaml compose.yaml && oasis rofl build --deployment base-mainnet",
     "rofl:update:sepolia-on-mainnet": "bun run rofl:set:sepolia-on-mainnet && oasis rofl update --deployment base-mainnet --account oasis_mainnet --gas-limit 200000",
     "prepare:brain": "cd oracle/packages/sense-ai-brain && bun install --frozen-lockfile && bun run build && rm -rf node_modules",
+    "oasis:unlock": "expect scripts/oasis-unlock.exp",
     "logs:base-testnet": "expect scripts/rofl-logs.exp --deployment base-testnet",
     "logs:base-mainnet": "expect scripts/rofl-logs.exp --deployment base-mainnet"
   },
