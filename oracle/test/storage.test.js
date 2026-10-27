@@ -9,6 +9,7 @@ describe("storage router", function () {
   let storage;
   let arweaveStub;
   let autonomysStub;
+  let mirrorStub;
 
   beforeEach(() => {
     arweaveStub = {
@@ -25,9 +26,14 @@ describe("storage router", function () {
       queryTransactionByTags: sinon.stub().resolves("autonomys_tx_id"),
     };
 
+    mirrorStub = {
+      mirrorInBackground: sinon.stub().returns(new Promise(() => {})),
+    };
+
     storage = proxyquire("../src/storage/storage", {
       "./arweave": arweaveStub,
       "./autonomys": autonomysStub,
+      "./mirror": mirrorStub,
     });
   });
 
@@ -50,8 +56,61 @@ describe("storage router", function () {
 
       const cid = await storage.uploadData(buffer, tags);
 
-      expect(autonomysStub.uploadData.calledOnceWith(buffer, tags)).to.be.true;
+      expect(autonomysStub.uploadData.calledOnce).to.be.true;
+      const [sentBuffer, sentTags] = autonomysStub.uploadData.firstCall.args;
+      expect(sentBuffer).to.equal(buffer);
+      expect(sentTags).to.deep.include(tags[0]);
       expect(cid).to.equal("autonomys_cid_123");
+    });
+
+    it("pins a File-Name tag so the Auto Drive CID can be recomputed later", async () => {
+      await storage.uploadData(Buffer.from("x"), []);
+
+      const sentTags = autonomysStub.uploadData.firstCall.args[1];
+      const fileNameTag = sentTags.find((t) => t.name === "File-Name");
+      expect(fileNameTag).to.exist;
+      expect(fileNameTag.value).to.match(/^file-\d+\.json$/);
+    });
+
+    it("keeps a caller-supplied File-Name tag untouched", async () => {
+      const tags = [{ name: "File-Name", value: "rofl-key.txt" }];
+
+      await storage.uploadData(Buffer.from("x"), tags);
+
+      const sentTags = autonomysStub.uploadData.firstCall.args[1];
+      expect(sentTags.filter((t) => t.name === "File-Name")).to.deep.equal(tags);
+    });
+
+    it("mirrors the uploaded bytes under the returned CID with the Auto Drive file name", async () => {
+      const buffer = Buffer.from("ciphertext");
+      const tags = [{ name: "File-Name", value: "answer.json" }];
+
+      await storage.uploadData(buffer, tags);
+
+      expect(mirrorStub.mirrorInBackground.calledOnce).to.be.true;
+      const [cid, bytes, fileName] = mirrorStub.mirrorInBackground.firstCall.args;
+      expect(cid).to.equal("autonomys_cid_123");
+      expect(bytes).to.equal(buffer);
+      expect(fileName).to.equal("answer.json");
+    });
+
+    it("returns the CID without waiting for the mirror (never on the prompt's critical path)", async () => {
+      // mirrorInBackground is stubbed to a promise that NEVER resolves; uploadData must still resolve.
+      const cid = await storage.uploadData(Buffer.from("x"), []);
+
+      expect(cid).to.equal("autonomys_cid_123");
+    });
+
+    it("does not mirror when STORAGE_PROVIDER=irys routes the upload to Arweave", async () => {
+      process.env.STORAGE_PROVIDER = "irys";
+      try {
+        const cid = await storage.uploadData(Buffer.from("x"), []);
+
+        expect(cid).to.equal("arweave_cid_123");
+        expect(mirrorStub.mirrorInBackground.called).to.be.false;
+      } finally {
+        delete process.env.STORAGE_PROVIDER;
+      }
     });
   });
 
@@ -92,6 +151,7 @@ describe("storage router — local IPFS mode (LOCAL_IPFS_API_URL set)", function
   let ipfsStub;
   let arweaveStub;
   let autonomysStub;
+  let mirrorStub;
 
   beforeEach(() => {
     // The mode flags are read at module load, so set the env before proxyquire.
@@ -105,16 +165,25 @@ describe("storage router — local IPFS mode (LOCAL_IPFS_API_URL set)", function
     arweaveStub = { initializeIrys: sinon.stub().resolves() };
     autonomysStub = { initializeAutoDrive: sinon.stub().resolves() };
 
+    mirrorStub = { mirrorInBackground: sinon.stub().returns(new Promise(() => {})) };
+
     storage = proxyquire("../src/storage/storage", {
       "./ipfs": ipfsStub,
       "./arweave": arweaveStub,
       "./autonomys": autonomysStub,
+      "./mirror": mirrorStub,
     });
   });
 
   afterEach(() => {
     delete process.env.LOCAL_IPFS_API_URL;
     sinon.restore();
+  });
+
+  it("uploadData never mirrors in local IPFS mode", async () => {
+    await storage.uploadData(Buffer.from("x"), []);
+
+    expect(mirrorStub.mirrorInBackground.called).to.be.false;
   });
 
   it("initializeStorage initialises only the local IPFS provider", async () => {

@@ -61,6 +61,7 @@
     "dotenv": "^17.0.1",
     "drizzle-orm": "^0.45.2",
     "ethers": "^6.15.0",
+    "google-auth-library": "^10.5.0",
     "lru-cache": "^11.2.4",
     "p-queue": "^6.6.2",
     "pg": "^8.16.3",

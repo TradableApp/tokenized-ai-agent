@@ -158,6 +158,57 @@ stays open: prove it against the live oracle first.
 - [ ] Annotate/close **CU-86d3dwme6** (oracle body Brain migration verified on Base-testnet).
 - [ ] Update memory `project_oracle-brain-migration`.
 
+## 9. Payload mirror (GCS write-through) — one-time setup per network
+
+`gateway.autonomys.xyz/file/<cid>` is intermittently 503, and the dApp hydrates ALL history from
+those CIDs. The oracle now mirrors every Autonomys payload it uploads into a public GCS bucket
+(`oracle/src/storage/mirror.js`): object name = CID, `Content-Type: text/plain`, immutable
+cache headers, and the Auto Drive file name as object metadata `name` so the dApp can recompute
+and verify the CID from the mirrored bytes. **Autonomys stays the permanence layer and the
+on-chain CID stays the root of trust — the bucket is a cache.** The mirror is never on the
+prompt's critical path: a failing bucket costs one alert and a climbing `payloadMirror.failed`
+counter in the heartbeat vitals, never an unanswered prompt. Unset bucket = mirror disabled.
+
+| Network | Bucket (`${project_id}-senseai-payloads`) | GCP project |
+| --- | --- | --- |
+| Base Sepolia (`base-testnet`) | `tradable-app-garrick-senseai-payloads` | `tradable-app-garrick` |
+| Base mainnet (`base-mainnet`) | `tradable-app-senseai-payloads` | `tradable-app` |
+
+- [ ] **9.1 Bucket (Infrastructure repo, `senseai_payloads.tf`, CU-14ym9bvm1d2):** uniform access,
+  `allUsers` → `roles/storage.objectViewer`, CORS `GET`/`HEAD` from the dApp origins, no
+  versioning or lifecycle. The same file creates the writer SA `senseai-payload-writer` with
+  **`roles/storage.objectCreator` on the bucket only** — it can add objects, never read,
+  overwrite or delete them, so a leaked key cannot tamper with mirrored history.
+- [ ] **9.2 Writer key (you; gcloud, by hand — never Terraform state):**
+  ```bash
+  gcloud iam service-accounts keys create /tmp/payload-writer.json \
+    --iam-account senseai-payload-writer@<project>.iam.gserviceaccount.com --project <project>
+  jq -c . /tmp/payload-writer.json | pbcopy   # ONE line — the secrets generator rejects newlines
+  rm /tmp/payload-writer.json
+  ```
+- [ ] **9.3 Env (you; `!` — guarded):** in `oracle/.env.oracle.<env>` put `PAYLOAD_MIRROR_SA_KEY=<pasted line>`
+  **above** the 🔒/📄 delimiter (it is a secret) and `PAYLOAD_MIRROR_BUCKET=<bucket>` **below** it
+  (plaintext config). Do NOT hand-edit `compose.<env>.yaml` or `rofl.yaml` — both are regenerated
+  from the env files by `rofl:set:<env>`.
+- [ ] **9.4 Sync + redeploy (A.5 → A.9):** `bun run rofl:set:<env>` pushes the key on-chain and
+  regenerates the compose `environment:` block; then build, update, deploy as usual. Boot refuses
+  a bucket without a usable key (`startupConfig.js`), so a bad paste fails in the logs at start,
+  not silently in the background.
+- [ ] **9.5 Verify:** after the first answered prompt, `curl -sI https://storage.googleapis.com/<bucket>/<cid>`
+  for its `messageCID` returns `200`, `content-type: text/plain`, `cache-control: public, max-age=31536000, immutable`
+  and an `x-goog-meta-name` header. The heartbeat's `payloadMirror` block shows `mirrored ≥ 1, failed 0`.
+- [ ] **9.6 Backfill history that pre-dates the mirror (run from `oracle/`, idempotent, re-run until clean):**
+  ```bash
+  ENV_FILE=.env.oracle.<env> SUBGRAPH_URL=<the-graph-endpoint> node scripts/mirror-backfill.js --dry-run
+  ENV_FILE=.env.oracle.<env> SUBGRAPH_URL=<the-graph-endpoint> node scripts/mirror-backfill.js
+  ```
+  It walks the subgraph by id cursor, skips CIDs the bucket already serves, recovers each
+  payload's original Auto Drive file name, and mirrors with the same `ifGenerationMatch=0`
+  write as the oracle. A CID whose name cannot be recovered is reported and left alone (an
+  unverifiable object is worse than none). Exit `1` = some failed, re-run; `0` = nothing left.
+
+---
+
 ## Mainnet is not deployed yet — builds are blocked on purpose
 
 ### Verification run: Sepolia config on the mainnet ROFL app (`sepolia-on-mainnet`)
@@ -233,6 +284,7 @@ mainnet run can check for it up front instead of rediscovering it.
 - [ ] Dedicated RPC endpoint configured for the admin script; rehearse forward + confirm phases against the mainnet Safe with dust values first.
 - [ ] Safe threshold and signer set confirmed; Tenderly simulation green before any batch is sent.
 - [ ] Wait one heartbeat interval before judging boot; read `machine show` → `net.oasis.error` before reading logs.
+- [ ] Payload mirror: `tradable-app-senseai-payloads` applied via Cloud Build on promotion to `prod`; writer key minted and pasted single-line (§9); `payloadMirror.failed` stays 0 across the first heartbeat after the first answered prompt.
 
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.

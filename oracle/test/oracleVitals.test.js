@@ -65,6 +65,18 @@ describe("collectVitals", () => {
     expect(v.autoDriveDownloadCredits).to.equal(104857600);
   });
 
+  it("carries the payload-mirror counters, and null when no mirror snapshot is injected", async () => {
+    const { collectVitals } = load();
+    const deps = OK_DEPS();
+    deps.mirrorSnapshot = () => ({ mirrored: 12, failed: 1, skipped: 0 });
+
+    const withMirror = await collectVitals(deps);
+    expect(withMirror.payloadMirror).to.deep.equal({ mirrored: 12, failed: 1, skipped: 0 });
+
+    const withoutMirror = await collectVitals(OK_DEPS());
+    expect(withoutMirror.payloadMirror).to.equal(null);
+  });
+
   it("carries the cumulative AI tier mix, and null when no tally is injected", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();

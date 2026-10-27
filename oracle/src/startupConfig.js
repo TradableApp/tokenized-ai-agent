@@ -282,7 +282,52 @@ function validateConfig(env = process.env) {
     }
   }
 
+  validatePayloadMirror(env, problems);
+
   if (problems.length) throw new ConfigError(problems);
+}
+
+/**
+ * The write-through payload mirror (storage/mirror.js) is OPTIONAL — an unset bucket disables
+ * it — but half-configured is the worst state: the oracle would boot, answer, then fail every
+ * mirror write in the background (one alert, then counters), while the dApp quietly falls back
+ * to the flaky gateway the mirror exists to shield it from. Boot-time-knowable, so refuse here.
+ *
+ * A key with no bucket is deliberately NOT a problem: that is just "mirror off" with a secret
+ * still provisioned, which is how a deployment looks between `rofl:set` and the Terraform apply.
+ */
+function validatePayloadMirror(env, problems) {
+  if (isBlank(env.PAYLOAD_MIRROR_BUCKET)) return;
+
+  const rawKey = env.PAYLOAD_MIRROR_SA_KEY;
+  if (isBlank(rawKey)) {
+    problems.push(
+      "PAYLOAD_MIRROR_SA_KEY is missing or empty, but PAYLOAD_MIRROR_BUCKET is set — every " +
+        "payload mirror write would fail in the background. Set the service-account JSON key " +
+        "(single line) or unset the bucket to run without the mirror",
+    );
+
+    return;
+  }
+
+  let key;
+  try {
+    key = JSON.parse(rawKey);
+  } catch {
+    problems.push(
+      "PAYLOAD_MIRROR_SA_KEY is not valid JSON — it must be the service-account key file " +
+        "compacted to a single line (jq -c . key.json), not a bare PEM",
+    );
+
+    return;
+  }
+
+  if (!key || isBlank(key.client_email) || isBlank(key.private_key)) {
+    problems.push(
+      "PAYLOAD_MIRROR_SA_KEY is JSON but lacks client_email and/or private_key — it must be a " +
+        "Google service-account key file",
+    );
+  }
 }
 
 module.exports = { validateConfig, ConfigError };
