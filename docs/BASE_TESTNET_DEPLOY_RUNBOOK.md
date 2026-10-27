@@ -66,8 +66,30 @@ The **only** run-time input from you: the Test User wallet's **private key** (Me
 ## 3. Phase A — Deploy the oracle to Base-testnet ROFL
 
 Division of labour: **me** (no wallet) = trust-root refresh, image build, `rofl:set`,
-`rofl:build`, commit `rofl.yaml`. **You** (wallet passphrase + gcloud) = `image:push`,
-`rofl:init:cloud-sql`, `rofl:update`, `rofl:deploy`. All `bun run` from the **repo root**.
+`rofl:build`, commit `rofl.yaml`, and — through `scripts/oasis-unlock.exp` (next section) —
+`rofl:update` / `rofl:deploy`. **You** = `image:push` (ghcr auth) and `rofl:init:cloud-sql` the first
+time. All `bun run` from the **repo root**.
+
+### Non-interactive Oasis CLI — the passphrase is in the Keychain, use the wrapper
+
+Every signing step below (`rofl update`, `rofl deploy`, `rofl machine …`) prompts for the
+account passphrase on a TTY. **Do not type it and do not stop to ask for it.** Garrick keeps
+the passphrases in the macOS login Keychain, one item per CLI account —
+`oasis-passphrase-oasis_testnet` and `oasis-passphrase-oasis_mainnet` — and
+`scripts/oasis-unlock.exp` feeds them to any `oasis` command, answers the terminal probe
+and the y/N confirmations, and never prints the secret:
+
+```bash
+bun run oasis:unlock rofl update --deployment base-testnet --account oasis_testnet --gas-limit 200000
+bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short
+# or: expect scripts/oasis-unlock.exp <oasis args…>
+```
+
+Exit codes: the child's status, `1` timeout (15 min), `2` no Keychain item for that account,
+`3` passphrase rejected. The Keychain may show an "Always Allow" dialog on first use per
+binary — expected. Claude Code drives these steps itself with the wrapper; the `(you; passphrase)`
+notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-root`, `rofl show`,
+`rofl build`) need no passphrase and run bare.
 
 - [ ] **A.1 Refresh the Sapphire-testnet trust root (REQUIRED — ~5.2M blocks / ~1 yr stale).**
   `oasis rofl trust-root --network testnet --paratime sapphire` → set `height` + `hash`
@@ -82,8 +104,8 @@ Division of labour: **me** (no wallet) = trust-root refresh, image build, `rofl:
 - [ ] **A.6 Build the ORC (me):** `bun run rofl:build:base-testnet`. Re-verify the trust root survived (re-apply A.1 values if the build rewrote it).
 - [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6`. NOT the `.orc` (gitignored build artifact).
   **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` remains the last-deployed snapshot; the per-env files are its sources.
-- [ ] **A.8 Push on-chain (you; passphrase):** `! bun run rofl:update:base-testnet`.
-- [ ] **A.9 Deploy (you; passphrase):** `! bun run rofl:deploy:base-testnet`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
+- [ ] **A.8 Push on-chain (me; wrapper):** `bun run oasis:unlock rofl update --deployment base-testnet --account oasis_testnet --gas-limit 200000` (not `rofl:update:base-testnet` — that re-runs `rofl:set` and churns every ciphertext).
+- [ ] **A.9 Deploy (me; wrapper, only when Garrick says go — it rents the machine):** `bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
 
 ---
 
@@ -224,7 +246,7 @@ target the `base-mainnet` app. Rules that fell out of doing it:
   template, so its preflight fails on purpose (see below).
 - Every on-chain step (`rofl update`, `rofl deploy`, `machine logs`) needs the
   `oasis_mainnet` passphrase. Run them through the keychain wrapper
-  `cache/oasis-unlock.exp` (`expect cache/oasis-unlock.exp rofl update --deployment base-mainnet --account oasis_mainnet --gas-limit 200000`).
+  `scripts/oasis-unlock.exp` (`expect scripts/oasis-unlock.exp rofl update --deployment base-mainnet --account oasis_mainnet --gas-limit 200000`).
 - `rofl deploy` **reuses `deployments.base-mainnet.machines.default.id`** when it is set, so a
   rebuild + update + deploy cycle costs gas only, no new rental. Commit the write-back
   (`rofl.yaml` enclave IDs and machine id) on a manifest branch after every cycle.
