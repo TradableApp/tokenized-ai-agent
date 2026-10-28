@@ -18,7 +18,14 @@ function aesGcmEncrypt(keyBytes, obj) {
 }
 
 function aesGcmDecrypt(keyBytes, str) {
-  const [ivB64, dataB64] = str.split(".");
+  // A clear storage-format error beats the TypeError Buffer.from(undefined) would throw. Length
+  // only — the stored value is ciphertext, but the habit of not echoing content is worth keeping.
+  const dot = typeof str === "string" ? str.indexOf(".") : -1;
+  if (dot === -1)
+    throw new Error(
+      `aesGcmDecrypt: stored value is not iv.ct (no separator; length ${typeof str === "string" ? str.length : "n/a"})`,
+    );
+  const [ivB64, dataB64] = [str.slice(0, dot), str.slice(dot + 1)];
   const iv = Buffer.from(ivB64, "base64");
   const data = Buffer.from(dataB64, "base64");
   const tag = data.subarray(data.length - 16);

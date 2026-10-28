@@ -295,37 +295,46 @@ async function runPrompt({ index, wallet, provider, cfg, promptText, wantStoredP
     plog(`answer CID: ${result.cid} (${evts.length} event(s), ${result.latencyMs} ms)`);
 
     // 5b. The oracle's submitAnswer tx: gas, nonce, sender, and the stored-prompt CID emitted in
-    //     the same tx (PromptMessageAdded for our promptMessageId).
-    const [answerRc, answerTx, submitBlock, answerBlock] = await Promise.all([
-      provider.getTransactionReceipt(evt.transactionHash),
-      provider.getTransaction(evt.transactionHash),
-      provider.getBlock(rc.blockNumber),
-      provider.getBlock(evt.blockNumber),
-    ]);
-    Object.assign(result, {
-      answerTxHash: evt.transactionHash,
-      answerBlock: evt.blockNumber,
-      answerGasUsed: answerRc?.gasUsed,
-      answerFrom: answerTx?.from,
-      answerNonce: answerTx?.nonce,
-      submitTimestamp: submitBlock?.timestamp,
-      answerTimestamp: answerBlock?.timestamp,
-    });
-    if (wantStoredPrompt && answerRc) {
-      const stored = agentEvents(agent, answerRc, "PromptMessageAdded").find(
-        (p) => p.args.messageId === result.promptMessageId,
-      );
-      if (stored) {
-        result.storedPromptCid = stored.args.messageCID;
-        result.storedPrompt = aesGcmDecrypt(
-          sessionKey,
-          await fetchEncrypted(stored.args.messageCID, cfg),
+    //     the same tx (PromptMessageAdded for our promptMessageId). NON-FATAL for the verdict: the
+    //     answer is already on-chain, so a flaky RPC here must not reclassify a correct run as an
+    //     oracle failure — it only leaves the metrics columns null (and, in injection mode, the
+    //     stored prompt unread, which assessInjection reports on its own terms).
+    try {
+      const [answerRc, answerTx, submitBlock, answerBlock] = await Promise.all([
+        provider.getTransactionReceipt(evt.transactionHash),
+        provider.getTransaction(evt.transactionHash),
+        provider.getBlock(rc.blockNumber),
+        provider.getBlock(evt.blockNumber),
+      ]);
+      Object.assign(result, {
+        answerTxHash: evt.transactionHash,
+        answerBlock: evt.blockNumber,
+        answerGasUsed: answerRc?.gasUsed,
+        answerFrom: answerTx?.from,
+        answerNonce: answerTx?.nonce,
+        submitTimestamp: submitBlock?.timestamp,
+        answerTimestamp: answerBlock?.timestamp,
+      });
+      if (wantStoredPrompt && answerRc) {
+        const stored = agentEvents(agent, answerRc, "PromptMessageAdded").find(
+          (p) => p.args.messageId === result.promptMessageId,
         );
-      } else {
-        plog(
-          `⚠️  no PromptMessageAdded for promptMessageId=${result.promptMessageId} in the answer tx`,
-        );
+        if (stored) {
+          result.storedPromptCid = stored.args.messageCID;
+          result.storedPrompt = aesGcmDecrypt(
+            sessionKey,
+            await fetchEncrypted(stored.args.messageCID, cfg),
+          );
+        } else {
+          plog(
+            `⚠️  no PromptMessageAdded for promptMessageId=${result.promptMessageId} in the answer tx`,
+          );
+        }
       }
+    } catch (metaErr) {
+      plog(
+        `⚠️  answer-tx metadata unavailable (gas/nonce/timestamps null): ${metaErr?.shortMessage || metaErr?.message || metaErr}`,
+      );
     }
 
     // 6. Fetch + decrypt the answer MessageFile

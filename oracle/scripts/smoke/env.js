@@ -61,8 +61,9 @@ function resolvePrivateKeys(env) {
 
 function resolveBurst(env, keyCount) {
   if (env.SMOKE_BURST === undefined || env.SMOKE_BURST === "") return 1;
+  // No value in the message: a misplaced paste into the wrong variable must not reach the logs.
   if (!/^[1-9]\d*$/.test(env.SMOKE_BURST))
-    throw new Error(`SMOKE_BURST must be a positive integer, got '${env.SMOKE_BURST}'`);
+    throw new Error("SMOKE_BURST must be a positive integer (1, 2, 3 …)");
   const burst = Number(env.SMOKE_BURST);
   if (burst > keyCount)
     throw new Error(
@@ -89,6 +90,20 @@ function resolveAsset(env) {
 }
 
 const isTruthy = (v) => ["1", "true", "yes"].includes(String(v ?? "").toLowerCase());
+
+/**
+ * Milliseconds from the environment. `Number("abc")` is NaN, and NaN is silent in every place
+ * these are used — a NaN deadline never arrives, a NaN setTimeout fires at once — so a value that
+ * is not a positive number fails here, by variable name only.
+ */
+function parseMs(env, name, fallback) {
+  const raw = pick(env, name, undefined);
+  if (raw === undefined) return fallback;
+  const v = Number(raw);
+  if (!Number.isFinite(v) || v <= 0)
+    throw new Error(`${name} must be a positive number of milliseconds`);
+  return v;
+}
 
 /**
  * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} env
@@ -134,9 +149,9 @@ function resolveSmokeConfig(env = process.env) {
     prompt: pick(env, "SMOKE_PROMPT", DEFAULT_PROMPT),
     asset: resolveAsset(env),
     metricsFile: pick(env, "SMOKE_METRICS_FILE", DEFAULT_METRICS_FILE),
-    timeoutMs: Number(pick(env, "SMOKE_TIMEOUT_MS", 300_000)),
-    pollMs: Number(pick(env, "SMOKE_POLL_MS", 6_000)),
-    fetchTimeoutMs: Number(pick(env, "SMOKE_FETCH_TIMEOUT_MS", 30_000)),
+    timeoutMs: parseMs(env, "SMOKE_TIMEOUT_MS", 300_000),
+    pollMs: parseMs(env, "SMOKE_POLL_MS", 6_000),
+    fetchTimeoutMs: parseMs(env, "SMOKE_FETCH_TIMEOUT_MS", 30_000),
     storageGatewayUrl: pick(env, "SMOKE_STORAGE_GATEWAY_URL", undefined),
   };
 }

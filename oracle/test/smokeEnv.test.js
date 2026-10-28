@@ -147,6 +147,27 @@ describe("smoke: resolveSmokeConfig", () => {
     });
   });
 
+  it("refuses non-numeric or non-positive timeouts by name instead of letting NaN disable them", () => {
+    for (const name of ["SMOKE_TIMEOUT_MS", "SMOKE_POLL_MS", "SMOKE_FETCH_TIMEOUT_MS"]) {
+      const err = thrownBy(() => resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, [name]: "abc" }));
+      expect(err.message).to.include(name);
+      expect(err.message).not.to.include("abc");
+      expect(() => resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, [name]: "0" })).to.throw(name);
+    }
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_POLL_MS: "2500" }).pollMs).to.equal(
+      2500,
+    );
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).timeoutMs).to.equal(300_000);
+  });
+
+  it("never echoes a SMOKE_BURST value in its error", () => {
+    const err = thrownBy(() =>
+      resolveSmokeConfig({ SMOKE_BURST: "sk-not-a-number", SMOKE_PRIVATE_KEY: KEY_A }),
+    );
+    expect(err.message).to.include("SMOKE_BURST");
+    expect(err.message).not.to.include("sk-not");
+  });
+
   it("SMOKE_INJECTION=1 (or true) switches the injection prompt on", () => {
     expect(
       resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "1" }).injection,
