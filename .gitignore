@@ -203,3 +203,6 @@ oracle/oracle-state.json
 # Stray compiled-contract exports (use hardhat artifacts/ instead)
 /bin/contracts/
 .claude/PRPs/
+
+# Smoke run output (oracle/scripts/base-testnet-smoke.js writes SMOKE_METRICS_FILE here by default)
+oracle/smoke-metrics.json

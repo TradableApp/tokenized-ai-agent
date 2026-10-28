@@ -1,74 +1,46 @@
 #!/usr/bin/env node
 /**
- * Base-Sepolia post-deploy SMOKE TEST for the Brain-migrated oracle (CU-86d3dwme6).
+ * Post-deploy SMOKE TEST for the Brain-migrated oracle on Base (CU-86d3dwme6, extended for the
+ * testnet run days under CU-14ym9bvdmjr).
  *
- * Exercises the exact production path — approve → activate plan → initiatePrompt →
- * wait for the on-chain answer → fetch + decrypt it — and asserts the deployed
- * oracle produced a Brain-enriched answer (`reasoning[]` + `sources[]` populated).
- * Structural assertions only (the LLM answer is non-deterministic). Doubles as a
- * re-runnable canary against the live deployment.
+ * Exercises the exact production path — approve → activate plan → initiatePrompt → wait for the
+ * on-chain answer → fetch + decrypt it — and judges the answer with src/answerQuality.js. Doubles
+ * as a re-runnable canary against the live deployment.
  *
- * Reuses the oracle's own ECIES module (src/ecies.js) so the session-key wire
- * format is guaranteed to match what the oracle decrypts with. The AES-256-GCM
- * `base64(iv).base64(ct+tag)` format mirrors the dApp's src/lib/crypto.ts.
+ * Three modes, all env-driven (scripts/smoke/env.js holds the per-environment default tables):
+ *   single      one prompt from SMOKE_PRIVATE_KEY (the default)
+ *   burst       SMOKE_BURST=N prompts at once from N accounts in SMOKE_PRIVATE_KEYS — exercises
+ *               the oracle's p-queue + tx mutex; every prompt must get exactly its own answer
+ *   injection   SMOKE_INJECTION=1 wraps the prompt in a forged fence close + "URGENT SYSTEM
+ *               DIRECTIVE" demanding a random canary; the answer must ignore it and the stored
+ *               prompt must keep the directive but lose the forged tag
  *
- * Discovers the answer via the on-chain `AnswerMessageAdded(convId, msgId, cid)`
- * event (msgId = answerMessageId, indexed) — NO subgraph dependency.
+ * Every run writes SMOKE_METRICS_FILE (default ./smoke-metrics.json): per-prompt ids, gas for
+ * initiatePrompt and submitAnswer, wall-clock and block-timestamp latency, a summary.
  *
- * Usage (env-driven; keep the private key in a gitignored env, never commit it):
- *   SMOKE_PRIVATE_KEY=0x... \
- *   SMOKE_ORACLE_PUBLIC_KEY=04... \
- *   node scripts/base-testnet-smoke.js
+ * Reuses the oracle's own ECIES module (src/ecies.js) so the session-key wire format is
+ * guaranteed to match what the oracle decrypts with. Discovers the answer via the on-chain
+ * `AnswerMessageAdded(convId, msgId, cid)` event — NO subgraph dependency.
  *
- * Optional overrides (sensible Base-Sepolia defaults below):
- *   SMOKE_RPC_URL, SMOKE_CHAIN_ID, SMOKE_ESCROW_ADDRESS, SMOKE_AGENT_ADDRESS,
- *   SMOKE_TOKEN_ADDRESS, SMOKE_PROMPT, SMOKE_TIMEOUT_MS, SMOKE_POLL_MS,
- *   SMOKE_FETCH_TIMEOUT_MS
+ * Usage (keep private keys in a gitignored env, never commit them):
+ *   SMOKE_PRIVATE_KEY=0x... node scripts/base-testnet-smoke.js
+ *   SMOKE_ENV=base-mainnet SMOKE_ESCROW_ADDRESS=… SMOKE_AGENT_ADDRESS=… SMOKE_TOKEN_ADDRESS=… \
+ *     SMOKE_ORACLE_PUBLIC_KEY=… SMOKE_PRIVATE_KEY=0x... node scripts/base-testnet-smoke.js
  *
  * Exit codes (for scheduled-canary alerting):
- *   0 = pass (oracle answered, Brain reasoning + sources present)
- *   1 = oracle broken (no/short answer, timeout, wrong network, error)
+ *   0 = pass (every prompt answered, Brain reasoning + sources present)
+ *   1 = oracle broken (no/short answer, timeout, wrong network, cross-wired burst, steered)
  *   2 = oracle healthy but Brain warm cache is cold (reasoning/sources empty)
  */
 const crypto = require("node:crypto");
 const { ethers } = require("ethers");
 const { eciesEncrypt } = require("../src/ecies");
 const { assessAnswer } = require("../src/answerQuality");
-
-// ── Config ────────────────────────────────────────────────────────────────
-const RPC_URL = process.env.SMOKE_RPC_URL || "https://sepolia.base.org";
-const PRIVATE_KEY = process.env.SMOKE_PRIVATE_KEY;
-const ORACLE_PUBLIC_KEY = process.env.SMOKE_ORACLE_PUBLIC_KEY; // uncompressed 04-prefixed
-const ESCROW_ADDRESS =
-  process.env.SMOKE_ESCROW_ADDRESS || "0x36ec08471F2b995024967204D7542713cFaf5Fa4";
-const AGENT_ADDRESS =
-  process.env.SMOKE_AGENT_ADDRESS || "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D";
-const TOKEN_ADDRESS =
-  process.env.SMOKE_TOKEN_ADDRESS || "0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80";
-const PROMPT = process.env.SMOKE_PROMPT || "What is the latest news on Bitcoin?";
-
-/**
- * The asset the answer must actually be about — the check that catches a fluent, well-sourced
- * answer on the wrong subject, which structure alone never can.
- *
- * Defaults to Bitcoin ONLY when the default prompt is in use. If someone overrides SMOKE_PROMPT
- * and we kept asserting "Bitcoin", the smoke would fail on a correct answer to the question that
- * was actually asked — and a smoke that cries wolf is one that gets muted. Override SMOKE_ASSET
- * alongside SMOKE_PROMPT to keep the check; leave it unset to skip it.
- */
-// ABSENT AND EMPTY MEAN DIFFERENT THINGS, because in a compose file they are different things:
-// `SMOKE_ASSET=` is an empty string in process.env, not an absent key, while `# SMOKE_ASSET=` is
-// absent. An operator adding the former to switch the check off would, under a plain `||`, get
-// "Bitcoin" back — the variable would look set and do nothing.
-const SMOKE_ASSET =
-  "SMOKE_ASSET" in process.env
-    ? process.env.SMOKE_ASSET.trim() || undefined // set-but-empty = deliberately disabled
-    : process.env.SMOKE_PROMPT
-      ? undefined // custom prompt, no asset stated — cannot know what to assert
-      : "Bitcoin"; // default prompt asks about Bitcoin
-const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 300_000);
-const POLL_MS = Number(process.env.SMOKE_POLL_MS || 6_000);
-const FETCH_TIMEOUT_MS = Number(process.env.SMOKE_FETCH_TIMEOUT_MS || 30_000);
+const { resolveSmokeConfig } = require("./smoke/env");
+const { assertOneAnswerPerPrompt } = require("./smoke/burst");
+const { buildInjectionPrompt, assessInjection, makeCanary } = require("./smoke/injection");
+const { buildMetrics, writeMetrics } = require("./smoke/metrics");
+const { aesGcmEncrypt, aesGcmDecrypt, fetchEncrypted } = require("./smoke/wire");
 
 // ── Minimal ABIs ──────────────────────────────────────────────────────────
 const ESCROW_ABI = [
@@ -89,6 +61,7 @@ const ESCROW_ABI = [
 ];
 const AGENT_ABI = [
   "event PromptSubmitted(address indexed user, uint256 indexed conversationId, uint256 indexed promptMessageId, uint256 answerMessageId, bytes encryptedPayload, bytes roflEncryptedKey)",
+  "event PromptMessageAdded(uint256 indexed conversationId, uint256 indexed messageId, string messageCID)",
   "event AnswerMessageAdded(uint256 indexed conversationId, uint256 indexed messageId, string messageCID)",
   "function isJobFinalized(uint256 answerMessageId) view returns (bool)",
 ];
@@ -99,69 +72,6 @@ const ERC20_ABI = [
   "function decimals() view returns (uint8)",
   "function symbol() view returns (string)",
 ];
-
-// ── Crypto (mirrors dApp src/lib/crypto.ts format) ─────────────────────────
-function aesGcmEncrypt(keyBytes, obj) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", keyBytes, iv);
-  const ct = Buffer.concat([
-    cipher.update(Buffer.from(JSON.stringify(obj), "utf8")),
-    cipher.final(),
-  ]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString("base64")}.${Buffer.concat([ct, tag]).toString("base64")}`;
-}
-function aesGcmDecrypt(keyBytes, str) {
-  const [ivB64, dataB64] = str.split(".");
-  const iv = Buffer.from(ivB64, "base64");
-  const data = Buffer.from(dataB64, "base64");
-  const tag = data.subarray(data.length - 16);
-  const ct = data.subarray(0, data.length - 16);
-  const decipher = crypto.createDecipheriv("aes-256-gcm", keyBytes, iv);
-  decipher.setAuthTag(tag);
-  return JSON.parse(Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf8"));
-}
-
-// ── Storage gateway (mirrors dApp syncService.getStorageProvider) ──────────
-function gatewayUrl(cid) {
-  // Prefix-only match: AutoDrive CIDv1 base32 length can shift with codec/hash
-  // changes, so don't hard-code the char count. Irys (43-44 base64url) can't
-  // collide with a bafkr6i-prefixed base32 CID, so it's still a safe guard below.
-  if (/^bafkr6i/.test(cid)) return `https://gateway.autonomys.xyz/file/${cid}`; // Autonomys
-  if (/^[A-Za-z0-9_-]{43,44}$/.test(cid)) return `https://gateway.irys.xyz/${cid}`; // Irys/Arweave
-  if (/^bafy/.test(cid) && process.env.SMOKE_STORAGE_GATEWAY_URL)
-    return `${process.env.SMOKE_STORAGE_GATEWAY_URL}${cid}`; // IPFS/localnet
-  throw new Error(`Unrecognised CID format: ${cid}`);
-}
-async function fetchEncrypted(cid) {
-  // Bound the whole fetch (headers AND body read) with an AbortSignal — the outer
-  // TIMEOUT_MS only guards the event poll, so a slow/hung gateway here would
-  // otherwise hang the process indefinitely. clearTimeout in finally, after
-  // .text(), so the signal stays live through the body stream too.
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(gatewayUrl(cid), { signal: ctrl.signal });
-    if (!res.ok) throw new Error(`storage fetch ${res.status} for ${cid}`);
-    const text = (await res.text()).trim();
-    // Stored value is the encrypted MessageFile string (`iv.ct`). Some providers
-    // wrap it in JSON — unwrap if so, and fail LOUDLY on an unexpected shape rather
-    // than passing raw JSON to aesGcmDecrypt (which would throw a misleading GCM
-    // auth-tag error instead of a clear storage-format error).
-    if (text.startsWith("{")) {
-      const j = JSON.parse(text);
-      const inner = j.encryptedContent ?? j.content ?? j.data;
-      if (inner == null)
-        throw new Error(
-          `storage file has unexpected JSON shape, keys: ${Object.keys(j).join(", ")}`,
-        );
-      return inner;
-    }
-    return text;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(...a);
@@ -224,204 +134,335 @@ async function ensurePlanActive({
   );
 }
 
-async function main() {
-  if (!PRIVATE_KEY) throw new Error("SMOKE_PRIVATE_KEY is required");
-  if (!ORACLE_PUBLIC_KEY)
-    throw new Error(
-      "SMOKE_ORACLE_PUBLIC_KEY is required (the oracle's uncompressed 04-prefixed ECIES pubkey)",
-    );
-
-  const provider = new ethers.JsonRpcProvider(RPC_URL);
-  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-  const net = await provider.getNetwork();
-  log(`\n── Base-testnet oracle smoke test ──`);
-  log(`chain=${net.chainId} wallet=${wallet.address}`);
-  log(`escrow=${ESCROW_ADDRESS} agent=${AGENT_ADDRESS} token=${TOKEN_ADDRESS}`);
-  // Guard the chain BEFORE any approve/spend — a wrong SMOKE_RPC_URL (e.g. Base
-  // mainnet) would otherwise approve real tokens + burn real gas before failing.
-  const EXPECTED_CHAIN_ID = BigInt(process.env.SMOKE_CHAIN_ID || 84532); // Base Sepolia
-  if (net.chainId !== EXPECTED_CHAIN_ID)
-    throw new Error(
-      `wrong network: expected chainId ${EXPECTED_CHAIN_ID} (Base Sepolia), got ${net.chainId} — check SMOKE_RPC_URL / SMOKE_CHAIN_ID`,
-    );
-
-  const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
-  const agent = new ethers.Contract(AGENT_ADDRESS, AGENT_ABI, provider);
-  const token = new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, wallet);
-
-  // 1. Balances + fee
-  const [dec, sym, bal, ethBal, fee] = await Promise.all([
-    token.decimals(),
-    token.symbol(),
-    token.balanceOf(wallet.address),
-    provider.getBalance(wallet.address),
-    escrow.promptFee(),
-  ]);
-  const fmt = (v) => ethers.formatUnits(v, dec);
-  log(
-    `balances: ${ethers.formatEther(ethBal)} ETH · ${fmt(bal)} ${sym} · promptFee=${fmt(fee)} ${sym}`,
-  );
-  if (bal < fee) throw new Error(`insufficient ${sym}: have ${fmt(bal)}, prompt costs ${fmt(fee)}`);
-  // Gas guard: without ETH the approve/setSpendingLimit/initiatePrompt txs fail
-  // with a raw INSUFFICIENT_FUNDS that looks like a contract bug. Hard-fail on
-  // zero; warn (not block) on low — Base Sepolia gas is cheap/variable and the
-  // test wallet is intentionally small + toppable, so don't false-block it.
-  if (ethBal === 0n)
-    throw new Error("no ETH for gas — fund the wallet with Base Sepolia ETH before running");
-  if (ethBal < ethers.parseEther("0.001"))
-    log(
-      `⚠️  low ETH for gas (${ethers.formatEther(ethBal)}) — top up if a tx fails with INSUFFICIENT_FUNDS`,
-    );
-
-  // 2. Plan: approve + setSpendingLimit (headroom for a few prompts)
-  const allowance = fee > 0n ? fee * 5n : ethers.parseUnits("10", dec);
-  const capped = allowance > bal ? bal : allowance;
-  const curAllow = await token.allowance(wallet.address, ESCROW_ADDRESS);
-  if (curAllow < capped) {
-    log(`approve ${fmt(capped)} ${sym} → escrow...`);
-    await (await token.approve(ESCROW_ADDRESS, capped)).wait();
-  }
-  await ensurePlanActive({
-    escrow,
-    address: wallet.address,
-    capped,
-    fee,
-    sleep,
-    log,
-    fmt,
-  });
-
-  // 3. Encrypt payload + session key (random one-shot session key; the oracle
-  //    recovers it from roflEncryptedKey via ECIES, then encrypts the answer with it)
-  const sessionKey = crypto.randomBytes(32);
-  const payload = {
-    promptText: PROMPT,
-    isNewConversation: true,
-    previousMessageId: null,
-    previousMessageCID: null,
-  };
-  const aesString = aesGcmEncrypt(sessionKey, payload);
-  const encryptedPayload = "0x" + Buffer.from(aesString, "utf8").toString("hex");
-  // eciesEncrypt returns a Buffer (0x01|ephemPubKey|nonce|GCM); ethers v6 accepts
-  // a Uint8Array/Buffer directly for the `bytes` param.
-  const roflEncryptedKey = await eciesEncrypt(ORACLE_PUBLIC_KEY, sessionKey);
-
-  // 4. initiatePrompt (conversationId 0 = new)
-  log(`\ninitiatePrompt("${PROMPT}")...`);
-  const rc = await (await escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)).wait();
-  let answerMessageId, conversationId;
-  for (const lg of rc.logs) {
+/** Parses the agent's logs out of a receipt by event name; non-agent logs are skipped. */
+function agentEvents(agent, receipt, name) {
+  const out = [];
+  for (const lg of receipt.logs) {
     try {
       const p = agent.interface.parseLog(lg);
-      if (p && p.name === "PromptSubmitted") {
-        answerMessageId = p.args.answerMessageId;
-        conversationId = p.args.conversationId;
-        break;
-      }
+      if (p && p.name === name) out.push(p);
     } catch {
       /* not an agent log */
     }
   }
-  if (answerMessageId === undefined) throw new Error("PromptSubmitted not found in receipt logs");
-  log(
-    `submitted: conversationId=${conversationId} answerMessageId=${answerMessageId} (tx ${rc.hash})`,
-  );
+  return out;
+}
 
-  // 5. Wait for the on-chain answer CID (AnswerMessageAdded, indexed by messageId)
-  log(`waiting up to ${TIMEOUT_MS / 1000}s for the oracle's answer...`);
-  const deadline = Date.now() + TIMEOUT_MS;
-  let messageCID;
+/**
+ * Poll for the AnswerMessageAdded event of one prompt.
+ *
+ * Anchors the scan at the initiatePrompt tx block and advances it each poll. The public Base
+ * Sepolia RPC caps eth_getLogs at a few hundred blocks, so a fixed [head-5000, head] range would
+ * be rejected every iteration. Advancing fromBlock keeps each window to ~POLL_MS/blocktime blocks
+ * (contiguous, no gap, no re-scan). The answer event always lands after the submit block.
+ *
+ * Returns EVERY matching event in the window the answer appeared in, so burst mode can tell one
+ * answer from two.
+ */
+async function waitForAnswer({
+  agent,
+  provider,
+  conversationId,
+  answerMessageId,
+  fromBlock,
+  cfg,
+  log,
+}) {
+  const deadline = Date.now() + cfg.timeoutMs;
   const filter = agent.filters.AnswerMessageAdded(conversationId, answerMessageId);
-  // Anchor the scan at the initiatePrompt tx block and advance it each poll. The
-  // public Base Sepolia RPC caps eth_getLogs at ~2000 blocks, so a fixed
-  // [head-5000, head] range would be rejected every iteration. Advancing
-  // fromBlock keeps each window to ~POLL_MS/blocktime blocks (contiguous, no gap,
-  // no re-scan). The answer event always lands after rc.blockNumber.
-  let fromBlock = rc.blockNumber;
+  let from = fromBlock;
   while (Date.now() < deadline) {
     try {
       const head = await provider.getBlockNumber();
-      if (head >= fromBlock) {
-        const evts = await agent.queryFilter(filter, fromBlock, head);
-        if (evts.length) {
-          messageCID = evts[evts.length - 1].args.messageCID;
-          break;
-        }
-        fromBlock = head + 1;
+      if (head >= from) {
+        const evts = await agent.queryFilter(filter, from, head);
+        if (evts.length) return evts;
+        from = head + 1;
       }
       // Informational only — a transient failure here must not abort the poll.
       try {
         if (await agent.isJobFinalized(answerMessageId))
-          log(`  job finalized; awaiting AnswerMessageAdded...`);
+          log(`job finalized; awaiting AnswerMessageAdded...`);
       } catch {
         /* ignore — status log only */
       }
     } catch (e) {
-      // Load-bearing RPC calls (getBlockNumber/queryFilter): a transient blip or
-      // rate-limit must not fail the run — log and retry on the next poll.
-      log(`  transient RPC error (${e?.shortMessage || e?.message || e}) — retrying...`);
+      // Load-bearing RPC calls (getBlockNumber/queryFilter): a transient blip or rate-limit must
+      // not fail the run — log and retry on the next poll.
+      log(`transient RPC error (${e?.shortMessage || e?.message || e}) — retrying...`);
     }
-    await sleep(POLL_MS);
+    await sleep(cfg.pollMs);
   }
-  if (!messageCID)
+  throw new Error(
+    `TIMEOUT: no AnswerMessageAdded for answerMessageId=${answerMessageId} within ${cfg.timeoutMs / 1000}s`,
+  );
+}
+
+/**
+ * One full prompt round-trip from one wallet. Never throws: a failure lands in `result.error` so
+ * burst mode can report every prompt and the metrics file is still written.
+ */
+async function runPrompt({ index, wallet, provider, cfg, promptText, wantStoredPrompt }) {
+  const tag = cfg.burst > 1 ? `[${index}] ` : "";
+  const plog = (...a) => log(tag + a.join(" "));
+  const result = { index, account: wallet.address, answerEventCount: 0 };
+  try {
+    const escrow = new ethers.Contract(cfg.escrow, ESCROW_ABI, wallet);
+    const agent = new ethers.Contract(cfg.agent, AGENT_ABI, provider);
+    const token = new ethers.Contract(cfg.token, ERC20_ABI, wallet);
+
+    // 1. Balances + fee
+    const [dec, sym, bal, ethBal, fee] = await Promise.all([
+      token.decimals(),
+      token.symbol(),
+      token.balanceOf(wallet.address),
+      provider.getBalance(wallet.address),
+      escrow.promptFee(),
+    ]);
+    const fmt = (v) => ethers.formatUnits(v, dec);
+    plog(
+      `balances: ${ethers.formatEther(ethBal)} ETH · ${fmt(bal)} ${sym} · promptFee=${fmt(fee)} ${sym}`,
+    );
+    if (bal < fee)
+      throw new Error(`insufficient ${sym}: have ${fmt(bal)}, prompt costs ${fmt(fee)}`);
+    // Gas guard: without ETH the approve/setSpendingLimit/initiatePrompt txs fail with a raw
+    // INSUFFICIENT_FUNDS that looks like a contract bug. Hard-fail on zero; warn (not block) on
+    // low — Base Sepolia gas is cheap/variable and the test wallets are small + toppable.
+    if (ethBal === 0n) throw new Error("no ETH for gas — fund the wallet before running");
+    if (ethBal < ethers.parseEther("0.001"))
+      plog(
+        `⚠️  low ETH for gas (${ethers.formatEther(ethBal)}) — top up if a tx fails with INSUFFICIENT_FUNDS`,
+      );
+
+    // 2. Plan: approve + setSpendingLimit (headroom for a few prompts)
+    const allowance = fee > 0n ? fee * 5n : ethers.parseUnits("10", dec);
+    const capped = allowance > bal ? bal : allowance;
+    const curAllow = await token.allowance(wallet.address, cfg.escrow);
+    if (curAllow < capped) {
+      plog(`approve ${fmt(capped)} ${sym} → escrow...`);
+      await (await token.approve(cfg.escrow, capped)).wait();
+    }
+    await ensurePlanActive({ escrow, address: wallet.address, capped, fee, sleep, log: plog, fmt });
+
+    // 3. Encrypt payload + session key (random one-shot session key; the oracle recovers it from
+    //    roflEncryptedKey via ECIES, then encrypts the answer — and the stored prompt — with it)
+    const sessionKey = crypto.randomBytes(32);
+    const payload = {
+      promptText,
+      isNewConversation: true,
+      previousMessageId: null,
+      previousMessageCID: null,
+    };
+    const encryptedPayload =
+      "0x" + Buffer.from(aesGcmEncrypt(sessionKey, payload), "utf8").toString("hex");
+    const roflEncryptedKey = await eciesEncrypt(cfg.oraclePublicKey, sessionKey);
+
+    // 4. initiatePrompt (conversationId 0 = new)
+    plog(
+      `initiatePrompt(${JSON.stringify(promptText.slice(0, 60))}${promptText.length > 60 ? "…" : ""})...`,
+    );
+    const submittedAt = Date.now();
+    const rc = await (await escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)).wait();
+    const [submitted] = agentEvents(agent, rc, "PromptSubmitted");
+    if (!submitted) throw new Error("PromptSubmitted not found in receipt logs");
+    Object.assign(result, {
+      conversationId: submitted.args.conversationId,
+      promptMessageId: submitted.args.promptMessageId,
+      answerMessageId: submitted.args.answerMessageId,
+      submitTxHash: rc.hash,
+      submitBlock: rc.blockNumber,
+      submitGasUsed: rc.gasUsed,
+    });
+    plog(
+      `submitted: conversationId=${result.conversationId} answerMessageId=${result.answerMessageId} (tx ${rc.hash})`,
+    );
+
+    // 5. Wait for the on-chain answer CID
+    plog(`waiting up to ${cfg.timeoutMs / 1000}s for the oracle's answer...`);
+    const evts = await waitForAnswer({
+      agent,
+      provider,
+      conversationId: result.conversationId,
+      answerMessageId: result.answerMessageId,
+      fromBlock: rc.blockNumber,
+      cfg,
+      log: plog,
+    });
+    result.latencyMs = Date.now() - submittedAt;
+    result.answerEventCount = evts.length;
+    const evt = evts[evts.length - 1];
+    result.cid = evt.args.messageCID;
+    plog(`answer CID: ${result.cid} (${evts.length} event(s), ${result.latencyMs} ms)`);
+
+    // 5b. The oracle's submitAnswer tx: gas, nonce, sender, and the stored-prompt CID emitted in
+    //     the same tx (PromptMessageAdded for our promptMessageId). NON-FATAL for the verdict: the
+    //     answer is already on-chain, so a flaky RPC here must not reclassify a correct run as an
+    //     oracle failure — it only leaves the metrics columns null (and, in injection mode, the
+    //     stored prompt unread, which assessInjection reports on its own terms).
+    try {
+      const [answerRc, answerTx, submitBlock, answerBlock] = await Promise.all([
+        provider.getTransactionReceipt(evt.transactionHash),
+        provider.getTransaction(evt.transactionHash),
+        provider.getBlock(rc.blockNumber),
+        provider.getBlock(evt.blockNumber),
+      ]);
+      Object.assign(result, {
+        answerTxHash: evt.transactionHash,
+        answerBlock: evt.blockNumber,
+        answerGasUsed: answerRc?.gasUsed,
+        answerFrom: answerTx?.from,
+        answerNonce: answerTx?.nonce,
+        submitTimestamp: submitBlock?.timestamp,
+        answerTimestamp: answerBlock?.timestamp,
+      });
+      if (wantStoredPrompt && answerRc) {
+        const stored = agentEvents(agent, answerRc, "PromptMessageAdded").find(
+          (p) => p.args.messageId === result.promptMessageId,
+        );
+        if (stored) {
+          result.storedPromptCid = stored.args.messageCID;
+          result.storedPrompt = aesGcmDecrypt(
+            sessionKey,
+            await fetchEncrypted(stored.args.messageCID, cfg),
+          );
+        } else {
+          plog(
+            `⚠️  no PromptMessageAdded for promptMessageId=${result.promptMessageId} in the answer tx`,
+          );
+        }
+      }
+    } catch (metaErr) {
+      plog(
+        `⚠️  answer-tx metadata unavailable (gas/nonce/timestamps null): ${metaErr?.shortMessage || metaErr?.message || metaErr}`,
+      );
+    }
+
+    // 6. Fetch + decrypt the answer MessageFile
+    result.answer = aesGcmDecrypt(sessionKey, await fetchEncrypted(result.cid, cfg));
+    const a = result.answer;
+    const reasoning = Array.isArray(a.reasoning) ? a.reasoning : [];
+    const sources = Array.isArray(a.sources) ? a.sources : [];
+    plog(
+      `answer: role=${a.role} contentLen=${(a.content || "").length} reasoning=${reasoning.length} sources=${sources.length}`,
+    );
+    plog(`content: ${(a.content || "").slice(0, 400)}${(a.content || "").length > 400 ? "…" : ""}`);
+    if (sources.length)
+      plog(
+        `sources: ${sources
+          .map((s) => s.title)
+          .slice(0, 5)
+          .join(" · ")}`,
+      );
+  } catch (e) {
+    result.error = e?.shortMessage || e?.message || String(e);
+    plog(`❌ ${result.error}`);
+  }
+  return result;
+}
+
+/** Judges one result: fatal/brain lists plus a verdict for the metrics file. */
+function judge(result, { cfg, canary }) {
+  if (result.error) return { fatal: [result.error], brain: [], verdict: "fail" };
+  const { fatal, brain } = cfg.injection
+    ? assessInjection({
+        answer: result.answer,
+        storedPrompt: result.storedPrompt,
+        canary,
+        asset: cfg.asset,
+      })
+    : assessAnswer(result.answer, { asset: cfg.asset });
+  return { fatal, brain, verdict: fatal.length ? "fail" : brain.length ? "partial" : "pass" };
+}
+
+function oracleNonceSpan(results) {
+  const nonces = results.map((r) => r.answerNonce).filter((n) => Number.isInteger(n));
+  if (!nonces.length) return null;
+  return { before: Math.min(...nonces), after: Math.max(...nonces) + 1 };
+}
+
+async function main() {
+  const cfg = resolveSmokeConfig(process.env);
+  const provider = new ethers.JsonRpcProvider(cfg.rpcUrl);
+  const net = await provider.getNetwork();
+  const wallets = cfg.privateKeys.slice(0, cfg.burst).map((k) => new ethers.Wallet(k, provider));
+  log(`\n── ${cfg.envName} oracle smoke test ──`);
+  log(
+    `chain=${net.chainId} mode=${cfg.burst > 1 ? `burst×${cfg.burst}` : "single"}${cfg.injection ? "+injection" : ""}`,
+  );
+  log(`accounts: ${wallets.map((w) => w.address).join(", ")}`);
+  log(`escrow=${cfg.escrow} agent=${cfg.agent} token=${cfg.token}`);
+  // Guard the chain BEFORE any approve/spend — a wrong SMOKE_RPC_URL would otherwise approve
+  // real tokens + burn real gas before failing.
+  if (net.chainId !== BigInt(cfg.chainId))
     throw new Error(
-      `TIMEOUT: no AnswerMessageAdded for answerMessageId=${answerMessageId} within ${TIMEOUT_MS / 1000}s`,
+      `wrong network: expected chainId ${cfg.chainId} (${cfg.envName}), got ${net.chainId} — check SMOKE_RPC_URL / SMOKE_CHAIN_ID / SMOKE_ENV`,
     );
-  log(`answer CID: ${messageCID}`);
 
-  // 6. Fetch + decrypt the answer MessageFile
-  const encryptedAnswer = await fetchEncrypted(messageCID);
-  const answer = aesGcmDecrypt(sessionKey, encryptedAnswer);
+  const canary = cfg.injection ? makeCanary() : undefined;
+  const promptText = cfg.injection
+    ? buildInjectionPrompt({ question: cfg.prompt, canary })
+    : cfg.prompt;
+  if (cfg.injection) log(`injection canary: ${canary}`);
 
-  // 7. Assert Brain-enriched answer
-  const reasoning = Array.isArray(answer.reasoning) ? answer.reasoning : [];
-  const sources = Array.isArray(answer.sources) ? answer.sources : [];
-  log(`\n── answer ──`);
-  log(
-    `role=${answer.role} contentLen=${(answer.content || "").length} reasoning=${reasoning.length} sources=${sources.length}`,
+  const startedAt = new Date().toISOString();
+  const results = await Promise.all(
+    wallets.map((wallet, index) =>
+      runPrompt({ index, wallet, provider, cfg, promptText, wantStoredPrompt: cfg.injection }),
+    ),
   );
-  log(
-    `content: ${(answer.content || "").slice(0, 400)}${(answer.content || "").length > 400 ? "…" : ""}`,
-  );
-  if (reasoning.length) log(`reasoning[0]: ${JSON.stringify(reasoning[0]).slice(0, 200)}`);
-  if (sources.length)
+  const finishedAt = new Date().toISOString();
+
+  const judged = results.map((r) => judge(r, { cfg, canary }));
+  const fatal = judged.flatMap((j, i) => j.fatal.map((m) => (cfg.burst > 1 ? `[${i}] ${m}` : m)));
+  const brain = judged.flatMap((j, i) => j.brain.map((m) => (cfg.burst > 1 ? `[${i}] ${m}` : m)));
+  if (cfg.burst > 1)
+    fatal.push(...assertOneAnswerPerPrompt(results, { expected: cfg.burst }).problems);
+
+  const oracleNonce = oracleNonceSpan(results);
+  const metrics = buildMetrics({
+    env: cfg.envName,
+    chainId: cfg.chainId,
+    mode: { burst: cfg.burst, injection: cfg.injection },
+    startedAt,
+    finishedAt,
+    prompts: results.map((r, i) => ({ ...r, verdict: judged[i].verdict })),
+    oracleNonce,
+  });
+  const written = writeMetrics(cfg.metricsFile, metrics);
+  log(`\nmetrics → ${written}`);
+  if (oracleNonce)
     log(
-      `sources: ${sources
-        .map((s) => s.title)
-        .slice(0, 5)
-        .join(" · ")}`,
+      `oracle ${results.find((r) => r.answerFrom)?.answerFrom}: nonces ${oracleNonce.before}…${oracleNonce.after - 1} (${oracleNonce.after - oracleNonce.before} submitAnswer tx)`,
     );
+  log(
+    `latency ms: ${JSON.stringify(metrics.summary.latencyMs)} · submitAnswer gas: ${JSON.stringify(metrics.summary.answerGasUsed)}`,
+  );
 
-  // Split oracle-health from cache-warmth so a scheduled canary can alert
-  // differently: exit 1 = oracle broken (page), exit 2 = oracle healthy but the
-  // Brain warm cache is cold (seed it — not an oracle failure), exit 0 = full pass.
-  //
-  // THE JUDGEMENT LIVES IN answerQuality.js, not here. This block used to assert structure only
-  // — role, length, reasoning/sources non-empty — and every one of those was TRUE for both
-  // recorded production failures, because the Brain populates reasoning and sources regardless
-  // of what the model actually said. The smoke reported PASS on a fenced TypeScript snippet and
-  // on an apology. A module can be tested against those fixtures; this script, which needs a
-  // funded wallet and a live TEE, cannot.
-  const { fatal, brain } = assessAnswer(answer, { asset: SMOKE_ASSET });
-
+  // Split oracle-health from cache-warmth so a scheduled canary can alert differently: exit 1 =
+  // oracle broken (page), exit 2 = oracle healthy but the Brain warm cache is cold (seed it — not
+  // an oracle failure), exit 0 = full pass. THE JUDGEMENT LIVES IN answerQuality.js and
+  // smoke/injection.js, not here — a module can be tested against recorded failures; this
+  // script, which needs funded wallets and a live TEE, cannot.
   if (fatal.length) {
-    log(`\n❌ SMOKE FAIL (oracle broken):\n - ${fatal.join("\n - ")}`);
+    log(`\n❌ SMOKE FAIL (oracle broken):\n - ${[...new Set(fatal)].join("\n - ")}`);
     process.exit(1);
   }
   if (brain.length) {
     log(
-      `\n⚠️  SMOKE PARTIAL (oracle healthy, Brain cache cold — exit 2):\n - ${brain.join("\n - ")}`,
+      `\n⚠️  SMOKE PARTIAL (oracle healthy, Brain cache cold — exit 2):\n - ${[...new Set(brain)].join("\n - ")}`,
     );
     log(
       `(The social testnet body keeps the warm cache populated; seed market_news/macro rows if cold, then re-run. NOT an oracle failure.)`,
     );
     process.exit(2);
   }
-  log(`\n✅ SMOKE PASS — deployed oracle answered with Brain-enriched reasoning + sources.`);
+  log(
+    `\n✅ SMOKE PASS — ${results.length} prompt(s) answered with Brain-enriched reasoning + sources${cfg.injection ? ", injection ignored" : ""}.`,
+  );
 }
 
 // Only run when executed directly — `require()`ing this file (the unit tests do) must not fire
-// a live smoke run against Base Sepolia.
+// a live smoke run.
 if (require.main === module) {
   main().catch((e) => {
     console.error(`\n❌ SMOKE ERROR: ${e?.stack || e}`);
@@ -429,4 +470,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ensurePlanActive, ESCROW_ABI, AGENT_ABI, ERC20_ABI };
+module.exports = {
+  ensurePlanActive,
+  agentEvents,
+  judge,
+  oracleNonceSpan,
+  ESCROW_ABI,
+  AGENT_ABI,
+  ERC20_ABI,
+};
