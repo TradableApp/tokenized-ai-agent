@@ -32,8 +32,9 @@ function assertOneAnswerPerPrompt(results, { expected } = {}) {
     problems.push(`expected ${expected} prompt results, got ${results.length}`);
 
   results.forEach((r) => {
+    // An errored prompt has no events by definition — one line for it, not two.
     if (r.error) problems.push(`prompt ${r.index} did not get an answer: ${r.error}`);
-    if (r.answerEventCount !== 1)
+    else if (r.answerEventCount !== 1)
       problems.push(
         `prompt ${r.index} has ${r.answerEventCount ?? 0} AnswerMessageAdded logs for ` +
           `answerMessageId ${r.answerMessageId} (expected exactly 1)`,

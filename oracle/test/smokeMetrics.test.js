@@ -78,8 +78,29 @@ describe("smoke: buildMetrics", () => {
     expect(m.prompts[0].answerGasUsed).to.equal(null);
     expect(m.prompts[0].chainLatencyS).to.equal(null);
     expect(m.summary.latencyMs).to.deep.equal({ min: null, p50: null, max: null });
-    expect(m.summary.answerGasUsed).to.deep.equal({ total: "0", mean: null });
+    expect(m.summary.answerGasUsed).to.deep.equal({ total: null, mean: null }); // no samples ≠ zero gas
     expect(m.oracleNonce).to.equal(null);
+  });
+});
+
+describe("smoke: latency p50", () => {
+  const run = (latencies) =>
+    buildMetrics({
+      env: "base-testnet",
+      chainId: 84532,
+      mode: { burst: latencies.length, injection: false },
+      startedAt: "2026-10-28T04:00:00.000Z",
+      finishedAt: "2026-10-28T04:01:00.000Z",
+      prompts: latencies.map((latencyMs, i) => prompt(i, { latencyMs })),
+    }).summary.latencyMs;
+
+  it("is the middle sample for an odd count", () => {
+    expect(run([40_000, 20_000, 30_000]).p50).to.equal(30_000);
+  });
+
+  it("is the mean of the two middle samples for an even count — never just the min", () => {
+    expect(run([12_000, 45_000]).p50).to.equal(28_500);
+    expect(run([10, 20, 30, 41]).p50).to.equal(25);
   });
 });
 

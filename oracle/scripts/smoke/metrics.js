@@ -14,23 +14,25 @@ const num = (v) => (v === undefined || v === null ? null : Number(v));
 
 const sumBig = (values) => values.reduce((acc, v) => acc + BigInt(v), 0n);
 
-function latencySummary(values) {
-  const sorted = values.filter((v) => v !== undefined && v !== null).sort((a, b) => a - b);
-  if (!sorted.length) return { min: null, p50: null, max: null };
-  return {
-    min: sorted[0],
-    p50: sorted[Math.floor((sorted.length - 1) / 2)],
-    max: sorted[sorted.length - 1],
-  };
+/** Conventional median: the middle sample, or the rounded mean of the two middle samples. */
+function median(sorted) {
+  const n = sorted.length;
+  const mid = Math.floor(n / 2);
+  return n % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 }
 
+function latencySummary(values) {
+  const sorted = values.filter((v) => v != null).sort((a, b) => a - b);
+  if (!sorted.length) return { min: null, p50: null, max: null };
+  return { min: sorted[0], p50: median(sorted), max: sorted[sorted.length - 1] };
+}
+
+/** No samples → null, not "0": a run where nothing was submitted did not cost zero gas. */
 function gasSummary(values) {
-  const present = values.filter((v) => v !== undefined && v !== null);
+  const present = values.filter((v) => v != null);
+  if (!present.length) return { total: null, mean: null };
   const total = sumBig(present);
-  return {
-    total: total.toString(),
-    mean: present.length ? (total / BigInt(present.length)).toString() : null,
-  };
+  return { total: total.toString(), mean: (total / BigInt(present.length)).toString() };
 }
 
 /**
@@ -56,7 +58,7 @@ function buildMetrics({ env, chainId, mode, startedAt, finishedAt, prompts, orac
     cid: p.cid ?? null,
     latencyMs: num(p.latencyMs),
     chainLatencyS:
-      p.answerTimestamp !== undefined && p.answerTimestamp !== null && p.submitTimestamp != null
+      p.answerTimestamp != null && p.submitTimestamp != null
         ? Number(p.answerTimestamp) - Number(p.submitTimestamp)
         : null,
     verdict: p.verdict,

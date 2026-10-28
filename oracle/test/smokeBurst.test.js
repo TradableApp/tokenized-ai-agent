@@ -58,6 +58,8 @@ describe("smoke: assertOneAnswerPerPrompt", () => {
     ]);
     expect(v.ok).to.equal(false);
     expect(v.problems.join("\n")).to.match(/prompt 1 .*TIMEOUT/);
+    // One line per errored prompt — not a second "0 AnswerMessageAdded logs for undefined" line.
+    expect(v.problems).to.have.length(1);
   });
 
   it("requires the count it was promised", () => {
