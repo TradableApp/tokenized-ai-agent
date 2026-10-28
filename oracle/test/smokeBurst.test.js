@@ -26,7 +26,11 @@ describe("smoke: assertOneAnswerPerPrompt", () => {
 
   it("names a CID that landed on two prompts (cross-wired answers)", () => {
     const shared = `bafkr6i${"z".repeat(41)}`;
-    const v = assertOneAnswerPerPrompt([result(0, { cid: shared }), result(1, { cid: shared }), result(2)]);
+    const v = assertOneAnswerPerPrompt([
+      result(0, { cid: shared }),
+      result(1, { cid: shared }),
+      result(2),
+    ]);
     expect(v.ok).to.equal(false);
     expect(v.problems.join("\n")).to.match(/CID .*shared by prompts 0, 1/);
   });
@@ -38,14 +42,20 @@ describe("smoke: assertOneAnswerPerPrompt", () => {
   });
 
   it("names a prompt with more than one AnswerMessageAdded log, or none", () => {
-    const v = assertOneAnswerPerPrompt([result(0, { answerEventCount: 2 }), result(1, { answerEventCount: 0 })]);
+    const v = assertOneAnswerPerPrompt([
+      result(0, { answerEventCount: 2 }),
+      result(1, { answerEventCount: 0 }),
+    ]);
     expect(v.ok).to.equal(false);
     expect(v.problems.join("\n")).to.match(/prompt 0 .*2 AnswerMessageAdded/);
     expect(v.problems.join("\n")).to.match(/prompt 1 .*0 AnswerMessageAdded/);
   });
 
   it("names a prompt that never got an answer", () => {
-    const v = assertOneAnswerPerPrompt([result(0), result(1, { answerMessageId: "201", cid: undefined, answerEventCount: 0, error: "TIMEOUT" })]);
+    const v = assertOneAnswerPerPrompt([
+      result(0),
+      result(1, { answerMessageId: "201", cid: undefined, answerEventCount: 0, error: "TIMEOUT" }),
+    ]);
     expect(v.ok).to.equal(false);
     expect(v.problems.join("\n")).to.match(/prompt 1 .*TIMEOUT/);
   });

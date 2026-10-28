@@ -57,9 +57,23 @@ describe("smoke: buildMetrics", () => {
 
   it("copes with a prompt that never answered (no answer receipt)", () => {
     const m = buildMetrics({
-      env: "base-testnet", chainId: 84532, mode: { burst: 1, injection: false },
-      startedAt: "2026-10-28T04:00:00.000Z", finishedAt: "2026-10-28T04:05:00.000Z",
-      prompts: [prompt(0, { answerTxHash: undefined, answerBlock: undefined, answerGasUsed: undefined, answerTimestamp: undefined, cid: undefined, latencyMs: undefined, verdict: "fail", error: "TIMEOUT" })],
+      env: "base-testnet",
+      chainId: 84532,
+      mode: { burst: 1, injection: false },
+      startedAt: "2026-10-28T04:00:00.000Z",
+      finishedAt: "2026-10-28T04:05:00.000Z",
+      prompts: [
+        prompt(0, {
+          answerTxHash: undefined,
+          answerBlock: undefined,
+          answerGasUsed: undefined,
+          answerTimestamp: undefined,
+          cid: undefined,
+          latencyMs: undefined,
+          verdict: "fail",
+          error: "TIMEOUT",
+        }),
+      ],
     });
     expect(m.prompts[0].answerGasUsed).to.equal(null);
     expect(m.prompts[0].chainLatencyS).to.equal(null);

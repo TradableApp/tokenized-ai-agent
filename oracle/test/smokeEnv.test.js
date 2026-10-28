@@ -12,6 +12,16 @@ const KEY_B = `0x${"22".repeat(32)}`;
 const KEY_C = `0x${"33".repeat(32)}`;
 const ORACLE_PUB = `04${"ab".repeat(64)}`;
 
+/** chai's `.to.throw(fn)` treats a function as a constructor, so capture the error by hand. */
+const thrownBy = (fn) => {
+  try {
+    fn();
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected the call to throw");
+};
+
 describe("smoke: SMOKE_ENV tables", () => {
   it("base-testnet carries today's defaults", () => {
     const t = SMOKE_ENVS["base-testnet"];
@@ -65,42 +75,59 @@ describe("smoke: resolveSmokeConfig", () => {
   });
 
   it("base-mainnet fails once, naming every missing variable and never echoing a value", () => {
-    expect(() =>
-      resolveSmokeConfig({ SMOKE_ENV: "base-mainnet", SMOKE_PRIVATE_KEY: KEY_A, SMOKE_RPC_URL: "https://rpc.example/v2/SECRET" }),
-    ).to.throw((err) => {
-      expect(err.message).to.include("SMOKE_ESCROW_ADDRESS");
-      expect(err.message).to.include("SMOKE_AGENT_ADDRESS");
-      expect(err.message).to.include("SMOKE_TOKEN_ADDRESS");
-      expect(err.message).to.include("SMOKE_ORACLE_PUBLIC_KEY");
-      expect(err.message).not.to.include("SECRET");
-      expect(err.message).not.to.include(KEY_A);
-      return true;
-    });
+    const err = thrownBy(() =>
+      resolveSmokeConfig({
+        SMOKE_ENV: "base-mainnet",
+        SMOKE_PRIVATE_KEY: KEY_A,
+        SMOKE_RPC_URL: "https://rpc.example/v2/SECRET",
+      }),
+    );
+    expect(err.message).to.include("SMOKE_ESCROW_ADDRESS");
+    expect(err.message).to.include("SMOKE_AGENT_ADDRESS");
+    expect(err.message).to.include("SMOKE_TOKEN_ADDRESS");
+    expect(err.message).to.include("SMOKE_ORACLE_PUBLIC_KEY");
+    expect(err.message).not.to.include("SECRET");
+    expect(err.message).not.to.include(KEY_A);
   });
 
   it("rejects an unknown SMOKE_ENV by name and lists the known ones", () => {
-    expect(() => resolveSmokeConfig({ SMOKE_ENV: "base-goerli", SMOKE_PRIVATE_KEY: KEY_A })).to.throw(/base-goerli.*base-testnet.*base-mainnet/s);
+    expect(() =>
+      resolveSmokeConfig({ SMOKE_ENV: "base-goerli", SMOKE_PRIVATE_KEY: KEY_A }),
+    ).to.throw(/base-goerli.*base-testnet.*base-mainnet/s);
   });
 
   it("keeps the three-state SMOKE_ASSET rule: set-but-empty disables, custom prompt without asset means none", () => {
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_ASSET: "" }).asset).to.equal(undefined);
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_PROMPT: "Tell me about Solana" }).asset).to.equal(undefined);
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_PROMPT: "Tell me about Solana", SMOKE_ASSET: "Solana" }).asset).to.equal("Solana");
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_ASSET: "" }).asset).to.equal(
+      undefined,
+    );
+    expect(
+      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_PROMPT: "Tell me about Solana" }).asset,
+    ).to.equal(undefined);
+    expect(
+      resolveSmokeConfig({
+        SMOKE_PRIVATE_KEY: KEY_A,
+        SMOKE_PROMPT: "Tell me about Solana",
+        SMOKE_ASSET: "Solana",
+      }).asset,
+    ).to.equal("Solana");
   });
 
   describe("burst", () => {
     it("SMOKE_BURST=N needs N keys in SMOKE_PRIVATE_KEYS, one account per prompt", () => {
-      const c = resolveSmokeConfig({ SMOKE_BURST: "3", SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}, ${KEY_C}` });
+      const c = resolveSmokeConfig({
+        SMOKE_BURST: "3",
+        SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}, ${KEY_C}`,
+      });
       expect(c.burst).to.equal(3);
       expect(c.privateKeys).to.deep.equal([KEY_A, KEY_B, KEY_C]);
     });
 
     it("fewer keys than the burst size fails by count, not by key", () => {
-      expect(() => resolveSmokeConfig({ SMOKE_BURST: "3", SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}` })).to.throw((err) => {
-        expect(err.message).to.match(/SMOKE_BURST=3.*2 key/s);
-        expect(err.message).not.to.include(KEY_A.slice(2, 20));
-        return true;
-      });
+      const err = thrownBy(() =>
+        resolveSmokeConfig({ SMOKE_BURST: "3", SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}` }),
+      );
+      expect(err.message).to.match(/SMOKE_BURST=3.*2 key/s);
+      expect(err.message).not.to.include(KEY_A.slice(2, 20));
     });
 
     it("SMOKE_PRIVATE_KEYS alone (no burst) means a single prompt from the first key", () => {
@@ -110,15 +137,25 @@ describe("smoke: resolveSmokeConfig", () => {
     });
 
     it("rejects a non-integer or zero burst and a missing key", () => {
-      expect(() => resolveSmokeConfig({ SMOKE_BURST: "0", SMOKE_PRIVATE_KEY: KEY_A })).to.throw(/SMOKE_BURST/);
-      expect(() => resolveSmokeConfig({ SMOKE_BURST: "two", SMOKE_PRIVATE_KEY: KEY_A })).to.throw(/SMOKE_BURST/);
+      expect(() => resolveSmokeConfig({ SMOKE_BURST: "0", SMOKE_PRIVATE_KEY: KEY_A })).to.throw(
+        /SMOKE_BURST/,
+      );
+      expect(() => resolveSmokeConfig({ SMOKE_BURST: "two", SMOKE_PRIVATE_KEY: KEY_A })).to.throw(
+        /SMOKE_BURST/,
+      );
       expect(() => resolveSmokeConfig({})).to.throw(/SMOKE_PRIVATE_KEY/);
     });
   });
 
   it("SMOKE_INJECTION=1 (or true) switches the injection prompt on", () => {
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "1" }).injection).to.equal(true);
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "true" }).injection).to.equal(true);
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "0" }).injection).to.equal(false);
+    expect(
+      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "1" }).injection,
+    ).to.equal(true);
+    expect(
+      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "true" }).injection,
+    ).to.equal(true);
+    expect(
+      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "0" }).injection,
+    ).to.equal(false);
   });
 });
