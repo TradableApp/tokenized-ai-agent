@@ -43,7 +43,7 @@ module.exports = {
       chainId: 8453,
       verify: {
         etherscan: {
-          apiUrl: "https://api-sepolia.basescan.org",
+          apiUrl: "https://api.basescan.org",
           apiKey: ETHERSCAN_API_KEY, // single Etherscan.io key
         },
       },

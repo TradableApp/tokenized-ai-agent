@@ -13,9 +13,60 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
 
+// --- Base mainnet guard -------------------------------------------------------------------
+// `deploy:base-mainnet` reads .env.base-mainnet, which ships with placeholder addresses until
+// the mainnet contracts exist. `ethers` treats a non-address string as an ENS name and defers
+// resolution, so a placeholder would not fail until the first transaction had already cost gas.
+// On `base` every address-shaped variable must be a real address, and the run must be confirmed
+// with DEPLOY_MAINNET_CONFIRMED=1 (exactly "1"), mirroring REHEARSAL_MAINNET_CONFIRMED in
+// scripts/admin-rehearsal.js. Other networks are untouched.
+const MAINNET_NETWORK = "base";
+const CONFIRM_VAR = "DEPLOY_MAINNET_CONFIRMED";
+const ADDRESS_ENV_VARS = [
+  "TOKEN_CONTRACT_ADDRESS",
+  "AI_AGENT_CONTRACT_ADDRESS",
+  "AI_AGENT_ESCROW_CONTRACT_ADDRESS",
+  "TREASURY_ADDRESS",
+];
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+function deployProblems({ networkName, env }) {
+  if (networkName !== MAINNET_NETWORK) return [];
+  const problems = [];
+  for (const name of ADDRESS_ENV_VARS) {
+    const value = env[name];
+    if (value !== undefined && value !== "" && !ADDRESS_RE.test(value)) {
+      problems.push(`${name} is a placeholder or malformed: ${JSON.stringify(value)}`);
+    }
+  }
+  if (!env.AI_AGENT_ESCROW_CONTRACT_ADDRESS && !env.TOKEN_CONTRACT_ADDRESS) {
+    problems.push(
+      `TOKEN_CONTRACT_ADDRESS is required for a new EVMAIAgentEscrow deployment on ${MAINNET_NETWORK}`,
+    );
+  }
+  if (env[CONFIRM_VAR] !== "1") {
+    const shown = env[CONFIRM_VAR] === undefined ? "unset" : JSON.stringify(env[CONFIRM_VAR]);
+    problems.push(
+      `${CONFIRM_VAR} is ${shown}; a live deploy to ${MAINNET_NETWORK} needs exactly ${CONFIRM_VAR}=1 bun run deploy:base-mainnet`,
+    );
+  }
+  return problems;
+}
+
+function assertDeployAllowed(ctx) {
+  const problems = deployProblems(ctx);
+  if (problems.length === 0) return;
+  throw new Error(`Deployment to ${ctx.networkName} refused:\n  - ${problems.join("\n  - ")}`);
+}
+
+function explorerFor(networkName) {
+  return networkName === MAINNET_NETWORK ? "https://basescan.org" : "https://sepolia.basescan.org";
+}
+
 async function main() {
   const networkName = hre.network.name;
   const isSapphire = SAPPHIRE_NETWORKS.has(networkName);
+  assertDeployAllowed({ networkName, env: process.env });
 
   console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
 
@@ -258,7 +309,7 @@ async function main() {
         await hre.run("verify:verify", { address: aiAgentAddress });
         console.log(chalk.green(`✅ EVMAIAgent verified!`));
         console.log(
-          chalk.cyan(`   Explorer: https://sepolia.basescan.org/address/${aiAgentAddress}#code`),
+          chalk.cyan(`   Explorer: ${explorerFor(networkName)}/address/${aiAgentAddress}#code`),
         ); // Explicit URL
       } catch (error) {
         console.error(chalk.red("Verification failed:", error.message));
@@ -270,7 +321,7 @@ async function main() {
         console.log(chalk.green(`✅ EVMAIAgentEscrow verified!`));
         console.log(
           chalk.cyan(
-            `   Explorer: https://sepolia.basescan.org/address/${aiAgentEscrowAddress}#code`,
+            `   Explorer: ${explorerFor(networkName)}/address/${aiAgentEscrowAddress}#code`,
           ),
         ); // Explicit URL
       } catch (error) {
@@ -282,7 +333,11 @@ async function main() {
   console.log("\n--- Deployment Finished ---");
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+module.exports = { deployProblems, assertDeployAllowed, explorerFor, CONFIRM_VAR, MAINNET_NETWORK };
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

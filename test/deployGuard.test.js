@@ -59,7 +59,10 @@ describe("scripts/deploy — Base mainnet guard", function () {
 
   it(`refuses base unless ${CONFIRM_VAR} is exactly "1"`, function () {
     for (const value of [undefined, "", "true", "yes", " 1"]) {
-      const problems = deployProblems({ networkName: "base", env: { ...resolved, [CONFIRM_VAR]: value } });
+      const problems = deployProblems({
+        networkName: "base",
+        env: { ...resolved, [CONFIRM_VAR]: value },
+      });
       expect(problems, JSON.stringify(value)).to.have.lengthOf(1);
       expect(problems[0]).to.include(`${CONFIRM_VAR}=1`);
     }
@@ -82,7 +85,9 @@ describe("scripts/deploy — Base mainnet guard", function () {
 
 describe("hardhat.config — Basescan verify endpoints", function () {
   it("base verifies against the mainnet API, baseSepolia against the sepolia API", function () {
-    expect(hardhatConfig.networks.base.verify.etherscan.apiUrl).to.equal("https://api.basescan.org");
+    expect(hardhatConfig.networks.base.verify.etherscan.apiUrl).to.equal(
+      "https://api.basescan.org",
+    );
     expect(hardhatConfig.networks.baseSepolia.verify.etherscan.apiUrl).to.equal(
       "https://api-sepolia.basescan.org",
     );
@@ -90,7 +95,9 @@ describe("hardhat.config — Basescan verify endpoints", function () {
 });
 
 describe("package scripts — ROFL signing goes through the Keychain wrapper", function () {
-  const { scripts } = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  const { scripts } = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"),
+  );
   const signing = Object.entries(scripts).filter(([name]) =>
     /^rofl:(create|update|deploy):/.test(name),
   );

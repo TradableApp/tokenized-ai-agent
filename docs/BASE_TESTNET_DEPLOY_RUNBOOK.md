@@ -85,6 +85,17 @@ bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testn
 # or: expect scripts/oasis-unlock.exp <oasis args…>
 ```
 
+The package scripts are routed through it too: every `rofl:create:*`, `rofl:update:*` and
+`rofl:deploy:*` script runs `expect scripts/oasis-unlock.exp rofl …` rather than `oasis rofl …`
+bare, so `bun run rofl:deploy:base-testnet` is equivalent to the wrapper line above
+(`test/deployGuard.test.js` pins this). Mind the order and what each script bundles:
+`rofl:set:<env>` → `rofl:build:<env>` → `rofl update` → `rofl deploy`. `rofl:update:<env>`
+re-runs `rofl:set:<env>` first, which re-encrypts every secret and churns the ciphertexts in
+`rofl.yaml` — fine for a full sync, noisy for a manifest-only push (A.8 uses the bare wrapper
+for that reason). A `rofl update` after editing `compose.<env>.yaml` without a `rofl:build`
+pushes the OLD enclave identity; a `rofl:build` without a following `rofl update` deploys the
+old one. Commit `rofl.yaml` after the update, not before.
+
 Exit codes: the child's status, `1` timeout (15 min), `2` no Keychain item for that account,
 `3` passphrase rejected. The Keychain may show an "Always Allow" dialog on first use per
 binary — expected. Claude Code drives these steps itself with the wrapper; the `(you; passphrase)`
@@ -327,6 +338,10 @@ mainnet run can check for it up front instead of rediscovering it.
 
 ### Mainnet pre-flight additions (do before the first mainnet `rofl deploy`)
 
+- [ ] **Refresh the Sapphire-mainnet trust root** (mainnet counterpart of A.1; read-only, no passphrase):
+  `oasis rofl trust-root --network mainnet --paratime sapphire` → set `height` + `hash` under
+  `deployments.base-mainnet.trust_root` in `rofl.yaml`. Re-verify it after `rofl:build:base-mainnet`
+  (the build can rewrite it) and commit `rofl.yaml`.
 - [ ] `resources.storage.size` + 2048 ≤ chosen offer storage, with ≥ 1 GiB headroom; confirm the qcow2 size from the built bundle.
 - [ ] `--term hour` on the deploy command; ROSE balance read from the ParaTime block covers rental + registration deposit.
 - [ ] No stale `machines:` id for the target deployment.

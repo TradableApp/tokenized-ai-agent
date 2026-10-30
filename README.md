@@ -167,6 +167,13 @@ bun run deploy:base-testnet
 
 _Copy the `EVMAIAgent` and `EVMAIAgentEscrow` addresses into `oracle/.env.oracle.base-testnet`._
 
+> **Base mainnet** uses the same script with `.env.base-mainnet`, but `deploy:base-mainnet` refuses
+> to run while any of `TOKEN_CONTRACT_ADDRESS`, `AI_AGENT_CONTRACT_ADDRESS`,
+> `AI_AGENT_ESCROW_CONTRACT_ADDRESS`, `TREASURY_ADDRESS` is a placeholder, and unless
+> `DEPLOY_MAINNET_CONFIRMED=1` is exported (exactly `1`, mirroring `REHEARSAL_MAINNET_CONFIRMED`
+> for the admin rehearsal): `DEPLOY_MAINNET_CONFIRMED=1 bun run deploy:base-mainnet`. Testnet,
+> localnet and Sapphire deploys are unaffected.
+
 ### 2. Derive the Oracle Public Key
 
 The oracle uses its public key for ECIES encryption. Derive it from `PRIVATE_KEY`:
