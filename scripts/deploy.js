@@ -44,6 +44,14 @@ function deployProblems({ networkName, env }) {
       `TOKEN_CONTRACT_ADDRESS is required for a new EVMAIAgentEscrow deployment on ${MAINNET_NETWORK}`,
     );
   }
+  // A fresh proxy initialises its treasury from TREASURY_ADDRESS, falling back to the deployer
+  // key — fine on testnet, wrong on mainnet (fees would accrue to the deploy key, not the Safe).
+  const deploysNewProxy = !env.AI_AGENT_CONTRACT_ADDRESS || !env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
+  if (deploysNewProxy && !env.TREASURY_ADDRESS) {
+    problems.push(
+      `TREASURY_ADDRESS must be set explicitly for a new proxy deployment on ${MAINNET_NETWORK} (it is where fees accrue; the deployer-key fallback is testnet-only)`,
+    );
+  }
   if (env[CONFIRM_VAR] !== "1") {
     const shown = env[CONFIRM_VAR] === undefined ? "unset" : JSON.stringify(env[CONFIRM_VAR]);
     problems.push(

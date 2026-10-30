@@ -10,6 +10,7 @@ const resolved = {
   TOKEN_CONTRACT_ADDRESS: ADDRESS,
   AI_AGENT_CONTRACT_ADDRESS: ADDRESS,
   AI_AGENT_ESCROW_CONTRACT_ADDRESS: ADDRESS,
+  TREASURY_ADDRESS: ADDRESS,
   [CONFIRM_VAR]: "1",
 };
 
@@ -49,6 +50,23 @@ describe("scripts/deploy — Base mainnet guard", function () {
     const problems = deployProblems({ networkName: "base", env });
     expect(problems).to.have.lengthOf(1);
     expect(problems[0]).to.include("TOKEN_CONTRACT_ADDRESS");
+  });
+
+  it("requires TREASURY_ADDRESS on base when a new proxy would be deployed", function () {
+    for (const missing of ["AI_AGENT_CONTRACT_ADDRESS", "AI_AGENT_ESCROW_CONTRACT_ADDRESS"]) {
+      const env = { ...resolved };
+      delete env[missing];
+      delete env.TREASURY_ADDRESS;
+      const problems = deployProblems({ networkName: "base", env });
+      expect(problems, missing).to.have.lengthOf(1);
+      expect(problems[0]).to.include("TREASURY_ADDRESS");
+    }
+  });
+
+  it("does not require TREASURY_ADDRESS on base for a pure upgrade of both proxies", function () {
+    const env = { ...resolved };
+    delete env.TREASURY_ADDRESS;
+    expect(deployProblems({ networkName: "base", env })).to.deep.equal([]);
   });
 
   it("does not require TOKEN_CONTRACT_ADDRESS on base when upgrading an existing escrow", function () {
@@ -102,16 +120,13 @@ describe("package scripts — ROFL signing goes through the Keychain wrapper", f
     /^rofl:(create|update|deploy):/.test(name),
   );
 
-  it("covers every rofl:create / rofl:update / rofl:deploy script", function () {
-    expect(signing.map(([name]) => name)).to.include.members([
-      "rofl:create:base-testnet",
-      "rofl:update:base-testnet",
-      "rofl:deploy:base-testnet",
-      "rofl:create:base-mainnet",
-      "rofl:update:base-mainnet",
-      "rofl:deploy:base-mainnet",
-      "rofl:update:sepolia-on-mainnet",
-    ]);
+  it("covers every rofl:create / rofl:update / rofl:deploy script (all 13, exactly)", function () {
+    const expected = [];
+    for (const env of ["testnet", "base-testnet", "mainnet", "base-mainnet"]) {
+      expected.push(`rofl:create:${env}`, `rofl:update:${env}`, `rofl:deploy:${env}`);
+    }
+    expected.push("rofl:update:sepolia-on-mainnet");
+    expect(signing.map(([name]) => name).sort()).to.deep.equal(expected.sort());
   });
 
   it("never invokes a signing `oasis rofl` command bare", function () {
