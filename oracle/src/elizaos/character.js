@@ -30,7 +30,7 @@ const character = {
 
   settings: {
     // Defines the primary model to use if specific task models aren't found
-    model: "gemini-pro-latest",
+    model: "gemini-3.8-flash",
 
     // Safety settings for the Google Plugin
     google_safety: {
