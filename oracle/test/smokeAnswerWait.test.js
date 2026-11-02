@@ -184,6 +184,40 @@ describe("smoke: waitForAnswer — chunked eth_getLogs", () => {
   });
 });
 
+describe("smoke: waitForAnswer — deadline inside a long catch-up", () => {
+  it("stops issuing chunks once the deadline passes, even mid-walk", async () => {
+    // The chain is 500 blocks past fromBlock (the provider was unreachable for a while) and the
+    // deadline expires after the third chunk: the walk must stop there, not drain all 50 chunks.
+    let t = 0;
+    const { agent, provider, calls } = fakeChain({ head: () => FROM + 499, responses: [[]] });
+    const slowAgent = {
+      ...agent,
+      queryFilter: async (...a) => {
+        t += 1_000; // each eth_getLogs costs a second of wall clock
+        return agent.queryFilter(...a);
+      },
+    };
+    let err;
+    try {
+      await waitForAnswer({
+        agent: slowAgent,
+        provider,
+        conversationId: CONV,
+        answerMessageId: MSG,
+        fromBlock: FROM,
+        cfg: { ...cfg, timeoutMs: 2_500 },
+        log: () => {},
+        now: () => t,
+        sleep: async (ms) => void (t += ms),
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err?.message).to.match(/^TIMEOUT: no AnswerMessageAdded/);
+    expect(calls.length, "chunks requested after the deadline").to.equal(3);
+  });
+});
+
 describe("smoke: rpcErrorMessage", () => {
   it("prefers the node's JSON-RPC error over ethers' wrapper text", () => {
     const e = Object.assign(new Error("could not coalesce error (payload=…)"), {
