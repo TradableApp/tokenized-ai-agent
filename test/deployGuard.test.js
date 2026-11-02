@@ -136,6 +136,28 @@ describe("package scripts — ROFL signing goes through the Keychain wrapper", f
     }
   });
 
+  it("routes every logs:<env> script through the same wrapper with the deployment's own account", function () {
+    // `rofl machine logs` prompts for the passphrase of the account that owns the machine, so
+    // the logs scripts must name that account: the wrapper derives the Keychain item from
+    // `--account`, and a logs script without one falls back to the shared item and is refused.
+    const logs = Object.entries(scripts).filter(([name]) => /^logs:/.test(name));
+    expect(logs.map(([name]) => name).sort()).to.deep.equal([
+      "logs:base-mainnet",
+      "logs:base-testnet",
+    ]);
+    const accountFor = { "base-testnet": "oasis_testnet", "base-mainnet": "oasis_mainnet" };
+    for (const [name, cmd] of logs) {
+      const env = name.slice("logs:".length);
+      expect(cmd, name).to.equal(
+        `expect scripts/oasis-unlock.exp rofl machine logs --deployment ${env} --account ${accountFor[env]}`,
+      );
+    }
+    expect(
+      fs.existsSync(path.join(__dirname, "..", "scripts", "rofl-logs.exp")),
+      "rofl-logs.exp",
+    ).to.equal(false);
+  });
+
   it("deploy:base-mainnet still targets --network base from .env.base-mainnet (the guard is in deploy.js)", function () {
     expect(scripts["deploy:base-mainnet"]).to.equal(
       "ENV_FILE=.env.base-mainnet hardhat run scripts/deploy.js --network base",
