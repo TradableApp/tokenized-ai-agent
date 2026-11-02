@@ -85,10 +85,13 @@ bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testn
 # or: expect scripts/oasis-unlock.exp <oasis args…>
 ```
 
-The package scripts are routed through it too: every `rofl:create:*`, `rofl:update:*` and
-`rofl:deploy:*` script runs `expect scripts/oasis-unlock.exp rofl …` rather than `oasis rofl …`
-bare, so `bun run rofl:deploy:base-testnet` is equivalent to the wrapper line above
-(`test/deployGuard.test.js` pins this). Mind the order and what each script bundles:
+The package scripts are routed through it too: every `rofl:create:*`, `rofl:update:*`,
+`rofl:deploy:*` and `logs:*` script runs `expect scripts/oasis-unlock.exp rofl …` rather than
+`oasis rofl …` bare, so `bun run rofl:deploy:base-testnet` is equivalent to the wrapper line above
+(`test/deployGuard.test.js` pins this). `logs:<env>` passes the account that owns that
+deployment's machine (`oasis_testnet` / `oasis_mainnet`): `rofl machine logs` prompts for *that*
+account's passphrase, and a wrapper call without `--account` falls back to the shared item and
+is refused. Mind the order and what each script bundles:
 `rofl:set:<env>` → `rofl:build:<env>` → `rofl update` → `rofl deploy`. `rofl:update:<env>`
 re-runs `rofl:set:<env>` first, which re-encrypts every secret and churns the ciphertexts in
 `rofl.yaml` — fine for a full sync, noisy for a manifest-only push (A.8 uses the bare wrapper

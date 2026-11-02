@@ -15,7 +15,7 @@ set stty_init "rows 50 columns 200"
 # Usage check first, so misuse never touches the credential.
 if {[llength $argv] == 0} { send_user "usage: oasis-unlock.exp <oasis args...>\n"; exit 1 }
 # Keychain item is per CLI account: oasis-passphrase-<account> from the --account flag,
-# falling back to the shared oasis-passphrase item (the log wrapper's).
+# falling back to the shared oasis-passphrase item when no --account is given.
 if {![info exists env(USER)]} { send_user "error: USER is not set in the environment.\n"; exit 1 }
 set current_user $env(USER)
 set svc "oasis-passphrase"
