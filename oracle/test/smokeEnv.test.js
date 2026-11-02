@@ -163,13 +163,16 @@ describe("smoke: resolveSmokeConfig", () => {
   it("caps each eth_getLogs window at SMOKE_LOGS_BLOCK_RANGE blocks, default 10 (Alchemy free tier)", () => {
     expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).logsBlockRange).to.equal(10);
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_LOGS_BLOCK_RANGE: "400" }).logsBlockRange,
+      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_LOGS_BLOCK_RANGE: "400" })
+        .logsBlockRange,
     ).to.equal(400);
     for (const bad of ["0", "-5", "2.5", "lots"]) {
       const err = thrownBy(() =>
         resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_LOGS_BLOCK_RANGE: bad }),
       );
-      expect(err.message).to.match(/SMOKE_LOGS_BLOCK_RANGE must be a positive whole number of blocks/);
+      expect(err.message).to.match(
+        /SMOKE_LOGS_BLOCK_RANGE must be a positive whole number of blocks/,
+      );
       expect(err.message).not.to.include("lots");
     }
   });

@@ -52,12 +52,22 @@ describe("smoke: waitForAnswer — chunked eth_getLogs", () => {
     const { now, sleep } = fakeClock();
     const log = [];
     const evts = await waitForAnswer({
-      agent, provider, conversationId: CONV, answerMessageId: MSG, fromBlock: FROM, cfg,
-      log: (l) => log.push(l), now, sleep,
+      agent,
+      provider,
+      conversationId: CONV,
+      answerMessageId: MSG,
+      fromBlock: FROM,
+      cfg,
+      log: (l) => log.push(l),
+      now,
+      sleep,
     });
     expect(evts.map((e) => e.blockNumber)).to.deep.equal([FROM + 33]);
     expect(calls.map((c) => [c.from, c.to])).to.deep.equal([
-      [FROM, FROM + 9], [FROM + 10, FROM + 19], [FROM + 20, FROM + 29], [FROM + 30, FROM + 34],
+      [FROM, FROM + 9],
+      [FROM + 10, FROM + 19],
+      [FROM + 20, FROM + 29],
+      [FROM + 30, FROM + 34],
     ]);
     for (const c of calls) expect(c.to - c.from + 1, `window ${c.from}-${c.to}`).to.be.at.most(10);
     expect(calls[0].filter).to.deep.equal({ c: CONV, m: MSG });
@@ -66,7 +76,10 @@ describe("smoke: waitForAnswer — chunked eth_getLogs", () => {
   it("resumes at the chunk that failed, not at the original fromBlock", async () => {
     const refused = Object.assign(new Error("could not coalesce error"), {
       shortMessage: "could not coalesce error",
-      error: { code: -32600, message: "Under the Free tier, eth_getLogs is limited to a 10 block range" },
+      error: {
+        code: -32600,
+        message: "Under the Free tier, eth_getLogs is limited to a 10 block range",
+      },
     });
     const { agent, provider, calls } = fakeChain({
       head: () => FROM + 25,
@@ -75,13 +88,22 @@ describe("smoke: waitForAnswer — chunked eth_getLogs", () => {
     const { now, sleep } = fakeClock();
     const log = [];
     const evts = await waitForAnswer({
-      agent, provider, conversationId: CONV, answerMessageId: MSG, fromBlock: FROM, cfg,
-      log: (l) => log.push(l), now, sleep,
+      agent,
+      provider,
+      conversationId: CONV,
+      answerMessageId: MSG,
+      fromBlock: FROM,
+      cfg,
+      log: (l) => log.push(l),
+      now,
+      sleep,
     });
     expect(evts).to.have.length(1);
     // poll 1: chunk 1 ok, chunk 2 refused → poll 2 starts again at chunk 2, never re-reads chunk 1
     expect(calls.map((c) => [c.from, c.to])).to.deep.equal([
-      [FROM, FROM + 9], [FROM + 10, FROM + 19], [FROM + 10, FROM + 19],
+      [FROM, FROM + 9],
+      [FROM + 10, FROM + 19],
+      [FROM + 10, FROM + 19],
     ]);
     // the node's own message is what gets logged, with the window it refused
     expect(log.join("\n")).to.match(/Under the Free tier/);
@@ -99,14 +121,23 @@ describe("smoke: waitForAnswer — chunked eth_getLogs", () => {
     let err;
     try {
       await waitForAnswer({
-        agent, provider, conversationId: CONV, answerMessageId: 7, fromBlock: FROM, cfg,
-        log: () => {}, now, sleep,
+        agent,
+        provider,
+        conversationId: CONV,
+        answerMessageId: 7,
+        fromBlock: FROM,
+        cfg,
+        log: () => {},
+        now,
+        sleep,
       });
     } catch (e) {
       err = e;
     }
     expect(err).to.be.an("error");
-    expect(err.message).to.match(/^TIMEOUT: no AnswerMessageAdded for answerMessageId=7 within 300s/);
+    expect(err.message).to.match(
+      /^TIMEOUT: no AnswerMessageAdded for answerMessageId=7 within 300s/,
+    );
     expect(err.message).to.match(/last RPC error: .*rate limited: 330 CU\/s exceeded/);
   });
 
@@ -117,8 +148,15 @@ describe("smoke: waitForAnswer — chunked eth_getLogs", () => {
     });
     const { now, sleep } = fakeClock();
     const evts = await waitForAnswer({
-      agent, provider, conversationId: CONV, answerMessageId: MSG, fromBlock: FROM, cfg,
-      log: () => {}, now, sleep,
+      agent,
+      provider,
+      conversationId: CONV,
+      answerMessageId: MSG,
+      fromBlock: FROM,
+      cfg,
+      log: () => {},
+      now,
+      sleep,
     });
     expect(evts).to.have.length(2);
   });
@@ -128,8 +166,18 @@ describe("smoke: waitForAnswer — chunked eth_getLogs", () => {
     const { agent, provider, calls } = fakeChain({ head: () => head, responses: [[evt(FROM)]] });
     const { now, sleep } = fakeClock();
     const evts = await waitForAnswer({
-      agent, provider, conversationId: CONV, answerMessageId: MSG, fromBlock: FROM, cfg,
-      log: () => {}, now, sleep: async (ms) => { head = FROM; await sleep(ms); },
+      agent,
+      provider,
+      conversationId: CONV,
+      answerMessageId: MSG,
+      fromBlock: FROM,
+      cfg,
+      log: () => {},
+      now,
+      sleep: async (ms) => {
+        head = FROM;
+        await sleep(ms);
+      },
     });
     expect(evts).to.have.length(1);
     expect(calls.map((c) => [c.from, c.to])).to.deep.equal([[FROM, FROM]]);
@@ -140,7 +188,10 @@ describe("smoke: rpcErrorMessage", () => {
   it("prefers the node's JSON-RPC error over ethers' wrapper text", () => {
     const e = Object.assign(new Error("could not coalesce error (payload=…)"), {
       shortMessage: "could not coalesce error",
-      error: { code: -32600, message: "Under the Free tier, eth_getLogs is limited to a 10 block range" },
+      error: {
+        code: -32600,
+        message: "Under the Free tier, eth_getLogs is limited to a 10 block range",
+      },
     });
     expect(rpcErrorMessage(e)).to.equal(
       "Under the Free tier, eth_getLogs is limited to a 10 block range (code -32600)",
