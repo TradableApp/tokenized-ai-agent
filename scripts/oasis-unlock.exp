@@ -21,7 +21,14 @@ set current_user $env(USER)
 set svc "oasis-passphrase"
 set i [lsearch -exact $argv "--account"]
 if {$i >= 0 && $i + 1 < [llength $argv]} { set svc "oasis-passphrase-[lindex $argv [expr {$i + 1}]]" }
-if {[info exists env(OASIS_PASSPHRASE_SERVICE)]} { set svc $env(OASIS_PASSPHRASE_SERVICE) }
+if {[info exists env(OASIS_PASSPHRASE_SERVICE)]} {
+    # Escape hatch for ad-hoc runs. Say so when it discards an --account-derived item, or a
+    # stale export (e.g. from the old logs wrapper) reproduces "passphrase rejected" silently.
+    if {$svc ne "oasis-passphrase" && $svc ne $env(OASIS_PASSPHRASE_SERVICE)} {
+        send_user "\[oasis-unlock] warning: OASIS_PASSPHRASE_SERVICE=$env(OASIS_PASSPHRASE_SERVICE) overrides the --account item '$svc'\n"
+    }
+    set svc $env(OASIS_PASSPHRASE_SERVICE)
+}
 if {[catch {exec security find-generic-password -s $svc -a $current_user -w} pass]} {
     send_user "error: no Keychain item '$svc' for user $current_user.\n"; exit 2
 }
