@@ -60,7 +60,9 @@ async function waitForAnswer({
   while (now() < deadline) {
     try {
       const head = await provider.getBlockNumber();
-      while (from <= head) {
+      // Re-check the clock per chunk: a long catch-up (provider back after an outage) must not
+      // drain every chunk past the deadline before the outer loop looks at it again.
+      while (from <= head && now() < deadline) {
         const to = Math.min(head, from + range - 1);
         let evts;
         try {
