@@ -186,7 +186,7 @@ the oracle; out of scope here.
 3. **Plan setup** — `token.approve(escrow, …)` then `escrow.setSpendingLimit(…, +1 day)` (skips if already active).
 4. **Encrypt** — generates a random 32-byte session key, AES-256-GCM-encrypts the prompt payload (`{promptText, isNewConversation, …}`), and ECIES-encrypts the session key to the oracle's `PUBLIC_KEY` (reusing the oracle's own `src/ecies.js` → wire-format guaranteed to match).
 5. **Submit** — `escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)`; parses `PromptSubmitted` for `answerMessageId`.
-6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**), resilient to transient RPC errors, up to `SMOKE_TIMEOUT_MS` (5 min).
+6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**) with `eth_getLogs` walked in contiguous windows of at most `SMOKE_LOGS_BLOCK_RANGE` blocks (default 10 — Alchemy's free-tier cap; the public node allows a few hundred), resuming from a refused window rather than re-widening it and logging the node's own error, up to `SMOKE_TIMEOUT_MS` (5 min). The 2026-11-02 run day lost 6/6 smoke verdicts to a single-request `[submitBlock, head]` poll against an Alchemy endpoint while every answer was on-chain within a minute (`scripts/smoke/answerWait.js`).
 7. **Fetch + decrypt** — fetches the answer `MessageFile` from the storage gateway (Autonomys/Irys, 30-s bounded), AES-decrypts it with the session key.
 8. **Assert** — prints the answer and judges it with `src/answerQuality.js` (burst: `scripts/smoke/burst.js`; injection: `scripts/smoke/injection.js`), then writes the metrics file.
 
