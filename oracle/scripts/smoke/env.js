@@ -106,13 +106,28 @@ function parseMs(env, name, fallback) {
 }
 
 /**
+ * Blocks per eth_getLogs request. Providers cap this per call — Alchemy's free tier at 10, the
+ * public Base Sepolia node at a few hundred — and a request over the cap is refused outright, so
+ * the default is the smallest cap among the endpoints a run day may be handed. Same NaN reasoning
+ * as parseMs, and whole blocks only.
+ */
+function parseBlocks(env, name, fallback) {
+  const raw = pick(env, name, undefined);
+  if (raw === undefined) return fallback;
+  const v = Number(raw);
+  if (!Number.isInteger(v) || v <= 0)
+    throw new Error(`${name} must be a positive whole number of blocks`);
+  return v;
+}
+
+/**
  * @param {NodeJS.ProcessEnv | Record<string, string | undefined>} env
  * @returns {{
  *   envName: string, rpcUrl: string, chainId: number,
  *   escrow: string, agent: string, token: string, oraclePublicKey: string,
  *   privateKeys: string[], burst: number, injection: boolean,
  *   prompt: string, asset: string | undefined, metricsFile: string,
- *   timeoutMs: number, pollMs: number, fetchTimeoutMs: number,
+ *   timeoutMs: number, pollMs: number, fetchTimeoutMs: number, logsBlockRange: number,
  *   storageGatewayUrl: string | undefined,
  * }}
  */
@@ -152,6 +167,7 @@ function resolveSmokeConfig(env = process.env) {
     timeoutMs: parseMs(env, "SMOKE_TIMEOUT_MS", 300_000),
     pollMs: parseMs(env, "SMOKE_POLL_MS", 6_000),
     fetchTimeoutMs: parseMs(env, "SMOKE_FETCH_TIMEOUT_MS", 30_000),
+    logsBlockRange: parseBlocks(env, "SMOKE_LOGS_BLOCK_RANGE", 10),
     storageGatewayUrl: pick(env, "SMOKE_STORAGE_GATEWAY_URL", undefined),
   };
 }

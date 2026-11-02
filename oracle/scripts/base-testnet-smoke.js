@@ -38,6 +38,7 @@ const { eciesEncrypt } = require("../src/ecies");
 const { assessAnswer } = require("../src/answerQuality");
 const { resolveSmokeConfig } = require("./smoke/env");
 const { assertOneAnswerPerPrompt } = require("./smoke/burst");
+const { waitForAnswer } = require("./smoke/answerWait");
 const { buildInjectionPrompt, assessInjection, makeCanary } = require("./smoke/injection");
 const { buildMetrics, writeMetrics } = require("./smoke/metrics");
 const { aesGcmEncrypt, aesGcmDecrypt, fetchEncrypted } = require("./smoke/wire");
@@ -146,56 +147,6 @@ function agentEvents(agent, receipt, name) {
     }
   }
   return out;
-}
-
-/**
- * Poll for the AnswerMessageAdded event of one prompt.
- *
- * Anchors the scan at the initiatePrompt tx block and advances it each poll. The public Base
- * Sepolia RPC caps eth_getLogs at a few hundred blocks, so a fixed [head-5000, head] range would
- * be rejected every iteration. Advancing fromBlock keeps each window to ~POLL_MS/blocktime blocks
- * (contiguous, no gap, no re-scan). The answer event always lands after the submit block.
- *
- * Returns EVERY matching event in the window the answer appeared in, so burst mode can tell one
- * answer from two.
- */
-async function waitForAnswer({
-  agent,
-  provider,
-  conversationId,
-  answerMessageId,
-  fromBlock,
-  cfg,
-  log,
-}) {
-  const deadline = Date.now() + cfg.timeoutMs;
-  const filter = agent.filters.AnswerMessageAdded(conversationId, answerMessageId);
-  let from = fromBlock;
-  while (Date.now() < deadline) {
-    try {
-      const head = await provider.getBlockNumber();
-      if (head >= from) {
-        const evts = await agent.queryFilter(filter, from, head);
-        if (evts.length) return evts;
-        from = head + 1;
-      }
-      // Informational only — a transient failure here must not abort the poll.
-      try {
-        if (await agent.isJobFinalized(answerMessageId))
-          log(`job finalized; awaiting AnswerMessageAdded...`);
-      } catch {
-        /* ignore — status log only */
-      }
-    } catch (e) {
-      // Load-bearing RPC calls (getBlockNumber/queryFilter): a transient blip or rate-limit must
-      // not fail the run — log and retry on the next poll.
-      log(`transient RPC error (${e?.shortMessage || e?.message || e}) — retrying...`);
-    }
-    await sleep(cfg.pollMs);
-  }
-  throw new Error(
-    `TIMEOUT: no AnswerMessageAdded for answerMessageId=${answerMessageId} within ${cfg.timeoutMs / 1000}s`,
-  );
 }
 
 /**
