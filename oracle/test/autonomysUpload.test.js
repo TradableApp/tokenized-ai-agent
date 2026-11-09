@@ -82,6 +82,16 @@ describe("autonomys.uploadData — transient failures", () => {
     expect(uploadAlerts[0].args[0]).to.not.match(/^CRITICAL/);
   });
 
+  it("still calls a caller-supplied onRetry alongside its own retry log", async () => {
+    uploadFile.onFirstCall().rejects(new Error(SDK_503));
+    uploadFile.onSecondCall().resolves("bafy-second");
+    const onRetry = sinon.spy();
+
+    await autonomys.uploadData(Buffer.from("{}"), [], { ...noSleep, onRetry });
+
+    sinon.assert.calledOnceWithMatch(onRetry, sinon.match.instanceOf(Error), 2);
+  });
+
   it("treats a transient failure of the credit check as retryable too — RetryableError, no CRITICAL", async () => {
     // The credit check is a separate fetch to the Auto Drive account API, outside the upload
     // retry loop. A 503 there is the same outage; it must leave with the same type and severity.

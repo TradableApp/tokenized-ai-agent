@@ -61,6 +61,9 @@ async function uploadWithRetry(attempt, options = {}) {
     random = Math.random,
     onRetry = () => {},
   } = options;
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new TypeError(`attempts must be >= 1, got ${attempts}`);
+  }
   let lastError;
 
   for (let index = 0; index < attempts; index += 1) {

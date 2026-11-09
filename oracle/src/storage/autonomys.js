@@ -162,6 +162,8 @@ async function ensureCreditsAreSufficient(dataSizeBytes) {
  * Uploads data to Autonomys Auto Drive.
  * @param {Buffer} dataBuffer The data to upload.
  * @param {Array<{name: string, value: string}>} tags Optional metadata tags.
+ * @param {object} [retryOptions] Passed through to uploadWithRetry (`attempts`, `sleep`,
+ *   `random`, `onRetry`); a test-injection seam, not something the router sets.
  * @returns {Promise<string>} The CID of the uploaded data.
  */
 async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
@@ -221,10 +223,12 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
     // handleAndRecord queues instead of declaring fatal (#108).
     const cid = await uploadWithRetry(() => autoDriveApi.uploadFile(genericFile, options), {
       ...retryOptions,
-      onRetry: (error, nextAttemptNumber) =>
+      onRetry: (error, nextAttemptNumber) => {
+        retryOptions.onRetry?.(error, nextAttemptNumber);
         console.warn(
           `Autonomys upload attempt failed (${error.message}); retrying (attempt ${nextAttemptNumber})`,
-        ),
+        );
+      },
     });
     console.log(`Data uploaded to Autonomys ==> CID: ${cid}`);
 

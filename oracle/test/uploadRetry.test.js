@@ -103,6 +103,23 @@ describe("uploadWithRetry", () => {
     expect(caught.cause).to.be.instanceOf(Error);
   });
 
+  it("rejects attempts < 1 up front with a TypeError, never a RetryableError with no cause", async () => {
+    const attempt = sinon.stub().resolves("bafy-cid");
+
+    let caught;
+    try {
+      await uploadWithRetry(attempt, { attempts: 0, sleep: noSleep });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).to.be.instanceOf(TypeError);
+    // The explicit guard, not an accidental `undefined.message` read at the throw site.
+    expect(caught.message).to.match(/attempts must be >= 1/);
+    expect(isRetryableError(caught)).to.equal(false);
+    expect(attempt.called).to.equal(false);
+  });
+
   it("does not retry a permanent failure and rethrows it unchanged", async () => {
     const permanent = new Error("Insufficient upload credits: 10 bytes needed, 0 remaining.");
     const attempt = sinon.stub().rejects(permanent);
