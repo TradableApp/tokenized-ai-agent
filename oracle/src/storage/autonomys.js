@@ -1,6 +1,8 @@
 const { createAutoDriveApi } = require("@autonomys/auto-drive");
 const { NetworkId } = require("@autonomys/auto-utils");
 const { sendAlert } = require("../alerting");
+const { RetryableError, isRetryableError } = require("../errors");
+const { isTransientUploadError, uploadWithRetry } = require("./uploadRetry");
 
 let autoDriveApi = null;
 const API_BASE_URL = "https://mainnet.auto-drive.autonomys.xyz/api";
@@ -160,16 +162,28 @@ async function ensureCreditsAreSufficient(dataSizeBytes) {
  * Uploads data to Autonomys Auto Drive.
  * @param {Buffer} dataBuffer The data to upload.
  * @param {Array<{name: string, value: string}>} tags Optional metadata tags.
+ * @param {object} [retryOptions] Passed through to uploadWithRetry (`attempts`, `sleep`,
+ *   `random`, `onRetry`); a test-injection seam, not something the router sets.
  * @returns {Promise<string>} The CID of the uploaded data.
  */
-async function uploadData(dataBuffer, tags = []) {
+async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
   if (!autoDriveApi) {
     throw new Error("Autonomys Auto Drive not initialized.");
   }
 
   try {
-    // Check credits before upload
-    await ensureCreditsAreSufficient(dataBuffer.length);
+    // Check credits before upload. This is a separate call to the account API, outside the
+    // upload retry loop; a transient failure there is the same provider outage and must leave
+    // with the same type, or handleAndRecord sees a raw error and the alert below reads CRITICAL.
+    try {
+      await ensureCreditsAreSufficient(dataBuffer.length);
+    } catch (e) {
+      throw isTransientUploadError(e)
+        ? new RetryableError(`Autonomys credit check failed transiently: ${e.message}`, {
+            cause: e,
+          })
+        : e;
+    }
 
     // Extract metadata from tags
     let fileName = `file-${Date.now()}.json`;
@@ -204,7 +218,18 @@ async function uploadData(dataBuffer, tags = []) {
       },
     };
 
-    const cid = await autoDriveApi.uploadFile(genericFile, options);
+    // A transient provider failure (5xx, 429, dropped socket) is retried here, where it is known to
+    // be transient. Only after the attempts run out does it leave as a RetryableError, which
+    // handleAndRecord queues instead of declaring fatal (#108).
+    const cid = await uploadWithRetry(() => autoDriveApi.uploadFile(genericFile, options), {
+      ...retryOptions,
+      onRetry: (error, nextAttemptNumber) => {
+        retryOptions.onRetry?.(error, nextAttemptNumber);
+        console.warn(
+          `Autonomys upload attempt failed (${error.message}); retrying (attempt ${nextAttemptNumber})`,
+        );
+      },
+    });
     console.log(`Data uploaded to Autonomys ==> CID: ${cid}`);
 
     return cid;
@@ -213,7 +238,14 @@ async function uploadData(dataBuffer, tags = []) {
 
     console.error(errorMessage, e);
 
-    await sendAlert("CRITICAL: Autonomys Upload Failed", errorMessage);
+    // Exhausted retries are a provider outage the retry queue will absorb: a warning, so one
+    // blip does not page as fatal. Anything else is a configuration or input fault: CRITICAL.
+    await sendAlert(
+      isRetryableError(e)
+        ? "WARNING: Autonomys Upload Failed (transient, queued for retry)"
+        : "CRITICAL: Autonomys Upload Failed",
+      errorMessage,
+    );
 
     throw e;
   }

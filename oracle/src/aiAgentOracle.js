@@ -35,14 +35,10 @@ const {
   createSearchIndexDeltaFile,
   jsonReplacer,
 } = require("./formatters");
-const { BadInputError, isBadInputError } = require("./errors");
+const { BadInputError, isBadInputError, isRetryableError } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
-const {
-  initInboundPrompt,
-  stripInboundPrompt,
-  stripStoredAnswer,
-} = require("./inboundPrompt");
+const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { reconcileCursor } = require("./blockCursor");
 
@@ -284,7 +280,7 @@ function wireAgentDbForPluginSql() {
     console.error(
       "[ElizaOS] POSTGRES_AGENT_DATABASE unset — falling through to plugin-sql's PGLite " +
         "store, which CANNOT work (no server-level migration on this boot path). " +
-        "Expect `relation \"agents\" does not exist`. This process should have been " +
+        'Expect `relation "agents" does not exist`. This process should have been ' +
         "stopped by validateConfig; it was started without that guard.",
     );
     return null;
@@ -2212,9 +2208,12 @@ async function handleAndRecord(eventName, handler, ...args) {
     }
 
     // 2. RETRYABLE ERRORS (Network, API limits)
-    // For now, we'll treat most I/O errors (like from Irys) as retryable.
-    // We can add more specific checks here later (e.g., based on error codes).
+    // By TYPE first: the layer that knows a failure is transient (the storage wrapper, after its
+    // own retries) throws RetryableError. The substring chain below is the legacy fallback for
+    // paths that still throw raw errors — it is not the contract, and it missed the Autonomys
+    // SDK's `Failed to upload file chunk: Service Unavailable` on 2026-11-09 (#108).
     const isRetryable =
+      isRetryableError(error) ||
       error.message.includes("Irys") ||
       error.message.includes("fetch") ||
       error.message.includes("insufficient funds") ||
@@ -2257,10 +2256,7 @@ async function handleAndRecord(eventName, handler, ...args) {
       // jsonReplacer is REQUIRED here, not defensive: `event.args` is an ethers v6 Result whose
       // uint256 fields are BigInt, and JSON.stringify throws on those. Without it this write
       // threw, so neither the queue write nor the persistCursor below ever ran.
-      await fs.writeFile(
-        FAILED_JOBS_FILE_PATH,
-        JSON.stringify(failedJobs, jsonReplacer, 2),
-      );
+      await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(failedJobs, jsonReplacer, 2));
 
       // Only NOW is the block progress safe to save: the job is durably queued, so advancing the
       // cursor hands responsibility to the retry loop rather than dropping the event. If the
@@ -2415,10 +2411,7 @@ async function retryFailedJobs() {
   if (processed) {
     // Same replacer as the enqueue path. These jobs were read back from JSON so are already
     // BigInt-free today, but the two writes must not disagree about how a job serialises.
-    await fs.writeFile(
-      FAILED_JOBS_FILE_PATH,
-      JSON.stringify(remainingJobs, jsonReplacer, 2),
-    );
+    await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(remainingJobs, jsonReplacer, 2));
   }
 }
 

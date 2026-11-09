@@ -29,4 +29,28 @@ function isBadInputError(error) {
   return error instanceof BadInputError;
 }
 
-module.exports = { BadInputError, isBadInputError };
+/**
+ * A dependency failed in a way that a later attempt may well succeed at: a storage provider's
+ * 5xx/429, a dropped connection, a timeout. `handleAndRecord` branches on this TYPE to queue the
+ * event for retry instead of declaring it fatal.
+ *
+ * Why a type: the previous test was a chain of `error.message.includes(...)` substrings. On the
+ * 2026-11-09 Base Sepolia run day the Autonomys SDK threw `Failed to upload file chunk: Service
+ * Unavailable` — status as words, not a number, and no provider name — so a transient 503 fell
+ * through to the fatal branch and a paid prompt was dropped. The layer that KNOWS a failure is
+ * transient (the storage wrapper) says so by throwing this; the handler no longer guesses from
+ * message text.
+ */
+class RetryableError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "RetryableError";
+  }
+}
+
+/** Is this a failure a later attempt may succeed at, so the event belongs in the retry queue? */
+function isRetryableError(error) {
+  return error instanceof RetryableError;
+}
+
+module.exports = { BadInputError, isBadInputError, RetryableError, isRetryableError };
