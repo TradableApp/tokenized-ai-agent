@@ -1,6 +1,8 @@
 const { createAutoDriveApi } = require("@autonomys/auto-drive");
 const { NetworkId } = require("@autonomys/auto-utils");
 const { sendAlert } = require("../alerting");
+const { isRetryableError } = require("../errors");
+const { uploadWithRetry } = require("./uploadRetry");
 
 let autoDriveApi = null;
 const API_BASE_URL = "https://mainnet.auto-drive.autonomys.xyz/api";
@@ -162,7 +164,7 @@ async function ensureCreditsAreSufficient(dataSizeBytes) {
  * @param {Array<{name: string, value: string}>} tags Optional metadata tags.
  * @returns {Promise<string>} The CID of the uploaded data.
  */
-async function uploadData(dataBuffer, tags = []) {
+async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
   if (!autoDriveApi) {
     throw new Error("Autonomys Auto Drive not initialized.");
   }
@@ -204,7 +206,16 @@ async function uploadData(dataBuffer, tags = []) {
       },
     };
 
-    const cid = await autoDriveApi.uploadFile(genericFile, options);
+    // A transient provider failure (5xx, 429, dropped socket) is retried here, where it is known to
+    // be transient. Only after the attempts run out does it leave as a RetryableError, which
+    // handleAndRecord queues instead of declaring fatal (#108).
+    const cid = await uploadWithRetry(() => autoDriveApi.uploadFile(genericFile, options), {
+      ...retryOptions,
+      onRetry: (error, nextAttempt) =>
+        console.warn(
+          `Autonomys upload attempt failed (${error.message}); retrying (attempt ${nextAttempt + 1})`,
+        ),
+    });
     console.log(`Data uploaded to Autonomys ==> CID: ${cid}`);
 
     return cid;
@@ -213,7 +224,14 @@ async function uploadData(dataBuffer, tags = []) {
 
     console.error(errorMessage, e);
 
-    await sendAlert("CRITICAL: Autonomys Upload Failed", errorMessage);
+    // Exhausted retries are a provider outage the retry queue will absorb: a warning, so one
+    // blip does not page as fatal. Anything else is a configuration or input fault: CRITICAL.
+    await sendAlert(
+      isRetryableError(e)
+        ? "WARNING: Autonomys Upload Retried Out — queued for retry"
+        : "CRITICAL: Autonomys Upload Failed",
+      errorMessage,
+    );
 
     throw e;
   }
