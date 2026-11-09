@@ -2,6 +2,7 @@ const chai = require("chai");
 const sinon = require("sinon");
 const { expect } = chai;
 const proxyquire = require("proxyquire").noCallThru();
+const { RetryableError } = require("../src/errors");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 
@@ -9,7 +10,7 @@ describe("aiAgentOracle", function () {
   let aiAgentOracle;
   let stubs;
   const FAKE_SESSION_KEY = crypto.randomBytes(32);
-  const FAKE_ENCRYPTED_KEY = Buffer.from('fake-ecies-cipher-blob');
+  const FAKE_ENCRYPTED_KEY = Buffer.from("fake-ecies-cipher-blob");
 
   // Helper function to create the encrypted string format our app uses.
   const createEncryptedString = (dataObject, key) => {
@@ -128,15 +129,25 @@ describe("aiAgentOracle", function () {
       "./ecies": {
         eciesDecrypt: sinon.stub().resolves(FAKE_SESSION_KEY),
         eciesEncrypt: sinon.stub().resolves(FAKE_ENCRYPTED_KEY),
-        publicKeyFromPrivateKey: sinon.stub().returns('04' + '0f'.repeat(64)),
+        publicKeyFromPrivateKey: sinon.stub().returns("04" + "0f".repeat(64)),
       },
       "@elizaos/core": {
         ElizaOS: class {
-          async addAgents() { return ["fake-agent-id"]; }
+          async addAgents() {
+            return ["fake-agent-id"];
+          }
           async startAgents() {}
-          getAgent() { return null; }
+          getAgent() {
+            return null;
+          }
         },
-        elizaLogger: { info: () => {}, log: () => {}, error: () => {}, warn: () => {}, debug: () => {} },
+        elizaLogger: {
+          info: () => {},
+          log: () => {},
+          error: () => {},
+          warn: () => {},
+          debug: () => {},
+        },
         stringToUuid: (s) => s,
         createUniqueUuid: (_ns, s) => s,
         ChannelType: { DM: "DM", WORLD: "WORLD" },
@@ -274,11 +285,14 @@ describe("aiAgentOracle", function () {
         `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GOOGLE_LARGE_MODEL}:generateContent`,
       ]);
       for (const call of geminiCalls) {
-        expect(call.args[1].headers["x-goog-api-key"]).to.equal(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
+        expect(call.args[1].headers["x-goog-api-key"]).to.equal(
+          process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+        );
         expect(String(call.args[0])).to.not.include(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
       }
       // Nothing may still try to reach an Ollama sidecar.
-      expect(stubs["node-fetch"].getCalls().some((c) => String(c.args[0]).includes("11434"))).to.be.false;
+      expect(stubs["node-fetch"].getCalls().some((c) => String(c.args[0]).includes("11434"))).to.be
+        .false;
     });
 
     it("should call queryChainGPT if AI_PROVIDER is 'ChainGPT'", async () => {
@@ -477,7 +491,7 @@ describe("aiAgentOracle", function () {
 
         const answerCall = stubs["./formatters"].createMessageFile
           .getCalls()
-          .find(c => c.args[0].role === "assistant");
+          .find((c) => c.args[0].role === "assistant");
         expect(answerCall, "an assistant MessageFile should be created").to.exist;
         expect(answerCall.args[0].reasoning).to.have.lengthOf(2);
         expect(answerCall.args[0].reasoning[0]).to.include.keys("title", "description");
@@ -515,7 +529,7 @@ describe("aiAgentOracle", function () {
 
         const answerCall = stubs["./formatters"].createMessageFile
           .getCalls()
-          .find(c => c.args[0].role === "assistant");
+          .find((c) => c.args[0].role === "assistant");
         expect(answerCall, "an assistant MessageFile should be created").to.exist;
         expect(answerCall.args[0].reasoning).to.equal(undefined);
         expect(answerCall.args[0].sources).to.equal(undefined);
@@ -710,7 +724,10 @@ describe("aiAgentOracle", function () {
         .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
         .catch(() => {});
 
-      expect(finalized.callCount, "the catch's re-check must actually have been reached").to.be.at.least(4);
+      expect(
+        finalized.callCount,
+        "the catch's re-check must actually have been reached",
+      ).to.be.at.least(4);
       expect(recordAnswerActivity.callCount).to.equal(1);
       expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
     });
@@ -897,9 +914,9 @@ describe("aiAgentOracle", function () {
     // The dApp is the primary fix (flags such a resend new); this predicate is the oracle's
     // defensive backstop, disambiguating via the conversation's key file existence.
     it("initialises when the client flags the conversation new", () => {
-      expect(
-        aiAgentOracle.shouldInitializeConversation({ isNewConversation: true }),
-      ).to.equal(true);
+      expect(aiAgentOracle.shouldInitializeConversation({ isNewConversation: true })).to.equal(
+        true,
+      );
     });
 
     it("does NOT initialise a normal follow-up that threads off a parent message", () => {
@@ -1746,6 +1763,39 @@ describe("aiAgentOracle", function () {
       expect(stateFileCall).to.not.be.undefined;
     });
 
+    it("queues a RetryableError for retry even when its message matches none of the legacy substrings", async () => {
+      // 2026-11-09: the storage wrapper surfaced the SDK's raw `Service Unavailable` text and the
+      // string classifier dropped the prompt as fatal. The contract is the TYPE, not the words.
+      stubs["./storage/storage"].uploadData.rejects(
+        new RetryableError("Failed to upload file chunk: Service Unavailable"),
+      );
+      const writeFileStub = stubs["fs/promises"].writeFile;
+      const clientPayload = { promptText: "Transient storage failure", isNewConversation: true };
+      const payloadBytes = ethers.toUtf8Bytes(
+        createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+      );
+      const fakeEvent = {
+        blockNumber: 56696323,
+        transactionHash: "0xhash503",
+        args: ["0xUser", 281, 619, 620, payloadBytes, "0xkey"],
+        getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+      };
+      await aiAgentOracle.handleAndRecord(
+        "PromptSubmitted",
+        aiAgentOracle.handlePrompt,
+        ...fakeEvent.args,
+        fakeEvent,
+      );
+      const fatal = stubs["./alerting"].sendAlert
+        .getCalls()
+        .find((c) => String(c.args[0]).includes("Oracle Fatal Error"));
+      expect(fatal, "a typed retryable error is never fatal").to.be.undefined;
+      const failedJobsCall = writeFileStub
+        .getCalls()
+        .find((call) => call.args[0].includes("failed-jobs.json"));
+      expect(failedJobsCall, "the event must be queued for retry").to.not.be.undefined;
+      expect(JSON.parse(failedJobsCall.args[1])[0].event.blockNumber).to.equal(56696323);
+    });
     it("should send a critical alert for a non-retryable error", async () => {
       // Simulate a fatal error like a decryption failure.
       stubs["./ecies"].eciesDecrypt.rejects(new Error("Decryption failed"));
