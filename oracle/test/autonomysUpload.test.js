@@ -82,6 +82,31 @@ describe("autonomys.uploadData — transient failures", () => {
     expect(uploadAlerts[0].args[0]).to.not.match(/^CRITICAL/);
   });
 
+  it("treats a transient failure of the credit check as retryable too — RetryableError, no CRITICAL", async () => {
+    // The credit check is a separate fetch to the Auto Drive account API, outside the upload
+    // retry loop. A 503 there is the same outage; it must leave with the same type and severity.
+    global.fetch = sinon.stub().resolves({
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      json: async () => ({}),
+    });
+
+    let caught;
+    try {
+      await autonomys.uploadData(Buffer.from("{}"), [], noSleep);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(isRetryableError(caught)).to.equal(true);
+    expect(uploadFile.called, "no upload is attempted without a credit check").to.equal(false);
+    const critical = sendAlert.getCalls().filter((c) => /^CRITICAL/.test(c.args[0]));
+    expect(critical, "a transient credit-check failure must not page as CRITICAL").to.have.lengthOf(
+      0,
+    );
+  });
+
   it("throws a permanent failure unchanged after one attempt and alerts CRITICAL", async () => {
     const permanent = new Error("Failed to upload file chunk: Unauthorized");
     uploadFile.rejects(permanent);

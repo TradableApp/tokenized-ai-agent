@@ -1,8 +1,8 @@
 const { createAutoDriveApi } = require("@autonomys/auto-drive");
 const { NetworkId } = require("@autonomys/auto-utils");
 const { sendAlert } = require("../alerting");
-const { isRetryableError } = require("../errors");
-const { uploadWithRetry } = require("./uploadRetry");
+const { RetryableError, isRetryableError } = require("../errors");
+const { isTransientUploadError, uploadWithRetry } = require("./uploadRetry");
 
 let autoDriveApi = null;
 const API_BASE_URL = "https://mainnet.auto-drive.autonomys.xyz/api";
@@ -170,8 +170,18 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
   }
 
   try {
-    // Check credits before upload
-    await ensureCreditsAreSufficient(dataBuffer.length);
+    // Check credits before upload. This is a separate call to the account API, outside the
+    // upload retry loop; a transient failure there is the same provider outage and must leave
+    // with the same type, or handleAndRecord sees a raw error and the alert below reads CRITICAL.
+    try {
+      await ensureCreditsAreSufficient(dataBuffer.length);
+    } catch (e) {
+      throw isTransientUploadError(e)
+        ? new RetryableError(`Autonomys credit check failed transiently: ${e.message}`, {
+            cause: e,
+          })
+        : e;
+    }
 
     // Extract metadata from tags
     let fileName = `file-${Date.now()}.json`;
@@ -211,9 +221,9 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
     // handleAndRecord queues instead of declaring fatal (#108).
     const cid = await uploadWithRetry(() => autoDriveApi.uploadFile(genericFile, options), {
       ...retryOptions,
-      onRetry: (error, nextAttempt) =>
+      onRetry: (error, nextAttemptNumber) =>
         console.warn(
-          `Autonomys upload attempt failed (${error.message}); retrying (attempt ${nextAttempt + 1})`,
+          `Autonomys upload attempt failed (${error.message}); retrying (attempt ${nextAttemptNumber})`,
         ),
     });
     console.log(`Data uploaded to Autonomys ==> CID: ${cid}`);
@@ -228,7 +238,7 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
     // blip does not page as fatal. Anything else is a configuration or input fault: CRITICAL.
     await sendAlert(
       isRetryableError(e)
-        ? "WARNING: Autonomys Upload Retried Out — queued for retry"
+        ? "WARNING: Autonomys Upload Failed (transient, queued for retry)"
         : "CRITICAL: Autonomys Upload Failed",
       errorMessage,
     );

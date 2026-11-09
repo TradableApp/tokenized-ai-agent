@@ -72,7 +72,8 @@ describe("uploadWithRetry", () => {
     expect(cid).to.equal("bafy-cid");
     expect(attempt.callCount).to.equal(2);
     expect(sleep.callCount).to.equal(1);
-    sinon.assert.calledOnceWithMatch(onRetry, sinon.match.instanceOf(Error), 1);
+    // The second argument is the 1-based number of the attempt about to run: 2 after the first failure.
+    sinon.assert.calledOnceWithMatch(onRetry, sinon.match.instanceOf(Error), 2);
   });
 
   it("backs off exponentially with jitter between attempts", async () => {

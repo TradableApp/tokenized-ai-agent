@@ -48,7 +48,8 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param {number} [options.attempts] Total attempts including the first.
  * @param {(ms: number) => Promise<void>} [options.sleep] Injected for tests.
  * @param {() => number} [options.random] Injected for deterministic jitter in tests.
- * @param {(error: Error, nextAttempt: number) => void} [options.onRetry] Called before each retry.
+ * @param {(error: Error, nextAttemptNumber: number) => void} [options.onRetry] Called before each
+ *   retry with the failure and the 1-based number of the attempt about to run (2, 3, …).
  * @returns {Promise<string>} The CID.
  * @throws {RetryableError} every attempt failed transiently (the last failure is `cause`).
  * @throws {Error} the first permanent failure, unchanged, with no further attempts.
@@ -71,7 +72,7 @@ async function uploadWithRetry(attempt, options = {}) {
       }
       lastError = error;
       if (index < attempts - 1) {
-        onRetry(error, index + 1);
+        onRetry(error, index + 2);
         await sleep(backoffDelayMs(index, random));
       }
     }
