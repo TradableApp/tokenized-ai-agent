@@ -36,8 +36,8 @@ deployments:
           min_tcb_evaluation_data_number: 18
           tdx: {}
       enclaves:
-        - id: /lEb3rGMzPMk6Qi4Yuq4W5Za8rH7JU1NoH7BHTR0OQUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
-        - id: loYMqErLpCVm4vmQ/HC5UrC1N+lAd/ISMaDc9egwMOEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: Q4dnrxQLAhFl07Ukm5Cum5lhsjzSFTz3X+UQ+DiH+ogAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        - id: d/dglWA6uA0RGZSVqe0KYw3WZdIpPCNx+gACNAekLqgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
       endorsements:
         - any: {}
       fees: endorsing_node
@@ -77,7 +77,7 @@ deployments:
       default:
         provider: oasis1qzc8pldvm8vm3duvdrj63wgvkw34y9ucfcxzetqr
         offer: medium
-        id: 000000000000013e
+        id: "0000000000000140"
   base-testnet:
     app_id: rofl1qppl3qnsxzxz4el8uuyfr4fsjn30gpn2fy3ne8qs
     network: testnet
