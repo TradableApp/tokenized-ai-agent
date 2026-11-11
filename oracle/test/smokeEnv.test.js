@@ -160,6 +160,44 @@ describe("smoke: resolveSmokeConfig", () => {
     expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).timeoutMs).to.equal(300_000);
   });
 
+  it("requires SMOKE_TIMEOUT_MS to be a whole number of milliseconds (restart checks budget minutes)", () => {
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_TIMEOUT_MS: "900000" }).timeoutMs).to.equal(
+      900_000,
+    );
+    for (const bad of ["1.5", "2e5"]) {
+      const err = thrownBy(() =>
+        resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_TIMEOUT_MS: bad }),
+      );
+      expect(err.message).to.match(/SMOKE_TIMEOUT_MS must be a positive whole number of milliseconds/);
+    }
+  });
+
+  it("defaults SMOKE_SETTLE_MS to 0 (settle window off) and accepts a whole number of milliseconds", () => {
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).settleMs).to.equal(0);
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: "0" }).settleMs).to.equal(0);
+    expect(
+      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: "120000" }).settleMs,
+    ).to.equal(120_000);
+    for (const bad of ["-1", "1.5", "soon"]) {
+      const err = thrownBy(() =>
+        resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: bad }),
+      );
+      expect(err.message).to.match(/SMOKE_SETTLE_MS must be a whole number of milliseconds/);
+      expect(err.message).not.to.include("soon");
+    }
+  });
+
+  it("leaves SMOKE_SUBMITTED_FILE unset unless it is given a non-empty path", () => {
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).submittedFile).to.equal(undefined);
+    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SUBMITTED_FILE: "" }).submittedFile).to.equal(
+      undefined,
+    );
+    expect(
+      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SUBMITTED_FILE: "/run/submitted.json" })
+        .submittedFile,
+    ).to.equal("/run/submitted.json");
+  });
+
   it("caps each eth_getLogs window at SMOKE_LOGS_BLOCK_RANGE blocks, default 10 (Alchemy free tier)", () => {
     expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).logsBlockRange).to.equal(10);
     expect(

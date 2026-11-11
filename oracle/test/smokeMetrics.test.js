@@ -29,6 +29,38 @@ const prompt = (i, over = {}) => ({
   ...over,
 });
 
+describe("smoke: buildMetrics settle block (CU-14ym9bvdmju)", () => {
+  const base = {
+    env: "base-testnet",
+    chainId: 84532,
+    mode: { burst: 1, injection: false },
+    startedAt: "2026-11-10T03:00:00.000Z",
+    finishedAt: "2026-11-10T03:03:00.000Z",
+    prompts: [prompt(0)],
+  };
+
+  it("omits the settle key entirely when no settle window ran, so default output is unchanged", () => {
+    const m = buildMetrics({ ...base, oracleNonce: null });
+    expect(Object.keys(m)).not.to.include("settle");
+  });
+
+  it("records the settle duration, per-prompt answer event counts, oracle nonce and verdict when it ran", () => {
+    const settle = {
+      settleMs: 120000,
+      durationMs: 120450,
+      fromBlock: 1000,
+      endBlock: 1150,
+      verdict: "pass",
+      problems: [],
+      answerEventCounts: [{ index: 0, answerMessageId: "200", count: 1 }],
+      oracleNonce: { address: "0x00000000000000000000000000000000000000aa", before: 7, after: 8, delta: 1, answered: 1 },
+    };
+    const m = buildMetrics({ ...base, settle });
+    expect(m.settle).to.deep.equal(settle);
+    expect(JSON.parse(JSON.stringify(m.settle))).to.deep.equal(settle);
+  });
+});
+
 describe("smoke: buildMetrics", () => {
   it("summarises gas, latency and verdicts and keeps every per-prompt id", () => {
     const m = buildMetrics({
