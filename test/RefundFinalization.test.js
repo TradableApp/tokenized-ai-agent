@@ -85,18 +85,18 @@ describe("Timeout refund — what the agent contract knows afterwards", function
     it("returns the full fee to the user and clears the pending count", async function () {
       const { escrow, token, user } = await loadFixture(refundedPromptFixture);
       expect(await token.balanceOf(user.address)).to.equal(INITIAL_ALLOWANCE);
+      expect(await token.balanceOf(await escrow.getAddress())).to.equal(0n);
       expect(await escrow.pendingEscrowCount(user.address)).to.equal(0n);
       expect((await escrow.spendingLimits(user.address)).spentAmount).to.equal(0n);
     });
 
-    it("a late answer for the refunded prompt cannot be paid: submitAnswer reverts and records nothing", async function () {
-      const { aiAgent, escrow, token, oracle, user, answerMessageId, promptMessageId } =
+    it("a late answer for the refunded prompt cannot be paid: submitAnswer reverts", async function () {
+      // Which contract refuses it is pinned separately below, because that is what the fix changes.
+      const { aiAgent, oracle, answerMessageId, promptMessageId } =
         await loadFixture(refundedPromptFixture);
       await expect(
         aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, CID_BUNDLE),
       ).to.be.reverted;
-      expect(await token.balanceOf(user.address)).to.equal(INITIAL_ALLOWANCE);
-      expect(await token.balanceOf(await escrow.getAddress())).to.equal(0n);
     });
   });
 
