@@ -65,26 +65,15 @@ describe("Timeout refund — what the agent contract knows afterwards", function
     await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
 
     const receipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
-    const escrowed = receipt.logs
-      .map((l) => {
-        try {
-          return escrow.interface.parseLog(l);
-        } catch {
-          return null;
-        }
-      })
-      .find((p) => p?.name === "PaymentEscrowed");
-    const submitted = receipt.logs
-      .map((l) => {
-        try {
-          return aiAgent.interface.parseLog(l);
-        } catch {
-          return null;
-        }
-      })
-      .find((p) => p?.name === "PromptSubmitted");
-    const answerMessageId = escrowed.args[0];
-    const promptMessageId = submitted.args[2];
+    // Topic lookup, as in answerMessageId.lifecycle.test.js; a missing log names itself.
+    const findEvent = (contract, name) => {
+      const topic = contract.interface.getEvent(name).topicHash;
+      const log = receipt.logs.find((l) => l.topics[0] === topic);
+      if (!log) throw new Error(`${name} not found in the initiatePrompt receipt — recompile?`);
+      return contract.interface.parseLog(log);
+    };
+    const answerMessageId = findEvent(escrow, "PaymentEscrowed").args[0];
+    const promptMessageId = findEvent(aiAgent, "PromptSubmitted").args[2];
 
     await time.increase(Number(await escrow.REFUND_TIMEOUT()) + 1);
     await escrow.connect(keeper).processRefund(answerMessageId);
