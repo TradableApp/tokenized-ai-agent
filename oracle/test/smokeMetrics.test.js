@@ -53,7 +53,13 @@ describe("smoke: buildMetrics settle block (CU-14ym9bvdmju)", () => {
       verdict: "pass",
       problems: [],
       answerEventCounts: [{ index: 0, answerMessageId: "200", count: 1 }],
-      oracleNonce: { address: "0x00000000000000000000000000000000000000aa", before: 7, after: 8, delta: 1, answered: 1 },
+      oracleNonce: {
+        address: "0x00000000000000000000000000000000000000aa",
+        before: 7,
+        after: 8,
+        delta: 1,
+        answered: 1,
+      },
     };
     const m = buildMetrics({ ...base, settle });
     expect(m.settle).to.deep.equal(settle);

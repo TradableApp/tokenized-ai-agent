@@ -27,6 +27,23 @@
  *   SMOKE_ENV=base-mainnet SMOKE_ESCROW_ADDRESS=… SMOKE_AGENT_ADDRESS=… SMOKE_TOKEN_ADDRESS=… \
  *     SMOKE_ORACLE_PUBLIC_KEY=… SMOKE_PRIVATE_KEY=0x... node scripts/base-testnet-smoke.js
  *
+ * Restart check (CU-14ym9bvdmju) — prove exactly one answer arrives after the oracle restarts:
+ *   SMOKE_SUBMITTED_FILE=<path>  once every prompt's submit is mined, write a JSON marker there
+ *                                (env, chainId, submittedAt, per-prompt conversationId /
+ *                                promptMessageId / answerMessageId / submitTxHash / submitBlock —
+ *                                never keys or the RPC URL) and print one line starting
+ *                                `SMOKE_SUBMITTED_ALL`. A runner watches for the file, restarts
+ *                                the machine, and the smoke keeps waiting for the answers.
+ *   SMOKE_TIMEOUT_MS=<ms>        answer wait budget, positive whole number; default 300000. A
+ *                                restart costs minutes, so a restart run sets it higher.
+ *   SMOKE_SETTLE_MS=<ms>         after the answers arrive, keep watching the chain this long and
+ *                                FAIL (exit 1, naming the answer ids) on a second
+ *                                AnswerMessageAdded for the same answer id, or when the oracle
+ *                                account's nonce rose by more than one per answered prompt.
+ *                                Whole number; 0 (default) disables the window.
+ *   All three unset: behaviour and output are unchanged. Metrics gain a `settle` block only when
+ *   the window ran.
+ *
  * Exit codes (for scheduled-canary alerting):
  *   0 = pass (every prompt answered, Brain reasoning + sources present)
  *   1 = oracle broken (no/short answer, timeout, wrong network, cross-wired burst, steered)
@@ -41,6 +58,12 @@ const { assertOneAnswerPerPrompt } = require("./smoke/burst");
 const { waitForAnswer } = require("./smoke/answerWait");
 const { buildInjectionPrompt, assessInjection, makeCanary } = require("./smoke/injection");
 const { buildMetrics, writeMetrics } = require("./smoke/metrics");
+const {
+  createSubmitGate,
+  buildSubmittedMarker,
+  writeSubmittedMarker,
+  runSettleWindow,
+} = require("./smoke/settle");
 const { aesGcmEncrypt, aesGcmDecrypt, fetchEncrypted } = require("./smoke/wire");
 
 // ── Minimal ABIs ──────────────────────────────────────────────────────────
@@ -153,7 +176,15 @@ function agentEvents(agent, receipt, name) {
  * One full prompt round-trip from one wallet. Never throws: a failure lands in `result.error` so
  * burst mode can report every prompt and the metrics file is still written.
  */
-async function runPrompt({ index, wallet, provider, cfg, promptText, wantStoredPrompt }) {
+async function runPrompt({
+  index,
+  wallet,
+  provider,
+  cfg,
+  promptText,
+  wantStoredPrompt,
+  onSubmitted,
+}) {
   const tag = cfg.burst > 1 ? `[${index}] ` : "";
   const plog = (...a) => log(tag + a.join(" "));
   const result = { index, account: wallet.address, answerEventCount: 0 };
@@ -227,6 +258,7 @@ async function runPrompt({ index, wallet, provider, cfg, promptText, wantStoredP
     plog(
       `submitted: conversationId=${result.conversationId} answerMessageId=${result.answerMessageId} (tx ${rc.hash})`,
     );
+    onSubmitted?.(result);
 
     // 5. Wait for the on-chain answer CID
     plog(`waiting up to ${cfg.timeoutMs / 1000}s for the oracle's answer...`);
@@ -355,12 +387,47 @@ async function main() {
     : cfg.prompt;
   if (cfg.injection) log(`injection canary: ${canary}`);
 
+  // Restart-check hook: once every submit is mined, announce it (marker file + one log line) so a
+  // runner can restart the oracle machine while the answers are still pending.
+  const submitGate = cfg.submittedFile
+    ? createSubmitGate({
+        expected: wallets.length,
+        onAllSubmitted: (records) => {
+          const file = writeSubmittedMarker(
+            cfg.submittedFile,
+            buildSubmittedMarker({ env: cfg.envName, chainId: cfg.chainId, records }),
+          );
+          log(`SMOKE_SUBMITTED_ALL prompts=${records.length} marker=${file}`);
+        },
+      })
+    : null;
+
   const startedAt = new Date().toISOString();
   const results = await Promise.all(
     wallets.map((wallet, index) =>
-      runPrompt({ index, wallet, provider, cfg, promptText, wantStoredPrompt: cfg.injection }),
+      runPrompt({
+        index,
+        wallet,
+        provider,
+        cfg,
+        promptText,
+        wantStoredPrompt: cfg.injection,
+        onSubmitted: submitGate ? (r) => submitGate.record(r) : undefined,
+      }),
     ),
   );
+  // Settle window (SMOKE_SETTLE_MS > 0): keep watching after the answers for duplicates and extra
+  // oracle transactions. Off by default, so the default run is unchanged.
+  const settle =
+    cfg.settleMs > 0
+      ? await runSettleWindow({
+          agent: new ethers.Contract(cfg.agent, AGENT_ABI, provider),
+          provider,
+          results,
+          cfg,
+          log,
+        })
+      : undefined;
   const finishedAt = new Date().toISOString();
 
   const judged = results.map((r) => judge(r, { cfg, canary }));
@@ -368,6 +435,15 @@ async function main() {
   const brain = judged.flatMap((j, i) => j.brain.map((m) => (cfg.burst > 1 ? `[${i}] ${m}` : m)));
   if (cfg.burst > 1)
     fatal.push(...assertOneAnswerPerPrompt(results, { expected: cfg.burst }).problems);
+  if (settle) {
+    log(
+      `settle: ${settle.verdict} after ${settle.durationMs ?? 0} ms · answer events ${JSON.stringify(settle.answerEventCounts.map((c) => c.count))}` +
+        (settle.oracleNonce
+          ? ` · oracle nonce ${settle.oracleNonce.before}→${settle.oracleNonce.after} (${settle.oracleNonce.delta} tx, ${settle.oracleNonce.answered} answered)`
+          : ""),
+    );
+    fatal.push(...settle.problems);
+  }
 
   const oracleNonce = oracleNonceSpan(results);
   const metrics = buildMetrics({
@@ -378,6 +454,7 @@ async function main() {
     finishedAt,
     prompts: results.map((r, i) => ({ ...r, verdict: judged[i].verdict })),
     oracleNonce,
+    settle,
   });
   const written = writeMetrics(cfg.metricsFile, metrics);
   log(`\nmetrics → ${written}`);

@@ -42,7 +42,13 @@ const record = (i, over = {}) => ({
  * AnswerMessageAdded fires. `refuseOnce` holds "from-to" range keys the node refuses the first
  * time they are asked for; `refuseAlways` holds keys it refuses every time.
  */
-function fakeChain({ head, events = [], refuseOnce = new Set(), refuseAlways = new Set(), nonces = {} }) {
+function fakeChain({
+  head,
+  events = [],
+  refuseOnce = new Set(),
+  refuseAlways = new Set(),
+  nonces = {},
+}) {
   const calls = { queryFilter: [], getTransactionCount: [] };
   let currentHead = head;
   const agent = {
@@ -390,19 +396,26 @@ describe("smoke settle: runSettleWindow", () => {
     expect(out.fromBlock).to.equal(1000);
     expect(out.verdict).to.equal("pass");
     expect(out.durationMs).to.be.at.least(3000);
-    expect(out.oracleNonce).to.include({ address: ORACLE, before: 7, after: 9, delta: 2, answered: 2 });
+    expect(out.oracleNonce).to.include({
+      address: ORACLE,
+      before: 7,
+      after: 9,
+      delta: 2,
+      answered: 2,
+    });
     expect(chain.calls.getTransactionCount[0]).to.deep.equal({ address: ORACLE, blockTag: 1000 });
   });
 
   it("turns an unreadable nonce into a failed verdict instead of throwing out of the run", async () => {
     const chain = fakeChain({ head: 1010, events: [[1003]] });
+    const clock = fakeClock();
     const out = await runSettleWindow({
       agent: chain.agent,
       provider: chain.provider,
       results: [record(0, { cid: "bafy0", answerFrom: ORACLE })],
       cfg,
-      now: fakeClock().now,
-      sleep: fakeClock().sleep,
+      now: clock.now,
+      sleep: clock.sleep,
     });
     expect(out.verdict).to.equal("fail");
     expect(out.problems.join("\n")).to.match(/settle window could not be completed/);
