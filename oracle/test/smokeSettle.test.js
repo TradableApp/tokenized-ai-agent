@@ -327,7 +327,9 @@ describe("smoke settle: evaluateSettle", () => {
       nonce: { before: 40, after: 42 },
     });
     expect(v.verdict).to.equal("fail");
-    expect(v.problems.join("\n")).to.match(/answerMessageId 201 \(prompt 1\) has 0 AnswerMessageAdded/);
+    expect(v.problems.join("\n")).to.match(
+      /answerMessageId 201 \(prompt 1\) has 0 AnswerMessageAdded/,
+    );
   });
 
   it("does not expect an event for a prompt that was never answered", () => {

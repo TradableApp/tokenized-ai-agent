@@ -82,7 +82,8 @@ function writeSubmittedMarker(file, marker, { fsImpl = fs } = {}) {
  * past chunks that were actually read, so a refused chunk is retried, never skipped or counted
  * twice.
  *
- * @returns {Promise<{durationMs: number, endBlock: number, counts: number[]}>}
+ * @returns {Promise<{durationMs: number, endBlock: number, counts: number[], txHashes: string[]}>}
+ *   `txHashes` are the distinct transactions that emitted the counted events
  */
 async function observeSettle({
   agent,
@@ -104,6 +105,7 @@ async function observeSettle({
   );
   const cursors = targets.map(() => fromBlock);
   const counts = targets.map(() => 0);
+  const txHashes = new Set();
   let head;
 
   /** One pass to the current head. Returns the last RPC error, or null when fully caught up. */
@@ -124,6 +126,7 @@ async function observeSettle({
           break; // this target's chunk is unread; keep its cursor
         }
         counts[i] += evts.length;
+        for (const e of evts) if (e.transactionHash) txHashes.add(e.transactionHash);
         cursors[i] = to + 1;
       }
     }
@@ -146,7 +149,8 @@ async function observeSettle({
   for (let attempt = 1; attempt <= FINAL_CATCH_UP_ATTEMPTS; attempt++) {
     try {
       const err = await scan();
-      if (!err) return { durationMs: now() - start, endBlock: head, counts };
+      if (!err)
+        return { durationMs: now() - start, endBlock: head, counts, txHashes: [...txHashes] };
       lastError = err;
     } catch (e) {
       lastError = errorText(e);
@@ -171,10 +175,14 @@ function evaluateSettle({ targets, counts, senders, nonce }) {
   const problems = [];
   const answeredCount = targets.filter((t) => t.answered).length;
 
+  // The window opens at the earliest submit block, so an answered prompt's own event is always
+  // inside it: 0 means the observer missed it, 2 or more means a duplicate. A prompt the run
+  // never saw answered must stay that way.
   targets.forEach((t, i) => {
-    if (counts[i] > 1)
+    const expected = t.answered ? 1 : 0;
+    if (counts[i] !== expected)
       problems.push(
-        `answerMessageId ${String(t.answerMessageId)} (prompt ${t.index}) has ${counts[i]} AnswerMessageAdded events in the settle window (expected exactly 1)`,
+        `answerMessageId ${String(t.answerMessageId)} (prompt ${t.index}) has ${counts[i]} AnswerMessageAdded event(s) in the settle window (expected ${expected === 1 ? "exactly 1" : "0 — the run did not see it answered"})`,
       );
   });
 
@@ -199,7 +207,7 @@ function evaluateSettle({ targets, counts, senders, nonce }) {
     };
     if (delta > answeredCount)
       problems.push(
-        `oracle ${unique[0]} sent ${delta} transaction(s) in the settle window for ${answeredCount} answered prompt(s) — at most one submitAnswer per prompt`,
+        `oracle ${unique[0]} sent ${delta} transaction(s) in the settle window for ${answeredCount} answered prompt(s) — at most one submitAnswer per prompt, so this is a duplicate attempt or an unrelated transaction from the oracle account`,
       );
   }
 
@@ -262,6 +270,13 @@ async function runSettleWindow({
       now,
       sleep,
     });
+    if (!senders.length) {
+      // The run's answer metadata is best-effort; the window saw the answer transactions itself.
+      for (const hash of obs.txHashes) {
+        const tx = await provider.getTransaction(hash);
+        if (tx?.from) senders.push(tx.from);
+      }
+    }
     const unique = [...new Set(senders.map((s) => s.toLowerCase()))];
     let nonce = null;
     if (unique.length === 1) {

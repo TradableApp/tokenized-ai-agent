@@ -233,10 +233,16 @@ answer: no duplicate, no lost job. Sequence: **submit → marker → restart →
    `AnswerMessageAdded`, and the answer is fetched and judged as in a plain run.
 5. **Settle.** With `SMOKE_SETTLE_MS` > 0 the smoke keeps reading the chain for that long after
    the last answer, then catches up to the head. It **fails (exit 1)**, naming the answer ids, if:
-   - a second `AnswerMessageAdded` appears for the same `answerMessageId`; or
+   - an answered prompt has anything other than exactly one `AnswerMessageAdded` for its
+     `answerMessageId` in the window (two is a duplicate, none means the observer missed it), or
+     an unanswered prompt gains one; or
    - the oracle account's nonce rose by more than one per answered prompt (from its nonce at the
      earliest submit block to its nonce at the window's end). A duplicate `submitAnswer` that
-     reverts emits no event but still spends a nonce, so only this check sees it.
+     reverts emits no event but still spends a nonce, so only this check sees it. The delta counts
+     every transaction from the oracle account, so keep the oracle otherwise idle during the
+     window: an unrelated transaction from that account fails the check the same way. The sender
+     comes from the run's answer metadata, or, when that read failed, from the answer
+     transactions the window observed; with neither, the check fails rather than pass unverified.
 
    The oracle account is the sender of the answer transactions. If answers come from more than one
    sender, or no sender was recorded, the settle check fails rather than guess.
