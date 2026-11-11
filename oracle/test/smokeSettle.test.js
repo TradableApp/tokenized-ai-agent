@@ -48,8 +48,9 @@ function fakeChain({
   refuseOnce = new Set(),
   refuseAlways = new Set(),
   nonces = {},
+  txSenders = {},
 }) {
-  const calls = { queryFilter: [], getTransactionCount: [] };
+  const calls = { queryFilter: [], getTransactionCount: [], getTransaction: [] };
   let currentHead = head;
   const agent = {
     filters: {
@@ -68,7 +69,9 @@ function fakeChain({
       }
       const idx = Number(filter.messageId) - 200;
       const blocks = events[idx] || [];
-      return blocks.filter((b) => b >= from && b <= to).map((b) => ({ blockNumber: b }));
+      return blocks
+        .filter((b) => b >= from && b <= to)
+        .map((b) => ({ blockNumber: b, transactionHash: `0xanswer-${idx}-${b}` }));
     },
   };
   const provider = {
@@ -80,6 +83,10 @@ function fakeChain({
       const v = nonces[`${address.toLowerCase()}@${blockTag}`];
       if (v === undefined) throw new Error(`no nonce for ${address}@${blockTag}`);
       return v;
+    },
+    async getTransaction(hash) {
+      calls.getTransaction.push(hash);
+      return txSenders[hash] ? { from: txSenders[hash] } : null;
     },
   };
   return {
@@ -312,6 +319,38 @@ describe("smoke settle: evaluateSettle", () => {
     expect(v.problems.join("\n")).to.match(/2 AnswerMessageAdded/);
   });
 
+  it("fails when an answered prompt has no event in the window, since the observer missed it", () => {
+    const v = evaluateSettle({
+      targets,
+      counts: [1, 0],
+      senders: [ORACLE],
+      nonce: { before: 40, after: 42 },
+    });
+    expect(v.verdict).to.equal("fail");
+    expect(v.problems.join("\n")).to.match(/answerMessageId 201 \(prompt 1\) has 0 AnswerMessageAdded/);
+  });
+
+  it("does not expect an event for a prompt that was never answered", () => {
+    const v = evaluateSettle({
+      targets: [targets[0], { ...targets[1], answered: false }],
+      counts: [1, 0],
+      senders: [ORACLE],
+      nonce: { before: 40, after: 41 },
+    });
+    expect(v.verdict).to.equal("pass");
+  });
+
+  it("fails when an unanswered prompt gains an answer event during the window", () => {
+    const v = evaluateSettle({
+      targets: [targets[0], { ...targets[1], answered: false }],
+      counts: [1, 1],
+      senders: [ORACLE],
+      nonce: { before: 40, after: 41 },
+    });
+    expect(v.verdict).to.equal("fail");
+    expect(v.problems.join("\n")).to.match(/prompt 1\) has 1 AnswerMessageAdded.*expected 0/);
+  });
+
   it("fails when the oracle nonce rose by more than one per answered prompt, even with one event each", () => {
     // A reverted duplicate submitAnswer spends a nonce and emits nothing; only the nonce sees it.
     const v = evaluateSettle({
@@ -323,6 +362,7 @@ describe("smoke settle: evaluateSettle", () => {
     expect(v.verdict).to.equal("fail");
     expect(v.problems.join("\n")).to.match(/sent 3 transaction/);
     expect(v.problems.join("\n")).to.match(/2 answered prompt/);
+    expect(v.problems.join("\n")).to.match(/unrelated transaction from the oracle account/);
   });
 
   it("treats addresses that differ only in case as the same oracle", () => {
@@ -404,6 +444,44 @@ describe("smoke settle: runSettleWindow", () => {
       answered: 2,
     });
     expect(chain.calls.getTransactionCount[0]).to.deep.equal({ address: ORACLE, blockTag: 1000 });
+  });
+
+  it("recovers the oracle sender from the answer events when the run recorded none", async () => {
+    // runPrompt's answer metadata is non-fatal: a flaky RPC leaves answerFrom unset. The window
+    // has the answer transactions itself, so the nonce check must not be lost to that.
+    const chain = fakeChain({
+      head: 1010,
+      events: [[1003]],
+      nonces: { [`${ORACLE}@1000`]: 7, [`${ORACLE}@1010`]: 8 },
+      txSenders: { "0xanswer-0-1003": ORACLE_CASED },
+    });
+    const clock = fakeClock();
+    const out = await runSettleWindow({
+      agent: chain.agent,
+      provider: chain.provider,
+      results: [record(0, { cid: "bafy0" })],
+      cfg,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(out.verdict).to.equal("pass");
+    expect(out.oracleNonce).to.include({ address: ORACLE, delta: 1, answered: 1 });
+    expect(chain.calls.getTransaction).to.deep.equal(["0xanswer-0-1003"]);
+  });
+
+  it("still fails closed when neither the run nor the answer events yield a sender", async () => {
+    const chain = fakeChain({ head: 1010, events: [[1003]] });
+    const clock = fakeClock();
+    const out = await runSettleWindow({
+      agent: chain.agent,
+      provider: chain.provider,
+      results: [record(0, { cid: "bafy0" })],
+      cfg,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(out.verdict).to.equal("fail");
+    expect(out.problems.join("\n")).to.match(/nonce cannot be checked/);
   });
 
   it("turns an unreadable nonce into a failed verdict instead of throwing out of the run", async () => {
