@@ -209,6 +209,10 @@ function evaluateSettle({ targets, counts, senders, nonce }) {
       problems.push(
         `oracle ${unique[0]} sent ${delta} transaction(s) in the settle window for ${answeredCount} answered prompt(s) — at most one submitAnswer per prompt, so this is a duplicate attempt or an unrelated transaction from the oracle account`,
       );
+  } else {
+    problems.push(
+      `oracle ${unique[0]} is known but its nonce was not read, so the nonce cannot be checked`,
+    );
   }
 
   return {

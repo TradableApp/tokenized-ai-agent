@@ -106,6 +106,15 @@ function fakeClock(start = 0) {
 }
 
 describe("smoke settle: submit gate", () => {
+  it("delivers records in prompt-index order even when they are recorded out of order", () => {
+    const fired = [];
+    const gate = createSubmitGate({ expected: 3, onAllSubmitted: (rs) => fired.push(rs) });
+    gate.record(record(2));
+    gate.record(record(0));
+    gate.record(record(1));
+    expect(fired[0].map((r) => r.index)).to.deep.equal([0, 1, 2]);
+  });
+
   it("does not fire until every expected prompt has recorded its submit", () => {
     const fired = [];
     const gate = createSubmitGate({ expected: 3, onAllSubmitted: (rs) => fired.push(rs) });
@@ -386,6 +395,12 @@ describe("smoke settle: evaluateSettle", () => {
     });
     expect(v.verdict).to.equal("fail");
     expect(v.problems.join("\n")).to.match(/2 different senders/);
+  });
+
+  it("fails when the sender is known but no nonce was read, rather than passing an unchecked nonce", () => {
+    const v = evaluateSettle({ targets, counts: [1, 1], senders: [ORACLE], nonce: null });
+    expect(v.verdict).to.equal("fail");
+    expect(v.problems.join("\n")).to.match(/nonce was not read/);
   });
 
   it("fails when no answer transaction sender is known, rather than passing an unchecked nonce", () => {

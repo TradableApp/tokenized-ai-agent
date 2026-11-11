@@ -220,7 +220,9 @@ answer: no duplicate, no lost job. Sequence: **submit → marker → restart →
    SMOKE_SETTLE_MS=120000 \
    SMOKE_PRIVATE_KEY=0x… bun run smoke:base-testnet
    ```
-   `SMOKE_TIMEOUT_MS` is the answer-wait budget (positive whole number, default 300000). A restart
+   `SMOKE_TIMEOUT_MS` is the answer-wait budget (positive whole number, default 300000; a decimal or
+   exponent form such as `300000.5` or `3e5`, accepted before this check existed, is now refused
+   at startup). A restart
    costs minutes, so give it more headroom than a plain run.
 2. **Marker.** Once every prompt's `initiatePrompt` is mined, the smoke writes
    `SMOKE_SUBMITTED_FILE` (JSON: `env`, `chainId`, `submittedAt`, and per prompt `index`,
