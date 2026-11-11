@@ -208,6 +208,66 @@ the oracle; out of scope here.
 no macro/news rows. The **social testnet body** keeps it warm; if it's not running, seed a
 couple of `market_news` + macro rows (or run the social body briefly) and re-run.
 
+### Restart check (CU-14ym9bvdmju)
+
+Proves that restarting the ROFL oracle machine while a prompt is pending yields exactly one
+answer: no duplicate, no lost job. Sequence: **submit → marker → restart → one answer → settle.**
+
+1. **Submit.** Start the smoke with the restart variables set:
+   ```bash
+   SMOKE_SUBMITTED_FILE=/tmp/smoke-submitted.json \
+   SMOKE_TIMEOUT_MS=900000 \
+   SMOKE_SETTLE_MS=120000 \
+   SMOKE_PRIVATE_KEY=0x… bun run smoke:base-testnet
+   ```
+   `SMOKE_TIMEOUT_MS` is the answer-wait budget (positive whole number, default 300000; a decimal or
+   exponent form such as `300000.5` or `3e5`, accepted before this check existed, is now refused
+   at startup). A restart
+   costs minutes, so give it more headroom than a plain run.
+2. **Marker.** Once every prompt's `initiatePrompt` is mined, the smoke writes
+   `SMOKE_SUBMITTED_FILE` (JSON: `env`, `chainId`, `submittedAt`, and per prompt `index`,
+   `conversationId`, `promptMessageId`, `answerMessageId`, `submitTxHash`, `submitBlock`; no keys,
+   no RPC URL) and prints one line beginning `SMOKE_SUBMITTED_ALL`. The runner watches for the
+   file, then restarts the machine. Nothing is written if a prompt fails before its submit is
+   mined, so the runner should time out rather than wait forever.
+3. **Restart.** `oasis rofl machine restart` for the deployment, while the answers are pending.
+4. **One answer.** The smoke waits as usual. Each prompt must receive exactly one
+   `AnswerMessageAdded`, and the answer is fetched and judged as in a plain run.
+5. **Settle.** With `SMOKE_SETTLE_MS` > 0 the smoke keeps reading the chain for that long after
+   the last answer, then catches up to the head. It **fails (exit 1)**, naming the answer ids, if:
+   - an answered prompt has anything other than exactly one `AnswerMessageAdded` for its
+     `answerMessageId` in the window (two is a duplicate, none means the observer missed it), or
+     an unanswered prompt gains one; or
+   - the oracle account's nonce rose by more than one per answered prompt (from its nonce at the
+     earliest submit block to its nonce at the window's end). A duplicate `submitAnswer` that
+     reverts emits no event but still spends a nonce, so only this check sees it. The delta counts
+     every transaction from the oracle account, so keep the oracle otherwise idle during the
+     window: an unrelated transaction from that account fails the check the same way. The sender
+     comes from the run's answer metadata, or, when that read failed, from the answer
+     transactions the window observed; with neither, the check fails rather than pass unverified.
+
+   The oracle account is the sender of the answer transactions. If answers come from more than one
+   sender, or no sender was recorded, the settle check fails rather than guess.
+
+The metrics file gains a `settle` block (`settleMs`, `durationMs`, `fromBlock`, `endBlock`,
+`verdict`, `problems`, `answerEventCounts` per prompt, `oracleNonce` with `before`, `after`,
+`delta`, `answered`). It is absent when the window did not run.
+
+**What the oracle does across a restart (verified in `oracle/src/aiAgentOracle.js`):**
+- **Cursor file.** The chain cursor is mirrored to `oracle/oracle-state.json`
+  (`STATE_FILE_PATH`, `aiAgentOracle.js:55`), rewritten by `persistCursor` on each poll
+  (`:117-120`), and read once at start-up (`:2701`).
+- **Cold start.** If the file is missing or unreadable, `lastProcessedBlock` is 0 and the oracle
+  replays `[head − 1800, head]` (`:2709-2714`, about an hour on Base). Otherwise it resumes at
+  `lastProcessedBlock + 1`.
+- **Duplicate guard.** Before sending, the oracle checks `isJobFinalized` and skips finalised
+  jobs (`:1405`, and again inside the tx mutex at `:1670`). If that read errors it logs and
+  proceeds anyway (`:1414`), which is why the settle check counts nonces as well as events.
+- **Persistence across the machine restart.** The brief states that `oracle-state.json` lives
+  inside the container with no volume. That was not verified here: the compose and `rofl.yaml`
+  files were not read. If the file does not survive the restart, the cold-start lookback applies,
+  and the replay is bounded by the finalised-job check above.
+
 ---
 
 ## 7. Iterate

@@ -38,9 +38,10 @@ function gasSummary(values) {
 /**
  * @param {{env: string, chainId: number, mode: {burst: number, injection: boolean},
  *   startedAt: string, finishedAt: string, prompts: object[],
- *   oracleNonce?: {before: number, after: number} | null}} run
+ *   oracleNonce?: {before: number, after: number} | null,
+ *   settle?: object}} run  `settle` is the settle-window block; absent when no window ran
  */
-function buildMetrics({ env, chainId, mode, startedAt, finishedAt, prompts, oracleNonce }) {
+function buildMetrics({ env, chainId, mode, startedAt, finishedAt, prompts, oracleNonce, settle }) {
   const rows = prompts.map((p) => ({
     index: p.index,
     account: p.account,
@@ -88,6 +89,7 @@ function buildMetrics({ env, chainId, mode, startedAt, finishedAt, prompts, orac
           delta: oracleNonce.after - oracleNonce.before,
         }
       : null,
+    ...(settle ? { settle } : {}),
     modelSpend: {
       note:
         "Token counts are not persisted by the oracle. Model calls for this window are in the oracle's " +

@@ -106,6 +106,24 @@ function parseMs(env, name, fallback) {
 }
 
 /**
+ * Whole milliseconds, optionally allowing zero. A restart check budgets minutes, so a fractional
+ * or exponent form ("2e5") is refused by name rather than silently read as something else.
+ */
+function parseWholeMs(env, name, fallback, { allowZero = false } = {}) {
+  const raw = pick(env, name, undefined);
+  if (raw === undefined) return fallback;
+  const v = Number(raw);
+  const floor = allowZero ? 0 : 1;
+  if (!/^\d+$/.test(String(raw).trim()) || !Number.isInteger(v) || v < floor)
+    throw new Error(
+      allowZero
+        ? `${name} must be a whole number of milliseconds (0 disables it)`
+        : `${name} must be a positive whole number of milliseconds`,
+    );
+  return v;
+}
+
+/**
  * Blocks per eth_getLogs request. Providers cap this per call — Alchemy's free tier at 10, the
  * public Base Sepolia node at a few hundred — and a request over the cap is refused outright, so
  * the default is the smallest cap among the endpoints a run day may be handed. Same NaN reasoning
@@ -128,7 +146,7 @@ function parseBlocks(env, name, fallback) {
  *   privateKeys: string[], burst: number, injection: boolean,
  *   prompt: string, asset: string | undefined, metricsFile: string,
  *   timeoutMs: number, pollMs: number, fetchTimeoutMs: number, logsBlockRange: number,
- *   storageGatewayUrl: string | undefined,
+ *   storageGatewayUrl: string | undefined, settleMs: number, submittedFile: string | undefined,
  * }}
  */
 function resolveSmokeConfig(env = process.env) {
@@ -164,11 +182,13 @@ function resolveSmokeConfig(env = process.env) {
     prompt: pick(env, "SMOKE_PROMPT", DEFAULT_PROMPT),
     asset: resolveAsset(env),
     metricsFile: pick(env, "SMOKE_METRICS_FILE", DEFAULT_METRICS_FILE),
-    timeoutMs: parseMs(env, "SMOKE_TIMEOUT_MS", 300_000),
+    timeoutMs: parseWholeMs(env, "SMOKE_TIMEOUT_MS", 300_000),
     pollMs: parseMs(env, "SMOKE_POLL_MS", 6_000),
     fetchTimeoutMs: parseMs(env, "SMOKE_FETCH_TIMEOUT_MS", 30_000),
     logsBlockRange: parseBlocks(env, "SMOKE_LOGS_BLOCK_RANGE", 10),
     storageGatewayUrl: pick(env, "SMOKE_STORAGE_GATEWAY_URL", undefined),
+    settleMs: parseWholeMs(env, "SMOKE_SETTLE_MS", 0, { allowZero: true }),
+    submittedFile: pick(env, "SMOKE_SUBMITTED_FILE", undefined),
   };
 }
 
