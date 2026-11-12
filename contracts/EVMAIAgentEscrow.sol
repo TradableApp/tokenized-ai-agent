@@ -137,6 +137,13 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param escrowId The unique ID of the refunded escrow.
    */
   event PaymentRefunded(uint256 indexed escrowId);
+
+  /**
+   * @notice Emitted when a refund was paid but the agent could not be told the job is over.
+   * @dev The agent still reports the job as open; the oracle must check the escrow status.
+   * @param escrowId The unique identifier of the refunded escrow.
+   */
+  event RefundRecordFailed(uint256 indexed escrowId);
   /**
    * @notice Emitted when a user cancels their own pending prompt.
    * @param user The user who initiated the cancellation.
@@ -612,10 +619,13 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     escrow.status = EscrowStatus.REFUNDED;
     spendingLimits[escrow.user].spentAmount -= escrow.amount;
 
-    // Tell the agent the job is over, as cancelPrompt does, so the oracle skips it. Effects are
-    // already written; the agent is the trusted linked contract and recordRefund never reverts
-    // for a finalized job, so it cannot stand between the user and the refund below.
-    evmAIAgent.recordRefund(escrow.user, escrowId);
+    // Tell the agent the job is over, as cancelPrompt does, so the oracle skips it. The refund is
+    // the user's last exit, so an agent that cannot take the call (an escrow upgraded ahead of
+    // its agent, a mis-linked agent) costs the record and never the money. Starving the call of
+    // gas to skip it is not possible: the 1/64 left over could not pay for the transfer below.
+    try evmAIAgent.recordRefund(escrow.user, escrowId) {} catch {
+      emit RefundRecordFailed(escrowId);
+    }
     emit PaymentRefunded(escrowId);
     ableToken.safeTransfer(escrow.user, escrow.amount);
   }

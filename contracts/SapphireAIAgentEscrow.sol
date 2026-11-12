@@ -122,6 +122,10 @@ contract SapphireAIAgentEscrow is Ownable {
   /// @notice Emitted when a timed-out escrowed payment is refunded to the user's deposit.
   /// @param escrowId The unique identifier of the refunded escrow entry.
   event PaymentRefunded(uint256 indexed escrowId);
+  /// @notice Emitted when a refund was credited but the agent could not be told the job is over.
+  /// @dev The agent still reports the job as open; the oracle must check the escrow status.
+  /// @param escrowId The unique identifier of the refunded escrow entry.
+  event RefundRecordFailed(uint256 indexed escrowId);
   /// @notice Emitted when a user cancels their own pending prompt.
   /// @param user The address of the user cancelling the prompt.
   /// @param answerMessageId The ID of the answer message being cancelled.
@@ -569,9 +573,11 @@ contract SapphireAIAgentEscrow is Ownable {
     // Refund the escrowed amount back to the user's internal deposit balance.
     deposits[escrow.user] += escrow.amount;
 
-    // Tell the agent the job is over, as cancelPrompt does, so the oracle skips it. recordRefund
-    // never reverts for a finalized job, so it cannot block the refund recorded above.
-    sapphireAIAgent.recordRefund(escrow.user, escrowId);
+    // Tell the agent the job is over, as cancelPrompt does, so the oracle skips it. An agent that
+    // cannot take the call costs the record and never the refund already credited above.
+    try sapphireAIAgent.recordRefund(escrow.user, escrowId) {} catch {
+      emit RefundRecordFailed(escrowId);
+    }
     emit PaymentRefunded(escrowId);
   }
 

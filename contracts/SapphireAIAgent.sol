@@ -110,14 +110,13 @@ contract SapphireAIAgent is Ownable {
   /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
 
-  /**
-   * @notice Emitted when a prompt's escrow is refunded after the refund timeout.
-   * @dev Distinct from `PromptCancelled` so an indexer never mistakes a timeout refund for a user
-   *      cancellation, which carries a fee.
-   * @param user The address of the user whose escrow was refunded.
-   * @param answerMessageId The ID of the answer that will no longer be produced.
-   */
+  /// @notice Emitted when a prompt's escrow is refunded after the refund timeout.
+  /// @dev Distinct from `PromptCancelled` so an indexer never mistakes a timeout refund for a user
+  ///      cancellation, which carries a fee.
+  /// @param user The address of the user whose escrow was refunded.
+  /// @param answerMessageId The ID of the answer that will no longer be produced.
   event PromptRefunded(address indexed user, uint256 indexed answerMessageId);
+
   /// @notice Emitted when a user requests a metadata update. This instructs the TEE to update decentralised storage.
   /// @param user The address of the user requesting the update.
   /// @param conversationId The ID of the conversation to update.
