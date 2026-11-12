@@ -190,6 +190,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   error EscrowNotFound();
   /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
   error EscrowNotPending();
+  /// @notice Reverts if a refund record is retried for an escrow that was not refunded.
+  error EscrowNotRefunded();
   /// @notice Reverts if a user tries to manage a spending limit while having pending prompts.
   error HasPendingPrompts();
 
@@ -637,6 +639,25 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
     emit PaymentRefunded(escrowId);
     ableToken.safeTransfer(escrow.user, escrow.amount);
+  }
+
+  /**
+   * @notice Completes the agent's record of a refund whose first attempt failed.
+   * @dev Callable by anyone, and safe to repeat: it moves no funds, acts only on an escrow that
+   *      is already REFUNDED, and the agent ignores a refund it has already recorded. It exists
+   *      because `processRefund` pays the user even when the agent cannot take the call
+   *      (`RefundRecordFailed`), and nothing else could tell the agent afterwards. Unlike
+   *      `processRefund` it reverts if the agent still cannot take the call, so a retry that did
+   *      not work is never mistaken for one that did.
+   * @param _escrowId The ID of the refunded escrow.
+   */
+  function retryRefundRecord(uint256 _escrowId) external {
+    Escrow storage escrow = escrows[_escrowId];
+    if (escrow.status != EscrowStatus.REFUNDED) {
+      revert EscrowNotRefunded();
+    }
+
+    evmAIAgent.recordRefund(escrow.user, _escrowId);
   }
 
   // --- Internal Helper Functions ---
