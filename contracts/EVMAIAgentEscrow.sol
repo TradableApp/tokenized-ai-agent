@@ -144,6 +144,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param escrowId The unique identifier of the refunded escrow.
    */
   event RefundRecordFailed(uint256 indexed escrowId);
+
   /**
    * @notice Emitted when a user cancels their own pending prompt.
    * @param user The user who initiated the cancellation.
@@ -514,6 +515,9 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   /**
    * @notice Allows a user to cancel their own pending prompt.
    * @dev Charges a fixed `cancellationFee` and refunds the original `promptFee`.
+   *      Unlike `processRefund`, this reverts if the agent cannot record the cancellation: a
+   *      cancellation exists to stop the oracle, so one the agent never hears of is refused, and
+   *      the user's exit is then `processRefund` after the refund timeout.
    * @param _answerMessageId The ID of the answer message to cancel.
    */
   function cancelPrompt(uint256 _answerMessageId) external {
@@ -623,6 +627,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     // the user's last exit, so an agent that cannot take the call (an escrow upgraded ahead of
     // its agent, a mis-linked agent) costs the record and never the money. Starving the call of
     // gas to skip it is not possible: the 1/64 left over could not pay for the transfer below.
+    // solhint-disable-next-line no-empty-blocks
     try evmAIAgent.recordRefund(escrow.user, escrowId) {} catch {
       emit RefundRecordFailed(escrowId);
     }
