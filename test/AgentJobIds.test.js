@@ -26,6 +26,7 @@ describe("Agent job ids — one id space with prompts", function () {
   };
   // Enough agent jobs that a counter of their own, starting at zero, would reach the answer id.
   const AGENT_JOBS = 3;
+  const ESCROW_COMPLETE = 1n; // EscrowStatus.COMPLETE
 
   const parseEvent = (receipt, contract, name) => {
     const topic = contract.interface.getEvent(name).topicHash;
@@ -149,8 +150,31 @@ describe("Agent job ids — one id space with prompts", function () {
 
         await aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, CID_BUNDLE);
 
+        expect((await escrow.escrows(answerMessageId)).status).to.equal(ESCROW_COMPLETE);
         expect(await escrow.pendingEscrowCount(promptUser.address)).to.equal(0n);
         expect(await escrow.pendingEscrowCount(jobUser.address)).to.equal(BigInt(AGENT_JOBS));
+      });
+
+      it("the job's user can cancel it, and nobody else can", async function () {
+        const { aiAgent, escrow, promptUser, jobUser, triggerIds } = await loadFixture(
+          promptThenAgentJobsFixture,
+        );
+        await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
+
+        await expect(
+          escrow.connect(promptUser).cancelPrompt(triggerIds[0]),
+        ).to.be.revertedWithCustomError(escrow, "NotPromptOwner");
+        await expect(escrow.connect(jobUser).cancelPrompt(triggerIds[0]))
+          .to.emit(aiAgent, "PromptCancelled")
+          .withArgs(jobUser.address, triggerIds[0]);
+        expect(await escrow.pendingEscrowCount(jobUser.address)).to.equal(BigInt(AGENT_JOBS - 1));
+      });
+
+      it("a trigger id is not a prompt: the agent refuses an answer filed against it", async function () {
+        const { aiAgent, oracle, triggerIds } = await loadFixture(promptThenAgentJobsFixture);
+        await expect(
+          aiAgent.connect(oracle).submitAnswer(triggerIds[0], triggerIds[1], CID_BUNDLE),
+        ).to.be.revertedWithCustomError(aiAgent, "InvalidPromptMessageId");
       });
 
       it("refunding an agent job leaves the prompt open and answerable", async function () {
