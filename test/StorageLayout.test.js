@@ -85,7 +85,11 @@ async function readLayout(fullyQualifiedName) {
   return buildInfo.output.contracts[sourceName][contractName].storageLayout;
 }
 
-/** Every enum declared in the contract, with its values in declaration order. */
+/**
+ * Every enum declared directly in the contract, with its values in declaration order. An enum
+ * declared in a base contract is not read here; the enum test fails if storage uses one, so it
+ * is never left unpinned without anyone noticing.
+ */
 async function readEnums(fullyQualifiedName) {
   const [sourceName, contractName] = fullyQualifiedName.split(":");
   const buildInfo = await artifacts.getBuildInfo(fullyQualifiedName);
@@ -105,7 +109,7 @@ async function readEnums(fullyQualifiedName) {
 function describeEntries(entries, types) {
   return entries.map(({ label, slot, offset, type }) => ({
     label,
-    slot,
+    slot: String(slot),
     offset,
     type: types[type].label,
   }));
@@ -156,9 +160,18 @@ describe("Storage layout of the upgradeable contracts", function () {
       });
 
       it("keeps every enum's values in their declared order", async function () {
+        const layout = await readLayout(fullyQualifiedName);
+        const storedEnumNames = Object.values(layout.types)
+          .filter((type) => type.label.startsWith("enum "))
+          .map((type) => type.label.split(".").pop());
+
         const actual = await readEnums(fullyQualifiedName);
 
         expect(actual).to.deep.equal(expected.enums);
+        expect(
+          Object.keys(actual),
+          "an enum used in storage is declared elsewhere",
+        ).to.include.members(storedEnumNames);
       });
 
       it("variables plus the gap fill exactly the reserved slots", async function () {
