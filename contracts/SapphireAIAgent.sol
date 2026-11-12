@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
-// The agent is the single registry of IDs, ownership and job state; its state stays together.
-/* solhint-disable max-states-count */
-
 import { Subcall } from "@oasisprotocol/sapphire-contracts/contracts/Subcall.sol";
 import { ISapphireAIAgentEscrow } from "./interfaces/ISapphireAIAgentEscrow.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
@@ -55,6 +52,8 @@ contract SapphireAIAgent is Ownable {
   mapping(uint256 => uint256) private _regenerationLockOf;
   /// @notice How many requests for the oracle this contract has recorded: prompts, regenerations,
   ///         agent jobs, metadata updates and branches. Request numbers start at 1.
+  /// @dev A request number is a position in this log, not an identity: it carries no link to a
+  ///      particular event. Agent jobs are counted although nothing consumes them yet.
   uint256 public requestCount;
   /// @notice The block in which request `n` was recorded, so its event can be fetched from that
   ///         block alone. Zero for a number that has not been issued.

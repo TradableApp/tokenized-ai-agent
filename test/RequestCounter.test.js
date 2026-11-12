@@ -185,8 +185,40 @@ describe("Request counter — every oracle-bound request is counted with its blo
         expect(third.blockNumber).to.be.greaterThan(second.blockNumber);
       });
 
+      it("a request that reverts is not counted", async function () {
+        const fixture = await loadFixture(answeredPromptFixture);
+        const { aiAgent, escrow, user, conversationId, promptMessageId, answerMessageId } = fixture;
+        await chain.regenerate(escrow, user, conversationId, promptMessageId, answerMessageId);
+        const countBefore = await aiAgent.requestCount();
+
+        // A second regeneration of the same prompt is refused while the first is pending.
+        await expect(
+          chain.regenerate(escrow, user, conversationId, promptMessageId, answerMessageId),
+        ).to.be.revertedWithCustomError(aiAgent, "RegenerationAlreadyPending");
+
+        expect(await aiAgent.requestCount()).to.equal(countBefore);
+        expect(await aiAgent.requestBlock(countBefore + 1n)).to.equal(0n);
+      });
+
+      it("the request's event is in the block the agent recorded for it", async function () {
+        const { aiAgent, escrow, user, conversationId } = await loadFixture(answeredPromptFixture);
+        await mine(4);
+        await chain.metadata(escrow, user, conversationId);
+
+        const recordedBlock = await aiAgent.requestBlock(await aiAgent.requestCount());
+        const events = await aiAgent.queryFilter(
+          aiAgent.filters.MetadataUpdateRequested(),
+          Number(recordedBlock),
+          Number(recordedBlock),
+        );
+
+        expect(events).to.have.lengthOf(1);
+      });
+
       it("an answer, a cancellation and a refund are not requests", async function () {
         const { aiAgent, escrow, user, keeper } = await loadFixture(answeredPromptFixture);
+        // The fixture's answer has already been submitted against request 1.
+        expect(await aiAgent.requestCount()).to.equal(1n);
         const cancelReceipt = await (await chain.prompt(escrow, user)).wait();
         const refundReceipt = await (await chain.prompt(escrow, user)).wait();
         const countAfterPrompts = await aiAgent.requestCount();
@@ -200,7 +232,6 @@ describe("Request counter — every oracle-bound request is counted with its blo
           .connect(keeper)
           .processRefund(parseEvent(refundReceipt, escrow, "PaymentEscrowed").args[0]);
 
-        // The fixture's answer already ran against request 1 without raising the count past 1.
         expect(countAfterPrompts).to.equal(3n);
         expect(await aiAgent.requestCount()).to.equal(3n);
       });
