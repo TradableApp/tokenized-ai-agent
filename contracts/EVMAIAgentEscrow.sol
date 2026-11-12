@@ -515,6 +515,9 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   /**
    * @notice Allows a user to cancel their own pending prompt.
    * @dev Charges a fixed `cancellationFee` and refunds the original `promptFee`.
+   *      Unlike `processRefund`, this reverts if the agent cannot record the cancellation: a
+   *      cancellation exists to stop the oracle, so one the agent never hears of is refused, and
+   *      the user's exit is then `processRefund` after the refund timeout.
    * @param _answerMessageId The ID of the answer message to cancel.
    */
   function cancelPrompt(uint256 _answerMessageId) external {
