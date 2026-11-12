@@ -178,6 +178,14 @@ describe("State changes are announced by the contract that makes them", function
       );
     });
 
+    it("a refund record cannot be retried for an escrow that does not exist", async function () {
+      const { escrow } = await loadFixture(sapphireEscrowFixture);
+      await expect(escrow.retryRefundRecord(4242)).to.be.revertedWithCustomError(
+        escrow,
+        "EscrowNotRefunded",
+      );
+    });
+
     it("the agent announces its initial oracle at construction", async function () {
       const [deployer, , oracle] = await ethers.getSigners();
       const aiAgent = await (

@@ -596,7 +596,8 @@ contract SapphireAIAgentEscrow is Ownable {
    * @dev Callable by anyone, and safe to repeat: it moves no funds, acts only on an escrow that
    *      is already REFUNDED, and the agent ignores a refund it has already recorded. It exists
    *      because `processRefund` pays the user even when the agent cannot take the call
-   *      (`RefundRecordFailed`), and nothing else could tell the agent afterwards. Unlike
+   *      (`RefundRecordFailed`), and nothing else could tell the agent afterwards; it also
+   *      repairs an escrow refunded before the agent could record refunds at all. Unlike
    *      `processRefund` it reverts if the agent still cannot take the call, so a retry that did
    *      not work is never mistaken for one that did.
    * @param _escrowId The ID of the refunded escrow.
