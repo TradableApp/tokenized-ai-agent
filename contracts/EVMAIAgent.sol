@@ -46,6 +46,9 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   mapping(uint256 => bool) public isJobFinalized;
   /// @notice Tracks whether a prompt message is currently pending a regeneration response.
   mapping(uint256 => bool) public isRegenerationPending;
+  /// @notice For a pending regeneration, the prompt it locked, stored as `promptMessageId + 1`
+  ///         so that zero means "this answer is not a pending regeneration".
+  mapping(uint256 => uint256) private _regenerationLockOf;
 
   // --- Events ---
 
@@ -457,6 +460,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     isRegenerationPending[_promptMessageId] = true;
+    _regenerationLockOf[_answerMessageId] = _promptMessageId + 1;
 
     emit RegenerationRequested(
       _user,
@@ -534,6 +538,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     } else if (isRegenerationPending[_promptMessageId]) {
       // This is a regeneration response, so unlock the original prompt.
       isRegenerationPending[_promptMessageId] = false;
+      delete _regenerationLockOf[_answerMessageId];
     }
 
     messageToConversation[_answerMessageId] = conversationId;
@@ -653,6 +658,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     isJobFinalized[_answerMessageId] = true;
+    _releaseRegenerationLock(_answerMessageId);
     emit PromptCancelled(_user, _answerMessageId);
   }
 
@@ -671,7 +677,25 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     isJobFinalized[_answerMessageId] = true;
+    _releaseRegenerationLock(_answerMessageId);
     emit PromptRefunded(_user, _answerMessageId);
+  }
+
+  /**
+   * @notice Unlocks the prompt a regeneration was holding, when that regeneration ends without
+   *         an answer.
+   * @dev A no-op for an ordinary prompt, and for a regeneration requested before this mapping
+   *      existed.
+   * @param _answerMessageId The answer ID of the job that ended.
+   */
+  function _releaseRegenerationLock(uint256 _answerMessageId) private {
+    uint256 lockedPromptPlusOne = _regenerationLockOf[_answerMessageId];
+    if (lockedPromptPlusOne == 0) {
+      return;
+    }
+
+    delete _regenerationLockOf[_answerMessageId];
+    isRegenerationPending[lockedPromptPlusOne - 1] = false;
   }
 
   // --- Upgradability ---
@@ -686,5 +710,5 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[37] private __gap;
+  uint256[36] private __gap;
 }
