@@ -575,6 +575,7 @@ contract SapphireAIAgentEscrow is Ownable {
 
     // Tell the agent the job is over, as cancelPrompt does, so the oracle skips it. An agent that
     // cannot take the call costs the record and never the refund already credited above.
+    // solhint-disable-next-line no-empty-blocks
     try sapphireAIAgent.recordRefund(escrow.user, escrowId) {} catch {
       emit RefundRecordFailed(escrowId);
     }

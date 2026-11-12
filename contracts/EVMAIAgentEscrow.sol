@@ -624,6 +624,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     // the user's last exit, so an agent that cannot take the call (an escrow upgraded ahead of
     // its agent, a mis-linked agent) costs the record and never the money. Starving the call of
     // gas to skip it is not possible: the 1/64 left over could not pay for the transfer below.
+    // solhint-disable-next-line no-empty-blocks
     try evmAIAgent.recordRefund(escrow.user, escrowId) {} catch {
       emit RefundRecordFailed(escrowId);
     }
