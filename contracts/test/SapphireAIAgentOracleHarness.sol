@@ -6,8 +6,8 @@ import { SapphireAIAgent } from "../SapphireAIAgent.sol";
 /**
  * @title Sapphire AI Agent oracle harness
  * @author Tradable
- * @notice Test-only agent that can authorize an oracle without a TEE attestation, which a
- *         non-Sapphire test network cannot produce.
+ * @notice Test-only agent that can authorize an oracle and publish the encryption key without a
+ *         TEE attestation, which a non-Sapphire test network cannot produce.
  * @dev Never deployed outside tests.
  */
 contract SapphireAIAgentOracleHarness is SapphireAIAgent {
@@ -31,5 +31,13 @@ contract SapphireAIAgentOracleHarness is SapphireAIAgent {
    */
   function addOracleForTest(address _oracle) external {
     _grantRole(ORACLE_ROLE, _oracle);
+  }
+
+  /**
+   * @notice Publishes the encryption key the way `setOracleEncryptionKey` does from inside the TEE.
+   * @param _newKey A secp256k1 public key: 33 bytes compressed or 65 bytes uncompressed.
+   */
+  function setOracleEncryptionKeyForTest(bytes calldata _newKey) external {
+    _setOracleEncryptionKey(_newKey);
   }
 }

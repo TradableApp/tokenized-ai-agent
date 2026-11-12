@@ -345,11 +345,21 @@ contract SapphireAIAgent is Ownable, AccessControl {
 
   /**
    * @notice Publishes the public key that clients encrypt a prompt's session key to.
-   * @dev Owner only. The key is shared by every authorized oracle, so there is one value and not
-   *      one per oracle. Clients read it from here, so a change reaches them without a rebuild.
+   * @dev Callable only from inside the ROFL app's TEE, like `addOracle`: the app publishes the
+   *      public half of a key it generated, so no operator can point clients at a key of their
+   *      own. The key is shared by every authorized oracle, so there is one value and not one
+   *      per oracle. Clients read it from here, so a change reaches them without a rebuild.
    * @param _newKey A secp256k1 public key: 33 bytes compressed or 65 bytes uncompressed.
    */
-  function setOracleEncryptionKey(bytes calldata _newKey) external onlyOwner {
+  function setOracleEncryptionKey(bytes calldata _newKey) external onlyTEE(roflAppID) {
+    _setOracleEncryptionKey(_newKey);
+  }
+
+  /**
+   * @notice Checks the encoding of an encryption key, stores it and announces it.
+   * @param _newKey A secp256k1 public key: 33 bytes compressed or 65 bytes uncompressed.
+   */
+  function _setOracleEncryptionKey(bytes calldata _newKey) internal {
     bool isCompressed = _newKey.length == 33 && (_newKey[0] == 0x02 || _newKey[0] == 0x03);
     bool isUncompressed = _newKey.length == 65 && _newKey[0] == 0x04;
     if (!isCompressed && !isUncompressed) {

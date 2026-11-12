@@ -156,6 +156,65 @@ describe("Oracle role — several oracles can be authorized at once", function (
       });
     });
 
+    describe("what cannot change the set of oracles", function () {
+      it("an oracle can give up its own role, and nobody can give it up for it", async function () {
+        const { aiAgent, oracle, stranger } = await loadFixture(deployFixture);
+
+        await expect(
+          aiAgent.connect(stranger).renounceRole(ORACLE_ROLE, oracle.address),
+        ).to.be.revertedWithCustomError(aiAgent, "AccessControlBadConfirmation");
+        await aiAgent.connect(oracle).renounceRole(ORACLE_ROLE, oracle.address);
+
+        expect(await aiAgent.isOracle(oracle.address)).to.equal(false);
+      });
+
+      it("a new owner inherits the power to add and remove, and the old owner loses it", async function () {
+        const { aiAgent, deployer, oracle, secondOracle, stranger } =
+          await loadFixture(deployFixture);
+
+        await aiAgent.connect(deployer).transferOwnership(stranger.address);
+
+        expect(await aiAgent.isOracle(oracle.address)).to.equal(true);
+        await expect(
+          aiAgent.connect(deployer).addOracle(secondOracle.address),
+        ).to.be.revertedWithCustomError(aiAgent, "OwnableUnauthorizedAccount");
+        await aiAgent.connect(stranger).addOracle(secondOracle.address);
+        expect(await aiAgent.isOracle(secondOracle.address)).to.equal(true);
+      });
+
+      it("the implementation contracts cannot be initialized directly", async function () {
+        const { aiAgent, escrow, stranger } = await loadFixture(deployFixture);
+        const agentImplementation = await ethers.getContractAt(
+          "EVMAIAgent",
+          await upgrades.erc1967.getImplementationAddress(await aiAgent.getAddress()),
+        );
+        const escrowImplementation = await ethers.getContractAt(
+          "EVMAIAgentEscrow",
+          await upgrades.erc1967.getImplementationAddress(await escrow.getAddress()),
+        );
+
+        await expect(
+          agentImplementation
+            .connect(stranger)
+            .initialize("example.com", stranger.address, stranger.address),
+        ).to.be.revertedWithCustomError(agentImplementation, "InvalidInitialization");
+        await expect(
+          escrowImplementation
+            .connect(stranger)
+            .initialize(
+              stranger.address,
+              stranger.address,
+              stranger.address,
+              stranger.address,
+              PROMPT_FEE,
+              CANCELLATION_FEE,
+              METADATA_FEE,
+              BRANCH_FEE,
+            ),
+        ).to.be.revertedWithCustomError(escrowImplementation, "InvalidInitialization");
+      });
+    });
+
     describe("what the role gates", function () {
       it("an address without the role cannot answer", async function () {
         const { aiAgent, escrow, user, stranger } = await loadFixture(deployFixture);
@@ -333,6 +392,30 @@ describe("Oracle role — several oracles can be authorized at once", function (
         ).to.equal(false);
       });
 
+      it("once the owner has added an oracle, a late migration cannot bring the stored one back", async function () {
+        const { aiAgent, deployer, legacyOracle, stranger } = await loadFixture(legacyStateFixture);
+
+        await aiAgent.connect(deployer).addOracle(stranger.address);
+
+        expect(
+          await needsOracleRoleMigration(ethers.provider, await aiAgent.getAddress()),
+        ).to.equal(false);
+        await expect(aiAgent.connect(deployer).migrateOracleRole()).to.not.emit(
+          aiAgent,
+          "RoleGranted",
+        );
+        expect(await aiAgent.isOracle(legacyOracle.address)).to.equal(false);
+      });
+
+      it("removing an oracle retires the stored one too", async function () {
+        const { aiAgent, deployer, legacyOracle, stranger } = await loadFixture(legacyStateFixture);
+
+        await aiAgent.connect(deployer).removeOracle(stranger.address);
+        await aiAgent.connect(deployer).migrateOracleRole();
+
+        expect(await aiAgent.isOracle(legacyOracle.address)).to.equal(false);
+      });
+
       it("on a fresh deployment there is nothing to migrate and no role is granted", async function () {
         const { aiAgent, deployer } = await loadFixture(deployFixture);
 
@@ -457,16 +540,23 @@ describe("Oracle role — several oracles can be authorized at once", function (
       ).to.emit(aiAgent, "AnswerMessageAdded");
     });
 
-    it("the owner publishes the encryption key, and bad bytes are refused", async function () {
+    it("the encryption key can only be published from inside the ROFL app's TEE", async function () {
       const { aiAgent, deployer, stranger } = await loadFixture(deployFixture);
 
-      await expect(
-        aiAgent.connect(stranger).setOracleEncryptionKey(COMPRESSED_KEY),
-      ).to.be.revertedWithCustomError(aiAgent, "OwnableUnauthorizedAccount");
-      await expect(
-        aiAgent.connect(deployer).setOracleEncryptionKey("0x1234"),
-      ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKey");
-      await expect(aiAgent.connect(deployer).setOracleEncryptionKey(COMPRESSED_KEY))
+      // The attestation check has no custom error on a non-Sapphire network; it just reverts.
+      await expect(aiAgent.connect(stranger).setOracleEncryptionKey(COMPRESSED_KEY)).to.be.reverted;
+      await expect(aiAgent.connect(deployer).setOracleEncryptionKey(COMPRESSED_KEY)).to.be.reverted;
+      expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
+    });
+
+    it("a published key is checked, stored and announced", async function () {
+      const { aiAgent } = await loadFixture(deployFixture);
+
+      await expect(aiAgent.setOracleEncryptionKeyForTest("0x1234")).to.be.revertedWithCustomError(
+        aiAgent,
+        "InvalidEncryptionKey",
+      );
+      await expect(aiAgent.setOracleEncryptionKeyForTest(COMPRESSED_KEY))
         .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
         .withArgs(COMPRESSED_KEY);
       expect(await aiAgent.oracleEncryptionKey()).to.equal(COMPRESSED_KEY);

@@ -213,6 +213,15 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   // --- Initialization ---
 
   /**
+   * @notice Locks the implementation contract so that only a proxy can be initialized.
+   * @dev Without this anyone could initialize the bare implementation and own it.
+   * @custom:oz-upgrades-unsafe-allow constructor
+   */
+  constructor() {
+    _disableInitializers();
+  }
+
+  /**
    * @notice Sets up the escrow smart contract.
    * @param _tokenAddress The address of the ERC20 token contract.
    * @param _agentAddress The address of the EVMAIAgent contract to interact with.

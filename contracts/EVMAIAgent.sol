@@ -301,6 +301,15 @@ contract EVMAIAgent is
   // --- Initialization ---
 
   /**
+   * @notice Locks the implementation contract so that only a proxy can be initialized.
+   * @dev Without this anyone could initialize the bare implementation and own it.
+   * @custom:oz-upgrades-unsafe-allow constructor
+   */
+  constructor() {
+    _disableInitializers();
+  }
+
+  /**
    * @notice Sets up the AI Agent smart contract.
    * @param _domain The domain used for off-chain SIWE validation.
    * @param _oracle The first address authorized as an oracle (announced by `RoleGranted`).
@@ -372,12 +381,14 @@ contract EVMAIAgent is
    *      holds `DEFAULT_ADMIN_ROLE`, so this and `removeOracle` are the only ways the set of
    *      oracles changes, apart from an oracle giving up its own role with `renounceRole`.
    *      Emits `RoleGranted`; adding an address that is already an oracle changes nothing.
+   *      The first add or remove also retires the previous version's stored oracle address.
    * @param _oracle The address to authorize.
    */
   function addOracle(address _oracle) external onlyOwner {
     if (_oracle == address(0)) {
       revert ZeroAddress();
     }
+    _retireLegacyOracle();
     _grantRole(ORACLE_ROLE, _oracle);
   }
 
@@ -388,6 +399,7 @@ contract EVMAIAgent is
    * @param _oracle The address to remove.
    */
   function removeOracle(address _oracle) external onlyOwner {
+    _retireLegacyOracle();
     _revokeRole(ORACLE_ROLE, _oracle);
   }
 
@@ -412,7 +424,9 @@ contract EVMAIAgent is
    * @dev Runs once, in the same transaction as the upgrade from the single-oracle version
    *      (`upgradeToAndCall`), so the proxy is never left upgraded with no oracle. Owner only,
    *      which in that transaction is the account upgrading. On a proxy deployed fresh there
-   *      is no stored oracle and nothing is granted.
+   *      is no stored oracle and nothing is granted. If the owner has already added or removed
+   *      an oracle, the stored address has been retired and nothing is granted either, so a
+   *      late migration can never bring back an oracle the owner has moved on from.
    */
   function migrateOracleRole() external reinitializer(2) onlyOwner {
     __AccessControl_init();
@@ -420,6 +434,16 @@ contract EVMAIAgent is
     if (legacyOracle != address(0)) {
       _legacyOracle = address(0);
       _grantRole(ORACLE_ROLE, legacyOracle);
+    }
+  }
+
+  /**
+   * @notice Forgets the previous version's single oracle address once the owner manages the set.
+   * @dev After this, `migrateOracleRole` has nothing to grant.
+   */
+  function _retireLegacyOracle() private {
+    if (_legacyOracle != address(0)) {
+      _legacyOracle = address(0);
     }
   }
 
