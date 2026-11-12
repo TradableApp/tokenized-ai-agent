@@ -11,8 +11,14 @@ const { artifacts } = require("hardhat");
  * extended to match. A new struct field is appended to the end of its struct. Any other edit to
  * these lists is a layout break for the deployed proxies.
  *
- * The compiler's layout does not carry the order of an enum's values, so `EscrowStatus` is not
- * covered here: its values must only ever be appended.
+ * A stored enum is kept as a number, so the order of its values is part of the layout too: a
+ * value inserted or moved changes what every stored number means. Enum values are pinned from
+ * the compiler's syntax tree and must only ever be appended.
+ *
+ * Types are pinned by the compiler's own labels (`contract IERC20`, `struct X.Y`), so renaming a
+ * contract, interface or struct also fails here; update the label if the rename is intended.
+ * An entry is `[label, type]` for a variable that starts a slot, or `[label, type, offset]` for
+ * one packed into the same slot as the entry before it.
  */
 const RESERVED_SLOTS = 50;
 
@@ -38,6 +44,7 @@ const EXPECTED_LAYOUTS = {
       ["__gap", "uint256[34]"],
     ],
     structs: {},
+    enums: {},
   },
   "contracts/EVMAIAgentEscrow.sol:EVMAIAgentEscrow": {
     storage: [
@@ -66,6 +73,9 @@ const EXPECTED_LAYOUTS = {
         ["status", "enum EVMAIAgentEscrow.EscrowStatus"],
       ],
     },
+    enums: {
+      EscrowStatus: ["PENDING", "COMPLETE", "REFUNDED"],
+    },
   },
 };
 
@@ -73,6 +83,22 @@ async function readLayout(fullyQualifiedName) {
   const [sourceName, contractName] = fullyQualifiedName.split(":");
   const buildInfo = await artifacts.getBuildInfo(fullyQualifiedName);
   return buildInfo.output.contracts[sourceName][contractName].storageLayout;
+}
+
+/** Every enum declared in the contract, with its values in declaration order. */
+async function readEnums(fullyQualifiedName) {
+  const [sourceName, contractName] = fullyQualifiedName.split(":");
+  const buildInfo = await artifacts.getBuildInfo(fullyQualifiedName);
+  const contract = buildInfo.output.sources[sourceName].ast.nodes.find(
+    (node) => node.nodeType === "ContractDefinition" && node.name === contractName,
+  );
+  const enums = {};
+  for (const node of contract.nodes) {
+    if (node.nodeType === "EnumDefinition") {
+      enums[node.name] = node.members.map((member) => member.name);
+    }
+  }
+  return enums;
 }
 
 /** One entry per variable or struct field: where it sits and what type the compiler gave it. */
@@ -85,9 +111,15 @@ function describeEntries(entries, types) {
   }));
 }
 
-/** The pinned form of the same thing: every entry fills one whole slot, in list order. */
-function expectedEntries(pairs) {
-  return pairs.map(([label, type], index) => ({ label, slot: String(index), offset: 0, type }));
+/** The pinned form of the same thing. An entry with an offset shares the slot before it. */
+function expectedEntries(pinned) {
+  let slot = -1;
+  return pinned.map(([label, type, offset = 0]) => {
+    if (offset === 0) {
+      slot += 1;
+    }
+    return { label, slot: String(slot), offset, type };
+  });
 }
 
 describe("Storage layout of the upgradeable contracts", function () {
@@ -118,6 +150,12 @@ describe("Storage layout of the upgradeable contracts", function () {
           pinned[label] = expectedEntries(pairs);
         }
         expect(actual).to.deep.equal(pinned);
+      });
+
+      it("keeps every enum's values in their declared order", async function () {
+        const actual = await readEnums(fullyQualifiedName);
+
+        expect(actual).to.deep.equal(expected.enums);
       });
 
       it("variables plus the gap fill exactly the reserved slots", async function () {
