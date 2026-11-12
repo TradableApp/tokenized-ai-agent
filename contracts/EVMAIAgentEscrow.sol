@@ -137,12 +137,27 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param escrowId The unique ID of the refunded escrow.
    */
   event PaymentRefunded(uint256 indexed escrowId);
+
+  /**
+   * @notice Emitted when a refund was paid but the agent could not be told the job is over.
+   * @dev The agent still reports the job as open; the oracle must check the escrow status.
+   * @param escrowId The unique identifier of the refunded escrow.
+   */
+  event RefundRecordFailed(uint256 indexed escrowId);
+
   /**
    * @notice Emitted when a user cancels their own pending prompt.
    * @param user The user who initiated the cancellation.
    * @param answerMessageId The ID of the answer that was cancelled.
    */
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
+
+  /**
+   * @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
+   * @param user The address of the user who paid.
+   * @param amount The fee transferred to the treasury.
+   */
+  event DirectPaymentProcessed(address indexed user, uint256 indexed amount);
 
   // --- Errors ---
 
@@ -500,6 +515,9 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   /**
    * @notice Allows a user to cancel their own pending prompt.
    * @dev Charges a fixed `cancellationFee` and refunds the original `promptFee`.
+   *      Unlike `processRefund`, this reverts if the agent cannot record the cancellation: a
+   *      cancellation exists to stop the oracle, so one the agent never hears of is refused, and
+   *      the user's exit is then `processRefund` after the refund timeout.
    * @param _answerMessageId The ID of the answer message to cancel.
    */
   function cancelPrompt(uint256 _answerMessageId) external {
@@ -605,6 +623,14 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     escrow.status = EscrowStatus.REFUNDED;
     spendingLimits[escrow.user].spentAmount -= escrow.amount;
 
+    // Tell the agent the job is over, as cancelPrompt does, so the oracle skips it. The refund is
+    // the user's last exit, so an agent that cannot take the call (an escrow upgraded ahead of
+    // its agent, a mis-linked agent) costs the record and never the money. Starving the call of
+    // gas to skip it is not possible: the 1/64 left over could not pay for the transfer below.
+    // solhint-disable-next-line no-empty-blocks
+    try evmAIAgent.recordRefund(escrow.user, escrowId) {} catch {
+      emit RefundRecordFailed(escrowId);
+    }
     emit PaymentRefunded(escrowId);
     ableToken.safeTransfer(escrow.user, escrow.amount);
   }
@@ -657,6 +683,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
 
     sub.spentAmount += _fee;
+    emit DirectPaymentProcessed(_user, _fee);
     ableToken.safeTransferFrom(_user, treasury, _fee);
   }
 

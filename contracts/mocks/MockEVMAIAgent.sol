@@ -36,6 +36,7 @@ contract MockEVMAIAgent is IEVMAIAgent {
     uint256 newConversationId
   );
   event CancellationRecorded(address user, uint256 answerMessageId);
+  event RefundRecorded(address user, uint256 answerMessageId);
   event AnswerSubmitted(uint256 promptMessageId, uint256 answerMessageId);
   event BranchSubmitted(uint256 newConversationId, uint256 originalConversationId);
   event MetadataSubmitted(uint256 conversationId);
@@ -155,6 +156,20 @@ contract MockEVMAIAgent is IEVMAIAgent {
     lastUser = _user;
     lastAnswerMessageId = _answerMessageId;
     emit CancellationRecorded(_user, _answerMessageId);
+  }
+
+  /// @notice When true, recordRefund reverts, standing in for an agent that cannot take the call.
+  bool public recordRefundReverts;
+
+  function setRecordRefundReverts(bool _reverts) external {
+    recordRefundReverts = _reverts;
+  }
+
+  function recordRefund(address _user, uint256 _answerMessageId) external override {
+    require(!recordRefundReverts, "MockAIAgent: recordRefund reverts");
+    lastUser = _user;
+    lastAnswerMessageId = _answerMessageId;
+    emit RefundRecorded(_user, _answerMessageId);
   }
 
   function submitConversationMetadata(
