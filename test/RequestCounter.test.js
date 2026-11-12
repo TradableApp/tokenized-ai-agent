@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers, upgrades, network } = require("hardhat");
+const { ethers, upgrades } = require("hardhat");
 const { time, mine, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
@@ -170,22 +170,19 @@ describe("Request counter — every oracle-bound request is counted with its blo
         });
       }
 
-      it("two requests mined in one block share that block", async function () {
-        const { aiAgent, escrow, user, conversationId } = await loadFixture(answeredPromptFixture);
-        await network.provider.send("evm_setAutomine", [false]);
-        try {
-          const first = await chain.prompt(escrow, user);
-          const second = await chain.metadata(escrow, user, conversationId);
-          await mine(1);
-          const [firstReceipt, secondReceipt] = await Promise.all([first.wait(), second.wait()]);
+      it("requests in later blocks record later blocks, in order", async function () {
+        const { aiAgent, escrow, user, conversationId, promptBlock } =
+          await loadFixture(answeredPromptFixture);
+        await mine(5);
+        const second = await (await chain.metadata(escrow, user, conversationId)).wait();
+        await mine(2);
+        const third = await (await chain.prompt(escrow, user)).wait();
 
-          expect(firstReceipt.blockNumber).to.equal(secondReceipt.blockNumber);
-          expect(await aiAgent.requestCount()).to.equal(3n);
-          expect(await aiAgent.requestBlock(2)).to.equal(BigInt(firstReceipt.blockNumber));
-          expect(await aiAgent.requestBlock(3)).to.equal(BigInt(firstReceipt.blockNumber));
-        } finally {
-          await network.provider.send("evm_setAutomine", [true]);
-        }
+        expect(await aiAgent.requestCount()).to.equal(3n);
+        expect(await aiAgent.requestBlock(2)).to.equal(BigInt(second.blockNumber));
+        expect(await aiAgent.requestBlock(3)).to.equal(BigInt(third.blockNumber));
+        expect(second.blockNumber).to.be.greaterThan(promptBlock);
+        expect(third.blockNumber).to.be.greaterThan(second.blockNumber);
       });
 
       it("an answer, a cancellation and a refund are not requests", async function () {

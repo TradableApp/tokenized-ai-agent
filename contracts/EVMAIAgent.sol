@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
+// The agent is the single registry of IDs, ownership and job state; its state stays together.
+/* solhint-disable max-states-count */
+
 import { IEVMAIAgentEscrow } from "./interfaces/IEVMAIAgentEscrow.sol";
 import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -52,6 +55,12 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   /// @notice For a pending regeneration, the prompt it locked, stored as `promptMessageId + 1`
   ///         so that zero means "this answer is not a pending regeneration".
   mapping(uint256 => uint256) private _regenerationLockOf;
+  /// @notice How many requests for the oracle this contract has recorded: prompts, regenerations,
+  ///         agent jobs, metadata updates and branches. Request numbers start at 1.
+  uint256 public requestCount;
+  /// @notice The block in which request `n` was recorded, so its event can be fetched from that
+  ///         block alone. Zero for a number that has not been issued.
+  mapping(uint256 => uint256) public requestBlock;
 
   // --- Events ---
 
@@ -426,6 +435,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     messageToConversation[_promptMessageId] = _conversationId;
+    _recordRequest();
     emit PromptSubmitted(
       _user,
       _conversationId,
@@ -467,6 +477,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     isRegenerationPending[_promptMessageId] = true;
     _regenerationLockOf[_answerMessageId] = _promptMessageId + 1;
 
+    _recordRequest();
     emit RegenerationRequested(
       _user,
       _conversationId,
@@ -501,6 +512,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     triggerToJob[_triggerId] = _jobId;
+    _recordRequest();
     emit AgentJobSubmitted(_user, _jobId, _triggerId, _encryptedPayload, _roflEncryptedKey);
   }
 
@@ -572,6 +584,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
       revert Unauthorized();
     }
 
+    _recordRequest();
     emit MetadataUpdateRequested(_user, _conversationId, _encryptedPayload, _roflEncryptedKey);
   }
 
@@ -611,6 +624,7 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
     conversationToOwner[_newConversationId] = _user;
 
+    _recordRequest();
     emit BranchRequested(
       _user,
       _originalConversationId,
@@ -709,6 +723,18 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     return true;
   }
 
+  /**
+   * @notice Counts a request for the oracle and records the block it arrived in.
+   * @dev Called once by every function that emits an event the oracle must act on. The oracle
+   *      reads `requestCount` to learn whether there is new work and `requestBlock` to fetch the
+   *      event from exactly that block, instead of scanning block ranges.
+   */
+  function _recordRequest() private {
+    uint256 requestNumber = requestCount + 1;
+    requestCount = requestNumber;
+    requestBlock[requestNumber] = block.number;
+  }
+
   // --- Upgradability ---
 
   /**
@@ -721,5 +747,5 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[36] private __gap;
+  uint256[34] private __gap;
 }
