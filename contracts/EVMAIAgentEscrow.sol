@@ -146,6 +146,14 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   event RefundRecordFailed(uint256 indexed escrowId);
 
   /**
+   * @notice Emitted when the agent accepted a retried refund record for an escrow.
+   * @dev The agent ignores a refund it had already recorded, so this is emitted for a repeat, and for
+   *      a cancelled escrow, too.
+   * @param escrowId The unique identifier of the refunded escrow.
+   */
+  event RefundRecordRetried(uint256 indexed escrowId);
+
+  /**
    * @notice Emitted when a user cancels their own pending prompt.
    * @param user The user who initiated the cancellation.
    * @param answerMessageId The ID of the answer that was cancelled.
@@ -190,6 +198,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   error EscrowNotFound();
   /// @notice Reverts if an action is attempted on an escrow that is not in the PENDING state.
   error EscrowNotPending();
+  /// @notice Reverts if a refund record is retried for an escrow that was not refunded.
+  error EscrowNotRefunded();
   /// @notice Reverts if a user tries to manage a spending limit while having pending prompts.
   error HasPendingPrompts();
 
@@ -637,6 +647,30 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
     }
     emit PaymentRefunded(escrowId);
     ableToken.safeTransfer(escrow.user, escrow.amount);
+  }
+
+  /**
+   * @notice Completes the agent's record of a refund whose first attempt failed.
+   * @dev Callable by anyone, and safe to repeat: it moves no funds, acts only on an escrow that
+   *      is already REFUNDED, and the agent ignores a refund it has already recorded. It exists
+   *      because `processRefund` pays the user even when the agent cannot take the call
+   *      (`RefundRecordFailed`), and nothing else could tell the agent afterwards; it also
+   *      repairs an escrow refunded before the agent could record refunds at all. Unlike
+   *      `processRefund` it reverts if the agent still cannot take the call, so a retry that did
+   *      not work is never mistaken for one that did. A cancelled escrow is stored as REFUNDED
+   *      too (there is no separate cancelled status), so this can be called for one: the agent
+   *      already holds the cancellation and ignores the call, and `RefundRecordRetried` is still
+   *      emitted. The event says the escrow made the call, not that the agent recorded a refund.
+   * @param _answerMessageId The ID of the answer message whose escrow was refunded.
+   */
+  function retryRefundRecord(uint256 _answerMessageId) external {
+    Escrow storage escrow = escrows[_answerMessageId];
+    if (escrow.status != EscrowStatus.REFUNDED) {
+      revert EscrowNotRefunded();
+    }
+
+    evmAIAgent.recordRefund(escrow.user, _answerMessageId);
+    emit RefundRecordRetried(_answerMessageId);
   }
 
   // --- Internal Helper Functions ---
