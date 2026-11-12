@@ -1,0 +1,212 @@
+const { expect } = require("chai");
+const { ethers, upgrades, network } = require("hardhat");
+const { time, mine, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+
+/**
+ * The agent counts every request the oracle must handle and records the block of each.
+ *
+ * An oracle on a free RPC tier cannot afford to scan block ranges for events: the log query is
+ * capped at a few blocks and metered. With `requestCount` and `requestBlock` it reads one cheap
+ * view to learn whether anything is new, then fetches the logs of exactly the blocks that hold a
+ * request, however long it was away. Events are unchanged; the counter is read by `eth_call`.
+ */
+describe("Request counter — every oracle-bound request is counted with its block", function () {
+  const ALLOWANCE = ethers.parseEther("100");
+  const PROMPT_FEE = ethers.parseEther("10");
+  const CANCELLATION_FEE = ethers.parseEther("1");
+  const METADATA_FEE = ethers.parseEther("0.5");
+  const BRANCH_FEE = ethers.parseEther("2");
+  const MOCK_CID = "QmXg9j4f8zYf8t7f8zYf8t7f8zYf8t7f8zYf8t7f8zYf8t7";
+  const CID_BUNDLE = {
+    conversationCID: MOCK_CID,
+    metadataCID: MOCK_CID,
+    promptMessageCID: MOCK_CID,
+    answerMessageCID: MOCK_CID,
+    searchDeltaCID: MOCK_CID,
+  };
+
+  const parseEvent = (receipt, contract, name) => {
+    const topic = contract.interface.getEvent(name).topicHash;
+    const log = receipt.logs.find((l) => l.topics[0] === topic);
+    if (!log) throw new Error(`${name} not found in the receipt — recompile?`);
+    return contract.interface.parseLog(log);
+  };
+
+  const chains = {
+    EVM: {
+      async deploy() {
+        const [deployer, user, oracle, treasury, keeper] = await ethers.getSigners();
+        const token = await (await ethers.getContractFactory("MockAbleToken")).deploy();
+        await token.waitForDeployment();
+        await token.mint(user.address, ALLOWANCE);
+        const aiAgent = await upgrades.deployProxy(
+          await ethers.getContractFactory("EVMAIAgent"),
+          ["example.com", oracle.address, deployer.address],
+          { initializer: "initialize", kind: "uups" },
+        );
+        await aiAgent.waitForDeployment();
+        const escrow = await upgrades.deployProxy(
+          await ethers.getContractFactory("EVMAIAgentEscrow"),
+          [
+            await token.getAddress(),
+            await aiAgent.getAddress(),
+            treasury.address,
+            deployer.address,
+            PROMPT_FEE,
+            CANCELLATION_FEE,
+            METADATA_FEE,
+            BRANCH_FEE,
+          ],
+          { initializer: "initialize", kind: "uups" },
+        );
+        await escrow.waitForDeployment();
+        await aiAgent.connect(deployer).setAgentEscrow(await escrow.getAddress());
+        await token.connect(user).approve(await escrow.getAddress(), ALLOWANCE);
+        await escrow.connect(user).setSpendingLimit(ALLOWANCE, (await time.latest()) + 100000);
+        return { aiAgent, escrow, user, oracle, keeper };
+      },
+      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+      regenerate: (escrow, user, conversationId, promptId, answerId) =>
+        escrow.connect(user).initiateRegeneration(conversationId, promptId, answerId, "0x", "0x"),
+      branch: (escrow, user, conversationId, messageId) =>
+        escrow.connect(user).initiateBranch(conversationId, messageId, "0x", "0x"),
+      metadata: (escrow, user, conversationId) =>
+        escrow.connect(user).initiateMetadataUpdate(conversationId, "0x", "0x"),
+      agentJob: (escrow, oracle, user) =>
+        escrow.connect(oracle).initiateAgentJob(user.address, 0, "0x", "0x"),
+    },
+    Sapphire: {
+      async deploy() {
+        const [deployer, user, oracle, treasury, keeper] = await ethers.getSigners();
+        const aiAgent = await (
+          await ethers.getContractFactory("SapphireAIAgent")
+        ).deploy("example.com", ethers.zeroPadBytes("0x00", 21), oracle.address, deployer.address);
+        await aiAgent.waitForDeployment();
+        const escrow = await (
+          await ethers.getContractFactory("SapphireAIAgentEscrow")
+        ).deploy(
+          await aiAgent.getAddress(),
+          treasury.address,
+          deployer.address,
+          PROMPT_FEE,
+          CANCELLATION_FEE,
+          METADATA_FEE,
+          BRANCH_FEE,
+        );
+        await escrow.waitForDeployment();
+        await aiAgent.connect(deployer).setAgentEscrow(await escrow.getAddress());
+        await escrow.connect(user).deposit({ value: ALLOWANCE });
+        await escrow.connect(user).setSpendingLimit((await time.latest()) + 100000);
+        return { aiAgent, escrow, user, oracle, keeper };
+      },
+      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "payload"),
+      regenerate: (escrow, user, conversationId, promptId, answerId) =>
+        escrow.connect(user).initiateRegeneration(conversationId, promptId, answerId, "payload"),
+      branch: (escrow, user, conversationId, messageId) =>
+        escrow.connect(user).initiateBranch(conversationId, messageId, "payload"),
+      metadata: (escrow, user, conversationId) =>
+        escrow.connect(user).initiateMetadataUpdate(conversationId, "payload"),
+      agentJob: (escrow, oracle, user) =>
+        escrow.connect(oracle).initiateAgentJob(user.address, 0, "payload"),
+    },
+  };
+
+  for (const [chainName, chain] of Object.entries(chains)) {
+    describe(chainName, function () {
+      // One answered prompt: request 1 is on the books and there is a conversation to act on.
+      async function answeredPromptFixture() {
+        const deployed = await chain.deploy();
+        const { aiAgent, escrow, user, oracle } = deployed;
+        const countAtDeploy = await aiAgent.requestCount();
+
+        const receipt = await (await chain.prompt(escrow, user)).wait();
+        const { conversationId, promptMessageId, answerMessageId } = parseEvent(
+          receipt,
+          aiAgent,
+          "PromptSubmitted",
+        ).args;
+        await aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, CID_BUNDLE);
+
+        return {
+          ...deployed,
+          countAtDeploy,
+          promptBlock: receipt.blockNumber,
+          conversationId,
+          promptMessageId,
+          answerMessageId,
+        };
+      }
+
+      it("starts at zero, and the first prompt is request 1 with its block", async function () {
+        const { aiAgent, countAtDeploy, promptBlock } = await loadFixture(answeredPromptFixture);
+        expect(countAtDeploy).to.equal(0n);
+        expect(await aiAgent.requestCount()).to.equal(1n);
+        expect(await aiAgent.requestBlock(1)).to.equal(BigInt(promptBlock));
+      });
+
+      it("has no block for a request that does not exist", async function () {
+        const { aiAgent } = await loadFixture(answeredPromptFixture);
+        expect(await aiAgent.requestBlock(0)).to.equal(0n);
+        expect(await aiAgent.requestBlock(2)).to.equal(0n);
+      });
+
+      const requestKinds = {
+        "a regeneration": (c, f) =>
+          c.regenerate(f.escrow, f.user, f.conversationId, f.promptMessageId, f.answerMessageId),
+        "a branch": (c, f) => c.branch(f.escrow, f.user, f.conversationId, f.answerMessageId),
+        "a metadata update": (c, f) => c.metadata(f.escrow, f.user, f.conversationId),
+        "an agent job": (c, f) => c.agentJob(f.escrow, f.oracle, f.user),
+      };
+
+      for (const [kind, send] of Object.entries(requestKinds)) {
+        it(`${kind} is the next request, recorded with the block it was mined in`, async function () {
+          const fixture = await loadFixture(answeredPromptFixture);
+          await mine(3);
+
+          const receipt = await (await send(chain, fixture)).wait();
+
+          expect(await fixture.aiAgent.requestCount()).to.equal(2n);
+          expect(await fixture.aiAgent.requestBlock(2)).to.equal(BigInt(receipt.blockNumber));
+        });
+      }
+
+      it("two requests mined in one block share that block", async function () {
+        const { aiAgent, escrow, user, conversationId } = await loadFixture(answeredPromptFixture);
+        await network.provider.send("evm_setAutomine", [false]);
+        try {
+          const first = await chain.prompt(escrow, user);
+          const second = await chain.metadata(escrow, user, conversationId);
+          await mine(1);
+          const [firstReceipt, secondReceipt] = await Promise.all([first.wait(), second.wait()]);
+
+          expect(firstReceipt.blockNumber).to.equal(secondReceipt.blockNumber);
+          expect(await aiAgent.requestCount()).to.equal(3n);
+          expect(await aiAgent.requestBlock(2)).to.equal(BigInt(firstReceipt.blockNumber));
+          expect(await aiAgent.requestBlock(3)).to.equal(BigInt(firstReceipt.blockNumber));
+        } finally {
+          await network.provider.send("evm_setAutomine", [true]);
+        }
+      });
+
+      it("an answer, a cancellation and a refund are not requests", async function () {
+        const { aiAgent, escrow, user, keeper } = await loadFixture(answeredPromptFixture);
+        const cancelReceipt = await (await chain.prompt(escrow, user)).wait();
+        const refundReceipt = await (await chain.prompt(escrow, user)).wait();
+        const countAfterPrompts = await aiAgent.requestCount();
+
+        await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
+        await escrow
+          .connect(user)
+          .cancelPrompt(parseEvent(cancelReceipt, escrow, "PaymentEscrowed").args[0]);
+        await time.increase(Number(await escrow.REFUND_TIMEOUT()) + 1);
+        await escrow
+          .connect(keeper)
+          .processRefund(parseEvent(refundReceipt, escrow, "PaymentEscrowed").args[0]);
+
+        // The fixture's answer already ran against request 1 without raising the count past 1.
+        expect(countAfterPrompts).to.equal(3n);
+        expect(await aiAgent.requestCount()).to.equal(3n);
+      });
+    });
+  }
+});
