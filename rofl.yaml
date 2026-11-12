@@ -77,7 +77,7 @@ deployments:
       default:
         provider: oasis1qzc8pldvm8vm3duvdrj63wgvkw34y9ucfcxzetqr
         offer: medium
-        id: "0000000000000140"
+        id: "0000000000000141"
   base-testnet:
     app_id: rofl1qppl3qnsxzxz4el8uuyfr4fsjn30gpn2fy3ne8qs
     network: testnet
