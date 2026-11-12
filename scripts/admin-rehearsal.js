@@ -18,16 +18,16 @@ const VERIFY_RETRY_MS = 2000;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const CONTRACT_KEYS = { agent: "aiAgent", escrow: "escrow" };
+const ORACLE_ROLE = ethers.id("ORACLE_ROLE");
 
 async function readState({ aiAgent, escrow }) {
-  const [agentOwner, escrowOwner, oracle, treasury, promptFee] = await Promise.all([
+  const [agentOwner, escrowOwner, treasury, promptFee] = await Promise.all([
     aiAgent.owner(),
     escrow.owner(),
-    aiAgent.oracle(),
     escrow.treasury(),
     escrow.promptFee(),
   ]);
-  return { agentOwner, escrowOwner, oracle, treasury, promptFee };
+  return { agentOwner, escrowOwner, treasury, promptFee };
 }
 
 function assertSafeAddress(safeAddress, state) {
@@ -86,6 +86,7 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
   const feeVerify = (value) => ({ getter: "promptFee", expected: value });
   const addrEvent = (name, value) => ({ name, args: [value] });
   const ownerEvent = (from) => ({ name: "OwnershipTransferred", args: [from, safe] });
+  const roleEvent = (name) => ({ name, args: [ORACLE_ROLE, safe] });
 
   return [
     step("fee-set", "escrow", "setPromptFee", [fee], feeEvent(fee), feeVerify(fee)),
@@ -109,18 +110,18 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
       addrEvent("TreasuryUpdated", state.treasury),
       { getter: "treasury", expected: state.treasury },
     ),
-    step("oracle-set", "agent", "setOracle", [safe], addrEvent("OracleUpdated", safe), {
-      getter: "oracle",
-      expected: safe,
+    // The Safe is added as a second oracle and removed again. The live oracle keeps its role
+    // throughout, so the rehearsal never interrupts answers.
+    step("oracle-add", "agent", "addOracle", [safe], roleEvent("RoleGranted"), {
+      getter: "isOracle",
+      args: [safe],
+      expected: true,
     }),
-    step(
-      "oracle-restore",
-      "agent",
-      "setOracle",
-      [state.oracle],
-      addrEvent("OracleUpdated", state.oracle),
-      { getter: "oracle", expected: state.oracle },
-    ),
+    step("oracle-remove", "agent", "removeOracle", [safe], roleEvent("RoleRevoked"), {
+      getter: "isOracle",
+      args: [safe],
+      expected: false,
+    }),
     step(
       "agent-owner-to-safe",
       "agent",
@@ -147,13 +148,18 @@ function sameValue(actual, expected) {
   return String(actual).toLowerCase() === String(expected).toLowerCase();
 }
 
+/** The getter call as text, e.g. `isOracle(0xSafe)`, for logs and errors. */
+function getterCall(verify) {
+  return `${verify.getter}(${(verify.args ?? []).join(", ")})`;
+}
+
 function describeStep(stepDef, target, log) {
   const calldata = target.interface.encodeFunctionData(stepDef.method, stepDef.args);
   log(`\n[${stepDef.id}] ${stepDef.contract}.${stepDef.method}(${stepDef.args.join(", ")})`);
   log(`  to:       ${target.target}`);
   log(`  calldata: ${calldata}`);
   log(`  expects:  ${stepDef.event.name}(${stepDef.event.args.join(", ")})`);
-  log(`  verify:   ${stepDef.verify.getter}() == ${stepDef.verify.expected}`);
+  log(`  verify:   ${getterCall(stepDef.verify)} == ${stepDef.verify.expected}`);
 }
 
 function findEvent(receipt, target, stepDef) {
@@ -186,11 +192,11 @@ async function verifyGetter(
   receipt,
   { attempts = VERIFY_ATTEMPTS, sleep = defaultSleep } = {},
 ) {
-  const { getter, expected } = stepDef.verify;
+  const { getter, args = [], expected } = stepDef.verify;
   let last = "no response";
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const actual = await target[getter]({ blockTag: receipt.blockNumber });
+      const actual = await target[getter](...args, { blockTag: receipt.blockNumber });
       if (sameValue(actual, expected)) return;
       last = String(actual);
     } catch (error) {
@@ -199,13 +205,13 @@ async function verifyGetter(
     if (attempt < attempts) await sleep(VERIFY_RETRY_MS);
   }
   throw new Error(
-    `[${stepDef.id}] ${getter}() at block ${receipt.blockNumber} is ${last}, expected ${expected} after ${attempts} attempts`,
+    `[${stepDef.id}] ${getterCall(stepDef.verify)} at block ${receipt.blockNumber} is ${last}, expected ${expected} after ${attempts} attempts`,
   );
 }
 
 /** True when the chain already holds the step's target value (a step an earlier run completed). */
 async function alreadyApplied(target, stepDef) {
-  const actual = await target[stepDef.verify.getter]();
+  const actual = await target[stepDef.verify.getter](...(stepDef.verify.args ?? []));
   return sameValue(actual, stepDef.verify.expected);
 }
 
@@ -229,7 +235,9 @@ async function runPlan({ plan, contracts, signer, dryRun, log }) {
     }
 
     if (await alreadyApplied(target, stepDef)) {
-      log(`  skip:     ${stepDef.verify.getter}() already == ${stepDef.verify.expected} (applied by an earlier run)`);
+      log(
+        `  skip:     ${getterCall(stepDef.verify)} already == ${stepDef.verify.expected} (applied by an earlier run)`,
+      );
       results.push({ id: stepDef.id, txHash: null, blockNumber: null, skipped: true });
       continue;
     }
@@ -333,7 +341,8 @@ async function forwardPhase({
   }
 
   const live = await readState(contracts);
-  const show = (st) => JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
+  const show = (st) =>
+    JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
   log(`Live state: ${show(live)}`);
   assertSignerOwnsBoth(signer.address, live);
 
@@ -379,7 +388,7 @@ async function confirmPhase({ contracts, log, snapshotFile }) {
   }
   log(
     chalk.green(
-      "Confirm phase complete: ownership, fees, treasury and oracle all match the pre-rehearsal snapshot.",
+      "Confirm phase complete: ownership, fees and treasury all match the pre-rehearsal snapshot.",
     ),
   );
 }

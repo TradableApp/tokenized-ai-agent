@@ -275,7 +275,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @notice Checks that the caller is the authorized oracle.
    */
   modifier onlyOracle() {
-    if (msg.sender != evmAIAgent.oracle()) {
+    if (!evmAIAgent.isOracle(msg.sender)) {
       revert NotOracle();
     }
     _;

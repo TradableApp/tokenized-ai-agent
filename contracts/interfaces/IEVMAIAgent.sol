@@ -12,11 +12,12 @@ import { Structs } from "../libraries/Structs.sol";
  */
 interface IEVMAIAgent {
   /**
-   * @notice Returns the address of the currently authorized oracle.
-   * @dev This is the single source of truth for the oracle's address in the system.
-   * @return oracleAddress The address of the TEE oracle.
+   * @notice Tells whether an address is authorized to submit answers.
+   * @dev The agent's oracle role is the single source of truth for who is an oracle.
+   * @param _account The address to check.
+   * @return isAuthorized True if the address holds the oracle role.
    */
-  function oracle() external view returns (address);
+  function isOracle(address _account) external view returns (bool isAuthorized);
 
   /**
    * @notice Atomically reserves a new conversation ID.

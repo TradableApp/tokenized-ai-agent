@@ -238,7 +238,7 @@ contract SapphireAIAgentEscrow is Ownable {
    * @notice Checks that the caller is the authorized oracle.
    */
   modifier onlyOracle() {
-    if (msg.sender != sapphireAIAgent.oracle()) {
+    if (!sapphireAIAgent.isOracle(msg.sender)) {
       revert NotOracle();
     }
     _;

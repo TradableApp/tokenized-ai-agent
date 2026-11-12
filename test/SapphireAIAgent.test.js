@@ -36,7 +36,7 @@ describe("SapphireAIAgent", function () {
   describe("Initialization and Admin", function () {
     it("should set the correct initial state on deployment", async function () {
       const { aiAgent, mockEscrow, oracle, deployer } = await loadFixture(deployAgentFixture);
-      expect(await aiAgent.oracle()).to.equal(oracle.address);
+      expect(await aiAgent.isOracle(oracle.address)).to.equal(true);
       expect(await aiAgent.domain()).to.equal(domain);
       expect(await aiAgent.roflAppID()).to.equal(roflAppID);
       expect(await aiAgent.aiAgentEscrow()).to.equal(await mockEscrow.getAddress());
@@ -80,11 +80,11 @@ describe("SapphireAIAgent", function () {
         ).to.be.revertedWithCustomError(aiAgent, "AgentEscrowAlreadySet");
       });
 
-      it("should revert when a non-TEE address tries to call setOracle", async function () {
+      it("should revert when a non-TEE address tries to call addOracle", async function () {
         const { aiAgent, unauthorizedUser } = await loadFixture(deployAgentFixture);
         // This reverts because the `onlyTEE` modifier fails. The exact error message is specific
         // to the Sapphire runtime and may not be a custom error.
-        await expect(aiAgent.connect(unauthorizedUser).setOracle(unauthorizedUser.address)).to.be
+        await expect(aiAgent.connect(unauthorizedUser).addOracle(unauthorizedUser.address)).to.be
           .reverted;
       });
     });

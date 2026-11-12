@@ -3,6 +3,7 @@ pragma solidity ^0.8.21;
 
 import { Subcall } from "@oasisprotocol/sapphire-contracts/contracts/Subcall.sol";
 import { ISapphireAIAgentEscrow } from "./interfaces/ISapphireAIAgentEscrow.sol";
+import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Structs } from "./libraries/Structs.sol";
 
@@ -16,12 +17,15 @@ import { Structs } from "./libraries/Structs.sol";
  *      Content is stored off-chain (e.g., on Arweave) and referenced by Content IDs (CIDs).
  *      All event payloads are confidentially stored by the Sapphire runtime.
  */
-contract SapphireAIAgent is Ownable {
+contract SapphireAIAgent is Ownable, AccessControl {
+  // --- Constants ---
+
+  /// @notice The role an address must hold to submit answers. Several addresses can hold it.
+  bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
+
   // --- State Variables ---
 
-  /// @notice The TEE-based oracle address authorized to submit answers.
-  address public oracle;
-  /// @notice The attested application ID of the ROFL TEE allowed to manage the oracle address.
+  /// @notice The attested application ID of the ROFL TEE allowed to register itself as an oracle.
   bytes21 public roflAppID;
   /// @notice The associated escrow contract that handles all payments.
   ISapphireAIAgentEscrow public aiAgentEscrow;
@@ -61,6 +65,9 @@ contract SapphireAIAgent is Ownable {
   /// @notice The block in which request `n` was recorded, so its event can be found by querying
   ///         that block alone. Zero for a number that has not been issued.
   mapping(uint256 => uint256) public requestBlock;
+
+  /// @notice The public key clients encrypt a prompt's session key to, shared by all oracles.
+  bytes public oracleEncryptionKey;
 
   // --- Events ---
 
@@ -200,9 +207,9 @@ contract SapphireAIAgent is Ownable {
   /// @notice Emitted when the linked escrow contract address is updated.
   /// @param newAIAgentEscrow The address of the new escrow contract.
   event AgentEscrowUpdated(address indexed newAIAgentEscrow);
-  /// @notice Emitted when the oracle address is updated by a TEE.
-  /// @param newOracle The address of the new oracle.
-  event OracleUpdated(address indexed newOracle);
+  /// @notice Emitted when the key clients encrypt a prompt's session key to is published.
+  /// @param newKey The secp256k1 public key, compressed or uncompressed.
+  event OracleEncryptionKeyUpdated(bytes newKey);
 
   // --- Errors ---
 
@@ -211,6 +218,8 @@ contract SapphireAIAgent is Ownable {
   error ZeroAddress();
   /// @notice Reverts if an attempt is made to set the escrow address more than once.
   error AgentEscrowAlreadySet();
+  /// @notice Reverts if the bytes offered as the encryption key are not a secp256k1 public key.
+  error InvalidEncryptionKey();
 
   // Access Control Errors
   /// @notice Reverts if a function is called by an unauthorized user.
@@ -237,8 +246,8 @@ contract SapphireAIAgent is Ownable {
   /**
    * @notice Sets up the AI Agent smart contract.
    * @param _domain The domain used for off-chain SIWE validation.
-   * @param _roflAppID The attested ROFL app that is allowed to call setOracle().
-   * @param _initialOracle The initial TEE oracle address for accessing prompts.
+   * @param _roflAppID The attested ROFL app that is allowed to call addOracle().
+   * @param _initialOracle The first address authorized as an oracle (announced by `RoleGranted`).
    * @param _initialOwner The address that will have ownership of this contract.
    */
   constructor(
@@ -252,8 +261,7 @@ contract SapphireAIAgent is Ownable {
     }
     domain = _domain;
     roflAppID = _roflAppID;
-    oracle = _initialOracle;
-    emit OracleUpdated(_initialOracle);
+    _grantRole(ORACLE_ROLE, _initialOracle);
 
     // Initialize counters to start from 1 to avoid Zero ID Problem when creating new entities
     conversationIdCounter = 1;
@@ -263,10 +271,10 @@ contract SapphireAIAgent is Ownable {
   // --- Modifiers ---
 
   /**
-   * @notice Checks whether the transaction was signed by the oracle's private key.
+   * @notice Checks that the caller holds the oracle role.
    */
   modifier onlyOracle() {
-    if (msg.sender != oracle) {
+    if (!hasRole(ORACLE_ROLE, msg.sender)) {
       revert UnauthorizedOracle();
     }
     _;
@@ -310,16 +318,54 @@ contract SapphireAIAgent is Ownable {
   }
 
   /**
-   * @notice Sets the oracle address that will be allowed to read prompts and submit answers.
-   * @dev This setter can only be called from within an authorized ROFL TEE, verified by Sapphire.
-   * @param _newOracle The new address for the oracle.
+   * @notice Authorizes an address to submit answers as an oracle.
+   * @dev Callable only from inside the ROFL app's TEE, verified by Sapphire: the app registers
+   *      the key it generated, so no operator ever handles it. Several oracles can be
+   *      authorized at once, so a new instance registers itself while the old one still
+   *      answers, and a prompt in flight during the overlap can be answered by either. Nobody
+   *      holds `DEFAULT_ADMIN_ROLE`. Emits `RoleGranted`.
+   * @param _oracle The address to authorize.
    */
-  function setOracle(address _newOracle) external onlyTEE(roflAppID) {
-    if (_newOracle == address(0)) {
+  function addOracle(address _oracle) external onlyTEE(roflAppID) {
+    if (_oracle == address(0)) {
       revert ZeroAddress();
     }
-    oracle = _newOracle;
-    emit OracleUpdated(_newOracle);
+    _grantRole(ORACLE_ROLE, _oracle);
+  }
+
+  /**
+   * @notice Withdraws an address's authorization to submit answers.
+   * @dev Owner only: the owner retires an instance once its replacement has registered.
+   *      Removing the last oracle is allowed, for a compromised key. Emits `RoleRevoked`.
+   * @param _oracle The address to remove.
+   */
+  function removeOracle(address _oracle) external onlyOwner {
+    _revokeRole(ORACLE_ROLE, _oracle);
+  }
+
+  /**
+   * @notice Publishes the public key that clients encrypt a prompt's session key to.
+   * @dev Owner only. The key is shared by every authorized oracle, so there is one value and not
+   *      one per oracle. Clients read it from here, so a change reaches them without a rebuild.
+   * @param _newKey A secp256k1 public key: 33 bytes compressed or 65 bytes uncompressed.
+   */
+  function setOracleEncryptionKey(bytes calldata _newKey) external onlyOwner {
+    bool isCompressed = _newKey.length == 33 && (_newKey[0] == 0x02 || _newKey[0] == 0x03);
+    bool isUncompressed = _newKey.length == 65 && _newKey[0] == 0x04;
+    if (!isCompressed && !isUncompressed) {
+      revert InvalidEncryptionKey();
+    }
+    oracleEncryptionKey = _newKey;
+    emit OracleEncryptionKeyUpdated(_newKey);
+  }
+
+  /**
+   * @notice Tells whether an address is authorized to submit answers.
+   * @param _account The address to check.
+   * @return isAuthorized True if the address holds the oracle role.
+   */
+  function isOracle(address _account) external view returns (bool isAuthorized) {
+    return hasRole(ORACLE_ROLE, _account);
   }
 
   // --- Core Functions ---

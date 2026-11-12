@@ -35,7 +35,7 @@ describe("EVMAIAgent (Upgradable)", function () {
   describe("Initialization and Admin", function () {
     it("should set the correct initial state on deployment", async function () {
       const { aiAgent, mockEscrow, oracle, deployer } = await loadFixture(deployAgentFixture);
-      expect(await aiAgent.oracle()).to.equal(oracle.address);
+      expect(await aiAgent.isOracle(oracle.address)).to.equal(true);
       expect(await aiAgent.domain()).to.equal(domain);
       expect(await aiAgent.aiAgentEscrow()).to.equal(await mockEscrow.getAddress());
       expect(await aiAgent.owner()).to.equal(deployer.address);
@@ -75,22 +75,6 @@ describe("EVMAIAgent (Upgradable)", function () {
         await expect(
           upgrades.deployProxy(EVMAIAgent, [domain, ethers.ZeroAddress, deployer.address]),
         ).to.be.revertedWithCustomError(EVMAIAgent, "ZeroAddress");
-      });
-
-      it("should allow the owner to set a new oracle and revert for non-owner or zero address", async function () {
-        const { aiAgent, deployer, unauthorizedUser } = await loadFixture(deployAgentFixture);
-        await expect(aiAgent.connect(deployer).setOracle(unauthorizedUser.address))
-          .to.emit(aiAgent, "OracleUpdated")
-          .withArgs(unauthorizedUser.address);
-        expect(await aiAgent.oracle()).to.equal(unauthorizedUser.address);
-
-        await expect(
-          aiAgent.connect(unauthorizedUser).setOracle(deployer.address),
-        ).to.be.revertedWithCustomError(aiAgent, "OwnableUnauthorizedAccount");
-
-        await expect(
-          aiAgent.connect(deployer).setOracle(ethers.ZeroAddress),
-        ).to.be.revertedWithCustomError(aiAgent, "ZeroAddress");
       });
     });
   });

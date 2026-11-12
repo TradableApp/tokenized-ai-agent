@@ -25,7 +25,7 @@ const RESERVED_SLOTS = 50;
 const EXPECTED_LAYOUTS = {
   "contracts/EVMAIAgent.sol:EVMAIAgent": {
     storage: [
-      ["oracle", "address"],
+      ["_legacyOracle", "address"],
       ["aiAgentEscrow", "contract IEVMAIAgentEscrow"],
       ["domain", "string"],
       ["conversationIdCounter", "uint256"],
@@ -41,7 +41,8 @@ const EXPECTED_LAYOUTS = {
       ["_regenerationLockOf", "mapping(uint256 => uint256)"],
       ["requestCount", "uint256"],
       ["requestBlock", "mapping(uint256 => uint256)"],
-      ["__gap", "uint256[34]"],
+      ["oracleEncryptionKey", "bytes"],
+      ["__gap", "uint256[33]"],
     ],
     structs: {},
     enums: {},

@@ -1,6 +1,7 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { needsOracleRoleMigration } = require("../scripts/deploy");
 
 /**
  * Oracle authorization is a role that several addresses can hold at once (ADR-0006).
@@ -318,6 +319,20 @@ describe("Oracle role — several oracles can be authorized at once", function (
         );
       });
 
+      it("the deploy script asks for the migration only while the legacy address is stored", async function () {
+        const { aiAgent, deployer } = await loadFixture(legacyStateFixture);
+        const proxyAddress = await aiAgent.getAddress();
+        // Deployed directly: loading a second fixture would roll the first one back.
+        const fresh = await deployFixture();
+
+        expect(await needsOracleRoleMigration(ethers.provider, proxyAddress)).to.equal(true);
+        await aiAgent.connect(deployer).migrateOracleRole();
+        expect(await needsOracleRoleMigration(ethers.provider, proxyAddress)).to.equal(false);
+        expect(
+          await needsOracleRoleMigration(ethers.provider, await fresh.aiAgent.getAddress()),
+        ).to.equal(false);
+      });
+
       it("on a fresh deployment there is nothing to migrate and no role is granted", async function () {
         const { aiAgent, deployer } = await loadFixture(deployFixture);
 
@@ -361,8 +376,7 @@ describe("Oracle role — several oracles can be authorized at once", function (
           CONVERSATION_ID,
           PROMPT_MESSAGE_ID,
           ANSWER_MESSAGE_ID,
-          "0x",
-          "0x",
+          "payload",
         );
     }
 
