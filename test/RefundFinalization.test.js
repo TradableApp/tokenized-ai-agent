@@ -332,7 +332,7 @@ describe("Timeout refund — what the agent contract knows afterwards", function
 
       const retry = escrow.connect(keeper).retryRefundRecord(answerMessageId);
 
-      await expect(retry).to.not.be.reverted;
+      await expect(retry).to.emit(escrow, "RefundRecordRetried").withArgs(answerMessageId);
       await expect(retry).to.not.emit(aiAgent, "PromptRefunded");
     });
 
@@ -402,7 +402,7 @@ describe("Timeout refund — what the agent contract knows afterwards", function
 
       const retry = escrow.connect(keeper).retryRefundRecord(answerMessageId);
 
-      await expect(retry).to.not.be.reverted;
+      await expect(retry).to.emit(escrow, "RefundRecordRetried").withArgs(answerMessageId);
       await expect(retry).to.not.emit(aiAgent, "PromptRefunded");
       expect(await aiAgent.isJobFinalized(answerMessageId)).to.equal(true);
     });
@@ -486,7 +486,7 @@ describe("Timeout refund — what the agent contract knows afterwards", function
 
       const retry = escrow.connect(keeper).retryRefundRecord(answerMessageId);
 
-      await expect(retry).to.not.be.reverted;
+      await expect(retry).to.emit(escrow, "RefundRecordRetried").withArgs(answerMessageId);
       await expect(retry).to.not.emit(aiAgent, "PromptRefunded");
     });
 

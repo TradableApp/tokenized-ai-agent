@@ -163,10 +163,27 @@ describe("State changes are announced by the contract that makes them", function
       await escrow.processRefund(escrowId);
       await mockAgent.setRecordRefundReverts(false);
 
+      const retry = escrow.retryRefundRecord(escrowId);
+
+      await expect(retry).to.emit(mockAgent, "RefundRecorded").withArgs(user.address, escrowId);
+      await expect(retry).to.emit(escrow, "RefundRecordRetried").withArgs(escrowId);
+      expect(await escrow.deposits(user.address)).to.equal(ALLOWANCE);
+    });
+
+    it("a retry reverts while the agent still cannot take the call, and works once it can", async function () {
+      const { escrow, mockAgent, user } = await loadFixture(sapphireEscrowFixture);
+      const escrowId = await initiatePromptAndPassTimeout(escrow, user);
+      await mockAgent.setRecordRefundReverts(true);
+      await escrow.processRefund(escrowId);
+
+      await expect(escrow.retryRefundRecord(escrowId)).to.be.revertedWith(
+        "MockAIAgent: recordRefund reverts",
+      );
+
+      await mockAgent.setRecordRefundReverts(false);
       await expect(escrow.retryRefundRecord(escrowId))
         .to.emit(mockAgent, "RefundRecorded")
         .withArgs(user.address, escrowId);
-      expect(await escrow.deposits(user.address)).to.equal(ALLOWANCE);
     });
 
     it("a refund record cannot be retried for an escrow that is still pending", async function () {

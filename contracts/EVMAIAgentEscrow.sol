@@ -147,7 +147,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   /**
    * @notice Emitted when the agent accepted a retried refund record for an escrow.
-   * @dev The agent ignores a refund it had already recorded, so this is emitted for a repeat too.
+   * @dev The agent ignores a refund it had already recorded, so this is emitted for a repeat, and for
+   *      a cancelled escrow, too.
    * @param escrowId The unique identifier of the refunded escrow.
    */
   event RefundRecordRetried(uint256 indexed escrowId);
@@ -656,7 +657,10 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    *      (`RefundRecordFailed`), and nothing else could tell the agent afterwards; it also
    *      repairs an escrow refunded before the agent could record refunds at all. Unlike
    *      `processRefund` it reverts if the agent still cannot take the call, so a retry that did
-   *      not work is never mistaken for one that did.
+   *      not work is never mistaken for one that did. A cancelled escrow is stored as REFUNDED
+   *      too (there is no separate cancelled status), so this can be called for one: the agent
+   *      already holds the cancellation and ignores the call, and `RefundRecordRetried` is still
+   *      emitted. The event says the escrow made the call, not that the agent recorded a refund.
    * @param _answerMessageId The ID of the answer message whose escrow was refunded.
    */
   function retryRefundRecord(uint256 _answerMessageId) external {
