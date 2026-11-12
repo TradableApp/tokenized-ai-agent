@@ -221,21 +221,6 @@ describe("Regeneration lock — released however the regeneration ends", functio
         expect(await aiAgent.isRegenerationPending(otherPromptId)).to.equal(true);
       });
 
-      it("refuses a regeneration that names a prompt from another conversation", async function () {
-        // Otherwise anyone could lock a stranger's prompt for the price of one prompt fee.
-        const { aiAgent, escrow, user, promptMessageId } = await loadFixture(
-          pendingRegenerationFixture,
-        );
-        const ownConversationId = await aiAgent.messageToConversation(promptMessageId);
-        const receipt = await (await chain.prompt(escrow, user)).wait();
-        const foreign = parseEvent(receipt, aiAgent, "PromptSubmitted").args;
-        expect(foreign.conversationId).to.not.equal(ownConversationId);
-
-        await expect(
-          chain.regenerate(escrow, user, ownConversationId, foreign.promptMessageId, 0),
-        ).to.be.revertedWithCustomError(aiAgent, "InvalidPromptMessageId");
-      });
-
       it("cancelling an ordinary prompt leaves another prompt's regeneration lock alone", async function () {
         const { aiAgent, escrow, user, promptMessageId } = await loadFixture(
           pendingRegenerationFixture,

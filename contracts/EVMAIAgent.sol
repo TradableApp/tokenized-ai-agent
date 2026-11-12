@@ -535,10 +535,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     if (bytes(_cids.promptMessageCID).length > 0) {
       emit PromptMessageAdded(conversationId, _promptMessageId, _cids.promptMessageCID);
       emit SearchIndexDeltaAdded(_promptMessageId, _cids.searchDeltaCID);
-    } else if (isRegenerationPending[_promptMessageId]) {
-      // This is a regeneration response, so unlock the original prompt.
+    } else if (!_releaseRegenerationLock(_answerMessageId)) {
+      // A regeneration requested before the lock was tracked by answer ID: unlock the prompt the
+      // oracle names, as before.
       isRegenerationPending[_promptMessageId] = false;
-      delete _regenerationLockOf[_answerMessageId];
     }
 
     messageToConversation[_answerMessageId] = conversationId;
@@ -684,20 +684,21 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   }
 
   /**
-   * @notice Unlocks the prompt a regeneration was holding, when that regeneration ends without
-   *         an answer.
+   * @notice Unlocks the prompt a regeneration was holding, when that regeneration ends.
    * @dev A no-op for an ordinary prompt, and for a regeneration requested before this mapping
    *      existed.
    * @param _answerMessageId The answer ID of the job that ended.
+   * @return released True if the job was a tracked regeneration and its prompt was unlocked.
    */
-  function _releaseRegenerationLock(uint256 _answerMessageId) private {
+  function _releaseRegenerationLock(uint256 _answerMessageId) private returns (bool released) {
     uint256 lockedPromptPlusOne = _regenerationLockOf[_answerMessageId];
     if (lockedPromptPlusOne == 0) {
-      return;
+      return false;
     }
 
     delete _regenerationLockOf[_answerMessageId];
     isRegenerationPending[lockedPromptPlusOne - 1] = false;
+    return true;
   }
 
   // --- Upgradability ---
