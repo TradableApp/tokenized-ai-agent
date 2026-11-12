@@ -144,6 +144,7 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    * @param escrowId The unique identifier of the refunded escrow.
    */
   event RefundRecordFailed(uint256 indexed escrowId);
+
   /**
    * @notice Emitted when a user cancels their own pending prompt.
    * @param user The user who initiated the cancellation.
