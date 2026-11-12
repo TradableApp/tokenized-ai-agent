@@ -157,7 +157,10 @@ node_modules
 # Hardhat files
 /cache
 /artifacts
-/.openzeppelin
+# OpenZeppelin upgrades manifests: the public-network files are the record of what is deployed
+# (proxy and implementation addresses, storage layouts) and are committed, so an upgrade can be
+# validated from any checkout. Only the throwaway local-network files are ignored.
+/.openzeppelin/unknown-*.json
 
 # Environment-specific compose files are TRACKED, deliberately.
 # They hold no secrets — every credential is a `${VAR:-}` placeholder injected by
