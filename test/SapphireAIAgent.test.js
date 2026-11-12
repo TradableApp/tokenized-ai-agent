@@ -105,9 +105,11 @@ describe("SapphireAIAgent", function () {
       await mockEscrow.callReserveMessageId();
       expect(await mockEscrow.callReserveMessageId.staticCall()).to.equal(1);
 
-      expect(await mockEscrow.callReserveTriggerId.staticCall()).to.equal(0);
-      await mockEscrow.callReserveTriggerId();
+      // Trigger IDs continue the message ID sequence: one ID space for everything an escrow keys.
       expect(await mockEscrow.callReserveTriggerId.staticCall()).to.equal(1);
+      await mockEscrow.callReserveTriggerId();
+      expect(await mockEscrow.callReserveTriggerId.staticCall()).to.equal(2);
+      expect(await mockEscrow.callReserveMessageId.staticCall()).to.equal(2);
     });
 
     it("should revert if a non-escrow address tries to reserve an ID", async function () {
