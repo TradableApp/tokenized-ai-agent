@@ -1,0 +1,1610 @@
+{
+  "manifestVersion": "3.2",
+  "proxies": [
+    {
+      "address": "0xD1f13aD2a841BCFbc5265F45200b1FA38F0bfaF5",
+      "txHash": "0x02029161bc8071b5937d1bd6a6b406fa7f13cd9c60a5971831c2f58fdf322468",
+      "kind": "uups"
+    },
+    {
+      "address": "0xbf48567A80F5646F20E38e2c4Fad393AC6046252",
+      "txHash": "0x43ec0cf0c11f650e25ba47e5f2124dda4661549de0c2299688623ec68353bbcd",
+      "kind": "uups"
+    },
+    {
+      "address": "0x7777C4D1Aa9c53AEa01D90291fa59E88F76a29e8",
+      "txHash": "0xb58862330f64611622e384b8dcfa23e9feab4052d02fbbdff41da0c56859e1a7",
+      "kind": "uups"
+    },
+    {
+      "address": "0xdA77FDa88C2459636Df4A1d7861B1050210f7296",
+      "txHash": "0x6492f87583546a50b5de116fb1b55597501cffcd93c4deeb8fb8fb0106314fcc",
+      "kind": "uups"
+    },
+    {
+      "address": "0xC3c221D368B018EcF856747FB2979fc1f3357E75",
+      "txHash": "0x538e3075f4a406c4756ba0c5c89fd6526b6eefbdf994ef18df87327cb2b5d04e",
+      "kind": "uups"
+    },
+    {
+      "address": "0xAdFE56Aac96382C1c4F7e9E8B1Db02eCAA916D74",
+      "txHash": "0xa91e01ed887d502dc9b9bd08983a5f33269b5a76d4ebd618e7efa545945f7cb3",
+      "kind": "uups"
+    },
+    {
+      "address": "0x5ce2498F24b0bB3adAdD0Fc3F43F293d0f786918",
+      "txHash": "0x3c46584cee945af8fb54d332d9a3efe489f04f417a81f00eabf32feccd2b8c62",
+      "kind": "uups"
+    },
+    {
+      "address": "0xea5360715cBb7a475CC3e1e8A468eE95C3Fc4E46",
+      "txHash": "0x213e2077d582e51db2af580bbb2662d440154d1a080ad7acf76222fdc0b717b2",
+      "kind": "uups"
+    },
+    {
+      "address": "0x84fF572156b50B0681a9dF2141304b3590240dA2",
+      "txHash": "0x28db30df3ac16d35eb5111fb22a319b55117246b4bec2924bf11ddd4737bbff6",
+      "kind": "uups"
+    },
+    {
+      "address": "0x56d858D86335da9336470E64fAD2Ba33f61908E4",
+      "txHash": "0xbad0b1d4f5bd68956b2d487af4ef02b50c28c8bd796c8d37639518aa47e3f2ae",
+      "kind": "uups"
+    },
+    {
+      "address": "0x93B94F77ffD726E8A35f6b8E4936F36F22b225ea",
+      "txHash": "0xbf6c01d58a777ffa0a6dae0b12d6b3742c81f213bd729aebc150f5511177fab7",
+      "kind": "uups"
+    },
+    {
+      "address": "0x2c1fe2103037d045e414E513DAcF8662CF3C06a8",
+      "txHash": "0x8ca66cfe3c7fb861a4c3e8043f5bb63961c63832bbaeb421fa484562e37bf9b8",
+      "kind": "uups"
+    },
+    {
+      "address": "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
+      "txHash": "0xf506a4d888a0057df566a2b450f40f2eeaeb86efbb29e9bacd8c9166b7a2fde6",
+      "kind": "uups"
+    },
+    {
+      "address": "0x36ec08471F2b995024967204D7542713cFaf5Fa4",
+      "txHash": "0x4000db81e6d2a6aad72beabc984f6cc2bfe7e53ecae612f361628cd404798292",
+      "kind": "uups"
+    }
+  ],
+  "impls": {
+    "5bc11793482f3a1e3852074675eb73cbea46d37d3dffcd2e39e20618a1cb6aca": {
+      "address": "0x8a472e7eCa76730FC47Cf67F25705Ed7EA65Cd31",
+      "txHash": "0x005a254210f104b03657a3d8d78db8d2d9aa7072bbf5896e3c78ecae97328bba",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "oracle",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_address",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:22"
+          },
+          {
+            "label": "aiAgentEscrow",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IEVMAIAgentEscrow)10023",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:24"
+          },
+          {
+            "label": "domain",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_string_storage",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:26"
+          },
+          {
+            "label": "conversationIdCounter",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:29"
+          },
+          {
+            "label": "messageIdCounter",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:31"
+          },
+          {
+            "label": "jobIdCounter",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:33"
+          },
+          {
+            "label": "triggerIdCounter",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:35"
+          },
+          {
+            "label": "conversationToOwner",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_uint256,t_address)",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:38"
+          },
+          {
+            "label": "jobToOwner",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_uint256,t_address)",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:40"
+          },
+          {
+            "label": "messageToConversation",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_uint256,t_uint256)",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:42"
+          },
+          {
+            "label": "triggerToJob",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_uint256,t_uint256)",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:44"
+          },
+          {
+            "label": "isJobFinalized",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_mapping(t_uint256,t_bool)",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:46"
+          },
+          {
+            "label": "isRegenerationPending",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_mapping(t_uint256,t_bool)",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:48"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_array(t_uint256)37_storage",
+            "contract": "EVMAIAgent",
+            "src": "contracts/EVMAIAgent.sol:661"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_struct(InitializableStorage)701_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(OwnableStorage)641_storage": {
+            "label": "struct OwnableUpgradeable.OwnableStorage",
+            "members": [
+              {
+                "label": "_owner",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)37_storage": {
+            "label": "uint256[37]",
+            "numberOfBytes": "1184"
+          },
+          "t_contract(IEVMAIAgentEscrow)10023": {
+            "label": "contract IEVMAIAgentEscrow",
+            "numberOfBytes": "20"
+          },
+          "t_mapping(t_uint256,t_address)": {
+            "label": "mapping(uint256 => address)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_bool)": {
+            "label": "mapping(uint256 => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_uint256)": {
+            "label": "mapping(uint256 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_string_storage": {
+            "label": "string",
+            "numberOfBytes": "32"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Ownable": [
+            {
+              "contract": "OwnableUpgradeable",
+              "label": "_owner",
+              "type": "t_address",
+              "src": "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol:24",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "34de05a07313f3169f7e1ea4279b43a53b0860eeb91a912e53091208831f49f7": {
+      "address": "0x3F33BdFcCD52D079E5a132DD62BdBDFA6A2F1A3C",
+      "txHash": "0x5f94d01de3f9de462be616d1a134f34bb2164bfb220ccf894bcde8c990f8997e",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "ableToken",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)4529",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:27"
+          },
+          {
+            "label": "evmAIAgent",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IEVMAIAgent)9421",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:29"
+          },
+          {
+            "label": "treasury",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_address",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:32"
+          },
+          {
+            "label": "promptFee",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:35"
+          },
+          {
+            "label": "cancellationFee",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:37"
+          },
+          {
+            "label": "metadataUpdateFee",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:39"
+          },
+          {
+            "label": "branchFee",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:41"
+          },
+          {
+            "label": "subscriptions",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_struct(Subscription)6007_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:51"
+          },
+          {
+            "label": "pendingEscrowCount",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:53"
+          },
+          {
+            "label": "escrows",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_uint256,t_struct(Escrow)6034_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:71"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_array(t_uint256)40_storage",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:643"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_struct(InitializableStorage)701_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(OwnableStorage)641_storage": {
+            "label": "struct OwnableUpgradeable.OwnableStorage",
+            "members": [
+              {
+                "label": "_owner",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)40_storage": {
+            "label": "uint256[40]",
+            "numberOfBytes": "1280"
+          },
+          "t_contract(IERC20)4529": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IEVMAIAgent)9421": {
+            "label": "contract IEVMAIAgent",
+            "numberOfBytes": "20"
+          },
+          "t_enum(EscrowStatus)6023": {
+            "label": "enum EVMAIAgentEscrow.EscrowStatus",
+            "members": [
+              "PENDING",
+              "COMPLETE",
+              "REFUNDED"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_struct(Subscription)6007_storage)": {
+            "label": "mapping(address => struct EVMAIAgentEscrow.Subscription)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(Escrow)6034_storage)": {
+            "label": "mapping(uint256 => struct EVMAIAgentEscrow.Escrow)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Escrow)6034_storage": {
+            "label": "struct EVMAIAgentEscrow.Escrow",
+            "members": [
+              {
+                "label": "user",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "createdAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "status",
+                "type": "t_enum(EscrowStatus)6023",
+                "offset": 0,
+                "slot": "3"
+              }
+            ],
+            "numberOfBytes": "128"
+          },
+          "t_struct(Subscription)6007_storage": {
+            "label": "struct EVMAIAgentEscrow.Subscription",
+            "members": [
+              {
+                "label": "allowance",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "spentAmount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "expiresAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Ownable": [
+            {
+              "contract": "OwnableUpgradeable",
+              "label": "_owner",
+              "type": "t_address",
+              "src": "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol:24",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "93b3976c4baaf0a48f4f69b90e847db39394e954db72d6f813ce5d25c0852a86": {
+      "address": "0xd1F5873B93Fb06cE02b420Bd186CFFd192c891C8",
+      "txHash": "0xea41897d0b4a6d25e16f87507cc8b0056655003d03c530264fd25963c73ed32b",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "ableToken",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)4529",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:27"
+          },
+          {
+            "label": "evmAIAgent",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IEVMAIAgent)9421",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:29"
+          },
+          {
+            "label": "treasury",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_address",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:32"
+          },
+          {
+            "label": "promptFee",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:35"
+          },
+          {
+            "label": "cancellationFee",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:37"
+          },
+          {
+            "label": "metadataUpdateFee",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:39"
+          },
+          {
+            "label": "branchFee",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:41"
+          },
+          {
+            "label": "spendingLimits",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_struct(SpendingLimit)6007_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:51"
+          },
+          {
+            "label": "pendingEscrowCount",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:53"
+          },
+          {
+            "label": "escrows",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_uint256,t_struct(Escrow)6034_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:71"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_array(t_uint256)40_storage",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:647"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_struct(InitializableStorage)701_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(OwnableStorage)641_storage": {
+            "label": "struct OwnableUpgradeable.OwnableStorage",
+            "members": [
+              {
+                "label": "_owner",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)40_storage": {
+            "label": "uint256[40]",
+            "numberOfBytes": "1280"
+          },
+          "t_contract(IERC20)4529": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IEVMAIAgent)9421": {
+            "label": "contract IEVMAIAgent",
+            "numberOfBytes": "20"
+          },
+          "t_enum(EscrowStatus)6023": {
+            "label": "enum EVMAIAgentEscrow.EscrowStatus",
+            "members": [
+              "PENDING",
+              "COMPLETE",
+              "REFUNDED"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_struct(SpendingLimit)6007_storage)": {
+            "label": "mapping(address => struct EVMAIAgentEscrow.SpendingLimit)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(Escrow)6034_storage)": {
+            "label": "mapping(uint256 => struct EVMAIAgentEscrow.Escrow)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Escrow)6034_storage": {
+            "label": "struct EVMAIAgentEscrow.Escrow",
+            "members": [
+              {
+                "label": "user",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "createdAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "status",
+                "type": "t_enum(EscrowStatus)6023",
+                "offset": 0,
+                "slot": "3"
+              }
+            ],
+            "numberOfBytes": "128"
+          },
+          "t_struct(SpendingLimit)6007_storage": {
+            "label": "struct EVMAIAgentEscrow.SpendingLimit",
+            "members": [
+              {
+                "label": "allowance",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "spentAmount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "expiresAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Ownable": [
+            {
+              "contract": "OwnableUpgradeable",
+              "label": "_owner",
+              "type": "t_address",
+              "src": "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol:24",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "ae894bff1bb8c76a239a0c328063c776f4596cb8ced6863db616e11ae13b3a0c": {
+      "address": "0x06ce04f2aEF30fC0834Ebd0513B5FcED6AD23e1d",
+      "txHash": "0x00e78889c6a853042a67409460b952cb0cda8e1e5c0389cfc91fbf719814a8c0",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "ableToken",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)4529",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:27"
+          },
+          {
+            "label": "evmAIAgent",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IEVMAIAgent)9421",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:29"
+          },
+          {
+            "label": "treasury",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_address",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:32"
+          },
+          {
+            "label": "promptFee",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:35"
+          },
+          {
+            "label": "cancellationFee",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:37"
+          },
+          {
+            "label": "metadataUpdateFee",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:39"
+          },
+          {
+            "label": "branchFee",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:41"
+          },
+          {
+            "label": "spendingLimits",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_struct(SpendingLimit)6007_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:51"
+          },
+          {
+            "label": "pendingEscrowCount",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:53"
+          },
+          {
+            "label": "escrows",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_uint256,t_struct(Escrow)6034_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:71"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_array(t_uint256)40_storage",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:647"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_struct(InitializableStorage)701_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(OwnableStorage)641_storage": {
+            "label": "struct OwnableUpgradeable.OwnableStorage",
+            "members": [
+              {
+                "label": "_owner",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)40_storage": {
+            "label": "uint256[40]",
+            "numberOfBytes": "1280"
+          },
+          "t_contract(IERC20)4529": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IEVMAIAgent)9421": {
+            "label": "contract IEVMAIAgent",
+            "numberOfBytes": "20"
+          },
+          "t_enum(EscrowStatus)6023": {
+            "label": "enum EVMAIAgentEscrow.EscrowStatus",
+            "members": [
+              "PENDING",
+              "COMPLETE",
+              "REFUNDED"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_struct(SpendingLimit)6007_storage)": {
+            "label": "mapping(address => struct EVMAIAgentEscrow.SpendingLimit)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(Escrow)6034_storage)": {
+            "label": "mapping(uint256 => struct EVMAIAgentEscrow.Escrow)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Escrow)6034_storage": {
+            "label": "struct EVMAIAgentEscrow.Escrow",
+            "members": [
+              {
+                "label": "user",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "createdAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "status",
+                "type": "t_enum(EscrowStatus)6023",
+                "offset": 0,
+                "slot": "3"
+              }
+            ],
+            "numberOfBytes": "128"
+          },
+          "t_struct(SpendingLimit)6007_storage": {
+            "label": "struct EVMAIAgentEscrow.SpendingLimit",
+            "members": [
+              {
+                "label": "allowance",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "spentAmount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "expiresAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Ownable": [
+            {
+              "contract": "OwnableUpgradeable",
+              "label": "_owner",
+              "type": "t_address",
+              "src": "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol:24",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "0f32deddfb6fa96b9637a939a301c0f385c7a74e5aff886b69cad24b189710be": {
+      "address": "0xEc94046ADb656C92d5896CcF2f1D7313F14A4E2a",
+      "txHash": "0xfc0cffb047560580d610cae311485764c9be2a1b5ef6119458ab7f76e90966e2",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "ableToken",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)4529",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:27"
+          },
+          {
+            "label": "evmAIAgent",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IEVMAIAgent)9416",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:29"
+          },
+          {
+            "label": "treasury",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_address",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:32"
+          },
+          {
+            "label": "promptFee",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:35"
+          },
+          {
+            "label": "cancellationFee",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:37"
+          },
+          {
+            "label": "metadataUpdateFee",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:39"
+          },
+          {
+            "label": "branchFee",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:41"
+          },
+          {
+            "label": "spendingLimits",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_struct(SpendingLimit)6007_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:51"
+          },
+          {
+            "label": "pendingEscrowCount",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:53"
+          },
+          {
+            "label": "escrows",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_uint256,t_struct(Escrow)6034_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:71"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_array(t_uint256)40_storage",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:655"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_struct(InitializableStorage)701_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(OwnableStorage)641_storage": {
+            "label": "struct OwnableUpgradeable.OwnableStorage",
+            "members": [
+              {
+                "label": "_owner",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)40_storage": {
+            "label": "uint256[40]",
+            "numberOfBytes": "1280"
+          },
+          "t_contract(IERC20)4529": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IEVMAIAgent)9416": {
+            "label": "contract IEVMAIAgent",
+            "numberOfBytes": "20"
+          },
+          "t_enum(EscrowStatus)6023": {
+            "label": "enum EVMAIAgentEscrow.EscrowStatus",
+            "members": [
+              "PENDING",
+              "COMPLETE",
+              "REFUNDED"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_struct(SpendingLimit)6007_storage)": {
+            "label": "mapping(address => struct EVMAIAgentEscrow.SpendingLimit)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(Escrow)6034_storage)": {
+            "label": "mapping(uint256 => struct EVMAIAgentEscrow.Escrow)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Escrow)6034_storage": {
+            "label": "struct EVMAIAgentEscrow.Escrow",
+            "members": [
+              {
+                "label": "user",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "createdAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "status",
+                "type": "t_enum(EscrowStatus)6023",
+                "offset": 0,
+                "slot": "3"
+              }
+            ],
+            "numberOfBytes": "128"
+          },
+          "t_struct(SpendingLimit)6007_storage": {
+            "label": "struct EVMAIAgentEscrow.SpendingLimit",
+            "members": [
+              {
+                "label": "allowance",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "spentAmount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "expiresAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Ownable": [
+            {
+              "contract": "OwnableUpgradeable",
+              "label": "_owner",
+              "type": "t_address",
+              "src": "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol:24",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "20d3f2dfea55fdb5ddfb4ded8b71f5d326823f8dd71575c1f12755934fc66294": {
+      "address": "0x2F0086ED473bD4Dd0fF36a1b0a23A31971EB1330",
+      "txHash": "0xeb3d57a5415dd23ddda0d13ea56e6b7c198ba626622845c1ac7d2e41e82bcb02",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "ableToken",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)4619",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:34"
+          },
+          {
+            "label": "evmAIAgent",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IEVMAIAgent)10013",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:36"
+          },
+          {
+            "label": "treasury",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_address",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:39"
+          },
+          {
+            "label": "promptFee",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:42"
+          },
+          {
+            "label": "cancellationFee",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:44"
+          },
+          {
+            "label": "metadataUpdateFee",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:46"
+          },
+          {
+            "label": "branchFee",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:48"
+          },
+          {
+            "label": "spendingLimits",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_struct(SpendingLimit)6579_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:58"
+          },
+          {
+            "label": "pendingEscrowCount",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:60"
+          },
+          {
+            "label": "escrows",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_uint256,t_struct(Escrow)6606_storage)",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:78"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_array(t_uint256)40_storage",
+            "contract": "EVMAIAgentEscrow",
+            "src": "contracts/EVMAIAgentEscrow.sol:675"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_struct(InitializableStorage)701_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(OwnableStorage)641_storage": {
+            "label": "struct OwnableUpgradeable.OwnableStorage",
+            "members": [
+              {
+                "label": "_owner",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)40_storage": {
+            "label": "uint256[40]",
+            "numberOfBytes": "1280"
+          },
+          "t_contract(IERC20)4619": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IEVMAIAgent)10013": {
+            "label": "contract IEVMAIAgent",
+            "numberOfBytes": "20"
+          },
+          "t_enum(EscrowStatus)6595": {
+            "label": "enum EVMAIAgentEscrow.EscrowStatus",
+            "members": [
+              "PENDING",
+              "COMPLETE",
+              "REFUNDED"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_struct(SpendingLimit)6579_storage)": {
+            "label": "mapping(address => struct EVMAIAgentEscrow.SpendingLimit)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(Escrow)6606_storage)": {
+            "label": "mapping(uint256 => struct EVMAIAgentEscrow.Escrow)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Escrow)6606_storage": {
+            "label": "struct EVMAIAgentEscrow.Escrow",
+            "members": [
+              {
+                "label": "user",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "createdAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "status",
+                "type": "t_enum(EscrowStatus)6595",
+                "offset": 0,
+                "slot": "3"
+              }
+            ],
+            "numberOfBytes": "128"
+          },
+          "t_struct(SpendingLimit)6579_storage": {
+            "label": "struct EVMAIAgentEscrow.SpendingLimit",
+            "members": [
+              {
+                "label": "allowance",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "spentAmount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "expiresAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              }
+            ],
+            "numberOfBytes": "96"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Ownable": [
+            {
+              "contract": "OwnableUpgradeable",
+              "label": "_owner",
+              "type": "t_address",
+              "src": "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol:24",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

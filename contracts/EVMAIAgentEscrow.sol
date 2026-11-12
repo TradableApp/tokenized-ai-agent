@@ -140,7 +140,8 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
 
   /**
    * @notice Emitted when a refund was paid but the agent could not be told the job is over.
-   * @dev The agent still reports the job as open; the oracle must check the escrow status.
+   * @dev The agent still reports the job as open until `retryRefundRecord` succeeds for this
+   *      escrow; the oracle must check the escrow status.
    * @param escrowId The unique identifier of the refunded escrow.
    */
   event RefundRecordFailed(uint256 indexed escrowId);
@@ -655,7 +656,9 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
    *      is already REFUNDED, and the agent ignores a refund it has already recorded. It exists
    *      because `processRefund` pays the user even when the agent cannot take the call
    *      (`RefundRecordFailed`), and nothing else could tell the agent afterwards; it also
-   *      repairs an escrow refunded before the agent could record refunds at all. Unlike
+   *      finalizes the job of an escrow refunded before the agent could record refunds at all.
+   *      It cannot unlock a regeneration requested before the agent tracked regeneration locks:
+   *      the agent holds no lock entry for that answer, so the prompt stays locked. Unlike
    *      `processRefund` it reverts if the agent still cannot take the call, so a retry that did
    *      not work is never mistaken for one that did. A cancelled escrow is stored as REFUNDED
    *      too (there is no separate cancelled status), so this can be called for one: the agent

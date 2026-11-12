@@ -3,48 +3,80 @@ const { artifacts } = require("hardhat");
 
 /**
  * The upgradeable contracts live behind proxies that already hold state. A variable inserted,
- * removed or reordered ahead of an existing one moves every later slot and corrupts that state on
- * upgrade, and nothing else in the suite would notice.
+ * removed, reordered or retyped ahead of or in place of an existing one, or a field moved inside
+ * a stored struct, corrupts that state on upgrade, and nothing else in the suite would notice.
  *
- * These lists are the layout in slot order. A new variable is appended just before `__gap`, the
- * gap shrinks by the slots it takes, and the list here is extended to match. Any other edit to a
- * list is a layout break for the deployed proxies.
+ * These lists are the layout in slot order, each variable with its type. A new variable is
+ * appended just before `__gap`, the gap shrinks by the slots it takes, and the list here is
+ * extended to match. A new struct field is appended to the end of its struct. Any other edit to
+ * these lists is a layout break for the deployed proxies.
+ *
+ * A stored enum is kept as a number, so the order of its values is part of the layout too: a
+ * value inserted or moved changes what every stored number means. Enum values are pinned from
+ * the compiler's syntax tree and must only ever be appended.
+ *
+ * Types are pinned by the compiler's own labels (`contract IERC20`, `struct X.Y`), so renaming a
+ * contract, interface or struct also fails here; update the label if the rename is intended.
+ * An entry is `[label, type]` for a variable that starts a slot, or `[label, type, offset]` for
+ * one packed into the same slot as the entry before it.
  */
 const RESERVED_SLOTS = 50;
 
 const EXPECTED_LAYOUTS = {
-  "contracts/EVMAIAgent.sol:EVMAIAgent": [
-    "oracle",
-    "aiAgentEscrow",
-    "domain",
-    "conversationIdCounter",
-    "messageIdCounter",
-    "jobIdCounter",
-    "triggerIdCounter",
-    "conversationToOwner",
-    "jobToOwner",
-    "messageToConversation",
-    "triggerToJob",
-    "isJobFinalized",
-    "isRegenerationPending",
-    "_regenerationLockOf",
-    "requestCount",
-    "requestBlock",
-    "__gap",
-  ],
-  "contracts/EVMAIAgentEscrow.sol:EVMAIAgentEscrow": [
-    "ableToken",
-    "evmAIAgent",
-    "treasury",
-    "promptFee",
-    "cancellationFee",
-    "metadataUpdateFee",
-    "branchFee",
-    "spendingLimits",
-    "pendingEscrowCount",
-    "escrows",
-    "__gap",
-  ],
+  "contracts/EVMAIAgent.sol:EVMAIAgent": {
+    storage: [
+      ["oracle", "address"],
+      ["aiAgentEscrow", "contract IEVMAIAgentEscrow"],
+      ["domain", "string"],
+      ["conversationIdCounter", "uint256"],
+      ["messageIdCounter", "uint256"],
+      ["jobIdCounter", "uint256"],
+      ["triggerIdCounter", "uint256"],
+      ["conversationToOwner", "mapping(uint256 => address)"],
+      ["jobToOwner", "mapping(uint256 => address)"],
+      ["messageToConversation", "mapping(uint256 => uint256)"],
+      ["triggerToJob", "mapping(uint256 => uint256)"],
+      ["isJobFinalized", "mapping(uint256 => bool)"],
+      ["isRegenerationPending", "mapping(uint256 => bool)"],
+      ["_regenerationLockOf", "mapping(uint256 => uint256)"],
+      ["requestCount", "uint256"],
+      ["requestBlock", "mapping(uint256 => uint256)"],
+      ["__gap", "uint256[34]"],
+    ],
+    structs: {},
+    enums: {},
+  },
+  "contracts/EVMAIAgentEscrow.sol:EVMAIAgentEscrow": {
+    storage: [
+      ["ableToken", "contract IERC20"],
+      ["evmAIAgent", "contract IEVMAIAgent"],
+      ["treasury", "address"],
+      ["promptFee", "uint256"],
+      ["cancellationFee", "uint256"],
+      ["metadataUpdateFee", "uint256"],
+      ["branchFee", "uint256"],
+      ["spendingLimits", "mapping(address => struct EVMAIAgentEscrow.SpendingLimit)"],
+      ["pendingEscrowCount", "mapping(address => uint256)"],
+      ["escrows", "mapping(uint256 => struct EVMAIAgentEscrow.Escrow)"],
+      ["__gap", "uint256[40]"],
+    ],
+    structs: {
+      "struct EVMAIAgentEscrow.SpendingLimit": [
+        ["allowance", "uint256"],
+        ["spentAmount", "uint256"],
+        ["expiresAt", "uint256"],
+      ],
+      "struct EVMAIAgentEscrow.Escrow": [
+        ["user", "address"],
+        ["amount", "uint256"],
+        ["createdAt", "uint256"],
+        ["status", "enum EVMAIAgentEscrow.EscrowStatus"],
+      ],
+    },
+    enums: {
+      EscrowStatus: ["PENDING", "COMPLETE", "REFUNDED"],
+    },
+  },
 };
 
 async function readLayout(fullyQualifiedName) {
@@ -53,22 +85,93 @@ async function readLayout(fullyQualifiedName) {
   return buildInfo.output.contracts[sourceName][contractName].storageLayout;
 }
 
+/**
+ * Every enum declared directly in the contract, with its values in declaration order. An enum
+ * declared in a base contract is not read here; the enum test fails if storage uses one, so it
+ * is never left unpinned without anyone noticing.
+ */
+async function readEnums(fullyQualifiedName) {
+  const [sourceName, contractName] = fullyQualifiedName.split(":");
+  const buildInfo = await artifacts.getBuildInfo(fullyQualifiedName);
+  const contract = buildInfo.output.sources[sourceName].ast.nodes.find(
+    (node) => node.nodeType === "ContractDefinition" && node.name === contractName,
+  );
+  const enums = {};
+  for (const node of contract.nodes) {
+    if (node.nodeType === "EnumDefinition") {
+      enums[node.name] = node.members.map((member) => member.name);
+    }
+  }
+  return enums;
+}
+
+/** One entry per variable or struct field: where it sits and what type the compiler gave it. */
+function describeEntries(entries, types) {
+  return entries.map(({ label, slot, offset, type }) => ({
+    label,
+    slot: String(slot),
+    offset,
+    type: types[type].label,
+  }));
+}
+
+/** The pinned form of the same thing. An entry with an offset shares the slot before it. */
+function expectedEntries(pinned) {
+  let slot = -1;
+  return pinned.map(([label, type, offset = 0]) => {
+    if (offset === 0) {
+      slot += 1;
+    }
+    return { label, slot: String(slot), offset, type };
+  });
+}
+
 describe("Storage layout of the upgradeable contracts", function () {
-  for (const [fullyQualifiedName, expectedLabels] of Object.entries(EXPECTED_LAYOUTS)) {
+  for (const [fullyQualifiedName, expected] of Object.entries(EXPECTED_LAYOUTS)) {
     const contractName = fullyQualifiedName.split(":")[1];
 
     describe(contractName, function () {
-      it("keeps every variable in its slot, one slot each, in the pinned order", async function () {
+      it("keeps every variable in its slot with its type, in the pinned order", async function () {
         const layout = await readLayout(fullyQualifiedName);
 
-        const actual = layout.storage.map(({ label, slot, offset }) => ({ label, slot, offset }));
+        const actual = describeEntries(layout.storage, layout.types);
 
-        const expected = expectedLabels.map((label, index) => ({
-          label,
-          slot: String(index),
-          offset: 0,
-        }));
-        expect(actual).to.deep.equal(expected);
+        expect(actual).to.deep.equal(expectedEntries(expected.storage));
+      });
+
+      it("keeps every field of every stored struct in its slot with its type", async function () {
+        const layout = await readLayout(fullyQualifiedName);
+
+        // Every struct the compiler reports for this contract's storage is compared, including
+        // one that arrives from a base contract. A struct that shows up here without an entry
+        // in `structs` above is new stored state: pin it there.
+        const actual = {};
+        for (const type of Object.values(layout.types)) {
+          if (type.members) {
+            actual[type.label] = describeEntries(type.members, layout.types);
+          }
+        }
+
+        const pinned = {};
+        for (const [label, pairs] of Object.entries(expected.structs)) {
+          pinned[label] = expectedEntries(pairs);
+        }
+        expect(actual).to.deep.equal(pinned);
+      });
+
+      it("keeps every enum's values in their declared order", async function () {
+        const layout = await readLayout(fullyQualifiedName);
+        const storedEnumNames = Object.values(layout.types)
+          .filter((type) => type.label.startsWith("enum "))
+          .map((type) => type.label.split(".").pop());
+
+        const actual = await readEnums(fullyQualifiedName);
+
+        expect(actual).to.deep.equal(expected.enums);
+        expect(
+          Object.keys(actual),
+          "an enum used in storage is declared elsewhere",
+        ).to.include.members(storedEnumNames);
       });
 
       it("variables plus the gap fill exactly the reserved slots", async function () {
