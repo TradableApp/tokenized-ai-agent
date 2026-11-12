@@ -30,7 +30,7 @@ contract SapphireAIAgent is Ownable {
 
   /// @notice A counter to ensure each conversation gets a unique ID.
   uint256 public conversationIdCounter;
-  /// @notice A counter to ensure each message gets a unique ID.
+  /// @notice A counter to ensure each message and each agent-job trigger gets a unique ID.
   uint256 public messageIdCounter;
   /// @notice A counter to ensure each autonomous agent job gets a unique ID.
   uint256 public jobIdCounter;
