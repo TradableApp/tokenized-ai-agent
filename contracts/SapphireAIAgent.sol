@@ -485,7 +485,9 @@ contract SapphireAIAgent is Ownable {
     if (bytes(_cids.promptMessageCID).length > 0) {
       emit PromptMessageAdded(conversationId, _promptMessageId, _cids.promptMessageCID);
       emit SearchIndexDeltaAdded(_promptMessageId, _cids.searchDeltaCID);
-    } else if (!_releaseRegenerationLock(_answerMessageId)) {
+    } else if (
+      !_releaseRegenerationLock(_answerMessageId) && isRegenerationPending[_promptMessageId]
+    ) {
       // A regeneration requested before the lock was tracked by answer ID: unlock the prompt the
       // oracle names, as before.
       isRegenerationPending[_promptMessageId] = false;
