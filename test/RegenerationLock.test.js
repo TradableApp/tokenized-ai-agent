@@ -221,6 +221,23 @@ describe("Regeneration lock — released however the regeneration ends", functio
         expect(await aiAgent.isRegenerationPending(otherPromptId)).to.equal(true);
       });
 
+      it("an answer with no tracked lock still unlocks the prompt it names", async function () {
+        // The path a regeneration requested before the lock was tracked by answer ID takes: its
+        // answer ID has no entry, so the prompt the oracle names is unlocked, as it always was.
+        // An ordinary prompt's answer ID stands in for such an untracked ID here.
+        const { aiAgent, escrow, user, oracle, promptMessageId } = await loadFixture(
+          pendingRegenerationFixture,
+        );
+        const receipt = await (await chain.prompt(escrow, user)).wait();
+        const untrackedAnswerId = parseEvent(receipt, escrow, "PaymentEscrowed").args[0];
+
+        await aiAgent
+          .connect(oracle)
+          .submitAnswer(promptMessageId, untrackedAnswerId, REGENERATION_BUNDLE);
+
+        expect(await aiAgent.isRegenerationPending(promptMessageId)).to.equal(false);
+      });
+
       it("cancelling an ordinary prompt leaves another prompt's regeneration lock alone", async function () {
         const { aiAgent, escrow, user, promptMessageId } = await loadFixture(
           pendingRegenerationFixture,
