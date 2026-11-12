@@ -453,6 +453,10 @@ contract EVMAIAgentEscrow is Initializable, OwnableUpgradeable, UUPSUpgradeable 
   /**
    * @notice Initiates a new autonomous agent job on behalf of a user.
    * @dev Called by the oracle. If _jobId is 0, it reserves a new job ID.
+   *      The trigger ID shares the message ID space and keys the escrow, so the job is cancelled
+   *      and refunded exactly like a prompt. There is no completion path designed for an agent
+   *      job yet: an answer attaches to a conversation and a job has none, so until one is built
+   *      the intended ends of an agent job's escrow are cancellation and refund.
    * @param _user The address of the user for whom the job is being run.
    * @param _jobId The ID of the parent job. Pass 0 to start a new job.
    * @param _encryptedPayload The encrypted prompt data for the TEE.

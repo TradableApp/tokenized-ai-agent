@@ -27,11 +27,14 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
   /// @notice A counter to ensure each conversation gets a unique ID.
   uint256 public conversationIdCounter;
-  /// @notice A counter to ensure each message gets a unique ID.
+  /// @notice A counter to ensure each message and each agent-job trigger gets a unique ID.
   uint256 public messageIdCounter;
   /// @notice A counter to ensure each autonomous agent job gets a unique ID.
   uint256 public jobIdCounter;
-  /// @notice A counter to ensure each job trigger gets a unique ID.
+  /// @notice Unused. Trigger IDs are drawn from `messageIdCounter`; the slot is kept so the
+  ///         storage layout of deployed proxies is unchanged.
+  /// @dev The getter is frozen at whatever it held when a proxy was upgraded (zero on a fresh
+  ///      deployment). Do not read it to count or predict trigger IDs; read `messageIdCounter`.
   uint256 public triggerIdCounter;
 
   /// @notice Maps a conversation ID to the owner's address for on-chain ownership verification.
@@ -387,12 +390,14 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
   /**
    * @notice Atomically reserves a new trigger ID for an upcoming agent job.
-   * @dev This can only be called by the trusted escrow contract.
+   * @dev This can only be called by the trusted escrow contract. Trigger IDs are drawn from the
+   *      message ID counter: an agent job uses the same escrow record and finalization flag as a
+   *      prompt, so the two must share one ID space or one could overwrite the other.
    * @return newTriggerId The newly reserved trigger ID.
    */
   function reserveTriggerId() external onlyAIAgentEscrow returns (uint256) {
-    uint256 newTriggerId = triggerIdCounter;
-    ++triggerIdCounter;
+    uint256 newTriggerId = messageIdCounter;
+    ++messageIdCounter;
     return newTriggerId;
   }
 

@@ -9,7 +9,6 @@ contract MockEVMAIAgent is IEVMAIAgent {
   uint256 private _conversationIdCounter;
   uint256 private _jobIdCounter;
   uint256 private _messageIdCounter;
-  uint256 private _triggerIdCounter;
 
   // Made public to create an automatic getter, satisfying the IEVMAIAgent interface.
   address public oracle;
@@ -66,8 +65,9 @@ contract MockEVMAIAgent is IEVMAIAgent {
   }
 
   function reserveTriggerId() external override returns (uint256) {
-    uint256 id = _triggerIdCounter;
-    _triggerIdCounter++;
+    // One ID space, as in the real agent.
+    uint256 id = _messageIdCounter;
+    _messageIdCounter++;
     return id;
   }
 
