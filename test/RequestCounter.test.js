@@ -111,6 +111,54 @@ describe("Request counter — every oracle-bound request is counted with its blo
     },
   };
 
+  describe("requests that share a block", function () {
+    // The rule a reader of the counter must follow: when requestBlock[n] equals requestBlock[n+1],
+    // one query of that block returns both events, and both must be handled before either number
+    // is treated as done. Events carry no request number, so the block is the unit of work.
+    const agents = {
+      EVM: async (oracle, deployer) => {
+        const aiAgent = await upgrades.deployProxy(
+          await ethers.getContractFactory("EVMAIAgent"),
+          ["example.com", oracle.address, deployer.address],
+          { initializer: "initialize", kind: "uups" },
+        );
+        await aiAgent.waitForDeployment();
+        return { aiAgent, mockEscrowName: "MockEVMAIAgentEscrow" };
+      },
+      Sapphire: async (oracle, deployer) => {
+        const aiAgent = await (
+          await ethers.getContractFactory("SapphireAIAgent")
+        ).deploy("example.com", ethers.zeroPadBytes("0x00", 21), oracle.address, deployer.address);
+        await aiAgent.waitForDeployment();
+        return { aiAgent, mockEscrowName: "MockSapphireAIAgentEscrow" };
+      },
+    };
+
+    for (const [chainName, deployAgent] of Object.entries(agents)) {
+      it(`${chainName}: two requests in one transaction get two numbers, one block, two events`, async function () {
+        const [deployer, user, oracle] = await ethers.getSigners();
+        const { aiAgent, mockEscrowName } = await deployAgent(oracle, deployer);
+        const mockEscrow = await (
+          await ethers.getContractFactory(mockEscrowName)
+        ).deploy(await aiAgent.getAddress());
+        await mockEscrow.waitForDeployment();
+        await aiAgent.connect(deployer).setAgentEscrow(await mockEscrow.getAddress());
+
+        const receipt = await (await mockEscrow.callSubmitTwoPrompts(user.address)).wait();
+
+        expect(await aiAgent.requestCount()).to.equal(2n);
+        expect(await aiAgent.requestBlock(1)).to.equal(BigInt(receipt.blockNumber));
+        expect(await aiAgent.requestBlock(2)).to.equal(BigInt(receipt.blockNumber));
+        const events = await aiAgent.queryFilter(
+          aiAgent.filters.PromptSubmitted(),
+          receipt.blockNumber,
+          receipt.blockNumber,
+        );
+        expect(events).to.have.lengthOf(2);
+      });
+    }
+  });
+
   for (const [chainName, chain] of Object.entries(chains)) {
     describe(chainName, function () {
       // One answered prompt: request 1 is on the books and there is a conversation to act on.

@@ -53,6 +53,12 @@ contract MockEVMAIAgentEscrow {
     );
   }
 
+  /// @notice Submits two prompts in one transaction, so both land in the same block.
+  function callSubmitTwoPrompts(address _user) external {
+    EVM_AI_AGENT.submitPrompt(_user, 1, 100, 101, "", "");
+    EVM_AI_AGENT.submitPrompt(_user, 2, 102, 103, "", "");
+  }
+
   function callSubmitRegenerationRequest(
     address _user,
     uint256 _conversationId,

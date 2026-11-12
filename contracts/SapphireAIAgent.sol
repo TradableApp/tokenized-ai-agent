@@ -54,9 +54,12 @@ contract SapphireAIAgent is Ownable {
   ///         agent jobs, metadata updates and branches. Request numbers start at 1.
   /// @dev A request number is a position in this log, not an identity: it carries no link to a
   ///      particular event. Agent jobs are counted although nothing consumes them yet.
+  ///      Several request numbers can share one block. A reader must handle every request event
+  ///      in a recorded block before treating the numbers that point at it as handled, and need
+  ///      query a block only once however many numbers point at it.
   uint256 public requestCount;
-  /// @notice The block in which request `n` was recorded, so its event can be fetched from that
-  ///         block alone. Zero for a number that has not been issued.
+  /// @notice The block in which request `n` was recorded, so its event can be found by querying
+  ///         that block alone. Zero for a number that has not been issued.
   mapping(uint256 => uint256) public requestBlock;
 
   // --- Events ---
