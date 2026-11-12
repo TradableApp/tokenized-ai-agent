@@ -269,9 +269,10 @@ describe("Timeout refund — what the agent contract knows afterwards", function
       );
       await mockAgent.setRecordRefundReverts(false);
 
-      await expect(escrow.connect(keeper).retryRefundRecord(escrowId))
-        .to.emit(mockAgent, "RefundRecorded")
-        .withArgs(user.address, escrowId);
+      const retry = escrow.connect(keeper).retryRefundRecord(escrowId);
+
+      await expect(retry).to.emit(mockAgent, "RefundRecorded").withArgs(user.address, escrowId);
+      await expect(retry).to.emit(escrow, "RefundRecordRetried").withArgs(escrowId);
     });
 
     it("moves no funds", async function () {
@@ -410,7 +411,7 @@ describe("Timeout refund — what the agent contract knows afterwards", function
   describe("Sapphire: the refund is recorded on the real agent", function () {
     const ROFL_APP_ID = ethers.zeroPadBytes("0x00", 21);
 
-    async function sapphireRefundedPromptFixture() {
+    async function sapphirePendingPromptFixture() {
       const [deployer, user, oracle, treasury, keeper] = await ethers.getSigners();
       const aiAgent = await (
         await ethers.getContractFactory("SapphireAIAgent")
@@ -437,9 +438,16 @@ describe("Timeout refund — what the agent contract knows afterwards", function
       const submitted = aiAgent.interface.parseLog(receipt.logs.find((l) => l.topics[0] === topic));
       const { promptMessageId, answerMessageId } = submitted.args;
 
-      await time.increase(Number(await escrow.REFUND_TIMEOUT()) + 1);
-      const refundTx = await escrow.connect(keeper).processRefund(answerMessageId);
-      return { aiAgent, escrow, user, oracle, answerMessageId, promptMessageId, refundTx };
+      return { aiAgent, escrow, user, oracle, keeper, answerMessageId, promptMessageId };
+    }
+
+    async function sapphireRefundedPromptFixture() {
+      const pending = await sapphirePendingPromptFixture();
+      await time.increase(Number(await pending.escrow.REFUND_TIMEOUT()) + 1);
+      const refundTx = await pending.escrow
+        .connect(pending.keeper)
+        .processRefund(pending.answerMessageId);
+      return { ...pending, refundTx };
     }
 
     it("isJobFinalized is true and the agent emits PromptRefunded(user, answerMessageId)", async function () {
@@ -455,6 +463,31 @@ describe("Timeout refund — what the agent contract knows afterwards", function
     it("the escrowed fee is back in the user's deposit", async function () {
       const { escrow, user } = await loadFixture(sapphireRefundedPromptFixture);
       expect(await escrow.deposits(user.address)).to.equal(INITIAL_ALLOWANCE);
+    });
+
+    it("a retry changes nothing for a refund the agent already recorded", async function () {
+      const { aiAgent, escrow, keeper, answerMessageId } = await loadFixture(
+        sapphireRefundedPromptFixture,
+      );
+
+      const retry = escrow.connect(keeper).retryRefundRecord(answerMessageId);
+
+      await expect(retry).to.emit(escrow, "RefundRecordRetried").withArgs(answerMessageId);
+      await expect(retry).to.not.emit(aiAgent, "PromptRefunded");
+      expect(await aiAgent.isJobFinalized(answerMessageId)).to.equal(true);
+    });
+
+    it("a cancelled prompt's retry records no refund", async function () {
+      const { aiAgent, escrow, user, keeper, answerMessageId } = await loadFixture(
+        sapphirePendingPromptFixture,
+      );
+      await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
+      await escrow.connect(user).cancelPrompt(answerMessageId);
+
+      const retry = escrow.connect(keeper).retryRefundRecord(answerMessageId);
+
+      await expect(retry).to.not.be.reverted;
+      await expect(retry).to.not.emit(aiAgent, "PromptRefunded");
     });
 
     it("a late answer is refused by the agent's own JobAlreadyFinalized", async function () {
