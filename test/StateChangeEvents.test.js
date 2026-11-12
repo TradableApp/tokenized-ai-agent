@@ -10,7 +10,8 @@ const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers"
  * had to infer the fee from FeeConfig), the oracle address set at agent deployment, and the fee
  * and treasury configuration set in the Sapphire escrow's constructor. The EVM escrow's
  * `initialize` already emitted its configuration; these tests hold the other paths to the same
- * rule. The timeout refund's record on the agent is covered in RefundFinalization.test.js.
+ * rule. What a timeout refund records on the agent, on both chains, is in
+ * RefundFinalization.test.js; the mock-level wiring of the Sapphire escrow stays here.
  */
 describe("State changes are announced by the contract that makes them", function () {
   const ALLOWANCE = ethers.parseEther("100");
@@ -102,6 +103,15 @@ describe("State changes are announced by the contract that makes them", function
       return { escrow, mockAgent, user, treasury };
     }
 
+    async function initiatePromptAndPassTimeout(escrow, user) {
+      const receipt = await (await escrow.connect(user).initiatePrompt(0, "payload")).wait();
+      const topic = escrow.interface.getEvent("PaymentEscrowed").topicHash;
+      const escrowId = escrow.interface.parseLog(receipt.logs.find((l) => l.topics[0] === topic))
+        .args[0];
+      await time.increase(Number(await escrow.REFUND_TIMEOUT()) + 1);
+      return escrowId;
+    }
+
     it("the escrow announces its fees and treasury at construction", async function () {
       const { escrow, treasury } = await loadFixture(sapphireEscrowFixture);
       const deployTx = escrow.deploymentTransaction();
@@ -128,11 +138,22 @@ describe("State changes are announced by the contract that makes them", function
 
     it("a timeout refund is recorded on the agent", async function () {
       const { escrow, mockAgent, user } = await loadFixture(sapphireEscrowFixture);
-      await escrow.connect(user).initiatePrompt(0, "payload");
-      await time.increase(3601);
-      await expect(escrow.processRefund(1))
+      const escrowId = await initiatePromptAndPassTimeout(escrow, user);
+      await expect(escrow.processRefund(escrowId))
         .to.emit(mockAgent, "RefundRecorded")
-        .withArgs(user.address, 1);
+        .withArgs(user.address, escrowId);
+    });
+
+    it("a failing agent costs the record, not the refund: RefundRecordFailed, deposit restored", async function () {
+      const { escrow, mockAgent, user } = await loadFixture(sapphireEscrowFixture);
+      const escrowId = await initiatePromptAndPassTimeout(escrow, user);
+      await mockAgent.setRecordRefundReverts(true);
+
+      const refund = escrow.processRefund(escrowId);
+
+      await expect(refund).to.emit(escrow, "RefundRecordFailed").withArgs(escrowId);
+      await expect(refund).to.emit(escrow, "PaymentRefunded").withArgs(escrowId);
+      expect(await escrow.deposits(user.address)).to.equal(ALLOWANCE);
     });
 
     it("the agent announces its initial oracle at construction", async function () {

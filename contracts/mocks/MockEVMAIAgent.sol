@@ -158,7 +158,15 @@ contract MockEVMAIAgent is IEVMAIAgent {
     emit CancellationRecorded(_user, _answerMessageId);
   }
 
+  /// @notice When true, recordRefund reverts, standing in for an agent that cannot take the call.
+  bool public recordRefundReverts;
+
+  function setRecordRefundReverts(bool _reverts) external {
+    recordRefundReverts = _reverts;
+  }
+
   function recordRefund(address _user, uint256 _answerMessageId) external override {
+    require(!recordRefundReverts, "MockAIAgent: recordRefund reverts");
     lastUser = _user;
     lastAnswerMessageId = _answerMessageId;
     emit RefundRecorded(_user, _answerMessageId);
