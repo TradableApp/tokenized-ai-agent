@@ -114,6 +114,10 @@ contract MockEVMAIAgentEscrow {
     EVM_AI_AGENT.recordCancellation(_user, _answerMessageId);
   }
 
+  function callRecordRefund(address _user, uint256 _answerMessageId) external {
+    EVM_AI_AGENT.recordRefund(_user, _answerMessageId);
+  }
+
   // --- Implementation of the callback from the Agent ---
 
   function finalizePayment(uint256 _escrowId) external {

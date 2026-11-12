@@ -127,6 +127,11 @@ contract SapphireAIAgentEscrow is Ownable {
   /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
 
+  /// @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
+  /// @param user The address of the user who paid.
+  /// @param amount The fee transferred to the treasury.
+  event DirectPaymentProcessed(address indexed user, uint256 amount); // solhint-disable-line gas-indexed-events
+
   // --- Errors ---
 
   // Admin and Setup Errors
@@ -195,6 +200,14 @@ contract SapphireAIAgentEscrow is Ownable {
     cancellationFee = _initialCancellationFee;
     metadataUpdateFee = _initialMetadataUpdateFee;
     branchFee = _initialBranchFee;
+
+    // Announce the initial configuration, as the EVM escrow's initialize() does, so an indexer
+    // has the fees and the treasury from the deployment block and not only after a setter runs.
+    emit PromptFeeUpdated(_initialPromptFee);
+    emit CancellationFeeUpdated(_initialCancellationFee);
+    emit MetadataUpdateFeeUpdated(_initialMetadataUpdateFee);
+    emit BranchFeeUpdated(_initialBranchFee);
+    emit TreasuryUpdated(_treasuryAddress);
   }
 
   // --- Modifiers ---
@@ -556,6 +569,9 @@ contract SapphireAIAgentEscrow is Ownable {
     // Refund the escrowed amount back to the user's internal deposit balance.
     deposits[escrow.user] += escrow.amount;
 
+    // Tell the agent the job is over, as cancelPrompt does, so the oracle skips it. recordRefund
+    // never reverts for a finalized job, so it cannot block the refund recorded above.
+    sapphireAIAgent.recordRefund(escrow.user, escrowId);
     emit PaymentRefunded(escrowId);
   }
 
@@ -606,6 +622,7 @@ contract SapphireAIAgentEscrow is Ownable {
     }
 
     deposits[_user] -= _fee;
+    emit DirectPaymentProcessed(_user, _fee);
     payable(treasury).sendValue(_fee);
   }
 }

@@ -167,4 +167,11 @@ interface ISapphireAIAgent {
    * @param _answerMessageId The ID of the answer that was cancelled.
    */
   function recordCancellation(address _user, uint256 _answerMessageId) external;
+
+  /**
+   * @notice Records that a prompt's escrow was refunded after the refund timeout.
+   * @param _user The address of the user whose escrow was refunded.
+   * @param _answerMessageId The ID of the answer that will no longer be produced.
+   */
+  function recordRefund(address _user, uint256 _answerMessageId) external;
 }

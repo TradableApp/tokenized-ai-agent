@@ -109,6 +109,15 @@ contract SapphireAIAgent is Ownable {
   /// @param user The address of the user cancelling the prompt.
   /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
+
+  /**
+   * @notice Emitted when a prompt's escrow is refunded after the refund timeout.
+   * @dev Distinct from `PromptCancelled` so an indexer never mistakes a timeout refund for a user
+   *      cancellation, which carries a fee.
+   * @param user The address of the user whose escrow was refunded.
+   * @param answerMessageId The ID of the answer that will no longer be produced.
+   */
+  event PromptRefunded(address indexed user, uint256 indexed answerMessageId);
   /// @notice Emitted when a user requests a metadata update. This instructs the TEE to update decentralised storage.
   /// @param user The address of the user requesting the update.
   /// @param conversationId The ID of the conversation to update.
@@ -233,6 +242,7 @@ contract SapphireAIAgent is Ownable {
     domain = _domain;
     roflAppID = _roflAppID;
     oracle = _initialOracle;
+    emit OracleUpdated(_initialOracle);
 
     // Initialize counters to start from 1 to avoid Zero ID Problem when creating new entities
     conversationIdCounter = 1;
@@ -590,5 +600,23 @@ contract SapphireAIAgent is Ownable {
 
     isJobFinalized[_answerMessageId] = true;
     emit PromptCancelled(_user, _answerMessageId);
+  }
+
+  /**
+   * @notice Records that a prompt's escrow was refunded after the refund timeout.
+   * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract. It finalizes
+   *      the job so the oracle skips it before spending anything and a late answer is refused here.
+   *      It never reverts for an already finalized job: the escrow returns the user's funds in the
+   *      same transaction, and agent-side state must not be able to block a refund.
+   * @param _user The address of the user whose escrow was refunded.
+   * @param _answerMessageId The ID of the answer that will no longer be produced.
+   */
+  function recordRefund(address _user, uint256 _answerMessageId) external onlyAIAgentEscrow {
+    if (isJobFinalized[_answerMessageId]) {
+      return;
+    }
+
+    isJobFinalized[_answerMessageId] = true;
+    emit PromptRefunded(_user, _answerMessageId);
   }
 }

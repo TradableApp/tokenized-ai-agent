@@ -37,6 +37,7 @@ contract MockSapphireAIAgent is ISapphireAIAgent {
     uint256 newConversationId
   );
   event CancellationRecorded(address user, uint256 answerMessageId);
+  event RefundRecorded(address user, uint256 answerMessageId);
   event AnswerSubmitted(uint256 promptMessageId, uint256 answerMessageId);
   event BranchSubmitted(uint256 newConversationId, uint256 originalConversationId);
   event MetadataSubmitted(uint256 conversationId);
@@ -151,6 +152,12 @@ contract MockSapphireAIAgent is ISapphireAIAgent {
     lastUser = _user;
     lastAnswerMessageId = _answerMessageId;
     emit CancellationRecorded(_user, _answerMessageId);
+  }
+
+  function recordRefund(address _user, uint256 _answerMessageId) external override {
+    lastUser = _user;
+    lastAnswerMessageId = _answerMessageId;
+    emit RefundRecorded(_user, _answerMessageId);
   }
 
   function submitConversationMetadata(
