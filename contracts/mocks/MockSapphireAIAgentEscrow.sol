@@ -51,6 +51,12 @@ contract MockSapphireAIAgentEscrow {
     );
   }
 
+  /// @notice Submits two prompts in one transaction, so both land in the same block.
+  function callSubmitTwoPrompts(address _user) external {
+    SAPPHIRE_AI_AGENT.submitPrompt(_user, 1, 100, 101, "");
+    SAPPHIRE_AI_AGENT.submitPrompt(_user, 2, 102, 103, "");
+  }
+
   function callSubmitRegenerationRequest(
     address _user,
     uint256 _conversationId,

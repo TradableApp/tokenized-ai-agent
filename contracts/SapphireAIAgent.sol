@@ -50,6 +50,17 @@ contract SapphireAIAgent is Ownable {
   /// @notice For a pending regeneration, the prompt it locked, stored as `promptMessageId + 1`
   ///         so that zero means "this answer is not a pending regeneration".
   mapping(uint256 => uint256) private _regenerationLockOf;
+  /// @notice How many requests for the oracle this contract has recorded: prompts, regenerations,
+  ///         agent jobs, metadata updates and branches. Request numbers start at 1.
+  /// @dev A request number is a position in this log, not an identity: it carries no link to a
+  ///      particular event. Agent jobs are counted although nothing consumes them yet.
+  ///      Several request numbers can share one block. A reader must handle every request event
+  ///      in a recorded block before treating the numbers that point at it as handled, and need
+  ///      query a block only once however many numbers point at it.
+  uint256 public requestCount;
+  /// @notice The block in which request `n` was recorded, so its event can be found by querying
+  ///         that block alone. Zero for a number that has not been issued.
+  mapping(uint256 => uint256) public requestBlock;
 
   // --- Events ---
 
@@ -383,6 +394,7 @@ contract SapphireAIAgent is Ownable {
     }
 
     messageToConversation[_promptMessageId] = _conversationId;
+    _recordRequest();
     emit PromptSubmitted(_user, _conversationId, _promptMessageId, _answerMessageId, _payload);
   }
 
@@ -415,6 +427,7 @@ contract SapphireAIAgent is Ownable {
     isRegenerationPending[_promptMessageId] = true;
     _regenerationLockOf[_answerMessageId] = _promptMessageId + 1;
 
+    _recordRequest();
     emit RegenerationRequested(
       _user,
       _conversationId,
@@ -446,6 +459,7 @@ contract SapphireAIAgent is Ownable {
     }
 
     triggerToJob[_triggerId] = _jobId;
+    _recordRequest();
     emit AgentJobSubmitted(_user, _jobId, _triggerId, _payload);
   }
 
@@ -515,6 +529,7 @@ contract SapphireAIAgent is Ownable {
       revert Unauthorized();
     }
 
+    _recordRequest();
     emit MetadataUpdateRequested(_user, _conversationId, _payload);
   }
 
@@ -552,6 +567,7 @@ contract SapphireAIAgent is Ownable {
     }
     conversationToOwner[_newConversationId] = _user;
 
+    _recordRequest();
     emit BranchRequested(
       _user,
       _originalConversationId,
@@ -647,5 +663,17 @@ contract SapphireAIAgent is Ownable {
     delete _regenerationLockOf[_answerMessageId];
     isRegenerationPending[lockedPromptPlusOne - 1] = false;
     return true;
+  }
+
+  /**
+   * @notice Counts a request for the oracle and records the block it arrived in.
+   * @dev Called once by every function that emits an event the oracle must act on. The oracle
+   *      reads `requestCount` to learn whether there is new work and `requestBlock` to fetch the
+   *      event from exactly that block, instead of scanning block ranges.
+   */
+  function _recordRequest() private {
+    uint256 requestNumber = requestCount + 1;
+    requestCount = requestNumber;
+    requestBlock[requestNumber] = block.number;
   }
 }
