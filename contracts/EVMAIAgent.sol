@@ -662,6 +662,8 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
    *      the job so the oracle skips it before spending anything and a late answer is refused here.
    *      It never reverts for an already finalized job: the escrow returns the user's funds in the
    *      same transaction, and agent-side state must not be able to block a refund.
+   *      The escrow is authoritative for which user owns a job; `_user` is taken on its word,
+   *      as in `recordCancellation`.
    * @param _user The address of the user whose escrow was refunded.
    * @param _answerMessageId The ID of the answer that will no longer be produced.
    */
