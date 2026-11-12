@@ -33,6 +33,8 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   uint256 public jobIdCounter;
   /// @notice Unused. Trigger IDs are drawn from `messageIdCounter`; the slot is kept so the
   ///         storage layout of deployed proxies is unchanged.
+  /// @dev The getter is frozen at whatever it held when a proxy was upgraded (zero on a fresh
+  ///      deployment). Do not read it to count or predict trigger IDs; read `messageIdCounter`.
   uint256 public triggerIdCounter;
 
   /// @notice Maps a conversation ID to the owner's address for on-chain ownership verification.

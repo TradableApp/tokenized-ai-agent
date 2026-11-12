@@ -170,6 +170,21 @@ describe("Agent job ids — one id space with prompts", function () {
         expect(await escrow.pendingEscrowCount(jobUser.address)).to.equal(BigInt(AGENT_JOBS - 1));
       });
 
+      it("an oracle answer naming a trigger id settles that job's escrow and leaves the prompt answerable", async function () {
+        // The oracle chooses the answer ID, so it can settle any pending escrow: that is the
+        // trust placed in it, unchanged here. This pins exactly what such a call does.
+        const { aiAgent, escrow, oracle, promptMessageId, answerMessageId, triggerIds } =
+          await loadFixture(promptThenAgentJobsFixture);
+
+        await aiAgent.connect(oracle).submitAnswer(promptMessageId, triggerIds[0], CID_BUNDLE);
+
+        expect((await escrow.escrows(triggerIds[0])).status).to.equal(ESCROW_COMPLETE);
+        expect(await aiAgent.isJobFinalized(answerMessageId)).to.equal(false);
+        await expect(
+          aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, CID_BUNDLE),
+        ).to.not.be.reverted;
+      });
+
       it("a trigger id is not a prompt: the agent refuses an answer filed against it", async function () {
         const { aiAgent, oracle, triggerIds } = await loadFixture(promptThenAgentJobsFixture);
         await expect(
