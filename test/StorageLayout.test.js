@@ -138,6 +138,9 @@ describe("Storage layout of the upgradeable contracts", function () {
       it("keeps every field of every stored struct in its slot with its type", async function () {
         const layout = await readLayout(fullyQualifiedName);
 
+        // Every struct the compiler reports for this contract's storage is compared, including
+        // one that arrives from a base contract. A struct that shows up here without an entry
+        // in `structs` above is new stored state: pin it there.
         const actual = {};
         for (const type of Object.values(layout.types)) {
           if (type.members) {
