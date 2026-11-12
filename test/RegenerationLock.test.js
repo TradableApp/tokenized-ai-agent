@@ -171,6 +171,71 @@ describe("Regeneration lock — released however the regeneration ends", functio
         await expect(regenerate()).to.not.be.reverted;
       });
 
+      // A second answered prompt in the same conversation, with its own regeneration in flight.
+      async function twoPendingRegenerationsFixture() {
+        const first = await pendingRegenerationFixture();
+        const { aiAgent, escrow, user, oracle } = first;
+        const receipt = await (await chain.prompt(escrow, user)).wait();
+        const second = parseEvent(receipt, aiAgent, "PromptSubmitted").args;
+        await aiAgent
+          .connect(oracle)
+          .submitAnswer(second.promptMessageId, second.answerMessageId, CID_BUNDLE);
+        const regenReceipt = await (
+          await chain.regenerate(
+            escrow,
+            user,
+            second.conversationId,
+            second.promptMessageId,
+            second.answerMessageId,
+          )
+        ).wait();
+        return {
+          ...first,
+          otherPromptId: second.promptMessageId,
+          otherRegenAnswerId: parseEvent(regenReceipt, escrow, "PaymentEscrowed").args[0],
+        };
+      }
+
+      it("cancelling one regeneration leaves another prompt's regeneration locked", async function () {
+        const { aiAgent, escrow, user, promptMessageId, regenAnswerId, otherPromptId } =
+          await loadFixture(twoPendingRegenerationsFixture);
+        await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
+
+        await escrow.connect(user).cancelPrompt(regenAnswerId);
+
+        expect(await aiAgent.isRegenerationPending(promptMessageId)).to.equal(false);
+        expect(await aiAgent.isRegenerationPending(otherPromptId)).to.equal(true);
+      });
+
+      it("an answer releases the prompt its regeneration locked, whatever prompt id the oracle names", async function () {
+        // The lock belongs to the answer id. An answer filed against the wrong prompt must not
+        // unlock that other prompt while its own regeneration is still running.
+        const { aiAgent, oracle, promptMessageId, regenAnswerId, otherPromptId } =
+          await loadFixture(twoPendingRegenerationsFixture);
+
+        await aiAgent
+          .connect(oracle)
+          .submitAnswer(otherPromptId, regenAnswerId, REGENERATION_BUNDLE);
+
+        expect(await aiAgent.isRegenerationPending(promptMessageId)).to.equal(false);
+        expect(await aiAgent.isRegenerationPending(otherPromptId)).to.equal(true);
+      });
+
+      it("refuses a regeneration that names a prompt from another conversation", async function () {
+        // Otherwise anyone could lock a stranger's prompt for the price of one prompt fee.
+        const { aiAgent, escrow, user, promptMessageId } = await loadFixture(
+          pendingRegenerationFixture,
+        );
+        const ownConversationId = await aiAgent.messageToConversation(promptMessageId);
+        const receipt = await (await chain.prompt(escrow, user)).wait();
+        const foreign = parseEvent(receipt, aiAgent, "PromptSubmitted").args;
+        expect(foreign.conversationId).to.not.equal(ownConversationId);
+
+        await expect(
+          chain.regenerate(escrow, user, ownConversationId, foreign.promptMessageId, 0),
+        ).to.be.revertedWithCustomError(aiAgent, "InvalidPromptMessageId");
+      });
+
       it("cancelling an ordinary prompt leaves another prompt's regeneration lock alone", async function () {
         const { aiAgent, escrow, user, promptMessageId } = await loadFixture(
           pendingRegenerationFixture,
