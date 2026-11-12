@@ -153,6 +153,9 @@ describe("Oracle role — several oracles can be authorized at once", function (
         await expect(
           aiAgent.connect(deployer).addOracle(ethers.ZeroAddress),
         ).to.be.revertedWithCustomError(aiAgent, "ZeroAddress");
+        await expect(
+          aiAgent.connect(deployer).removeOracle(ethers.ZeroAddress),
+        ).to.be.revertedWithCustomError(aiAgent, "ZeroAddress");
       });
     });
 
@@ -407,13 +410,25 @@ describe("Oracle role — several oracles can be authorized at once", function (
         expect(await aiAgent.isOracle(legacyOracle.address)).to.equal(false);
       });
 
-      it("removing an oracle retires the stored one too", async function () {
-        const { aiAgent, deployer, legacyOracle, stranger } = await loadFixture(legacyStateFixture);
+      it("removing the stored oracle itself retires it", async function () {
+        const { aiAgent, deployer, legacyOracle } = await loadFixture(legacyStateFixture);
 
-        await aiAgent.connect(deployer).removeOracle(stranger.address);
+        await aiAgent.connect(deployer).removeOracle(legacyOracle.address);
         await aiAgent.connect(deployer).migrateOracleRole();
 
         expect(await aiAgent.isOracle(legacyOracle.address)).to.equal(false);
+      });
+
+      it("removing some other address, or the zero address, leaves the stored oracle to be migrated", async function () {
+        const { aiAgent, deployer, legacyOracle, stranger } = await loadFixture(legacyStateFixture);
+
+        await aiAgent.connect(deployer).removeOracle(stranger.address);
+        await expect(
+          aiAgent.connect(deployer).removeOracle(ethers.ZeroAddress),
+        ).to.be.revertedWithCustomError(aiAgent, "ZeroAddress");
+        await aiAgent.connect(deployer).migrateOracleRole();
+
+        expect(await aiAgent.isOracle(legacyOracle.address)).to.equal(true);
       });
 
       it("on a fresh deployment there is nothing to migrate and no role is granted", async function () {
@@ -499,6 +514,9 @@ describe("Oracle role — several oracles can be authorized at once", function (
         .to.emit(aiAgent, "RoleRevoked")
         .withArgs(ORACLE_ROLE, oracle.address, deployer.address);
       expect(await aiAgent.isOracle(oracle.address)).to.equal(false);
+      await expect(
+        aiAgent.connect(deployer).removeOracle(ethers.ZeroAddress),
+      ).to.be.revertedWithCustomError(aiAgent, "ZeroAddress");
     });
 
     it("an address without the role cannot answer", async function () {

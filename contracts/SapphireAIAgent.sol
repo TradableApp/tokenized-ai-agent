@@ -340,6 +340,9 @@ contract SapphireAIAgent is Ownable, AccessControl {
    * @param _oracle The address to remove.
    */
   function removeOracle(address _oracle) external onlyOwner {
+    if (_oracle == address(0)) {
+      revert ZeroAddress();
+    }
     _revokeRole(ORACLE_ROLE, _oracle);
   }
 

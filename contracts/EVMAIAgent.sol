@@ -77,6 +77,13 @@ contract EVMAIAgent is
   ///         that block alone. Zero for a number that has not been issued.
   mapping(uint256 => uint256) public requestBlock;
 
+  /// @notice The public key clients encrypt a prompt's session key to, shared by all oracles.
+  bytes public oracleEncryptionKey;
+
+  // New state variables go directly above this line, never between existing ones: the proxy's
+  // storage follows declaration order, and `__gap` at the end of the contract shrinks by the
+  // slots each addition takes. `test/StorageLayout.test.js` pins the order.
+
   // --- Events ---
 
   // TEE Trigger Events
@@ -381,7 +388,8 @@ contract EVMAIAgent is
    *      holds `DEFAULT_ADMIN_ROLE`, so this and `removeOracle` are the only ways the set of
    *      oracles changes, apart from an oracle giving up its own role with `renounceRole`.
    *      Emits `RoleGranted`; adding an address that is already an oracle changes nothing.
-   *      The first add or remove also retires the previous version's stored oracle address.
+   *      The first add also retires the previous version's stored oracle address: from then on
+   *      the owner's explicit choices are the whole set.
    * @param _oracle The address to authorize.
    */
   function addOracle(address _oracle) external onlyOwner {
@@ -395,11 +403,18 @@ contract EVMAIAgent is
   /**
    * @notice Withdraws an address's authorization to submit answers.
    * @dev Owner only. Removing the last oracle is allowed, for a compromised key: prompts then
-   *      wait for a new oracle or for their timeout refund. Emits `RoleRevoked`.
+   *      wait for a new oracle or for their timeout refund. Emits `RoleRevoked`. Removing the
+   *      previous version's stored oracle before it was migrated retires it, so the migration
+   *      cannot grant it afterwards.
    * @param _oracle The address to remove.
    */
   function removeOracle(address _oracle) external onlyOwner {
-    _retireLegacyOracle();
+    if (_oracle == address(0)) {
+      revert ZeroAddress();
+    }
+    if (_oracle == _legacyOracle) {
+      _legacyOracle = address(0);
+    }
     _revokeRole(ORACLE_ROLE, _oracle);
   }
 
@@ -424,9 +439,9 @@ contract EVMAIAgent is
    * @dev Runs once, in the same transaction as the upgrade from the single-oracle version
    *      (`upgradeToAndCall`), so the proxy is never left upgraded with no oracle. Owner only,
    *      which in that transaction is the account upgrading. On a proxy deployed fresh there
-   *      is no stored oracle and nothing is granted. If the owner has already added or removed
-   *      an oracle, the stored address has been retired and nothing is granted either, so a
-   *      late migration can never bring back an oracle the owner has moved on from.
+   *      is no stored oracle and nothing is granted. If the owner has already added an oracle,
+   *      or removed the stored one, the stored address has been retired and nothing is granted
+   *      either, so a late migration can never bring back an oracle the owner has moved on from.
    */
   function migrateOracleRole() external reinitializer(2) onlyOwner {
     __AccessControl_init();
@@ -841,9 +856,6 @@ contract EVMAIAgent is
     // solhint-disable-previous-line no-empty-blocks
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
-
-  /// @notice The public key clients encrypt a prompt's session key to, shared by all oracles.
-  bytes public oracleEncryptionKey;
 
   uint256[33] private __gap;
 }
