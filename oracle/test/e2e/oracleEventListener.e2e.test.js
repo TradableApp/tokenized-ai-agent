@@ -318,7 +318,7 @@ describe("E2E: Oracle Event Listener", function () {
   describe("Rapid Successive Events", function () {
     it("processPastEvents handles multiple events in block order without dropping any", async function () {
       process.env.EVENT_BATCH_SIZE = "10000";
-      mockedOracleComponents.contract.oracle.resolves("0xOracleAddress");
+      mockedOracleComponents.contract.isOracle.resolves(true);
 
       const events = [];
       for (let i = 0; i < 5; i++) {
@@ -356,7 +356,7 @@ describe("E2E: Oracle Event Listener", function () {
 
     it("processPastEvents processes events from multiple blocks without errors", async function () {
       process.env.EVENT_BATCH_SIZE = "10000";
-      mockedOracleComponents.contract.oracle.resolves("0xOracleAddress");
+      mockedOracleComponents.contract.isOracle.resolves(true);
 
       const eventA = {
         eventName: "PromptSubmitted",
@@ -397,7 +397,7 @@ describe("E2E: Oracle Event Listener", function () {
   describe("Oracle State Persistence", function () {
     it("resumes from lastProcessedBlock after simulated restart, avoiding duplicate processing", async function () {
       process.env.EVENT_BATCH_SIZE = "10000";
-      mockedOracleComponents.contract.oracle.resolves("0xOracleAddress");
+      mockedOracleComponents.contract.isOracle.resolves(true);
       mockedOracleComponents.contract.queryFilter.resolves([]);
 
       // First start: nothing stored, processes from lookback
@@ -425,7 +425,7 @@ describe("E2E: Oracle Event Listener", function () {
   describe("Oracle Start Lifecycle", function () {
     beforeEach(() => {
       process.env.EVENT_BATCH_SIZE = "10000";
-      mockedOracleComponents.contract.oracle.resolves("0xOracleAddress");
+      mockedOracleComponents.contract.isOracle.resolves(true);
       mockedOracleComponents.contract.queryFilter.resolves([]);
     });
 
@@ -435,7 +435,7 @@ describe("E2E: Oracle Event Listener", function () {
       await aiAgentOracle.start();
 
       expect(stubs["./storage/storage"].initializeStorage.calledOnce).to.be.true;
-      expect(mockedOracleComponents.contract.oracle.calledOnce).to.be.true;
+      expect(mockedOracleComponents.contract.isOracle.calledOnce).to.be.true;
 
       // start() chose its store through createStateStore (no Postgres configured here, so the
       // file backend) and caught the cursor up to the head before polling.

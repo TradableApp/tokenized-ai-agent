@@ -74,8 +74,8 @@ describe("State changes are announced by the contract that makes them", function
       );
       await aiAgent.waitForDeployment();
       await expect(aiAgent.deploymentTransaction())
-        .to.emit(aiAgent, "OracleUpdated")
-        .withArgs(oracle.address);
+        .to.emit(aiAgent, "RoleGranted")
+        .withArgs(ethers.id("ORACLE_ROLE"), oracle.address, deployer.address);
     });
   });
 
@@ -210,8 +210,8 @@ describe("State changes are announced by the contract that makes them", function
       ).deploy("example.com", ROFL_APP_ID, oracle.address, deployer.address);
       await aiAgent.waitForDeployment();
       await expect(aiAgent.deploymentTransaction())
-        .to.emit(aiAgent, "OracleUpdated")
-        .withArgs(oracle.address);
+        .to.emit(aiAgent, "RoleGranted")
+        .withArgs(ethers.id("ORACLE_ROLE"), oracle.address, deployer.address);
     });
 
     it("recordRefund on the agent sets the flag, emits PromptRefunded, and is a no-op the second time", async function () {

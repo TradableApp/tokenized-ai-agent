@@ -2227,17 +2227,17 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
 // --- Main Service Logic ---
 
 /**
- * Ensures the oracle's address is correctly registered in the smart contract.
- * For Sapphire, this can be a TEE-signed transaction to securely update the key.
- * For EVM, this is a critical health check, as the function is owner-only.
+ * Ensures this oracle's address holds the oracle role on the agent contract.
+ * Several oracles can hold the role at once, so this never displaces another oracle.
+ * For Sapphire, the oracle registers itself with a TEE-signed transaction.
+ * For EVM, this is a critical health check: only the contract owner can add an oracle.
  */
-async function setOracleAddress() {
-  const onChainOracle = await contract.oracle();
-  if (onChainOracle.toLowerCase() === signer.address.toLowerCase()) {
-    console.log(`Oracle address is correctly set: ${signer.address}`);
+async function ensureOracleAuthorized() {
+  if (await contract.isOracle(signer.address)) {
+    console.log(`Oracle address is authorized: ${signer.address}`);
     return;
   }
-  console.log(`Updating on-chain oracle address from ${onChainOracle} to ${signer.address}`);
+  console.log(`Oracle address ${signer.address} does not hold the oracle role yet`);
 
   try {
     if (isSapphire) {
@@ -2245,37 +2245,37 @@ async function setOracleAddress() {
 
       if (isLocalnet) {
         // On localnet, we can send a direct transaction as we control the TEE simulation.
-        const tx = await contract.setOracle(signer.address, { gasLimit: 1000000 });
+        const tx = await contract.addOracle(signer.address, { gasLimit: 1000000 });
 
         await tx.wait();
       } else {
         // On testnet/mainnet, the transaction must be signed by the ROFL TEE.
-        console.log("Populating setOracle transaction...");
-        const txUnsigned = await contract.setOracle.populateTransaction(signer.address);
+        console.log("Populating addOracle transaction...");
+        const txUnsigned = await contract.addOracle.populateTransaction(signer.address);
 
         const txParams = {
           to: AI_AGENT_CONTRACT_ADDRESS,
-          gas: 2000000, // setOracle is a simple transaction, a fixed high limit is safe
+          gas: 2000000, // addOracle is a simple transaction, a fixed high limit is safe
           value: 0,
           data: txUnsigned.data,
         };
 
         const txHash = await submitTx(txParams);
-        console.log(`setOracle transaction submitted: ${txHash}`);
+        console.log(`addOracle transaction submitted: ${txHash}`);
       }
 
-      console.log(`Successfully updated oracle address to ${signer.address}`);
+      console.log(`Successfully registered oracle address ${signer.address}`);
     } else {
-      // For EVM, this is a health check. The contract's owner must set the address.
+      // For EVM, this is a health check. The contract's owner must add the address.
       // This oracle process does not have the permissions.
-      const errorMessage = `FATAL: Oracle address mismatch on EVM chain. On-chain oracle is ${onChainOracle}, but this oracle's key is for ${signer.address}. The contract owner must call setOracle().`;
+      const errorMessage = `FATAL: Oracle not authorized on EVM chain. ${signer.address} does not hold the oracle role. The contract owner must call addOracle(${signer.address}).`;
 
-      await sendAlert("CRITICAL: Oracle Address Mismatch", errorMessage);
+      await sendAlert("CRITICAL: Oracle Not Authorized", errorMessage);
 
       throw new Error(errorMessage);
     }
   } catch (err) {
-    const errorMessage = `FATAL: Failed to update oracle address. The on-chain oracle is ${onChainOracle}, but this oracle's address is ${signer.address}. Error: ${err.message}`;
+    const errorMessage = `FATAL: Failed to confirm oracle authorization for ${signer.address}. Error: ${err.message}`;
 
     await sendAlert("CRITICAL: Oracle Setup Failed", errorMessage);
 
@@ -2839,7 +2839,7 @@ async function start() {
   await initializeEliza();
 
   // Ensure the on-chain oracle address is correctly set to this wallet.
-  await setOracleAddress();
+  await ensureOracleAuthorized();
 
   // From here on the cursor and the failed-job queue live in the oracle's own database when it
   // has one. initializeEliza() above has already run the migration that creates the tables,
@@ -2952,7 +2952,7 @@ module.exports = {
   encryptSymmetrically,
   decryptSymmetrically,
   handleAndRecord,
-  setOracleAddress,
+  ensureOracleAuthorized,
   processPastEvents,
   retryFailedJobs,
   wireAgentDbForPluginSql,

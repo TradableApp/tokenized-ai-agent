@@ -37,8 +37,8 @@ function createMockedOracleComponents() {
         .stub()
         .resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),
       isJobFinalized: sinon.stub().resolves(false),
-      oracle: sinon.stub(),
-      setOracle: sinon.stub().resolves({ wait: () => Promise.resolve() }),
+      isOracle: sinon.stub(),
+      addOracle: sinon.stub().resolves({ wait: () => Promise.resolve() }),
       queryFilter: sinon.stub(),
       on: sinon.stub(),
       filters: {

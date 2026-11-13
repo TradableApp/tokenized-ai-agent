@@ -77,12 +77,11 @@ describe("scripts/admin-rehearsal", function () {
   }
 
   describe("readState", function () {
-    it("captures the live owner, oracle, treasury and prompt fee", async function () {
-      const { state, deployer, oracle, treasury } = await loadFixture(deployFixture);
+    it("captures the live owner, treasury and prompt fee", async function () {
+      const { state, deployer, treasury } = await loadFixture(deployFixture);
 
       expect(state.agentOwner).to.equal(deployer.address);
       expect(state.escrowOwner).to.equal(deployer.address);
-      expect(state.oracle).to.equal(oracle.address);
       expect(state.treasury).to.equal(treasury.address);
       expect(state.promptFee).to.equal(PROMPT_FEE);
     });
@@ -103,8 +102,8 @@ describe("scripts/admin-rehearsal", function () {
         "escrow.setPromptFee",
         "escrow.setTreasury",
         "escrow.setTreasury",
-        "agent.setOracle",
-        "agent.setOracle",
+        "agent.addOracle",
+        "agent.removeOracle",
         "agent.transferOwnership",
         "escrow.transferOwnership",
       ]);
@@ -113,7 +112,7 @@ describe("scripts/admin-rehearsal", function () {
       expect(plan[2].args).to.deep.equal([safe.address]);
       expect(plan[3].args).to.deep.equal([treasury.address]);
       expect(plan[4].args).to.deep.equal([safe.address]);
-      expect(plan[5].args).to.deep.equal([oracle.address]);
+      expect(plan[5].args).to.deep.equal([safe.address]);
       expect(plan[6].args).to.deep.equal([safe.address]);
       expect(plan[7].args).to.deep.equal([safe.address]);
     });
@@ -130,7 +129,24 @@ describe("scripts/admin-rehearsal", function () {
       expect(plan[0].event).to.deep.equal({ name: "PromptFeeUpdated", args: [REHEARSAL_FEE] });
       expect(plan[0].verify).to.deep.equal({ getter: "promptFee", expected: REHEARSAL_FEE });
       expect(plan[2].event).to.deep.equal({ name: "TreasuryUpdated", args: [safe.address] });
-      expect(plan[4].event).to.deep.equal({ name: "OracleUpdated", args: [safe.address] });
+      expect(plan[4].event).to.deep.equal({
+        name: "RoleGranted",
+        args: [ethers.id("ORACLE_ROLE"), safe.address],
+      });
+      expect(plan[4].verify).to.deep.equal({
+        getter: "isOracle",
+        args: [safe.address],
+        expected: true,
+      });
+      expect(plan[5].event).to.deep.equal({
+        name: "RoleRevoked",
+        args: [ethers.id("ORACLE_ROLE"), safe.address],
+      });
+      expect(plan[5].verify).to.deep.equal({
+        getter: "isOracle",
+        args: [safe.address],
+        expected: false,
+      });
       expect(plan[6].event).to.deep.equal({
         name: "OwnershipTransferred",
         args: [deployer.address, safe.address],
@@ -238,7 +254,8 @@ describe("scripts/admin-rehearsal", function () {
       expect(results.every((r) => /^0x[0-9a-f]{64}$/.test(r.txHash))).to.equal(true);
       expect(await contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
       expect(await contracts.escrow.treasury()).to.equal(treasury.address);
-      expect(await contracts.aiAgent.oracle()).to.equal(oracle.address);
+      expect(await contracts.aiAgent.isOracle(oracle.address)).to.equal(true);
+      expect(await contracts.aiAgent.isOracle(safe.address)).to.equal(false);
       expect(await contracts.aiAgent.owner()).to.equal(safe.address);
       expect(await contracts.escrow.owner()).to.equal(safe.address);
     });
@@ -264,7 +281,11 @@ describe("scripts/admin-rehearsal", function () {
       const { contracts, state, deployer, safe } = await loadFixture(deployFixture);
       await contracts.escrow.connect(deployer).setPromptFee(REHEARSAL_FEE);
       const lines = [];
-      const plan = buildPlan({ state, safeAddress: safe.address, rehearsalPromptFee: REHEARSAL_FEE });
+      const plan = buildPlan({
+        state,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
 
       const results = await runPlan({
         plan,
@@ -307,7 +328,10 @@ describe("scripts/admin-rehearsal", function () {
       };
       const naps = [];
 
-      await verifyGetter(target, stepDef, receipt, { attempts: 5, sleep: async (ms) => naps.push(ms) });
+      await verifyGetter(target, stepDef, receipt, {
+        attempts: 5,
+        sleep: async (ms) => naps.push(ms),
+      });
 
       expect(calls).to.equal(3);
       expect(seen[0]).to.deep.equal({ blockTag: 4242 });
@@ -365,6 +389,22 @@ describe("scripts/admin-rehearsal", function () {
       const after = await verifyReturned({ contracts, state });
       expect(after).to.deep.equal({ ok: true, mismatches: [] });
     });
+
+    it("watches the live oracle: a rehearsal that leaves it without its role is reported", async function () {
+      const { contracts, deployer, oracle } = await loadFixture(deployFixture);
+      const watched = { ...contracts, oracleAddress: oracle.address };
+      const state = await readState(watched);
+      expect(state.oracle).to.equal(oracle.address);
+      expect(state.oracleAuthorized).to.equal(true);
+
+      await contracts.aiAgent.connect(deployer).removeOracle(oracle.address);
+
+      const result = await verifyReturned({ contracts, state });
+      expect(result.ok).to.equal(false);
+      expect(result.mismatches).to.deep.equal([
+        { field: "oracleAuthorized", expected: "true", actual: "false" },
+      ]);
+    });
   });
 
   describe("parseRehearsalFee", function () {
@@ -413,7 +453,6 @@ describe("scripts/admin-rehearsal", function () {
       expect(saved).to.deep.equal({
         agentOwner: fixture.state.agentOwner,
         escrowOwner: fixture.state.escrowOwner,
-        oracle: fixture.state.oracle,
         treasury: fixture.state.treasury,
         promptFee: String(fixture.state.promptFee),
       });

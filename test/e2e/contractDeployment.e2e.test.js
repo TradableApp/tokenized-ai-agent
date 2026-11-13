@@ -71,7 +71,7 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       const { aiAgent, escrow, token, oracle, treasury } =
         await loadFixture(deployFullStackFixture);
 
-      expect(await aiAgent.oracle()).to.equal(oracle.address);
+      expect(await aiAgent.isOracle(oracle.address)).to.equal(true);
       expect(await escrow.ableToken()).to.equal(await token.getAddress());
       expect(await escrow.evmAIAgent()).to.equal(await aiAgent.getAddress());
       expect(await escrow.treasury()).to.equal(treasury.address);

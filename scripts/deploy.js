@@ -67,6 +67,17 @@ function assertDeployAllowed(ctx) {
   throw new Error(`Deployment to ${ctx.networkName} refused:\n  - ${problems.join("\n  - ")}`);
 }
 
+/**
+ * True when an EVMAIAgent proxy still holds the single oracle address of the version before the
+ * oracle role. That address sits in storage slot 0, and the migration clears it, so a non-zero
+ * slot means the oracle must be carried over to the role in the same transaction as the upgrade.
+ */
+async function needsOracleRoleMigration(provider, proxyAddress) {
+  // Slot 0 is `_legacyOracle`; test/StorageLayout.test.js pins it there.
+  const legacyOracleSlot = await provider.getStorage(proxyAddress, 0);
+  return BigInt(legacyOracleSlot) !== 0n;
+}
+
 function explorerFor(networkName) {
   return networkName === MAINNET_NETWORK ? "https://basescan.org" : "https://sepolia.basescan.org";
 }
@@ -95,7 +106,7 @@ async function main() {
   const oracleAddress = deployer.address;
   const treasuryAddress = process.env.TREASURY_ADDRESS || deployer.address;
   console.log(`Deploying contracts with the account: ${chalk.yellow(deployer.address)}`);
-  console.log(`This address will be set as the Oracle and default Treasury.`);
+  console.log(`This address will be the first authorized Oracle and the default Treasury.`);
 
   // The roflAppID is not used on-chain for the EVM version but is kept for consistency.
   const roflAppID = hre.ethers.zeroPadBytes("0x", 21);
@@ -213,7 +224,20 @@ async function main() {
     if (existingAIAgentAddress) {
       console.log(`Found existing EVMAIAgent at: ${chalk.yellow(existingAIAgentAddress)}`);
       console.log("Checking for EVMAIAgent upgrade...");
-      aiAgent = await hre.upgrades.upgradeProxy(existingAIAgentAddress, EVMAIAgent);
+      // Upgrading from the single-oracle version: carry the stored oracle over to the oracle
+      // role inside the upgrade transaction, so the proxy is never upgraded with no oracle.
+      const migrateOracle = await needsOracleRoleMigration(
+        hre.ethers.provider,
+        existingAIAgentAddress,
+      );
+      if (migrateOracle) {
+        console.log("Legacy oracle address found: migrating it to the oracle role in the upgrade.");
+      }
+      aiAgent = await hre.upgrades.upgradeProxy(
+        existingAIAgentAddress,
+        EVMAIAgent,
+        migrateOracle ? { call: "migrateOracleRole" } : {},
+      );
       await waitDeployed(aiAgent);
       aiAgentAddress = await aiAgent.getAddress();
       console.log(`✅ EVMAIAgent is up-to-date at: ${chalk.cyan(aiAgentAddress)}`);
@@ -341,7 +365,14 @@ async function main() {
   console.log("\n--- Deployment Finished ---");
 }
 
-module.exports = { deployProblems, assertDeployAllowed, explorerFor, CONFIRM_VAR, MAINNET_NETWORK };
+module.exports = {
+  deployProblems,
+  assertDeployAllowed,
+  explorerFor,
+  needsOracleRoleMigration,
+  CONFIRM_VAR,
+  MAINNET_NETWORK,
+};
 
 if (require.main === module) {
   main().catch((error) => {
