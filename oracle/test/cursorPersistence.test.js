@@ -134,6 +134,18 @@ describe("chain cursor persistence", () => {
     });
   });
 
+  it("never saves the cursor from the per-event wrapper", () => {
+    // handleAndRecord runs once per event, up to five at a time, finishing out of order. A save
+    // from there can move the cursor past an earlier event that is still being answered; only
+    // the scan loops, which wait for the whole batch, may save it.
+    const start = SOURCE.indexOf("async function handleAndRecord(");
+    expect(start, "handleAndRecord should exist").to.be.greaterThan(-1);
+    const end = SOURCE.indexOf("\nasync function ", start + 1);
+    const body = SOURCE.slice(start, end === -1 ? undefined : end);
+
+    expect(body).to.not.match(/\b(persistCursor|rewindCursor)\s*\(/);
+  });
+
   describe("behaviour", () => {
     // aiAgentOracle builds a signer at module load, so the placeholder key in
     // .env.oracle.example is not enough. Scoped to this suite, as in failedJobsProbe.test.js.

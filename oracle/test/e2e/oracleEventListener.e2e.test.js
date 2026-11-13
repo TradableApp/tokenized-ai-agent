@@ -1,4 +1,5 @@
 const { expect } = require("chai");
+const sinon = require("sinon");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 const {
@@ -104,7 +105,7 @@ describe("E2E: Oracle Event Listener", function () {
   });
 
   describe("handleAndRecord Error Classification", function () {
-    it("drops malformed payloads silently and advances block checkpoint", async function () {
+    it("drops malformed payloads silently, leaving the checkpoint to the batch", async function () {
       const malformedPayload = ethers.toUtf8Bytes("not-encrypted-at-all");
       const fakeEvent = makeFakeEvent(6000, {
         args: ["0xUser", 1, 300, 301, malformedPayload, "0xkey"],
@@ -116,9 +117,9 @@ describe("E2E: Oracle Event Listener", function () {
         fakeEvent,
       );
 
-      // Block checkpoint saved, in memory and in the store alike
-      expect(await stateStore.loadCursor()).to.equal(6000);
-      expect(aiAgentOracle.getLastProcessedBlock()).to.equal(6000);
+      // One event never moves the checkpoint: only the scan that owns the whole batch does.
+      expect(await stateStore.loadCursor()).to.equal(null);
+      expect(aiAgentOracle.getLastProcessedBlock()).to.equal(null);
 
       // No retry queue entry
       expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
@@ -167,8 +168,8 @@ describe("E2E: Oracle Event Listener", function () {
       });
       expect(jobs[0]).to.not.have.property("args");
 
-      // Block checkpoint also saved: the job is queued, so the cursor may move past the event
-      expect(await stateStore.loadCursor()).to.equal(6001);
+      // The checkpoint is the batch's to move, once every event in it is handled or queued.
+      expect(await stateStore.loadCursor()).to.equal(null);
     });
 
     it("sends CRITICAL alert and captures Sentry exception for non-retryable errors", async function () {
@@ -196,6 +197,74 @@ describe("E2E: Oracle Event Listener", function () {
       expect(stubs["./alerting"].sendAlert.calledOnce).to.be.true;
       expect(stubs["./alerting"].sendAlert.firstCall.args[0]).to.include("CRITICAL");
       expect(stubs["@sentry/node"].captureException.called).to.be.true;
+    });
+  });
+
+  describe("Checkpoint and events still in flight", function () {
+    // Up to five events are handled at once and finish out of order. If one of them saved the
+    // checkpoint as it finished, a crash would resume AFTER an earlier event that was still
+    // being answered — and that prompt would never be answered.
+    it("does not move the checkpoint past an event still being handled in the same batch", async function () {
+      process.env.EVENT_BATCH_SIZE = "10000";
+      const now = () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) });
+      let releaseSlowEvent;
+      const slowEventStarted = new Promise((resolve) => {
+        releaseSlowEvent = resolve;
+      });
+      const event = (blockNumber, getBlock) => ({
+        eventName: "PromptSubmitted",
+        blockNumber,
+        transactionIndex: 0,
+        index: 0,
+        args: ["0xUser", 1, blockNumber, blockNumber + 1, "0x1234", "0xkey"],
+        getBlock,
+      });
+      mockedOracleComponents.contract.queryFilter
+        .onFirstCall()
+        .resolves([event(1000, () => slowEventStarted.then(now)), event(1004, now)])
+        .resolves([]);
+
+      const scan = aiAgentOracle.processPastEvents(1000, 1004);
+      // Give the fast event at block 1004 every chance to finish while block 1000 is held.
+      for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+
+      expect(await stateStore.loadCursor(), "while block 1000 is still in flight").to.equal(null);
+
+      releaseSlowEvent();
+      await scan;
+
+      expect(await stateStore.loadCursor(), "once the whole batch is done").to.equal(1004);
+    });
+
+    it("does not move the checkpoint when a failed event could not be queued for retry", async function () {
+      process.env.EVENT_BATCH_SIZE = "10000";
+      stubs["./storage/storage"].uploadData.rejects(new Error("Autonomys network unreachable"));
+      sinon.stub(stateStore, "enqueueFailedJob").rejects(new Error("database unavailable"));
+      const clientPayload = {
+        promptText: "Queue is down",
+        isNewConversation: true,
+        previousMessageId: null,
+        previousMessageCID: null,
+      };
+      const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
+      const fakeEvent = makeFakeEvent(1002, {
+        eventName: "PromptSubmitted",
+        transactionIndex: 0,
+        args: ["0xUser", 1, 700, 701, payloadBytes, "0xkey"],
+      });
+      mockedOracleComponents.contract.queryFilter.onFirstCall().resolves([fakeEvent]).resolves([]);
+
+      let error;
+      try {
+        await aiAgentOracle.processPastEvents(1000, 1004);
+      } catch (e) {
+        error = e;
+      }
+
+      // The event is neither answered nor queued, so the scan must see it again: the batch
+      // fails and the checkpoint stays where it was.
+      expect(error, "the scan must not report success").to.be.instanceOf(Error);
+      expect(await stateStore.loadCursor()).to.equal(null);
     });
   });
 

@@ -1748,8 +1748,8 @@ describe("aiAgentOracle", function () {
       const [job] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
       expect(job.eventName).to.equal("PromptSubmitted");
 
-      // Queued first, then the cursor moved past the event.
-      expect(await stateStore.loadCursor()).to.equal(100);
+      // Queuing a job does not move the cursor: the scan that owns the batch does that.
+      expect(await stateStore.loadCursor()).to.equal(null);
     });
 
     it("queues a RetryableError for retry even when its message matches none of the legacy substrings", async () => {
