@@ -150,21 +150,30 @@ const retryQueueOutage = absorbedFailureTracker({
   site: "retry_queue_outage",
 });
 
-// How often the oracle asks the chain whether its role is back, while it believes it is not.
-const DEFAULT_ROLE_RECHECK_MS = 30 * 1000;
-
 /**
  * Holds event processing and retries while this oracle does not hold the oracle role: every
  * submission would revert, so answering would spend model and storage credits for nothing. One
- * page when the role is found missing, one notice when it is back (see oracleRoleGate.js).
+ * page when the role is found missing, a reminder each hour it stays missing, one notice when it
+ * is back (see oracleRoleGate.js).
+ *
+ * ORACLE_ROLE_RECHECK_MS shortens the 30 s recheck for tests; it is not a deployment setting.
  */
 const oracleRole = createRoleGate({
   checkRole: () => contract.isOracle(signer.address),
-  recheckMs: () => parseInt(process.env.ORACLE_ROLE_RECHECK_MS) || DEFAULT_ROLE_RECHECK_MS,
+  recheckMs: () => Number(process.env.ORACLE_ROLE_RECHECK_MS),
   onLost: (error) => {
-    const message = `Oracle ${signer.address} does not hold the oracle role on ${contract.target}. It has stopped answering and is waiting; prompts stay queued and are answered once the role is granted, or refunded after the refund timeout. The contract owner must call addOracle(${signer.address}).${error ? ` Last error: ${error.message}` : ""}`;
+    // On EVM the owner grants the role. On Sapphire the ROFL app registers itself, at start-up.
+    const remedy = isSapphire
+      ? "Restart the oracle so it registers itself again."
+      : `The contract owner must call addOracle(${signer.address}).`;
+    const message = `Oracle ${signer.address} does not hold the oracle role on ${contract.target}. It has stopped answering and is waiting; prompts stay queued and are answered once it holds the role, or refunded after the refund timeout. ${remedy}${error ? ` Last error: ${error.message}` : ""}`;
     console.error(`[OracleRole] ${message}`);
     return sendAlert("CRITICAL: Oracle Not Authorized", message);
+  },
+  onStillLost: ({ waitingForMs }) => {
+    const message = `Oracle ${signer.address} has been waiting ${minutes(waitingForMs)} minutes for the oracle role on ${contract.target} and is answering nothing.`;
+    console.error(`[OracleRole] ${message}`);
+    return sendAlert("CRITICAL: Oracle Still Not Authorized", message);
   },
   onRestored: () => {
     console.log(`[OracleRole] Oracle address is authorized again: ${signer.address}`);
@@ -2257,7 +2266,8 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
  * Ensures this oracle's address holds the oracle role on the agent contract.
  * Several oracles can hold the role at once, so this never displaces another oracle.
  * For Sapphire, the oracle registers itself with a TEE-signed transaction.
- * For EVM, only the contract owner can add an oracle: this waits until they have.
+ * For EVM, only the contract owner can add an oracle: this pages them and marks the role
+ * missing, which holds all answering until they have.
  */
 async function ensureOracleAuthorized() {
   if (await contract.isOracle(signer.address)) {
@@ -2268,10 +2278,10 @@ async function ensureOracleAuthorized() {
 
   if (!isSapphire) {
     // On EVM only the contract owner can grant the role. Exiting here would only make the
-    // platform restart the oracle into the same state, so it waits instead: one page now, and
-    // it carries on by itself once the owner has called addOracle.
+    // platform restart the oracle into the same state. So: one page now, and start-up carries
+    // on — the heartbeat begins, and every step that would answer a prompt waits at the role
+    // gate until the owner has called addOracle.
     oracleRole.markLost();
-    await oracleRole.ready();
     return;
   }
 
@@ -2310,6 +2320,43 @@ async function ensureOracleAuthorized() {
 }
 
 /**
+ * Was this submission refused because the oracle does not hold its role?
+ *
+ * Two shapes reach here. A revert caught at gas estimation carries the custom error's selector
+ * as its revert data. A revert that only happens once the transaction is mined (the role was
+ * removed in between) carries a receipt and no reason at all, so the chain has to be asked.
+ * Either way the answer is confirmed with `isOracle` before the role is treated as lost: only
+ * decoded revert data counts, never the transaction's own calldata or the error text.
+ *
+ * @returns {Promise<{ refused: boolean, lost: boolean }>} `refused`: the revert data names
+ *   UnauthorizedOracle. `lost`: the chain confirms the role is not held right now.
+ */
+async function lostOracleRole(error) {
+  let selector = null;
+  try {
+    selector = contract.interface.getError("UnauthorizedOracle")?.selector ?? null;
+  } catch {
+    selector = null;
+  }
+
+  const candidate = error?.data ?? error?.info?.error?.data;
+  const revertData = typeof candidate === "string" && candidate.length > 2 ? candidate : null;
+  const refused = Boolean(selector && revertData && revertData.startsWith(selector));
+  const revertedWithoutReason =
+    !revertData && error?.code === "CALL_EXCEPTION" && Boolean(error?.receipt);
+  if (!refused && !revertedWithoutReason) return { refused: false, lost: false };
+
+  try {
+    return { refused, lost: !(await contract.isOracle(signer.address)) };
+  } catch (checkError) {
+    console.warn(
+      `[OracleRole] Could not confirm the oracle role after a refused submission: ${checkError.message}`,
+    );
+    return { refused, lost: false };
+  }
+}
+
+/**
  * A wrapper for event handlers that distinguishes between retryable and fatal errors.
  * Retryable errors are saved to a queue for later processing.
  *
@@ -2322,6 +2369,10 @@ async function ensureOracleAuthorized() {
  */
 async function handleAndRecord(eventName, handler, ...args) {
   const event = args[args.length - 1];
+
+  // An event already in the queue when the role was lost waits here, before any model or
+  // storage credit is spent on an answer that could not be submitted.
+  await oracleRole.ready();
 
   try {
     const eventTimestamp = (await event.getBlock()).timestamp;
@@ -2358,11 +2409,13 @@ async function handleAndRecord(eventName, handler, ...args) {
     // SDK's `Failed to upload file chunk: Service Unavailable` on 2026-11-09 (#108).
     // A submission refused for want of the oracle role is not the event's fault and not final:
     // the event waits in the queue, and the role gate holds further work until the role is back.
-    const lostRole = isContractError(error, "UnauthorizedOracle");
-    if (lostRole) oracleRole.markLost(error);
+    // Refused but the role is already back (a grant landed in between): simply retried.
+    const role = await lostOracleRole(error);
+    if (role.lost) oracleRole.markLost(error);
 
     const isRetryable =
-      lostRole ||
+      role.lost ||
+      role.refused ||
       isRetryableError(error) ||
       error.message.includes("Irys") ||
       error.message.includes("fetch") ||
@@ -2478,10 +2531,13 @@ async function retryClaimedJob(job) {
 
     const event = await loadEventForRetry(job);
 
+    // Nothing can be submitted without the role, so the work is not started without it.
+    await oracleRole.ready();
+
     // Retries share the concurrency queue with fresh events.
     await queue.add(() => handler(...event.args, event));
   } catch (error) {
-    if (isContractError(error, "UnauthorizedOracle")) {
+    if ((await lostOracleRole(error)).lost) {
       // Not an attempt at the job: the oracle may not submit anything right now. The job keeps
       // its lease and is offered again afterwards, with its attempts untouched, so a long wait
       // for the role cannot walk it to "failed permanently".
@@ -2905,6 +2961,28 @@ async function start() {
   }));
   console.log(`[OracleState] Cursor and failed jobs are kept in: ${stateStore.backend}.`);
 
+  // Liveness beat. Standalone and entirely off the prompt path — core reads the newest
+  // `kind: "heartbeat"` row and checks its AGE, which is what distinguishes a silent oracle from
+  // a healthy-but-idle one. Awaited only to resolve the Brain handles; the chain itself is
+  // self-rescheduling and unref'd, so it neither blocks boot nor holds the process open.
+  //
+  // Not assigned to anything: nothing in this process stops the oracle short of exit, and the
+  // returned handle exists for tests. Disk is measured where oracle-state.json actually lives —
+  // the volume this process writes to — rather than core's dead PGLITE_DATA_DIR.
+  //
+  // Started before the first step that can wait for the oracle role: the beat is what tells a
+  // waiting oracle from a dead one.
+  await startOracleHeartbeat({
+    provider,
+    walletAddress: signer.address,
+    queue,
+    getLastProcessedBlock,
+    countFailedJobs,
+    fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
+    mirrorSnapshot: () => require("./storage/mirror").snapshot(),
+    diskPath: path.dirname(STATE_FILE_PATH),
+  });
+
   // Process any failed jobs from previous runs before catching up on past events.
   await retryFailedJobs();
 
@@ -2953,25 +3031,6 @@ async function start() {
 
   // Start background retry mechanism
   setInterval(retryFailedJobs, RETRY_INTERVAL_MS);
-
-  // Liveness beat. Standalone and entirely off the prompt path — core reads the newest
-  // `kind: "heartbeat"` row and checks its AGE, which is what distinguishes a silent oracle from
-  // a healthy-but-idle one. Awaited only to resolve the Brain handles; the chain itself is
-  // self-rescheduling and unref'd, so it neither blocks boot nor holds the process open.
-  //
-  // Not assigned to anything: nothing in this process stops the oracle short of exit, and the
-  // returned handle exists for tests. Disk is measured where oracle-state.json actually lives —
-  // the volume this process writes to — rather than core's dead PGLITE_DATA_DIR.
-  await startOracleHeartbeat({
-    provider,
-    walletAddress: signer.address,
-    queue,
-    getLastProcessedBlock,
-    countFailedJobs,
-    fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
-    mirrorSnapshot: () => require("./storage/mirror").snapshot(),
-    diskPath: path.dirname(STATE_FILE_PATH),
-  });
 
   // 2. Listening Phase — fire-and-forget; the infinite poll loop never resolves
   pollEvents(latestBlock).catch((err) => {

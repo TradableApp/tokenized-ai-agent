@@ -1153,13 +1153,16 @@ describe("aiAgentOracle", function () {
       });
 
       it("pages once for a batch of events that all hit the lost role", async () => {
-        for (const name of ["lost-a", "lost-b", "lost-c"]) {
-          await aiAgentOracle.handleAndRecord(
-            "PromptSubmitted",
-            sinon.stub().rejects(unauthorizedRevert()),
-            eventFor(name),
-          );
-        }
+        // Already being answered together when the role went; each is refused in turn.
+        await Promise.all(
+          ["lost-a", "lost-b", "lost-c"].map((name) =>
+            aiAgentOracle.handleAndRecord(
+              "PromptSubmitted",
+              sinon.stub().rejects(unauthorizedRevert()),
+              eventFor(name),
+            ),
+          ),
+        );
 
         const pages = stubs["./alerting"].sendAlert
           .getCalls()

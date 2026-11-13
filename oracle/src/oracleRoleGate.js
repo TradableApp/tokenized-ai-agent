@@ -12,7 +12,8 @@
  *   gate.markLost(error) — a submission was refused, or the start-up check found no role
  *   gate.ready()         — resolves at once while the role is held; otherwise once it is back
  *
- * The chain is only asked while the role is believed lost, once per `recheckMs`.
+ * The chain is only asked while the role is believed lost, once per `recheckMs`. A wait that goes
+ * on is reported again every `remindEveryMs`, so a missed first page is not the only signal.
  *
  * The hooks may be async; whatever they throw or reject with is logged and never reaches the
  * caller.
@@ -21,16 +22,25 @@
  *   checkRole: () => Promise<boolean>,
  *   onLost?: (error?: Error) => any,
  *   onRestored?: () => any,
+ *   onStillLost?: (info: { waitingForMs: number }) => any,
  *   recheckMs?: number | (() => number),
+ *   remindEveryMs?: number,
  *   sleep?: (ms: number) => Promise<void>,
+ *   now?: () => number,
  * }} options
  */
+const DEFAULT_RECHECK_MS = 30 * 1000;
+const DEFAULT_REMIND_EVERY_MS = 60 * 60 * 1000;
+
 function createRoleGate({
   checkRole,
   onLost = () => {},
   onRestored = () => {},
-  recheckMs = 30000,
+  onStillLost = () => {},
+  recheckMs = DEFAULT_RECHECK_MS,
+  remindEveryMs = DEFAULT_REMIND_EVERY_MS,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now = Date.now,
 }) {
   let lost = false;
   let waiting = null;
@@ -45,7 +55,15 @@ function createRoleGate({
     }
   }
 
+  // A zero, negative or unparsable interval would turn the wait into a tight loop against the RPC.
+  function recheckInterval() {
+    const ms = typeof recheckMs === "function" ? recheckMs() : recheckMs;
+    return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_RECHECK_MS;
+  }
+
   async function waitForRole() {
+    const since = now();
+    let remindedAt = since;
     for (;;) {
       try {
         if (await checkRole()) break;
@@ -53,7 +71,11 @@ function createRoleGate({
         // Not knowing is not having: keep holding, and ask again.
         console.warn(`[OracleRole] Could not check the oracle role: ${error.message}`);
       }
-      await sleep(typeof recheckMs === "function" ? recheckMs() : recheckMs);
+      if (now() - remindedAt >= remindEveryMs) {
+        remindedAt = now();
+        run(onStillLost, { waitingForMs: remindedAt - since });
+      }
+      await sleep(recheckInterval());
     }
     lost = false;
     run(onRestored);
