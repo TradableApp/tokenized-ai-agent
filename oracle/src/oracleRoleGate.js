@@ -105,6 +105,8 @@ function createRoleGate({
     /** Back to "role held", for tests. */
     reset() {
       lost = false;
+      // A wait still running belongs to the state being discarded; the next loss starts its own.
+      waiting = null;
     },
   };
 }

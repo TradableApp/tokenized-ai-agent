@@ -4,8 +4,6 @@ const { expect } = chai;
 const proxyquire = require("proxyquire").noCallThru();
 const { RetryableError } = require("../src/errors");
 const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
 const { ethers } = require("ethers");
 const realStateStore = require("../src/oracleState/store");
 const realStateRuntime = require("../src/oracleState/runtime");
@@ -124,6 +122,9 @@ describe("aiAgentOracle", function () {
       },
       "./roflUtility": {
         submitTx: sinon.stub().resolves("0xRoflTxHash"),
+      },
+      "./oracleHeartbeat": {
+        startOracleHeartbeat: sinon.stub().resolves({ stop: () => {} }),
       },
       "./alerting": {
         sendAlert: sinon.stub().resolves(),
@@ -1056,13 +1057,10 @@ describe("aiAgentOracle", function () {
       expect(mockedContract.isOracle.callCount).to.be.at.least(3);
       sinon.assert.callOrder(mockedContract.isOracle, mockedContract.queryFilter);
       // The heartbeat is what tells a waiting oracle from a dead one, so it must not sit behind
-      // the wait: in start() it begins before the first gated step.
-      const startBody = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8");
-      const from = startBody.indexOf("async function start()");
-      const heartbeatAt = startBody.indexOf("startOracleHeartbeat({", from);
-      const firstGatedAt = startBody.indexOf("await retryFailedJobs();", from);
-      expect(heartbeatAt).to.be.greaterThan(from);
-      expect(heartbeatAt).to.be.lessThan(firstGatedAt);
+      // the wait: it began before the check that found the role granted.
+      const heartbeat = stubs["./oracleHeartbeat"].startOracleHeartbeat;
+      sinon.assert.calledOnce(heartbeat);
+      expect(heartbeat.firstCall.calledBefore(mockedContract.isOracle.getCall(2))).to.be.true;
     });
 
     describe("losing the oracle role while running", () => {
