@@ -543,9 +543,9 @@ contract EVMAIAgent is
   ) external onlyAIAgentEscrow {
     if (conversationToOwner[_conversationId] == address(0)) {
       // A new conversation takes an id the counter has already handed out; the escrow reserves
-      // one in this same transaction. Ids are owned by reservation only.
+      // one in this same transaction. Ids are owned by reservation only, and 0 is never one.
       // solhint-disable-next-line gas-strict-inequalities
-      if (_conversationId >= conversationIdCounter) {
+      if (_conversationId == 0 || _conversationId >= conversationIdCounter) {
         revert Unauthorized();
       }
       conversationToOwner[_conversationId] = _user;
@@ -672,8 +672,7 @@ contract EVMAIAgent is
 
     // A regeneration recorded its conversation when it was requested. A first answer has none
     // yet (nor has a regeneration requested before that was recorded): it takes its prompt's.
-    // Conversation ids start at 1 and the escrow never opens conversation 0, so 0 means
-    // "not recorded".
+    // Conversation ids start at 1 and 0 can never have an owner, so 0 means "not recorded".
     uint256 conversationId = messageToConversation[_answerMessageId];
     if (conversationId == 0) {
       conversationId = messageToConversation[_promptMessageId];
@@ -765,6 +764,7 @@ contract EVMAIAgent is
     if (
       conversationToOwner[_originalConversationId] != _user ||
       conversationToOwner[_newConversationId] != address(0) ||
+      _newConversationId == 0 ||
       // solhint-disable-next-line gas-strict-inequalities
       _newConversationId >= conversationIdCounter
     ) {
