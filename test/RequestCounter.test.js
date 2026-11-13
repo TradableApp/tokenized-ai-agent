@@ -143,6 +143,9 @@ describe("Request counter — every oracle-bound request is counted with its blo
         ).deploy(await aiAgent.getAddress());
         await mockEscrow.waitForDeployment();
         await aiAgent.connect(deployer).setAgentEscrow(await mockEscrow.getAddress());
+        // The two prompts open conversations 1 and 2, which the agent accepts only once handed out.
+        await mockEscrow.callReserveConversationId();
+        await mockEscrow.callReserveConversationId();
 
         const receipt = await (await mockEscrow.callSubmitTwoPrompts(user.address)).wait();
 

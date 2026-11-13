@@ -451,6 +451,12 @@ contract SapphireAIAgent is Ownable, AccessControl {
     string calldata _payload
   ) external onlyAIAgentEscrow {
     if (conversationToOwner[_conversationId] == address(0)) {
+      // A new conversation takes an id the counter has already handed out; the escrow reserves
+      // one in this same transaction. Ids are owned by reservation only, and 0 is never one.
+      // solhint-disable-next-line gas-strict-inequalities
+      if (_conversationId == 0 || _conversationId >= conversationIdCounter) {
+        revert Unauthorized();
+      }
       conversationToOwner[_conversationId] = _user;
     } else if (conversationToOwner[_conversationId] != _user) {
       revert Unauthorized();
@@ -464,9 +470,12 @@ contract SapphireAIAgent is Ownable, AccessControl {
   /**
    * @notice Records a user's request to regenerate an answer after payment is secured.
    * @dev This function can only be called by the linked `SapphireAIAgentEscrow` contract. It places a
-   *      lock on the original prompt to prevent multiple simultaneous regenerations.
+   *      lock on the original prompt to prevent multiple simultaneous regenerations. The user must
+   *      own the named conversation and the named prompt; the answer is filed under the named
+   *      conversation.
    * @param _user The address of the user requesting the regeneration.
-   * @param _conversationId The ID of the conversation this regeneration belongs to.
+   * @param _conversationId The ID of the conversation this regeneration belongs to (the answer is
+   *        filed here). May be a branch of the conversation the prompt was first asked in.
    * @param _promptMessageId The ID of the user's prompt being regenerated.
    * @param _originalAnswerMessageId The ID of the AI answer to regenerate from.
    * @param _answerMessageId The unique, pre-reserved ID for the future answer.
@@ -480,15 +489,27 @@ contract SapphireAIAgent is Ownable, AccessControl {
     uint256 _answerMessageId,
     string calldata _payload
   ) external onlyAIAgentEscrow {
+    // The caller must own BOTH the conversation they name and the prompt they name. Message ids
+    // are shared by all conversations, so without the second check a caller could lock another
+    // user's prompt and have an answer filed in that user's conversation. The two conversations
+    // may differ: a branch reuses the ids of the messages it inherited, so a regeneration made
+    // inside a branch names the branch and a prompt that still belongs to the original. An id
+    // nobody has used maps to conversation 0, which has no owner.
+    if (
+      conversationToOwner[_conversationId] != _user ||
+      conversationToOwner[messageToConversation[_promptMessageId]] != _user
+    ) {
+      revert Unauthorized();
+    }
     if (isRegenerationPending[_promptMessageId]) {
       revert RegenerationAlreadyPending();
-    }
-    if (conversationToOwner[_conversationId] != _user) {
-      revert Unauthorized();
     }
 
     isRegenerationPending[_promptMessageId] = true;
     _regenerationLockOf[_answerMessageId] = _promptMessageId + 1;
+    // The answer belongs to the conversation the regeneration was asked in, which `submitAnswer`
+    // reads back; otherwise a regeneration made inside a branch would be filed under the original.
+    messageToConversation[_answerMessageId] = _conversationId;
 
     _recordRequest();
     emit RegenerationRequested(
@@ -546,7 +567,13 @@ contract SapphireAIAgent is Ownable, AccessControl {
       revert AnswerCIDRequired();
     }
 
-    uint256 conversationId = messageToConversation[_promptMessageId];
+    // A regeneration recorded its conversation when it was requested. A first answer has none
+    // yet (nor has a regeneration requested before that was recorded): it takes its prompt's.
+    // Conversation ids start at 1 and 0 can never have an owner, so 0 means "not recorded".
+    uint256 conversationId = messageToConversation[_answerMessageId];
+    if (conversationId == 0) {
+      conversationId = messageToConversation[_promptMessageId];
+    }
 
     if (conversationToOwner[conversationId] == address(0)) {
       revert InvalidPromptMessageId();
@@ -625,7 +652,15 @@ contract SapphireAIAgent is Ownable, AccessControl {
     uint256 _newConversationId,
     string calldata _payload
   ) external onlyAIAgentEscrow {
-    if (conversationToOwner[_originalConversationId] != _user) {
+    // The new id must be free and already handed out by the counter, the same rule as for a
+    // prompt: a branch never takes over a conversation that has an owner.
+    if (
+      conversationToOwner[_originalConversationId] != _user ||
+      conversationToOwner[_newConversationId] != address(0) ||
+      _newConversationId == 0 ||
+      // solhint-disable-next-line gas-strict-inequalities
+      _newConversationId >= conversationIdCounter
+    ) {
       revert Unauthorized();
     }
     conversationToOwner[_newConversationId] = _user;

@@ -34,6 +34,8 @@ describe("Suite 1 — PromptSubmitted Event Parameter Order", function () {
   describe("Event signature and ABI encoding", function () {
     it("should emit PromptSubmitted with correct parameter order: (user, conversationId, promptMessageId, answerMessageId, encryptedPayload, roflEncryptedKey)", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployFixture);
+      // The agent accepts a new conversation only under an id it has handed out, as the escrow does.
+      await mockEscrow.callReserveConversationId();
 
       const conversationId = 1;
       const promptMessageId = 0;

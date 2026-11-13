@@ -125,7 +125,9 @@ describe("EVMAIAgent (Upgradable)", function () {
   describe("Prompt Submission and Ownership", function () {
     it("should assign ownership for a newly reserved conversationId", async function () {
       const { aiAgent, mockEscrow, user } = await loadFixture(deployAgentFixture);
-      const conversationId = 1;
+      // As the escrow does: the agent accepts a new conversation only under an id it has handed out.
+      const conversationId = await mockEscrow.callReserveConversationId.staticCall();
+      await mockEscrow.callReserveConversationId();
       const promptMessageId = 0;
       const answerMessageId = 1;
 
@@ -151,6 +153,7 @@ describe("EVMAIAgent (Upgradable)", function () {
     it("should revert if an unauthorized user tries to use an existing conversation", async function () {
       const { aiAgent, mockEscrow, user, unauthorizedUser } = await loadFixture(deployAgentFixture);
       const conversationId = 1;
+      await mockEscrow.callReserveConversationId();
       const promptMessageId1 = 0;
       const answerMessageId1 = 1;
       await mockEscrow
@@ -216,6 +219,7 @@ describe("EVMAIAgent (Upgradable)", function () {
       it("should submit a full answer for a new prompt in a new conversation", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
         const conversationId = 1;
+        await mockEscrow.callReserveConversationId();
         const promptMessageId = 0;
         const answerMessageId = 1;
         await mockEscrow.callSubmitPrompt(
@@ -254,6 +258,7 @@ describe("EVMAIAgent (Upgradable)", function () {
       it("should submit an answer for a prompt in an existing conversation", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
         const conversationId = 1;
+        await mockEscrow.callReserveConversationId();
 
         const promptMessageId1 = 0;
         const answerMessageId1 = 1;
@@ -312,6 +317,7 @@ describe("EVMAIAgent (Upgradable)", function () {
       it("should submit an answer for a regeneration", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
         const conversationId = 1;
+        await mockEscrow.callReserveConversationId();
         const promptMessageId = 0;
         const originalAnswerMessageId = 1;
 
@@ -391,6 +397,7 @@ describe("EVMAIAgent (Upgradable)", function () {
       it("should revert if submitAnswer is called with an empty answer CID", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
         const conversationId = 1;
+        await mockEscrow.callReserveConversationId();
         const promptMessageId = 0;
         const answerMessageId = 1;
         await mockEscrow.callSubmitPrompt(
@@ -434,6 +441,7 @@ describe("EVMAIAgent (Upgradable)", function () {
       it("should revert if submitAnswer is called for a finalized job", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
         const conversationId = 1;
+        await mockEscrow.callReserveConversationId();
         const promptMessageId = 0;
         const answerMessageId = 1;
         await mockEscrow.callSubmitPrompt(
@@ -461,6 +469,7 @@ describe("EVMAIAgent (Upgradable)", function () {
       it("should revert if a regeneration is requested for a pending prompt", async function () {
         const { aiAgent, mockEscrow, user, oracle } = await loadFixture(deployAgentFixture);
         const conversationId = 1;
+        await mockEscrow.callReserveConversationId();
         const promptMessageId = 0;
         const originalAnswerMessageId = 1;
 
@@ -521,6 +530,7 @@ describe("EVMAIAgent (Upgradable)", function () {
     beforeEach(async function () {
       const fixtures = await loadFixture(deployAgentFixture);
       ({ aiAgent, mockEscrow, user, oracle, unauthorizedUser } = fixtures);
+      await mockEscrow.callReserveConversationId();
       const promptMessageId = 0;
       const answerMessageId = 1;
       await mockEscrow.callSubmitPrompt(
@@ -537,6 +547,8 @@ describe("EVMAIAgent (Upgradable)", function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
       const newConversationId = 2; // Next available conversation ID
+      // The branch takes an id the agent has handed out, as the escrow does.
+      await mockEscrow.callReserveConversationId();
 
       await expect(
         mockEscrow.callSubmitBranchRequest(
@@ -610,6 +622,8 @@ describe("EVMAIAgent (Upgradable)", function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
       const newConversationId = 2;
+      // The branch takes an id the agent has handed out, as the escrow does.
+      await mockEscrow.callReserveConversationId();
       await mockEscrow.callSubmitBranchRequest(
         user.address,
         originalConversationId,
