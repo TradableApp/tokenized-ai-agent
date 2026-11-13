@@ -204,6 +204,16 @@ function behavesLikeAStateStore(setup) {
       expect(await ctx.store.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 1 });
     });
 
+    it("does not let a stray completion erase an exhausted job's record", async () => {
+      await ctx.store.enqueueFailedJob(job());
+      const [claimed] = await ctx.store.claimDueJobs({ limit: 10, leaseMs: MINUTE });
+      await ctx.store.exhaustJob(claimed.id, { error: "gave up" });
+
+      await ctx.store.completeJob(claimed.id);
+
+      expect(await ctx.store.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 1 });
+    });
+
     it("does not queue an exhausted event again if the scan meets it a second time", async () => {
       await ctx.store.enqueueFailedJob(job());
       const [claimed] = await ctx.store.claimDueJobs({ limit: 10, leaseMs: MINUTE });

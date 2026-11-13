@@ -84,6 +84,19 @@ describe("outage tracker", () => {
     expect(alerts).to.have.length(1);
   });
 
+  it("forgets a run of failures on reset, without reporting a recovery", () => {
+    const { tracker, clock, alerts, recoveries } = setup();
+
+    tracker.failure(new Error("down"));
+    tracker.reset();
+    clock.ms += 6 * MINUTE;
+    tracker.failure(new Error("unrelated, later"));
+
+    expect(tracker.isFailing()).to.equal(true);
+    expect(alerts).to.deep.equal([]);
+    expect(recoveries).to.deep.equal([]);
+  });
+
   it("does not let a throwing alert hook escape into the caller", () => {
     const { tracker, clock } = setup({
       onAlert: () => {

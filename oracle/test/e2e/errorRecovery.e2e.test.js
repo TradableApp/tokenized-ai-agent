@@ -324,7 +324,9 @@ describe("E2E: Error Recovery", function () {
         const claim = sinon.spy(stateStore, "claimDueJobs");
 
         const firstPass = aiAgentOracle.retryFailedJobs();
-        for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+        // Wait until the first pass is really holding its job (it has asked for the receipt),
+        // rather than for some number of ticks: file I/O takes as long as it takes.
+        while (!releaseReceipt) await new Promise((resolve) => setImmediate(resolve));
         const claimsBefore = claim.callCount;
         await aiAgentOracle.retryFailedJobs();
 
