@@ -7,24 +7,50 @@ const {
   setupOracleTestEnv,
   cleanupOracleTestEnv,
   makeFakeEvent,
+  txHash,
 } = require("./helpers");
+const { failJobAttempts } = require("../helpers/tempStateStore");
 
 describe("E2E: Error Recovery", function () {
   let aiAgentOracle;
   let stubs;
   let mockedOracleComponents;
+  let stateStore;
+  let stateFiles;
+  // The state store's clock. Frozen per test so "not due yet" and backoff delays are exact.
+  let clock;
   const SESSION_KEY = crypto.randomBytes(32);
+  const BASE_RETRY_DELAY_MS = 30 * 1000;
+  const CONTRACT_TARGET = "0xMockedContractAddress";
 
   beforeEach(() => {
-    ({ aiAgentOracle, stubs, mockedOracleComponents } = setupOracleTestEnv(SESSION_KEY));
+    clock = { ms: Date.parse("2026-11-12T00:00:00Z") };
+    ({ aiAgentOracle, stubs, mockedOracleComponents, stateStore, stateFiles } = setupOracleTestEnv(
+      SESSION_KEY,
+      { now: () => new Date(clock.ms) },
+    ));
   });
 
   afterEach(() => {
     cleanupOracleTestEnv();
   });
 
+  /** Every due job, without holding it (a zero lease leaves it due for the next claim). */
+  const dueJobs = () => stateStore.claimDueJobs({ limit: 100, leaseMs: 0 });
+
+  /** Queue a failed PromptSubmitted the way handleAndRecord does, due now. */
+  const seedJob = (tx, blockNumber, overrides = {}) =>
+    stateStore.enqueueFailedJob({
+      transactionHash: tx,
+      logIndex: 0,
+      eventName: "PromptSubmitted",
+      blockNumber,
+      delayMs: 0,
+      ...overrides,
+    });
+
   describe("Storage Upload Failure → Retry Queue", function () {
-    it("queues Autonomys failures with blockNumber, txHash, and retryCount=0", async function () {
+    it("queues Autonomys failures with blockNumber, txHash, log index and attempts=0", async function () {
       stubs["./storage/storage"].uploadData.rejects(
         new Error("Autonomys network unreachable"),
       );
@@ -36,8 +62,10 @@ describe("E2E: Error Recovery", function () {
         previousMessageCID: null,
       };
       const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
+      const tx = txHash("autonomys");
       const fakeEvent = makeFakeEvent(7000, {
-        transactionHash: "0xautonomystx",
+        transactionHash: tx,
+        index: 4,
         args: ["0xUser", 1, 400, 401, payloadBytes, "0xkey"],
       });
 
@@ -47,21 +75,21 @@ describe("E2E: Error Recovery", function () {
         fakeEvent,
       );
 
-      const failedJobsWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(failedJobsWrite, "failed-jobs.json should be written").to.not.be.undefined;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
 
-      const jobs = JSON.parse(failedJobsWrite.args[1]);
+      // Queued for LATER, not for the very next tick: nothing is due until the base delay passes.
+      expect(await dueJobs(), "the first retry waits the base delay").to.deep.equal([]);
+      clock.ms += BASE_RETRY_DELAY_MS;
+
+      const jobs = await dueJobs();
       expect(jobs).to.have.lengthOf(1);
       expect(jobs[0]).to.deep.include({
         eventName: "PromptSubmitted",
-        retryCount: 0,
+        attempts: 0,
+        blockNumber: 7000,
+        transactionHash: tx,
+        logIndex: 4,
       });
-      expect(jobs[0].event.blockNumber).to.equal(7000);
-      expect(jobs[0].event.transactionHash).to.equal("0xautonomystx");
-      expect(jobs[0].nextAttemptAt).to.be.a("number");
-      expect(jobs[0].nextAttemptAt).to.be.greaterThan(Date.now());
     });
 
     it("queues Irys 502 errors as retryable", async function () {
@@ -76,7 +104,6 @@ describe("E2E: Error Recovery", function () {
         ),
       );
       const fakeEvent = makeFakeEvent(7001, {
-        transactionHash: "0xirystx",
         args: ["0xUser", 1, 402, 403, payloadBytes, "0xkey"],
       });
 
@@ -86,10 +113,10 @@ describe("E2E: Error Recovery", function () {
         fakeEvent,
       );
 
-      const failedJobsWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(failedJobsWrite, "Irys failure should be queued").to.not.be.undefined;
+      expect(
+        await stateStore.countFailedJobs(),
+        "Irys failure should be queued",
+      ).to.deep.equal({ pending: 1, exhausted: 0 });
     });
 
     it("queues ETIMEDOUT storage errors as retryable", async function () {
@@ -104,7 +131,6 @@ describe("E2E: Error Recovery", function () {
         ),
       );
       const fakeEvent = makeFakeEvent(7002, {
-        transactionHash: "0xtimeouttx",
         args: ["0xUser", 1, 404, 405, payloadBytes, "0xkey"],
       });
 
@@ -114,12 +140,9 @@ describe("E2E: Error Recovery", function () {
         fakeEvent,
       );
 
-      const failedJobsWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(failedJobsWrite, "ETIMEDOUT should be queued").to.not.be.undefined;
-
-      const jobs = JSON.parse(failedJobsWrite.args[1]);
+      clock.ms += BASE_RETRY_DELAY_MS;
+      const jobs = await dueJobs();
+      expect(jobs, "ETIMEDOUT should be queued").to.have.lengthOf(1);
       expect(jobs[0].eventName).to.equal("PromptSubmitted");
     });
   });
@@ -136,11 +159,13 @@ describe("E2E: Error Recovery", function () {
         ),
       );
 
+      const tx = txHash("retry");
       const fakeReceipt = {
         blockNumber: 7000,
         logs: [{
-          address: "0xMockedContractAddress",
-          transactionHash: "0xretrytx",
+          address: CONTRACT_TARGET,
+          index: 0,
+          transactionHash: tx,
           topics: ["0xfaketopic"],
           data: "0x",
         }],
@@ -153,97 +178,50 @@ describe("E2E: Error Recovery", function () {
         args: fakeArgs,
       });
 
-      const failedJobs = [{
-        eventName: "PromptSubmitted",
-        event: {
-          args: fakeArgs.map((a) => (typeof a === "object" ? "0x" : a)),
-          blockNumber: 7000,
-          transactionHash: "0xretrytx",
-        },
-        retryCount: 0,
-        nextAttemptAt: 0,
-      }];
-
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/), "utf-8")
-        .resolves(JSON.stringify(failedJobs));
+      await seedJob(tx, 7000);
 
       await aiAgentOracle.retryFailedJobs();
 
-      const writeCall = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(writeCall, "failed-jobs.json should be rewritten").to.not.be.undefined;
-
-      const remaining = JSON.parse(writeCall.args[1]);
-      expect(remaining).to.be.an("array").with.lengthOf(0);
+      expect(mockedOracleComponents.provider.getTransactionReceipt.calledOnceWith(tx)).to.be.true;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
 
-    it("increments retryCount and applies exponential backoff on failure", async function () {
-      const clock = sinon.useFakeTimers(Date.now());
-
+    it("increments attempts and applies exponential backoff on failure", async function () {
       mockedOracleComponents.provider.getTransactionReceipt.rejects(
         new Error("RPC temporarily unavailable"),
       );
 
-      const failedJobs = [{
-        eventName: "PromptSubmitted",
-        event: {
-          args: ["0xUser", 1, 600, 601, "0x", "0xkey"],
-          blockNumber: 8000,
-          transactionHash: "0xbackofftx",
-        },
-        retryCount: 2,
-        nextAttemptAt: 0,
-      }];
-
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/), "utf-8")
-        .resolves(JSON.stringify(failedJobs));
+      await seedJob(txHash("backoff"), 8000);
+      await failJobAttempts(stateStore, 2);
 
       await aiAgentOracle.retryFailedJobs();
 
-      const writeCall = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      const remaining = JSON.parse(writeCall.args[1]);
-      expect(remaining).to.have.lengthOf(1);
-      expect(remaining[0].retryCount).to.equal(3);
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
 
-      // base 30s * 2^3 = 240s = 240000ms — deterministic with frozen clock
-      const expectedDelay = 30000 * Math.pow(2, 3);
-      expect(remaining[0].nextAttemptAt).to.equal(clock.now + expectedDelay);
-
-      clock.restore();
+      // base 30s * 2^3 = 240s — exact, because the store's clock is frozen
+      const expectedDelay = BASE_RETRY_DELAY_MS * Math.pow(2, 3);
+      clock.ms += expectedDelay - 1;
+      expect(await dueJobs(), "not due a millisecond early").to.deep.equal([]);
+      clock.ms += 1;
+      const [job] = await dueJobs();
+      expect(job.attempts).to.equal(3);
+      expect(job.lastError).to.include("RPC temporarily unavailable");
     });
 
-    it("drops job and sends CRITICAL alert after 10 retries exhausted", async function () {
+    it("keeps the job as exhausted and sends CRITICAL alert after 10 retries", async function () {
       mockedOracleComponents.provider.getTransactionReceipt.rejects(
         new Error("Permanently broken RPC"),
       );
 
-      const failedJobs = [{
-        eventName: "PromptSubmitted",
-        event: {
-          args: ["0xUser", 1, 700, 701, "0x", "0xkey"],
-          blockNumber: 9000,
-          transactionHash: "0xmaxtx",
-        },
-        retryCount: 9,
-        nextAttemptAt: 0,
-      }];
-
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/), "utf-8")
-        .resolves(JSON.stringify(failedJobs));
+      await seedJob(txHash("max"), 9000);
+      await failJobAttempts(stateStore, 9);
 
       await aiAgentOracle.retryFailedJobs();
 
-      const writeCall = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      const remaining = JSON.parse(writeCall.args[1]);
-      expect(remaining).to.have.lengthOf(0);
+      // Kept on record for a person to look at — no longer dropped — but never handed out again.
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 1 });
+      clock.ms += 365 * 24 * 60 * 60 * 1000;
+      expect(await dueJobs(), "an exhausted job is never retried").to.deep.equal([]);
 
       expect(stubs["./alerting"].sendAlert.calledOnce).to.be.true;
       expect(stubs["./alerting"].sendAlert.firstCall.args[0]).to.include("CRITICAL");
@@ -251,28 +229,16 @@ describe("E2E: Error Recovery", function () {
     });
 
     it("leaves jobs in queue that are not yet due for retry", async function () {
-      const failedJobs = [{
-        eventName: "PromptSubmitted",
-        event: {
-          args: ["0xUser", 1, 800, 801, "0x", "0xkey"],
-          blockNumber: 9500,
-          transactionHash: "0xnotyettx",
-        },
-        retryCount: 1,
-        nextAttemptAt: Date.now() + 60000,
-      }];
-
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/), "utf-8")
-        .resolves(JSON.stringify(failedJobs));
+      await seedJob(txHash("notyet"), 9500, { delayMs: 60000 });
 
       await aiAgentOracle.retryFailedJobs();
 
-      // No writes — nothing was processed
-      const writeCall = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(writeCall).to.be.undefined;
+      // Nothing was attempted, and the job is untouched
+      expect(mockedOracleComponents.provider.getTransactionReceipt.called).to.be.false;
+      clock.ms += 60000;
+      const jobs = await dueJobs();
+      expect(jobs).to.have.lengthOf(1);
+      expect(jobs[0].attempts).to.equal(0);
     });
   });
 
@@ -289,7 +255,6 @@ describe("E2E: Error Recovery", function () {
         ),
       );
       const fakeEvent = makeFakeEvent(9800, {
-        transactionHash: "0xreverttx",
         args: ["0xUser", 1, 900, 901, payloadBytes, "0xkey"],
       });
 
@@ -302,42 +267,60 @@ describe("E2E: Error Recovery", function () {
       expect(stubs["./alerting"].sendAlert.calledOnce).to.be.true;
 
       // Not queued to retry
-      const failedJobsWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(failedJobsWrite).to.be.undefined;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
   });
 
+  // The file backend is still what localnet and e2e run on, and it reads a file other processes
+  // (or an older oracle version) may have left in any state.
   describe("Failed Jobs File Resilience", function () {
-    it("treats empty object {} in failed-jobs.json as no jobs", async function () {
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/), "utf-8")
-        .resolves("{}");
+    const fs = require("node:fs");
 
+    async function expectNoRetryAttempted() {
       await aiAgentOracle.retryFailedJobs();
+      expect(mockedOracleComponents.provider.getTransactionReceipt.called).to.be.false;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+    }
 
-      const writeCall = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(writeCall).to.be.undefined;
+    it("treats empty object {} in failed-jobs.json as no jobs", async function () {
+      fs.writeFileSync(stateFiles.jobsPath, "{}");
+      await expectNoRetryAttempted();
     });
 
     it("handles missing failed-jobs.json without throwing", async function () {
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/), "utf-8")
-        .rejects(new Error("ENOENT: no such file or directory"));
-
-      await aiAgentOracle.retryFailedJobs();
-      // No assertion needed — test passes if no exception thrown
+      expect(fs.existsSync(stateFiles.jobsPath)).to.be.false;
+      await expectNoRetryAttempted();
     });
 
     it("handles corrupt JSON in failed-jobs.json without throwing", async function () {
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/), "utf-8")
-        .resolves("{not valid json!!!");
+      fs.writeFileSync(stateFiles.jobsPath, "{not valid json!!!");
+      await expectNoRetryAttempted();
+    });
+
+    it("ignores entries in the old pre-store format rather than retrying them blind", async function () {
+      // The previous oracle wrote `{ eventName, event: {...}, retryCount, nextAttemptAt }` with
+      // no log index, which the retry can no longer pin to one log in the receipt.
+      fs.writeFileSync(
+        stateFiles.jobsPath,
+        JSON.stringify([{
+          eventName: "PromptSubmitted",
+          event: { args: [], blockNumber: 9000, transactionHash: txHash("legacy") },
+          retryCount: 0,
+          nextAttemptAt: 0,
+        }]),
+      );
+      await expectNoRetryAttempted();
+    });
+
+    it("does not throw when the queue cannot be read at all", async function () {
+      aiAgentOracle.initForTest({
+        ...mockedOracleComponents,
+        stateStore: { ...stateStore, claimDueJobs: sinon.stub().rejects(new Error("db down")) },
+      });
 
       await aiAgentOracle.retryFailedJobs();
+
+      expect(mockedOracleComponents.provider.getTransactionReceipt.called).to.be.false;
     });
   });
 });

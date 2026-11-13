@@ -2,6 +2,9 @@ const sinon = require("sinon");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 const proxyquire = require("proxyquire").noCallThru();
+const realStateStore = require("../../src/oracleState/store");
+const realStateRuntime = require("../../src/oracleState/runtime");
+const { createTempStateStore, txHash } = require("../helpers/tempStateStore");
 
 function createEncryptedString(dataObject, key) {
   const iv = crypto.randomBytes(12);
@@ -85,10 +88,6 @@ function createStubs(sessionKey) {
         }),
       text: () => Promise.resolve("Mocked AI Response"),
     }),
-    "fs/promises": {
-      writeFile: sinon.stub().resolves(),
-      readFile: sinon.stub().rejects(new Error("File not found")),
-    },
     "./ecies": {
       eciesDecrypt: sinon.stub().resolves(sessionKey),
       eciesEncrypt: sinon.stub().resolves(encryptedKey),
@@ -143,7 +142,15 @@ function createStubs(sessionKey) {
 /** Captured so cleanup can restore rather than delete — see cleanupOracleTestEnv. */
 let originalAgentAddress;
 
-function setupOracleTestEnv(sessionKey) {
+/** This test's state store; its temp directory is removed by cleanupOracleTestEnv. */
+let activeTempStore = null;
+
+/**
+ * @param {Buffer} sessionKey
+ * @param {{ now?: () => Date }} [options] `now` is the state store's clock, for tests that
+ *   assert when a failed job next becomes due
+ */
+function setupOracleTestEnv(sessionKey, { now } = {}) {
   const randomWallet = ethers.Wallet.createRandom();
   process.env.PRIVATE_KEY = randomWallet.privateKey;
   // .env.oracle.example ships "0xYourAIAgentAddressHere" and start()'s config guard rejects it
@@ -157,14 +164,36 @@ function setupOracleTestEnv(sessionKey) {
   const stubs = createStubs(sessionKey);
   stubs["./contractUtility"].initializeOracle.returns(mockedOracleComponents);
 
+  // Each test gets its own real file store in a temp directory. The oracle points two stores at
+  // oracle/oracle-state.json: its module-level default, and the one start() builds through
+  // createStateStore. Both are redirected — the runtime stub keeps the real backend selection
+  // but swaps in the temp paths — so a restart in a test reads back what the previous start
+  // wrote, and nothing lands in the repo.
+  activeTempStore = createTempStateStore({ now });
+  const { statePath, jobsPath } = activeTempStore;
+  const tempStore = activeTempStore.store;
+  stubs["./oracleState/store"] = { ...realStateStore, createFileStateStore: () => tempStore };
+  stubs["./oracleState/runtime"] = {
+    ...realStateRuntime,
+    createStateStore: sinon.spy((options) =>
+      realStateRuntime.createStateStore({ ...options, statePath, jobsPath }),
+    ),
+  };
+
   sinon.stub(global, "setInterval");
 
   const aiAgentOracle = proxyquire("../../src/aiAgentOracle", stubs);
-  aiAgentOracle.initForTest(mockedOracleComponents);
+  aiAgentOracle.initForTest({ ...mockedOracleComponents, stateStore: tempStore });
   sinon.stub(global, "fetch").callsFake((...args) => stubs["node-fetch"](...args));
   delete process.env.CHAIN_GPT_API_KEY;
 
-  return { aiAgentOracle, stubs, mockedOracleComponents };
+  return {
+    aiAgentOracle,
+    stubs,
+    mockedOracleComponents,
+    stateStore: tempStore,
+    stateFiles: { statePath, jobsPath },
+  };
 }
 
 function cleanupOracleTestEnv() {
@@ -178,11 +207,22 @@ function cleanupOracleTestEnv() {
   else process.env.AI_AGENT_CONTRACT_ADDRESS = originalAgentAddress;
   delete process.env.CHAIN_GPT_API_KEY;
   delete process.env.EVENT_BATCH_SIZE;
+  if (activeTempStore) {
+    activeTempStore.cleanup();
+    activeTempStore = null;
+  }
 }
 
+/**
+ * An event shaped like the ones ethers hands the poll loop. The transaction hash and log index
+ * are what the failed-job queue stores, so they must be realistic: a 0x + 64-hex hash (derived
+ * from the block, so distinct events get distinct hashes) and an `index`. Overrides win.
+ */
 function makeFakeEvent(blockNumber, extras = {}) {
   return {
     blockNumber,
+    transactionHash: txHash(`block-${blockNumber}`),
+    index: 0,
     getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
     ...extras,
   };
@@ -195,4 +235,5 @@ module.exports = {
   setupOracleTestEnv,
   cleanupOracleTestEnv,
   makeFakeEvent,
+  txHash,
 };

@@ -22,6 +22,8 @@
 // real agent exists (@elizaos/server AgentServer.initialize).
 const SERVER_AGENT_ID = "00000000-0000-0000-0000-000000000000";
 
+const { oracleStatePlugin } = require("./oracleState/schema");
+
 function defaultLoadSqlPlugin() {
   // Dynamic import: @elizaos/plugin-sql ships as ESM; the oracle is CommonJS.
   return import("@elizaos/plugin-sql");
@@ -91,7 +93,9 @@ async function runServerLevelMigrations(options = {}) {
 
   const migrationService = new DatabaseMigrationService();
   await migrationService.initializeWithDatabase(db);
-  migrationService.discoverAndRegisterPluginSchemas([sqlPlugin]);
+  // The oracle's own tables (chain cursor, failed-job queue) are created in the same run, in
+  // their own `oracle_state` schema — see oracleState/schema.js.
+  migrationService.discoverAndRegisterPluginSchemas([sqlPlugin, oracleStatePlugin]);
   await migrationService.runAllPluginMigrations();
 
   // DO NOT add `await adapter.close()` here — it would break the boot.

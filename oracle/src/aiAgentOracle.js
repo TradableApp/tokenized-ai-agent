@@ -3,7 +3,6 @@ const dotenv = require("dotenv");
 const { eciesEncrypt, eciesDecrypt, publicKeyFromPrivateKey } = require("./ecies");
 const { ethers } = require("ethers");
 const path = require("path");
-const fs = require("fs/promises");
 const { v5: uuidv5 } = require("uuid");
 const crypto = require("crypto");
 const { default: PQueue } = require("p-queue");
@@ -33,7 +32,6 @@ const {
   createConversationMetadataFile,
   createMessageFile,
   createSearchIndexDeltaFile,
-  jsonReplacer,
 } = require("./formatters");
 const { BadInputError, isBadInputError, isRetryableError } = require("./errors");
 const { submitTx } = require("./roflUtility");
@@ -41,6 +39,8 @@ const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { reconcileCursor } = require("./blockCursor");
+const { createFileStateStore } = require("./oracleState/store");
+const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 
 // --- Configuration & Initialization ---
 
@@ -56,52 +56,39 @@ const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
 const FAILED_JOBS_FILE_PATH = path.resolve(__dirname, "../failed-jobs.json");
 
 /**
- * The chain cursor, held in memory and mirrored to disk.
+ * Where the cursor and the failed-job queue are kept (see oracleState/store.js).
+ *
+ * Starts as the file backend so anything that runs before `start()` — and every test that never
+ * calls it — has a working store. `start()` replaces it with the Postgres backend when the oracle
+ * has its own agent database; the files do not survive a restart or a storage-wiping deploy
+ * (tokenized-ai-agent #114).
+ */
+let stateStore = createFileStateStore({
+  statePath: STATE_FILE_PATH,
+  jobsPath: FAILED_JOBS_FILE_PATH,
+});
+
+/**
+ * The chain cursor, held in memory and mirrored to the state store.
  *
  * WHY IN MEMORY AT ALL. The heartbeat (CU-86d438hwt) reports `lastProcessedBlock` and the lag
  * behind head — a stalled listener means paid prompts go unanswered, so it is the most
- * actionable figure it carries. It used to read oracle-state.json to get it, and this loop
- * rewrites that file every few seconds with `fs.writeFile`, which TRUNCATES before writing. A
- * read landing in that window returns "", JSON.parse throws, and the field silently blanks.
- * Observed on 2026-08-22: beat 1 null, beat 2 fine, no code change between them.
+ * actionable figure it carries. Reading it back from storage on every beat raced the writer
+ * (observed on 2026-08-22: beat 1 null, beat 2 fine, no code change between them). Reading
+ * memory removes the race.
  *
- * Atomic write-and-rename would only shrink the window. Reading memory removes it.
- *
- * ONE writer for both copies, deliberately: six call sites used to write the file directly, and
- * any that skipped the in-memory update would leave a stale cursor reporting a growing lag for a
- * healthy oracle. `test/cursorPersistence.test.js` fails if a raw write reappears.
+ * ONE writer for both copies, deliberately: `persistCursor` moves it forward, `rewindCursor`
+ * moves it back, and nothing else touches the store's cursor. `test/cursorPersistence.test.js`
+ * fails if a raw write reappears.
  */
 let lastProcessedBlockInMemory = null;
-
-/**
- * Read `failed-jobs.json`, tolerating the file being absent or malformed.
- *
- * It is only written once a job has actually FAILED, so on a healthy oracle it does not exist.
- * The retry loop has always treated that as `[]`; the heartbeat originally used a bare
- * `JSON.parse(await fs.readFile(...))`, so ENOENT threw, the vitals `safe()` degraded it, and
- * `failedJobsCount` reported null on all three beats of the 2026-08-22 Base-testnet run — a
- * perfectly healthy oracle reading as "unknown" for the one number that should say a confident 0.
- * "No failures" must never look the same as "cannot tell".
- *
- * `readFile` is injectable so the behaviour can be tested without touching the disk.
- *
- * @returns {Promise<Array>} the failed jobs, or [] if the file is missing/corrupt/not an array
- */
-async function readFailedJobsList(readFile = () => fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8")) {
-  try {
-    const parsed = JSON.parse(await readFile());
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
 
 /** Current cursor, or null before the first persist. Read by the heartbeat's vitals collector. */
 function getLastProcessedBlock() {
   return lastProcessedBlockInMemory;
 }
 
-async function persistCursor(blockNumber) {
+function toCursorBlock(blockNumber, caller) {
   const n = Number(blockNumber);
 
   // Reject garbage loudly rather than writing it. A NaN or undefined here would corrupt the
@@ -109,18 +96,76 @@ async function persistCursor(blockNumber) {
   // ethers, so a non-finite value is a programming error worth surfacing — not a runtime
   // condition to absorb. Each call site sits inside the poll loop's try/catch, which logs.
   if (!Number.isFinite(n)) {
-    throw new TypeError(`persistCursor: expected a finite block number, got ${blockNumber}`);
+    throw new TypeError(`${caller}: expected a finite block number, got ${blockNumber}`);
   }
+  return n;
+}
 
+// A database outage would otherwise log the same line on every poll tick.
+const CURSOR_WRITE_ERROR_LOG_INTERVAL_MS = 60 * 1000;
+let lastCursorWriteErrorLoggedAt = 0;
+
+/**
+ * A cursor write that failed must NOT stop the oracle: the events of that block have already been
+ * handled or queued, and throwing here would send the poll loop back over them. The cost of a
+ * stale stored cursor is only paid on the next restart, as a longer catch-up scan — every
+ * handler already tolerates meeting an event twice. Memory keeps the true value, so the
+ * heartbeat stays right and the next successful write catches the store up.
+ */
+function reportCursorWriteFailure(error, block) {
+  const now = Date.now();
+  if (now - lastCursorWriteErrorLoggedAt < CURSOR_WRITE_ERROR_LOG_INTERVAL_MS) return;
+  lastCursorWriteErrorLoggedAt = now;
+  console.error(
+    `[OracleState] Could not store cursor ${block}; continuing with it in memory. Error: ${error.message}`,
+  );
+  Sentry.captureException(error, { tags: { site: "cursor_write_failed", blockNumber: block } });
+}
+
+/** Move the cursor FORWARD. A lower block than the current one is ignored (never an error). */
+async function persistCursor(blockNumber) {
+  const n = toCursorBlock(blockNumber, "persistCursor");
+
+  // Handlers finish out of order, so one can report an older block after the loop has moved on.
+  if (lastProcessedBlockInMemory !== null && n < lastProcessedBlockInMemory) return;
   lastProcessedBlockInMemory = n;
 
-  // Write the SAME coerced value that went into memory. Writing the raw argument instead lets the
-  // two copies disagree — and a BigInt (which ethers can hand back) would throw inside
-  // JSON.stringify after the in-memory cursor had already advanced, leaving a silently stale file.
-  await fs.writeFile(STATE_FILE_PATH, JSON.stringify({ lastProcessedBlock: n }));
+  try {
+    await stateStore.advanceCursor(n);
+  } catch (error) {
+    reportCursorWriteFailure(error, n);
+  }
+}
+
+/** Move the cursor BACK. Only the reorg path may: the blocks it had passed no longer exist. */
+async function rewindCursor(blockNumber) {
+  const n = toCursorBlock(blockNumber, "rewindCursor");
+  lastProcessedBlockInMemory = n;
+
+  try {
+    await stateStore.rewindCursor(n);
+  } catch (error) {
+    reportCursorWriteFailure(error, n);
+  }
+}
+
+/**
+ * How many failed jobs the oracle is carrying, for the heartbeat: waiting for a retry plus given
+ * up on. Throws when the store cannot be read, and the vitals collector turns that into "unknown"
+ * — "no failures" must never look the same as "cannot tell".
+ *
+ * @returns {Promise<number>}
+ */
+async function countFailedJobs(store = stateStore) {
+  const { pending, exhausted } = await store.countFailedJobs();
+  return pending + exhausted;
 }
 const AI_CONTEXT_MESSAGES_LIMIT = parseInt(process.env.AI_CONTEXT_MESSAGES_LIMIT) || 20;
 const RETRY_INTERVAL_MS = 60 * 1000; // Check for failed jobs every 60 seconds
+const RETRY_BATCH_LIMIT = 20; // Failed jobs taken per check
+// How long a claimed job is held before another check (or another oracle) may take it. Longer
+// than the slowest answer, so a retry still running is not started a second time.
+const RETRY_LEASE_MS = 15 * 60 * 1000;
 const MAX_RETRIES = 10;
 const BASE_RETRY_DELAY_MS = 30 * 1000; // Start with a 30-second delay
 const NETWORK_NAME = process.env.NETWORK_NAME;
@@ -194,6 +239,11 @@ function initForTest(testComponents) {
   signer = testComponents.signer;
   contract = testComponents.contract;
   isSapphire = testComponents.isSapphire;
+  if (testComponents.stateStore) {
+    stateStore = testComponents.stateStore;
+    lastProcessedBlockInMemory = null;
+    lastCursorWriteErrorLoggedAt = 0;
+  }
 }
 
 // --- CONCURRENCY & MEMORY CONTROL ---
@@ -238,6 +288,10 @@ const runProvenance = createRunProvenance();
 // what it says: this runtime is wired, any other one is not.
 let provenanceHandlersRuntime = null;
 let senseAiAgentId = null;
+
+// The Postgres url the agent schema — and with it the oracle-state tables — was migrated on;
+// null where the oracle runs without Postgres. Set by initializeEliza, read by start().
+let agentStateDbUrl = null;
 
 /**
  * Point ElizaOS `plugin-sql` at the oracle's OWN isolated Postgres database
@@ -357,6 +411,7 @@ async function initializeEliza() {
     postgresUrl: agentDbUrl ?? process.env.POSTGRES_URL,
     expectDatabase,
   });
+  agentStateDbUrl = (agentDbUrl ?? process.env.POSTGRES_URL) || null;
 
   // Create the orchestrator
   elizaOS = new ElizaOS();
@@ -2228,39 +2283,19 @@ async function handleAndRecord(eventName, handler, ...args) {
         `Encountered a retryable error for ${eventName}. Adding to retry queue. Error: ${error.message}`,
       );
 
-      let failedJobs = [];
-      try {
-        const fileContent = await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8");
-
-        const parsed = JSON.parse(fileContent);
-
-        // Ensure what we read is actually an array. If it's {}, treat as [].
-        if (Array.isArray(parsed)) {
-          failedJobs = parsed;
-        }
-      } catch (e) {
-        /* File doesn't exist or is corrupt, start with empty array */
-      }
-
-      failedJobs.push({
+      // A pointer to the event, not a copy of it: the retry re-reads the receipt. Queuing the same
+      // event twice (a catch-up scan meeting it again) is a no-op.
+      await stateStore.enqueueFailedJob({
+        transactionHash: event.transactionHash,
+        logIndex: event.index,
         eventName,
-        event: {
-          args: event.args,
-          blockNumber: event.blockNumber,
-          transactionHash: event.transactionHash,
-        },
-        retryCount: 0,
-        nextAttemptAt: Date.now() + BASE_RETRY_DELAY_MS,
+        blockNumber: event.blockNumber,
+        delayMs: BASE_RETRY_DELAY_MS,
       });
-
-      // jsonReplacer is REQUIRED here, not defensive: `event.args` is an ethers v6 Result whose
-      // uint256 fields are BigInt, and JSON.stringify throws on those. Without it this write
-      // threw, so neither the queue write nor the persistCursor below ever ran.
-      await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(failedJobs, jsonReplacer, 2));
 
       // Only NOW is the block progress safe to save: the job is durably queued, so advancing the
       // cursor hands responsibility to the retry loop rather than dropping the event. If the
-      // write above throws, this is correctly skipped and the catch-up scanner sees the event
+      // enqueue above throws, this is correctly skipped and the catch-up scanner sees the event
       // again — which is why the write must come first.
       await persistCursor(event.blockNumber);
     } else {
@@ -2276,142 +2311,117 @@ async function handleAndRecord(eventName, handler, ...args) {
 }
 
 /**
- * Periodically checks for and retries failed jobs from a persistent queue file.
- * Uses exponential backoff to space out retries.
+ * Re-read a failed job's event from its transaction receipt — the chain is the source of truth,
+ * the queue only holds a pointer — and shape it like the events the poll loop hands to handlers.
  */
-async function retryFailedJobs() {
-  let failedJobs = [];
-  try {
-    const fileContent = await fs.readFile(FAILED_JOBS_FILE_PATH, "utf-8");
+async function loadEventForRetry(job) {
+  const receipt = await provider.getTransactionReceipt(job.transactionHash);
 
-    const parsed = JSON.parse(fileContent);
-    // Ensure failedJobs is iterable (Array). If it's an object {}, ignore it.
-    if (Array.isArray(parsed)) {
-      failedJobs = parsed;
-    } else {
-      // If the file contains {}, we treat it as empty.
-      // We don't write back immediately to avoid disk thrashing,
-      // but the next write will correct the file format.
-      failedJobs = [];
-    }
-  } catch (e) {
-    return; // No failed jobs file, nothing to do.
+  if (!receipt) {
+    throw new Error(`Could not find transaction receipt for hash ${job.transactionHash}`);
   }
 
-  if (failedJobs.length === 0) return;
+  const contractAddress = contract.target.toLowerCase();
+  let parsed = null;
+  for (const log of receipt.logs) {
+    // The log index pins the exact event: one transaction can carry several of the same name.
+    if (log.index !== job.logIndex || log.address.toLowerCase() !== contractAddress) continue;
+    try {
+      parsed = contract.interface.parseLog(log);
+    } catch (e) {
+      parsed = null;
+    }
+    break;
+  }
 
-  console.log(`[Retry] Checking ${failedJobs.length} failed job(s)...`);
-  const remainingJobs = [];
-  let processed = false;
-  for (const job of failedJobs) {
-    if (Date.now() >= job.nextAttemptAt) {
-      // An attempt is being made, so we know the file will need to be updated
-      processed = true;
+  if (!parsed || parsed.name !== job.eventName) {
+    throw new Error(`Could not re-parse event '${job.eventName}' from transaction receipt.`);
+  }
 
-      console.log(
-        `[Retry] Retrying job for event: ${job.eventName} from block ${job.event.blockNumber}`,
+  return {
+    args: parsed.args,
+    transactionHash: job.transactionHash,
+    index: job.logIndex,
+    blockNumber: receipt.blockNumber,
+    getBlock: () => provider.getBlock(receipt.blockNumber),
+  };
+}
+
+const RETRY_HANDLERS = {
+  PromptSubmitted: (...args) => handlePrompt(...args),
+  RegenerationRequested: (...args) => handleRegeneration(...args),
+  BranchRequested: (...args) => handleBranch(...args),
+  MetadataUpdateRequested: (...args) => handleMetadataUpdate(...args),
+};
+
+/**
+ * Periodically retries failed jobs from the state store, with exponential backoff.
+ *
+ * Each due job is CLAIMED first (leased for RETRY_LEASE_MS), so a slow retry is not started a
+ * second time by the next tick or by another oracle. Then exactly one of three things happens to
+ * it: it worked and is removed; it failed and is rescheduled; it failed for the last time and is
+ * kept on record as exhausted, with an alert.
+ */
+async function retryFailedJobs() {
+  let dueJobs;
+  try {
+    dueJobs = await stateStore.claimDueJobs({ limit: RETRY_BATCH_LIMIT, leaseMs: RETRY_LEASE_MS });
+  } catch (error) {
+    // The queue cannot be read right now. The jobs are still there; the next tick tries again.
+    console.error(`[Retry] Could not read the failed-job queue: ${error.message}`);
+    return;
+  }
+
+  if (dueJobs.length === 0) return;
+
+  console.log(`[Retry] Retrying ${dueJobs.length} failed job(s)...`);
+  for (const job of dueJobs) {
+    console.log(`[Retry] Retrying job for event: ${job.eventName} from block ${job.blockNumber}`);
+    try {
+      const handler = RETRY_HANDLERS[job.eventName];
+      if (!handler) {
+        throw new Error(`No handler for event '${job.eventName}'.`);
+      }
+
+      const event = await loadEventForRetry(job);
+
+      // Retries share the concurrency queue with fresh events.
+      await queue.add(() => handler(...event.args, event));
+
+      await stateStore.completeJob(job.id);
+      console.log(`[Retry] Job succeeded and was removed from the queue.`);
+    } catch (error) {
+      const attempt = job.attempts + 1;
+      console.error(
+        `[Retry] Attempt #${attempt} failed for event ${job.eventName}. Error: ${error.message}`,
       );
+
       try {
-        // Re-fetch the full event object to pass to the handler
-        const receipt = await provider.getTransactionReceipt(job.event.transactionHash);
-
-        if (!receipt) {
-          throw new Error(
-            `Could not find transaction receipt for hash ${job.event.transactionHash}`,
-          );
-        }
-
-        const fullEvent = receipt.logs
-          .map((log) => {
-            try {
-              if (log.address.toLowerCase() === contract.target.toLowerCase()) {
-                // Return a combined object that includes the transactionHash for the find filter
-                const parsed = contract.interface.parseLog(log);
-                if (parsed) {
-                  return { ...parsed, transactionHash: log.transactionHash };
-                }
-              }
-              return null;
-            } catch (e) {
-              return null;
-            }
-          })
-          .find(
-            (parsedLog) =>
-              parsedLog &&
-              parsedLog.name === job.eventName &&
-              parsedLog.transactionHash === job.event.transactionHash,
-          );
-
-        if (!fullEvent) {
-          throw new Error(`Could not re-parse event '${job.eventName}' from transaction receipt.`);
-        }
-
-        const eventWithBlock = {
-          ...fullEvent,
-          blockNumber: receipt.blockNumber,
-          getBlock: () => provider.getBlock(receipt.blockNumber),
-        };
-
-        // Add the retry to the concurrency queue as well
-        await queue.add(async () => {
-          switch (job.eventName) {
-            case "PromptSubmitted":
-              await handlePrompt(...eventWithBlock.args, eventWithBlock);
-
-              break;
-            case "RegenerationRequested":
-              await handleRegeneration(...eventWithBlock.args, eventWithBlock);
-
-              break;
-            case "BranchRequested":
-              await handleBranch(...eventWithBlock.args, eventWithBlock);
-
-              break;
-            case "MetadataUpdateRequested":
-              await handleMetadataUpdate(...eventWithBlock.args, eventWithBlock);
-
-              break;
-          }
-        });
-        console.log(`[Retry] Successfully re-queued job.`);
-        // On success, we DON'T add it to remainingJobs, so it's removed from the queue.
-      } catch (error) {
-        console.error(
-          `[Retry] Attempt #${job.retryCount + 1} failed for event ${job.eventName}. Error: ${error.message}`,
-        );
-
-        job.retryCount += 1;
-        if (job.retryCount >= MAX_RETRIES) {
+        if (attempt >= MAX_RETRIES) {
+          await stateStore.exhaustJob(job.id, { error });
           Sentry.captureException(error, {
             tags: {
               site: "retry_permanent_failure",
               eventName: job.eventName,
-              blockNumber: job.event.blockNumber,
+              blockNumber: job.blockNumber,
             },
           });
           await sendAlert(
             "CRITICAL: Job Failed Permanently",
-            `A job for event ${job.eventName} from block ${job.event.blockNumber} has failed all ${MAX_RETRIES} retries and has been dropped. Manual intervention required. Final error: ${error.message}`,
+            `A job for event ${job.eventName} from block ${job.blockNumber} (tx ${job.transactionHash}) has failed all ${MAX_RETRIES} retries and will not be retried again. It stays on record as exhausted. Manual intervention required. Final error: ${error.message}`,
           );
-          // On permanent failure, we also DON'T add it to remainingJobs.
         } else {
-          const delay = BASE_RETRY_DELAY_MS * Math.pow(2, job.retryCount);
-          job.nextAttemptAt = Date.now() + delay;
-          remainingJobs.push(job); // Add it back to the queue for the next attempt
+          const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
+          await stateStore.rescheduleJob(job.id, { delayMs, error });
         }
+      } catch (storeError) {
+        // The outcome could not be recorded. The job keeps its lease and comes back when that
+        // runs out, with this attempt uncounted — a retry too many, never a job lost.
+        console.error(
+          `[Retry] Could not record the failed attempt for ${job.eventName} (tx ${job.transactionHash}): ${storeError.message}`,
+        );
       }
-    } else {
-      remainingJobs.push(job); // Not time to retry yet, keep it in the queue
     }
-  }
-
-  // If we processed any jobs, this means the queue has changed (either by removing a job
-  // or by updating its retry count), so we must write the new state back to the file.
-  if (processed) {
-    // Same replacer as the enqueue path. These jobs were read back from JSON so are already
-    // BigInt-free today, but the two writes must not disagree about how a job serialises.
-    await fs.writeFile(FAILED_JOBS_FILE_PATH, JSON.stringify(remainingJobs, jsonReplacer, 2));
   }
 }
 
@@ -2565,7 +2575,7 @@ async function pollEvents(startBlock) {
           `Head ${latestBlock} dropped below cursor ${currentBlock}. Rewound to ${reconciledBlock}; re-mined events will be re-processed.`,
         ).catch((err) => console.error("sendAlert (reorg) failed:", err.message));
         currentBlock = reconciledBlock;
-        await persistCursor(currentBlock);
+        await rewindCursor(currentBlock);
       }
 
       // Only proceed if there are new blocks to check
@@ -2692,17 +2702,42 @@ async function start() {
   // Ensure the on-chain oracle address is correctly set to this wallet.
   await setOracleAddress();
 
+  // From here on the cursor and the failed-job queue live in the oracle's own database when it
+  // has one. initializeEliza() above has already run the migration that creates the tables,
+  // against this same url.
+  const { chainId } = await provider.getNetwork();
+  const selected = createStateStore({
+    postgresUrl: agentStateDbUrl,
+    chainId,
+    contractAddress: contract.target,
+    statePath: STATE_FILE_PATH,
+    jobsPath: FAILED_JOBS_FILE_PATH,
+  });
+  stateStore = selected.store;
+  console.log(`[OracleState] Cursor and failed jobs are kept in: ${stateStore.backend}.`);
+
   // Process any failed jobs from previous runs before catching up on past events.
   await retryFailedJobs();
 
   // Catch up on any events that were missed while the oracle was offline.
-  let state;
-  try {
-    state = JSON.parse(await fs.readFile(STATE_FILE_PATH, "utf-8"));
-  } catch (e) {
-    // If the state file doesn't exist or is invalid, create a default state.
-    state = { lastProcessedBlock: 0 };
-    console.log("No valid state file found. Will start processing from a recent block.");
+  const resume = await resolveResumeCursor({
+    store: stateStore,
+    legacyFileStore: selected.legacyFileStore,
+    onUnavailable: async (error) => {
+      console.error(`[OracleState] Could not read the stored cursor: ${error.message}`);
+      Sentry.captureException(error, { tags: { site: "cursor_read_failed" } });
+      await sendAlert(
+        "Oracle could not read its stored cursor",
+        `The oracle started but could not read where it left off (${error.message}). It is resuming from a recent-block lookback, so prompts submitted before that window and not yet answered will be missed until they are refunded. Check the oracle_agent database.`,
+      );
+    },
+  });
+  if (resume.source === "none") {
+    console.log("No stored cursor found. Will start processing from a recent block.");
+  } else if (resume.source === "legacy-file") {
+    console.log(
+      `[OracleState] Carrying over cursor ${resume.cursor} from the previous state file.`,
+    );
   }
 
   const latestBlock = await provider.getBlockNumber();
@@ -2710,12 +2745,10 @@ async function start() {
   // Otherwise, start from the next block after the last processed one.
   const lookback = 1800;
   const fromBlock =
-    state.lastProcessedBlock === 0
-      ? Math.max(0, latestBlock - lookback)
-      : state.lastProcessedBlock + 1;
+    resume.cursor === null ? Math.max(0, latestBlock - lookback) : resume.cursor + 1;
 
   // 1. Catch Up Phase
-  // Note: processPastEvents will update the state file as it goes.
+  // Note: processPastEvents stores the cursor as it goes.
   await processPastEvents(fromBlock, latestBlock);
 
   // Ensure state is synced to latest before starting poll (redundant safety save)
@@ -2737,7 +2770,7 @@ async function start() {
     walletAddress: signer.address,
     queue,
     getLastProcessedBlock,
-    readFailedJobs: readFailedJobsList,
+    countFailedJobs,
     fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
     mirrorSnapshot: () => require("./storage/mirror").snapshot(),
     diskPath: path.dirname(STATE_FILE_PATH),
@@ -2751,7 +2784,10 @@ async function start() {
 }
 
 module.exports = {
-  readFailedJobsList,
+  countFailedJobs,
+  getLastProcessedBlock,
+  persistCursor,
+  rewindCursor,
   start,
   queryElizaOS,
   initForTest,
