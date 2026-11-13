@@ -451,6 +451,12 @@ contract SapphireAIAgent is Ownable, AccessControl {
     string calldata _payload
   ) external onlyAIAgentEscrow {
     if (conversationToOwner[_conversationId] == address(0)) {
+      // A new conversation takes an id the counter has already handed out; the escrow reserves
+      // one in this same transaction. Ids are owned by reservation only.
+      // solhint-disable-next-line gas-strict-inequalities
+      if (_conversationId >= conversationIdCounter) {
+        revert Unauthorized();
+      }
       conversationToOwner[_conversationId] = _user;
     } else if (conversationToOwner[_conversationId] != _user) {
       revert Unauthorized();
@@ -645,7 +651,11 @@ contract SapphireAIAgent is Ownable, AccessControl {
     uint256 _newConversationId,
     string calldata _payload
   ) external onlyAIAgentEscrow {
-    if (conversationToOwner[_originalConversationId] != _user) {
+    // The new id must be free: a branch never takes over a conversation that has an owner.
+    if (
+      conversationToOwner[_originalConversationId] != _user ||
+      conversationToOwner[_newConversationId] != address(0)
+    ) {
       revert Unauthorized();
     }
     conversationToOwner[_newConversationId] = _user;

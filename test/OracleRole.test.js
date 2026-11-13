@@ -477,6 +477,8 @@ describe("Oracle role — several oracles can be authorized at once", function (
     const ANSWER_MESSAGE_ID = 1;
 
     async function submitPrompt(mockEscrow, user) {
+      // The agent accepts a new conversation only under an id it has handed out, as the escrow does.
+      await mockEscrow.callReserveConversationId();
       await mockEscrow
         .connect(user)
         .callSubmitPrompt(
