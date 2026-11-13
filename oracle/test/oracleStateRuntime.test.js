@@ -39,7 +39,7 @@ describe("oracle state runtime", () => {
 
   describe("createStateStore", () => {
     it("uses the files when no Postgres url is configured", () => {
-      const { store, legacyFileStore } = createStateStore({
+      const { store } = createStateStore({
         postgresUrl: null,
         chainId: CHAIN_ID,
         contractAddress: CONTRACT,
@@ -47,7 +47,6 @@ describe("oracle state runtime", () => {
       });
 
       expect(store.backend).to.equal("file");
-      expect(legacyFileStore).to.equal(null);
     });
 
     it("treats a blank Postgres url as not configured", () => {
@@ -61,12 +60,12 @@ describe("oracle state runtime", () => {
       expect(store.backend).to.equal("file");
     });
 
-    it("uses Postgres on the given url and keeps the files as the legacy source", async () => {
+    it("uses Postgres on the given url", async () => {
       const { db, close } = await createOracleStateDb();
       closeDb = close;
       const seenUrls = [];
 
-      const { store, legacyFileStore } = createStateStore({
+      const { store } = createStateStore({
         postgresUrl: "postgresql://oracle@db/oracle_agent",
         chainId: CHAIN_ID,
         contractAddress: CONTRACT,
@@ -78,7 +77,6 @@ describe("oracle state runtime", () => {
       });
 
       expect(store.backend).to.equal("postgres");
-      expect(legacyFileStore.backend).to.equal("file");
       expect(seenUrls).to.deep.equal(["postgresql://oracle@db/oracle_agent"]);
       await store.advanceCursor(10);
       expect(await store.loadCursor()).to.equal(10);
@@ -107,11 +105,14 @@ describe("oracle state runtime", () => {
       expect(await resolveResumeCursor({ store })).to.deep.equal({ cursor: null, source: "none" });
     });
 
-    it("carries over the previous version's cursor file on the first Postgres start", async () => {
+    it("does not take a cursor from the previous version's state file", async () => {
+      // That file's cursor is already past whatever sat in the old failed-jobs file, which this
+      // store cannot read; resuming from it would skip those events for good. A lookback at
+      // least meets the recent ones again.
       const { db, close } = await createOracleStateDb();
       closeDb = close;
       await fs.writeFile(paths.statePath, JSON.stringify({ lastProcessedBlock: 4242 }));
-      const { store, legacyFileStore } = createStateStore({
+      const { store } = createStateStore({
         postgresUrl: "postgresql://oracle@db/oracle_agent",
         chainId: CHAIN_ID,
         contractAddress: CONTRACT,
@@ -119,47 +120,54 @@ describe("oracle state runtime", () => {
         createDb: () => db,
       });
 
-      const resume = await resolveResumeCursor({ store, legacyFileStore });
-
-      expect(resume).to.deep.equal({ cursor: 4242, source: "legacy-file" });
+      expect(await resolveResumeCursor({ store })).to.deep.equal({ cursor: null, source: "none" });
     });
 
-    it("prefers the database over a stale cursor file", async () => {
-      const { db, close } = await createOracleStateDb();
-      closeDb = close;
-      await fs.writeFile(paths.statePath, JSON.stringify({ lastProcessedBlock: 10 }));
-      const { store, legacyFileStore } = createStateStore({
-        postgresUrl: "postgresql://oracle@db/oracle_agent",
-        chainId: CHAIN_ID,
-        contractAddress: CONTRACT,
-        ...paths,
-        createDb: () => db,
-      });
-      await store.advanceCursor(5000);
-
-      const resume = await resolveResumeCursor({ store, legacyFileStore });
-
-      expect(resume).to.deep.equal({ cursor: 5000, source: "store" });
-    });
-
-    it("falls back to no cursor and reports it when the store cannot be read", async () => {
-      const failure = new Error('relation "oracle_state.oracle_cursors" does not exist');
-      const reported = [];
+    it("keeps trying a store that fails at first, and resumes once it answers", async () => {
+      // A database restart or a slow first connection at boot must not cost a lookback: falling
+      // back overwrites the real cursor with the head on the next save, and the gap is gone.
+      const waits = [];
+      let calls = 0;
       const store = {
         loadCursor: async () => {
+          calls += 1;
+          if (calls < 3) throw new Error("connection refused");
+          return 777;
+        },
+      };
+
+      const resume = await resolveResumeCursor({
+        store,
+        retryDelaysMs: [1000, 2000, 4000],
+        sleep: async (ms) => waits.push(ms),
+      });
+
+      expect(resume).to.deep.equal({ cursor: 777, source: "store" });
+      expect(waits).to.deep.equal([1000, 2000]);
+    });
+
+    it("falls back to no cursor and reports it once every attempt has failed", async () => {
+      const failure = new Error('relation "oracle_state.oracle_cursors" does not exist');
+      const reported = [];
+      const waits = [];
+      let calls = 0;
+      const store = {
+        loadCursor: async () => {
+          calls += 1;
           throw failure;
         },
       };
 
       const resume = await resolveResumeCursor({
         store,
-        legacyFileStore: { loadCursor: async () => 77 },
+        retryDelaysMs: [1000, 2000],
+        sleep: async (ms) => waits.push(ms),
         onUnavailable: (error) => reported.push(error),
       });
 
-      // NOT the legacy file: the database may hold a newer cursor we simply cannot see, and a
-      // stale file would send the oracle back over blocks it has already answered.
       expect(resume).to.deep.equal({ cursor: null, source: "unavailable" });
+      expect(calls).to.equal(3);
+      expect(waits).to.deep.equal([1000, 2000]);
       expect(reported).to.deep.equal([failure]);
     });
   });

@@ -236,6 +236,53 @@ describe("E2E: Oracle Event Listener", function () {
       expect(await stateStore.loadCursor(), "once the whole batch is done").to.equal(1004);
     });
 
+    it("waits for every event of a failed batch before giving the batch back", async function () {
+      // If the scan gave up the moment one event failed, the loop would rescan the range while
+      // the other events were still being answered — and start each of them a second time.
+      process.env.EVENT_BATCH_SIZE = "10000";
+      stubs["./storage/storage"].uploadData.rejects(new Error("Autonomys network unreachable"));
+      sinon.stub(stateStore, "enqueueFailedJob").rejects(new Error("database unavailable"));
+      const clientPayload = {
+        promptText: "Queue is down",
+        isNewConversation: true,
+        previousMessageId: null,
+        previousMessageCID: null,
+      };
+      const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
+      const failing = makeFakeEvent(1001, {
+        eventName: "PromptSubmitted",
+        transactionIndex: 0,
+        args: ["0xUser", 1, 700, 701, payloadBytes, "0xkey"],
+      });
+      let releaseSlowEvent;
+      const held = new Promise((resolve) => {
+        releaseSlowEvent = resolve;
+      });
+      const slow = {
+        eventName: "PromptSubmitted",
+        blockNumber: 1003,
+        transactionIndex: 0,
+        index: 1,
+        args: ["0xUser", 1, 702, 703, "0x1234", "0xkey"],
+        getBlock: () => held.then(() => ({ timestamp: Math.floor(Date.now() / 1000) })),
+      };
+      mockedOracleComponents.contract.queryFilter.onFirstCall().resolves([failing, slow]).resolves([]);
+
+      let settled = false;
+      const scan = aiAgentOracle.processPastEvents(1000, 1004).then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      for (let i = 0; i < 100; i++) await new Promise((resolve) => setImmediate(resolve));
+
+      expect(settled, "while the slow event is still in flight").to.be.false;
+
+      releaseSlowEvent();
+      await scan;
+      expect(settled).to.be.true;
+      expect(await stateStore.loadCursor()).to.equal(null);
+    });
+
     it("does not move the checkpoint when a failed event could not be queued for retry", async function () {
       process.env.EVENT_BATCH_SIZE = "10000";
       stubs["./storage/storage"].uploadData.rejects(new Error("Autonomys network unreachable"));
@@ -405,6 +452,19 @@ describe("E2E: Oracle Event Listener", function () {
       const queryFilterCall = mockedOracleComponents.contract.queryFilter.firstCall;
       expect(queryFilterCall.args[1]).to.equal(9001);
       expect(queryFilterCall.args[2]).to.equal(10000);
+    });
+
+    it("rewinds a stored cursor that is ahead of the chain head before scanning", async function () {
+      // A reverted local chain, or an RPC that lags: the stored block does not exist yet. Left
+      // alone, the forward-only store would refuse every save until the head caught up, while
+      // memory claimed the head — and a restart in between would skip the difference.
+      await stateStore.advanceCursor(12000);
+      mockedOracleComponents.provider.getBlockNumber.resolves(10000);
+
+      await aiAgentOracle.start();
+
+      expect(await stateStore.loadCursor()).to.equal(10000);
+      expect(aiAgentOracle.getLastProcessedBlock()).to.equal(10000);
     });
 
     it("uses lookback window on fresh start (nothing stored)", async function () {

@@ -186,6 +186,170 @@ describe("E2E: Error Recovery", function () {
       expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
 
+    describe("finding the event again", function () {
+      const promptArgs = () => {
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(
+            { promptText: "Retryable", isNewConversation: true, previousMessageId: null, previousMessageCID: null },
+            SESSION_KEY,
+          ),
+        );
+        return ["0xUser", 1, 500, 501, payloadBytes, "0xkey"];
+      };
+      const log = (tx, index, topic = "0xprompt") => ({
+        address: CONTRACT_TARGET,
+        index,
+        transactionHash: tx,
+        topics: [topic],
+        data: "0x",
+      });
+
+      beforeEach(() => {
+        // Idempotency: the handler finds the job already finalized and returns early.
+        mockedOracleComponents.contract.isJobFinalized.resolves(true);
+      });
+
+      it("still finds the event after a reorg moved the transaction to another log position", async function () {
+        // A log's index is its position in the BLOCK. A reorg that re-includes the transaction
+        // elsewhere changes it, and a retry that insisted on the old index would fail every
+        // attempt and give the prompt up as exhausted.
+        const tx = txHash("reorged");
+        mockedOracleComponents.provider.getTransactionReceipt.resolves({
+          blockNumber: 7003,
+          logs: [log(tx, 41, "0xother"), log(tx, 42)],
+        });
+        mockedOracleComponents.contract.interface.parseLog.callsFake((l) =>
+          l.topics[0] === "0xprompt"
+            ? { name: "PromptSubmitted", args: promptArgs() }
+            : { name: "Transfer", args: [] },
+        );
+        await seedJob(tx, 7000, { logIndex: 5 });
+
+        await aiAgentOracle.retryFailedJobs();
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        expect(stubs["./alerting"].sendAlert.called).to.be.false;
+      });
+
+      it("refuses to guess between two events of the same name when neither is at the stored position", async function () {
+        const tx = txHash("ambiguous");
+        mockedOracleComponents.provider.getTransactionReceipt.resolves({
+          blockNumber: 7003,
+          logs: [log(tx, 41), log(tx, 42)],
+        });
+        mockedOracleComponents.contract.interface.parseLog.returns({
+          name: "PromptSubmitted",
+          args: promptArgs(),
+        });
+        await seedJob(tx, 7000, { logIndex: 5 });
+
+        await aiAgentOracle.retryFailedJobs();
+
+        clock.ms += 24 * 60 * 60 * 1000;
+        const [job] = await dueJobs();
+        expect(job.attempts).to.equal(1);
+        expect(job.lastError).to.match(/more than one/i);
+      });
+
+      it("says why a log could not be parsed", async function () {
+        const tx = txHash("stale-abi");
+        mockedOracleComponents.provider.getTransactionReceipt.resolves({
+          blockNumber: 7000,
+          logs: [log(tx, 0)],
+        });
+        mockedOracleComponents.contract.interface.parseLog.throws(new Error("no matching event (stale ABI)"));
+        await seedJob(tx, 7000);
+
+        await aiAgentOracle.retryFailedJobs();
+
+        clock.ms += 24 * 60 * 60 * 1000;
+        const [job] = await dueJobs();
+        expect(job.lastError).to.include("stale ABI");
+      });
+    });
+
+    describe("outcomes that cannot be recorded", function () {
+      const answeredReceipt = (tx) => {
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(
+            { promptText: "Retryable", isNewConversation: true, previousMessageId: null, previousMessageCID: null },
+            SESSION_KEY,
+          ),
+        );
+        mockedOracleComponents.contract.isJobFinalized.resolves(true);
+        mockedOracleComponents.provider.getTransactionReceipt.resolves({
+          blockNumber: 7000,
+          logs: [{ address: CONTRACT_TARGET, index: 0, transactionHash: tx, topics: ["0x"], data: "0x" }],
+        });
+        mockedOracleComponents.contract.interface.parseLog.returns({
+          name: "PromptSubmitted",
+          args: ["0xUser", 1, 500, 501, payloadBytes, "0xkey"],
+        });
+      };
+
+      it("does not count a retry that worked as a failed attempt when the job could not be removed", async function () {
+        // Counting it would walk a job that keeps being answered towards a false
+        // "failed permanently" alert.
+        const tx = txHash("answered-not-removed");
+        answeredReceipt(tx);
+        await seedJob(tx, 7000);
+        sinon.stub(stateStore, "completeJob").rejects(new Error("database unavailable"));
+        const reschedule = sinon.spy(stateStore, "rescheduleJob");
+        const exhaust = sinon.spy(stateStore, "exhaustJob");
+
+        await aiAgentOracle.retryFailedJobs();
+
+        expect(reschedule.called, "must not be rescheduled as a failure").to.be.false;
+        expect(exhaust.called).to.be.false;
+        expect(stubs["@sentry/node"].captureException.called).to.be.true;
+      });
+
+      it("does not start a second pass while one is still running", async function () {
+        // The timer fires every minute; a pass can take longer. An overlapping pass would claim
+        // the jobs whose lease ran out while they waited their turn, and run them twice.
+        const tx = txHash("slow-pass");
+        answeredReceipt(tx);
+        await seedJob(tx, 7000);
+        let releaseReceipt;
+        mockedOracleComponents.provider.getTransactionReceipt.callsFake(
+          () =>
+            new Promise((resolve) => {
+              releaseReceipt = () =>
+                resolve({
+                  blockNumber: 7000,
+                  logs: [{ address: CONTRACT_TARGET, index: 0, transactionHash: tx, topics: ["0x"], data: "0x" }],
+                });
+            }),
+        );
+        const claim = sinon.spy(stateStore, "claimDueJobs");
+
+        const firstPass = aiAgentOracle.retryFailedJobs();
+        for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+        const claimsBefore = claim.callCount;
+        await aiAgentOracle.retryFailedJobs();
+
+        expect(claim.callCount, "the overlapping pass must not touch the queue").to.equal(claimsBefore);
+
+        releaseReceipt();
+        await firstPass;
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+      });
+
+      it("claims one job at a time, so each job's lease starts when its own retry does", async function () {
+        const first = txHash("first");
+        const second = txHash("second");
+        answeredReceipt(first);
+        await seedJob(first, 7000);
+        await seedJob(second, 7001);
+        const claim = sinon.spy(stateStore, "claimDueJobs");
+
+        await aiAgentOracle.retryFailedJobs();
+
+        expect(claim.getCalls().every((call) => call.args[0].limit === 1)).to.be.true;
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+      });
+    });
+
     it("increments attempts and applies exponential backoff on failure", async function () {
       mockedOracleComponents.provider.getTransactionReceipt.rejects(
         new Error("RPC temporarily unavailable"),
