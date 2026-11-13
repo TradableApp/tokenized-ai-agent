@@ -1,9 +1,11 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { anyValue } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 
 /**
- * Whose prompt a regeneration may name, and which conversation its answer belongs to.
+ * Who may own a conversation id, whose prompt a regeneration may name, and which conversation
+ * its answer belongs to.
  *
  * `submitRegenerationRequest` checked that the caller owned the conversation they named, but not
  * the prompt. Since message ids are shared by all conversations, a caller could name anyone's
@@ -15,7 +17,7 @@ const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers"
  * branch names (branch, original prompt); the answer then landed in the original conversation
  * and never reached the branch the user was looking at.
  */
-describe("Regeneration — whose prompt, and where the answer goes", function () {
+describe("Conversations and regenerations — who owns what, and where an answer goes", function () {
   const ALLOWANCE = ethers.parseEther("100");
   const PROMPT_FEE = ethers.parseEther("10");
   const CANCELLATION_FEE = ethers.parseEther("1");
@@ -83,6 +85,28 @@ describe("Regeneration — whose prompt, and where the answer goes", function ()
           .initiateRegeneration(conversationId, promptId, answerId, "0x", "0x"),
       branch: (escrow, account, conversationId, branchPointId) =>
         escrow.connect(account).initiateBranch(conversationId, branchPointId, "0x", "0x"),
+      promptPayloadMatchers: ["0x", "0x"],
+      async deployAgent(deployer, oracle) {
+        const aiAgent = await upgrades.deployProxy(
+          await ethers.getContractFactory("EVMAIAgent"),
+          ["example.com", oracle.address, deployer.address],
+          { initializer: "initialize", kind: "uups" },
+        );
+        await aiAgent.waitForDeployment();
+        return aiAgent;
+      },
+      // The agent's own entry points, called as the escrow would call them.
+      promptRequest: (aiAgent, userAddress, conversationId, promptId, answerId) =>
+        aiAgent.submitPrompt(userAddress, conversationId, promptId, answerId, "0x", "0x"),
+      branchRequest: (aiAgent, userAddress, conversationId, branchPointId, newConversationId) =>
+        aiAgent.submitBranchRequest(
+          userAddress,
+          conversationId,
+          branchPointId,
+          newConversationId,
+          "0x",
+          "0x",
+        ),
     },
     Sapphire: {
       async deploy() {
@@ -116,6 +140,24 @@ describe("Regeneration — whose prompt, and where the answer goes", function ()
         escrow.connect(account).initiateRegeneration(conversationId, promptId, answerId, "payload"),
       branch: (escrow, account, conversationId, branchPointId) =>
         escrow.connect(account).initiateBranch(conversationId, branchPointId, "payload"),
+      promptPayloadMatchers: ["payload"],
+      async deployAgent(deployer, oracle) {
+        const aiAgent = await (
+          await ethers.getContractFactory("SapphireAIAgent")
+        ).deploy("example.com", ethers.zeroPadBytes("0x00", 21), oracle.address, deployer.address);
+        await aiAgent.waitForDeployment();
+        return aiAgent;
+      },
+      promptRequest: (aiAgent, userAddress, conversationId, promptId, answerId) =>
+        aiAgent.submitPrompt(userAddress, conversationId, promptId, answerId, "payload"),
+      branchRequest: (aiAgent, userAddress, conversationId, branchPointId, newConversationId) =>
+        aiAgent.submitBranchRequest(
+          userAddress,
+          conversationId,
+          branchPointId,
+          newConversationId,
+          "payload",
+        ),
     },
   };
 
@@ -231,6 +273,71 @@ describe("Regeneration — whose prompt, and where the answer goes", function ()
               victim.answerMessageId,
             ),
           ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+        });
+      });
+
+      describe("who may own a conversation id", function () {
+        // A conversation id is handed out by the agent's counter. Naming one that has not been
+        // handed out yet must not make the caller its owner: the next new conversation is given
+        // that same id, finds it owned by someone else and reverts — for every user, for good.
+        it("refuses a prompt that names a conversation id not handed out yet", async function () {
+          const { aiAgent, escrow, attacker } = await loadFixture(twoUsersFixture);
+          const next = await aiAgent.conversationIdCounter();
+
+          await expect(chain.prompt(escrow, attacker, next)).to.be.revertedWithCustomError(
+            aiAgent,
+            "Unauthorized",
+          );
+          await expect(chain.prompt(escrow, attacker, next + 100n)).to.be.revertedWithCustomError(
+            aiAgent,
+            "Unauthorized",
+          );
+        });
+
+        it("keeps new conversations working for everyone after such an attempt", async function () {
+          const { aiAgent, escrow, user, attacker } = await loadFixture(twoUsersFixture);
+          const next = await aiAgent.conversationIdCounter();
+          await chain.prompt(escrow, attacker, next).catch(() => {});
+
+          await expect(chain.prompt(escrow, user))
+            .to.emit(aiAgent, "PromptSubmitted")
+            .withArgs(user.address, next, anyValue, anyValue, ...chain.promptPayloadMatchers);
+          expect(await aiAgent.conversationToOwner(next)).to.equal(user.address);
+        });
+
+        it("still lets an owner prompt again in their own conversation", async function () {
+          const { escrow, user, victim } = await loadFixture(twoUsersFixture);
+
+          await expect(chain.prompt(escrow, user, victim.conversationId)).to.not.be.reverted;
+        });
+
+        it("still refuses a prompt in someone else's conversation", async function () {
+          const { aiAgent, escrow, attacker, victim } = await loadFixture(twoUsersFixture);
+
+          await expect(
+            chain.prompt(escrow, attacker, victim.conversationId),
+          ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+        });
+
+        it("never hands a branch a conversation id that already has an owner", async function () {
+          // Cannot be reached through the escrow once ids are only claimed by reservation, but a
+          // proxy upgraded from before that rule may hold ids claimed ahead of the counter. The
+          // agent must refuse to overwrite their owner rather than rely on the escrow. So this
+          // drives the agent directly, with a signer standing in for the escrow.
+          const [deployer, user, oracle, , attacker] = await ethers.getSigners();
+          const aiAgent = await chain.deployAgent(deployer, oracle);
+          await aiAgent.connect(deployer).setAgentEscrow(deployer.address);
+          const asEscrow = aiAgent.connect(deployer);
+          // Hand out ids 1 and 2, as the escrow does before each new conversation.
+          await asEscrow.reserveConversationId();
+          await asEscrow.reserveConversationId();
+          await chain.promptRequest(asEscrow, user.address, 1, 0, 1);
+          await chain.promptRequest(asEscrow, attacker.address, 2, 2, 3);
+
+          await expect(
+            chain.branchRequest(asEscrow, user.address, 1, 0, 2),
+          ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+          expect(await aiAgent.conversationToOwner(2)).to.equal(attacker.address);
         });
       });
 
