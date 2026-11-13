@@ -19,6 +19,8 @@
  *   completeJob(id)                      → the retry worked: forget the (pending) job
  *   rescheduleJob(id, { delayMs, error }) → the retry failed: count it, try again later
  *   exhaustJob(id, { error })            → out of attempts: keep the row, never hand it out again
+ *                                          (nothing changes an exhausted job afterwards)
+ *   listExhaustedJobs()                  → the jobs given up on, for whoever follows them up
  *   countFailedJobs()                    → { pending, exhausted }
  *
  * Time comes from the injected `now()` (the oracle's clock), not the database's, so both
@@ -219,7 +221,7 @@ function createPostgresStateStore({ db, chainId, contractAddress, now = () => ne
           lastError: errorText(error),
           updatedAt: at,
         })
-        .where(and(theseJobs, eq(jobs.id, id)));
+        .where(and(theseJobs, eq(jobs.id, id), eq(jobs.status, "pending")));
     },
 
     async exhaustJob(id, { error }) {
@@ -231,7 +233,25 @@ function createPostgresStateStore({ db, chainId, contractAddress, now = () => ne
           lastError: errorText(error),
           updatedAt: now(),
         })
-        .where(and(theseJobs, eq(jobs.id, id)));
+        .where(and(theseJobs, eq(jobs.id, id), eq(jobs.status, "pending")));
+    },
+
+    async listExhaustedJobs() {
+      const rows = await db
+        .select({
+          id: jobs.id,
+          transactionHash: jobs.transactionHash,
+          logIndex: jobs.logIndex,
+          eventName: jobs.eventName,
+          blockNumber: jobs.blockNumber,
+          attempts: jobs.attempts,
+          lastError: jobs.lastError,
+        })
+        .from(jobs)
+        .where(and(theseJobs, eq(jobs.status, "exhausted")));
+      return rows
+        .map((row) => ({ ...row, blockNumber: Number(row.blockNumber) }))
+        .sort(byChainOrder);
     },
 
     async countFailedJobs() {
@@ -292,7 +312,8 @@ function createFileStateStore({ statePath, jobsPath, now = () => new Date() }) {
 
   async function updateJob(id, change) {
     const list = await readJobs();
-    const job = list.find((entry) => entry.id === id);
+    // Pending only, as in the Postgres backend: an exhausted job is a record, not work in progress.
+    const job = list.find((entry) => entry.id === id && entry.status === "pending");
     if (!job) return;
     change(job);
     await writeJobs(list);
@@ -384,6 +405,13 @@ function createFileStateStore({ statePath, jobsPath, now = () => new Date() }) {
           job.lastError = errorText(error);
         }),
       );
+    },
+
+    async listExhaustedJobs() {
+      return (await readJobs())
+        .filter((job) => job.status === "exhausted")
+        .map(({ status, nextAttemptAt, ...job }) => job)
+        .sort(byChainOrder);
     },
 
     async countFailedJobs() {
