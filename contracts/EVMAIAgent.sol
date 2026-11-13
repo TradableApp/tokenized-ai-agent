@@ -403,7 +403,10 @@ contract EVMAIAgent is
   /**
    * @notice Withdraws an address's authorization to submit answers.
    * @dev Owner only. Removing the last oracle is allowed, for a compromised key: prompts then
-   *      wait for a new oracle or for their timeout refund. Emits `RoleRevoked`. Removing the
+   *      wait for a new oracle or for their timeout refund. Emits `RoleRevoked`. An address
+   *      that is not an oracle changes nothing and emits nothing, as adding an existing oracle
+   *      does: both calls can be repeated or simulated on their own, and the absence of
+   *      `RoleRevoked` is how a mistyped address shows. Removing the
    *      previous version's stored oracle before it was migrated retires it, so the migration
    *      cannot grant it afterwards.
    * @param _oracle The address to remove.

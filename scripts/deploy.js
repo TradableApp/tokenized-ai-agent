@@ -73,6 +73,7 @@ function assertDeployAllowed(ctx) {
  * slot means the oracle must be carried over to the role in the same transaction as the upgrade.
  */
 async function needsOracleRoleMigration(provider, proxyAddress) {
+  // Slot 0 is `_legacyOracle`; test/StorageLayout.test.js pins it there.
   const legacyOracleSlot = await provider.getStorage(proxyAddress, 0);
   return BigInt(legacyOracleSlot) !== 0n;
 }

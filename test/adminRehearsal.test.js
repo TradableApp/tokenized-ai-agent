@@ -389,6 +389,22 @@ describe("scripts/admin-rehearsal", function () {
       const after = await verifyReturned({ contracts, state });
       expect(after).to.deep.equal({ ok: true, mismatches: [] });
     });
+
+    it("watches the live oracle: a rehearsal that leaves it without its role is reported", async function () {
+      const { contracts, deployer, oracle } = await loadFixture(deployFixture);
+      const watched = { ...contracts, oracleAddress: oracle.address };
+      const state = await readState(watched);
+      expect(state.oracle).to.equal(oracle.address);
+      expect(state.oracleAuthorized).to.equal(true);
+
+      await contracts.aiAgent.connect(deployer).removeOracle(oracle.address);
+
+      const result = await verifyReturned({ contracts, state });
+      expect(result.ok).to.equal(false);
+      expect(result.mismatches).to.deep.equal([
+        { field: "oracleAuthorized", expected: "true", actual: "false" },
+      ]);
+    });
   });
 
   describe("parseRehearsalFee", function () {

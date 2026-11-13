@@ -20,14 +20,24 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const CONTRACT_KEYS = { agent: "aiAgent", escrow: "escrow" };
 const ORACLE_ROLE = ethers.id("ORACLE_ROLE");
 
-async function readState({ aiAgent, escrow }) {
+/**
+ * The oracle set cannot be listed from the contract, so the snapshot watches one address: the
+ * live oracle named by the caller. Its authorization is recorded before the rehearsal and
+ * compared afterwards, so a rehearsal that leaves the live oracle without its role is caught.
+ */
+async function readState({ aiAgent, escrow, oracleAddress }) {
   const [agentOwner, escrowOwner, treasury, promptFee] = await Promise.all([
     aiAgent.owner(),
     escrow.owner(),
     escrow.treasury(),
     escrow.promptFee(),
   ]);
-  return { agentOwner, escrowOwner, treasury, promptFee };
+  const state = { agentOwner, escrowOwner, treasury, promptFee };
+  if (!oracleAddress) {
+    return state;
+  }
+  const oracle = ethers.getAddress(oracleAddress);
+  return { ...state, oracle, oracleAuthorized: await aiAgent.isOracle(oracle) };
 }
 
 function assertSafeAddress(safeAddress, state) {
@@ -269,7 +279,7 @@ async function buildSafeReturnTxs({ contracts, returnTo }) {
 }
 
 async function verifyReturned({ contracts, state }) {
-  const live = await readState(contracts);
+  const live = await readState({ ...contracts, oracleAddress: state.oracle });
   const mismatches = Object.keys(state)
     .filter((field) => !sameValue(live[field], state[field]))
     .map((field) => ({ field, expected: String(state[field]), actual: String(live[field]) }));
@@ -313,6 +323,7 @@ async function attachContracts() {
   return {
     aiAgent: await ethers.getContractAt("EVMAIAgent", agentAddress),
     escrow: await ethers.getContractAt("EVMAIAgentEscrow", escrowAddress),
+    oracleAddress: process.env.REHEARSAL_ORACLE_ADDRESS,
   };
 }
 
@@ -344,6 +355,13 @@ async function forwardPhase({
   const show = (st) =>
     JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
   log(`Live state: ${show(live)}`);
+  if (!contracts.oracleAddress) {
+    log(
+      chalk.yellow(
+        "REHEARSAL_ORACLE_ADDRESS is not set: the live oracle's authorization is not in the snapshot and will not be checked by the confirm phase.",
+      ),
+    );
+  }
   assertSignerOwnsBoth(signer.address, live);
 
   // A snapshot left by an aborted live run is the ONLY record of the pre-rehearsal values; the
@@ -388,7 +406,7 @@ async function confirmPhase({ contracts, log, snapshotFile }) {
   }
   log(
     chalk.green(
-      "Confirm phase complete: ownership, fees and treasury all match the pre-rehearsal snapshot.",
+      "Confirm phase complete: everything in the pre-rehearsal snapshot matches the chain again.",
     ),
   );
 }

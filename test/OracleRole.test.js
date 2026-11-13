@@ -157,6 +157,16 @@ describe("Oracle role — several oracles can be authorized at once", function (
           aiAgent.connect(deployer).removeOracle(ethers.ZeroAddress),
         ).to.be.revertedWithCustomError(aiAgent, "ZeroAddress");
       });
+
+      it("removing an address that is not an oracle changes nothing and announces nothing", async function () {
+        const { aiAgent, deployer, oracle, stranger } = await loadFixture(deployFixture);
+
+        await expect(aiAgent.connect(deployer).removeOracle(stranger.address)).to.not.emit(
+          aiAgent,
+          "RoleRevoked",
+        );
+        expect(await aiAgent.isOracle(oracle.address)).to.equal(true);
+      });
     });
 
     describe("what cannot change the set of oracles", function () {
@@ -517,6 +527,10 @@ describe("Oracle role — several oracles can be authorized at once", function (
       await expect(
         aiAgent.connect(deployer).removeOracle(ethers.ZeroAddress),
       ).to.be.revertedWithCustomError(aiAgent, "ZeroAddress");
+      await expect(aiAgent.connect(deployer).removeOracle(stranger.address)).to.not.emit(
+        aiAgent,
+        "RoleRevoked",
+      );
     });
 
     it("an address without the role cannot answer", async function () {

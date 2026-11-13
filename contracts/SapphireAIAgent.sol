@@ -323,7 +323,9 @@ contract SapphireAIAgent is Ownable, AccessControl {
    *      the key it generated, so no operator ever handles it. Several oracles can be
    *      authorized at once, so a new instance registers itself while the old one still
    *      answers, and a prompt in flight during the overlap can be answered by either. Nobody
-   *      holds `DEFAULT_ADMIN_ROLE`. Emits `RoleGranted`.
+   *      holds `DEFAULT_ADMIN_ROLE`. Emits `RoleGranted`. Joining the set is the only change
+   *      that needs the TEE: the owner can remove an oracle, and an oracle can leave on its own
+   *      with `renounceRole`, which needs no attestation because it only gives access up.
    * @param _oracle The address to authorize.
    */
   function addOracle(address _oracle) external onlyTEE(roflAppID) {
@@ -336,7 +338,9 @@ contract SapphireAIAgent is Ownable, AccessControl {
   /**
    * @notice Withdraws an address's authorization to submit answers.
    * @dev Owner only: the owner retires an instance once its replacement has registered.
-   *      Removing the last oracle is allowed, for a compromised key. Emits `RoleRevoked`.
+   *      Removing the last oracle is allowed, for a compromised key. Emits `RoleRevoked`. An
+   *      address that is not an oracle changes nothing and emits nothing: the absence of
+   *      `RoleRevoked` is how a mistyped address shows.
    * @param _oracle The address to remove.
    */
   function removeOracle(address _oracle) external onlyOwner {
