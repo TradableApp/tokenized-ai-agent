@@ -277,9 +277,8 @@ describe("Conversations and regenerations — who owns what, and where an answer
       });
 
       describe("who may own a conversation id", function () {
-        // A conversation id is handed out by the agent's counter. Naming one that has not been
-        // handed out yet must not make the caller its owner: the next new conversation is given
-        // that same id, finds it owned by someone else and reverts — for every user, for good.
+        // A conversation id is handed out by the agent's counter, and that is the only way one
+        // gets an owner. The counter must never arrive at an id that already has one.
         it("refuses a prompt that names a conversation id not handed out yet", async function () {
           const { aiAgent, escrow, attacker } = await loadFixture(twoUsersFixture);
           const next = await aiAgent.conversationIdCounter();
@@ -338,6 +337,23 @@ describe("Conversations and regenerations — who owns what, and where an answer
             chain.branchRequest(asEscrow, user.address, 1, 0, 2),
           ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
           expect(await aiAgent.conversationToOwner(2)).to.equal(attacker.address);
+        });
+
+        it("never hands a branch a conversation id not handed out yet", async function () {
+          // Same rule as for a prompt, and driven the same way: the escrow always reserves the
+          // branch's id first, so only a direct call can name one the counter has not reached.
+          const [deployer, user, oracle] = await ethers.getSigners();
+          const aiAgent = await chain.deployAgent(deployer, oracle);
+          await aiAgent.connect(deployer).setAgentEscrow(deployer.address);
+          const asEscrow = aiAgent.connect(deployer);
+          await asEscrow.reserveConversationId();
+          await chain.promptRequest(asEscrow, user.address, 1, 0, 1);
+          const next = await aiAgent.conversationIdCounter();
+
+          await expect(
+            chain.branchRequest(asEscrow, user.address, 1, 0, next),
+          ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+          expect(await aiAgent.conversationToOwner(next)).to.equal(ethers.ZeroAddress);
         });
       });
 
