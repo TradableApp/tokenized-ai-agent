@@ -562,9 +562,12 @@ contract EVMAIAgent is
   /**
    * @notice Records a user's request to regenerate an answer after payment is secured.
    * @dev This function can only be called by the linked `EVMAIAgentEscrow` contract. It places a
-   *      lock on the original prompt to prevent multiple simultaneous regenerations.
+   *      lock on the original prompt to prevent multiple simultaneous regenerations. The user must
+   *      own the named conversation and the named prompt; the answer is filed under the named
+   *      conversation.
    * @param _user The address of the user requesting the regeneration.
-   * @param _conversationId The ID of the conversation this regeneration belongs to.
+   * @param _conversationId The ID of the conversation this regeneration belongs to (the answer is
+   *        filed here). May be a branch of the conversation the prompt was first asked in.
    * @param _promptMessageId The ID of the user's prompt being regenerated.
    * @param _originalAnswerMessageId The ID of the AI answer to regenerate from.
    * @param _answerMessageId The unique, pre-reserved ID for the future answer.
@@ -580,15 +583,27 @@ contract EVMAIAgent is
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external onlyAIAgentEscrow {
+    // The caller must own BOTH the conversation they name and the prompt they name. Message ids
+    // are shared by all conversations, so without the second check a caller could lock another
+    // user's prompt and have an answer filed in that user's conversation. The two conversations
+    // may differ: a branch reuses the ids of the messages it inherited, so a regeneration made
+    // inside a branch names the branch and a prompt that still belongs to the original. An id
+    // nobody has used maps to conversation 0, which has no owner.
+    if (
+      conversationToOwner[_conversationId] != _user ||
+      conversationToOwner[messageToConversation[_promptMessageId]] != _user
+    ) {
+      revert Unauthorized();
+    }
     if (isRegenerationPending[_promptMessageId]) {
       revert RegenerationAlreadyPending();
-    }
-    if (conversationToOwner[_conversationId] != _user) {
-      revert Unauthorized();
     }
 
     isRegenerationPending[_promptMessageId] = true;
     _regenerationLockOf[_answerMessageId] = _promptMessageId + 1;
+    // The answer belongs to the conversation the regeneration was asked in, which `submitAnswer`
+    // reads back; otherwise a regeneration made inside a branch would be filed under the original.
+    messageToConversation[_answerMessageId] = _conversationId;
 
     _recordRequest();
     emit RegenerationRequested(
@@ -649,7 +664,12 @@ contract EVMAIAgent is
       revert AnswerCIDRequired();
     }
 
-    uint256 conversationId = messageToConversation[_promptMessageId];
+    // A regeneration recorded its conversation when it was requested. A first answer has none
+    // yet (nor has a regeneration requested before that was recorded): it takes its prompt's.
+    uint256 conversationId = messageToConversation[_answerMessageId];
+    if (conversationId == 0) {
+      conversationId = messageToConversation[_promptMessageId];
+    }
 
     if (conversationToOwner[conversationId] == address(0)) {
       revert InvalidPromptMessageId();
