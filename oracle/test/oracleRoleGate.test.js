@@ -97,6 +97,45 @@ describe("oracleRoleGate — work waits while the oracle does not hold its role"
     sinon.assert.calledOnce(onRestored);
   });
 
+  it("reminds while the wait goes on, once per reminder period", async () => {
+    let clock = 0;
+    const onStillLost = sinon.stub();
+    // Seven checks 30 s apart find no role (t = 0 … 180 s); the eighth finds it.
+    for (let call = 0; call < 7; call++) checkRole.onCall(call).resolves(false);
+    checkRole.onCall(7).resolves(true);
+    sleep.callsFake(async (ms) => {
+      clock += ms;
+    });
+    const roleGate = createRoleGate({
+      checkRole,
+      onLost,
+      onRestored,
+      onStillLost,
+      recheckMs: 30000,
+      remindEveryMs: 60000,
+      sleep,
+      now: () => clock,
+    });
+    roleGate.markLost();
+
+    await roleGate.ready();
+
+    // 210 s of waiting, a reminder each full 60 s: at 60, 120 and 180 s.
+    expect(onStillLost.callCount).to.equal(3);
+    expect(onStillLost.firstCall.args[0]).to.deep.equal({ waitingForMs: 60000 });
+  });
+
+  it("falls back to the default interval when given one that is not a positive number", async () => {
+    checkRole.onCall(0).resolves(false);
+    checkRole.onCall(1).resolves(true);
+    const roleGate = createRoleGate({ checkRole, recheckMs: () => -5, sleep });
+    roleGate.markLost();
+
+    await roleGate.ready();
+
+    expect(sleep.args).to.deep.equal([[30000]]);
+  });
+
   it("does not let a failing hook stop the oracle", async () => {
     onLost.throws(new Error("alerting down"));
     onRestored.rejects(new Error("alerting down"));
