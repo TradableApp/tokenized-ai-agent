@@ -158,6 +158,27 @@ describe("oracleRoleGate — work waits while the oracle does not hold its role"
     await discarded;
   });
 
+  it("lets a wait discarded by a reset end silently, without touching the new state", async () => {
+    let releaseOld;
+    checkRole.onCall(0).returns(
+      new Promise((resolve) => {
+        releaseOld = resolve;
+      }),
+    );
+    const roleGate = gate();
+    roleGate.markLost();
+    const discarded = roleGate.ready();
+    roleGate.reset();
+    roleGate.markLost();
+
+    releaseOld(true);
+    await discarded;
+
+    // The discarded wait saw "granted", but it no longer speaks for the gate.
+    expect(roleGate.isLost()).to.equal(true);
+    sinon.assert.notCalled(onRestored);
+  });
+
   it("does not let a failing hook stop the oracle", async () => {
     onLost.throws(new Error("alerting down"));
     onRestored.rejects(new Error("alerting down"));

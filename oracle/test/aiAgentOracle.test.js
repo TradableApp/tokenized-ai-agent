@@ -1187,6 +1187,20 @@ describe("aiAgentOracle", function () {
         expect(job.attempts).to.equal(0);
       });
 
+      it("does not count a retry refused in a moment the role was gone, even if it is back", async () => {
+        await seedRetryablePrompt("retry-refused-role-back");
+        mockedContract.submitAnswer.rejects(unauthorizedRevert());
+        // Refused, but the owner has granted the role again by the time the oracle asks.
+        mockedContract.isOracle.resolves(true);
+
+        await aiAgentOracle.retryFailedJobs();
+
+        sinon.assert.neverCalledWithMatch(stubs["./alerting"].sendAlert, "Oracle Not Authorized");
+        storeClock.ms += 24 * 60 * 60 * 1000;
+        const [job] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+        expect(job.attempts).to.equal(0);
+      });
+
       it("holds the retry pass until the role is back, then answers the queued prompt", async () => {
         await aiAgentOracle.handleAndRecord(
           "PromptSubmitted",
