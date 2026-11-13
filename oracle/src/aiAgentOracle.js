@@ -304,6 +304,9 @@ function initForTest(testComponents) {
     stateStore = testComponents.stateStore;
     lastProcessedBlockInMemory = null;
     lastCursorWriteErrorLoggedAt = 0;
+    cursorWriteOutage.reset();
+    retryQueueOutage.reset();
+    pollLoopOutage.reset();
   }
 }
 
@@ -2548,8 +2551,13 @@ async function retryFailedJobs() {
  */
 async function settleBatch(tasks) {
   const results = await Promise.allSettled(tasks);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) throw failed.reason;
+  const failures = results.filter((result) => result.status === "rejected");
+  // The caller gets the first failure; the others must not vanish with it.
+  for (const { reason } of failures.slice(1)) {
+    console.error(`[Batch] Another event of the same batch also failed: ${reason?.message}`);
+    Sentry.captureException(reason, { tags: { site: "settle_batch_secondary" } });
+  }
+  if (failures.length > 0) throw failures[0].reason;
 }
 
 /**

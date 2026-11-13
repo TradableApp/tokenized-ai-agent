@@ -58,6 +58,13 @@ function createOutageTracker({ alertAfterMs, onAlert, onRecover = () => {}, now 
       run(onRecover, info);
     },
 
+    /** Forget any run in progress, reporting nothing. For tests that swap the tracked thing. */
+    reset() {
+      failingSince = null;
+      failures = 0;
+      alerted = false;
+    },
+
     /** True while a run of failures is in progress. */
     isFailing() {
       return failingSince !== null;

@@ -16,7 +16,7 @@
  *   rewindCursor(block)                  → the ONLY way to lower the cursor (chain reorg)
  *   enqueueFailedJob({...})              → true if queued; false if that event is already there
  *   claimDueJobs({ limit, leaseMs })     → due pending jobs, each leased for `leaseMs`
- *   completeJob(id)                      → the retry worked: forget the job
+ *   completeJob(id)                      → the retry worked: forget the (pending) job
  *   rescheduleJob(id, { delayMs, error }) → the retry failed: count it, try again later
  *   exhaustJob(id, { error })            → out of attempts: keep the row, never hand it out again
  *   countFailedJobs()                    → { pending, exhausted }
@@ -204,7 +204,9 @@ function createPostgresStateStore({ db, chainId, contractAddress, now = () => ne
     },
 
     async completeJob(id) {
-      await db.delete(jobs).where(and(theseJobs, eq(jobs.id, id)));
+      // Pending only: an exhausted job is a record someone has to follow up, and a stray
+      // completion must not be able to erase it.
+      await db.delete(jobs).where(and(theseJobs, eq(jobs.id, id), eq(jobs.status, "pending")));
     },
 
     async rescheduleJob(id, { delayMs, error }) {
@@ -359,7 +361,7 @@ function createFileStateStore({ statePath, jobsPath, now = () => new Date() }) {
     async completeJob(id) {
       await exclusive(async () => {
         const list = await readJobs();
-        const remaining = list.filter((job) => job.id !== id);
+        const remaining = list.filter((job) => job.id !== id || job.status !== "pending");
         if (remaining.length !== list.length) await writeJobs(remaining);
       });
     },
