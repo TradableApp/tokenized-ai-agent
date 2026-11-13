@@ -2537,13 +2537,15 @@ async function retryClaimedJob(job) {
     // Retries share the concurrency queue with fresh events.
     await queue.add(() => handler(...event.args, event));
   } catch (error) {
-    if ((await lostOracleRole(error)).lost) {
-      // Not an attempt at the job: the oracle may not submit anything right now. The job keeps
-      // its lease and is offered again afterwards, with its attempts untouched, so a long wait
-      // for the role cannot walk it to "failed permanently".
-      oracleRole.markLost(error);
+    const role = await lostOracleRole(error);
+    if (role.lost || role.refused) {
+      // Not an attempt at the job: the oracle was refused for want of its role, which says
+      // nothing about the job. It keeps its lease and is offered again afterwards, attempts
+      // untouched, so neither a long wait for the role nor a role that comes and goes can walk
+      // it to "failed permanently".
+      if (role.lost) oracleRole.markLost(error);
       console.warn(
-        `[Retry] ${job.eventName} (tx ${job.transactionHash}) is waiting for the oracle role; not counted as a failed attempt.`,
+        `[Retry] ${job.eventName} (tx ${job.transactionHash}) was refused for want of the oracle role; not counted as a failed attempt.`,
       );
       return;
     }

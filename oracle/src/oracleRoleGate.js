@@ -44,6 +44,8 @@ function createRoleGate({
 }) {
   let lost = false;
   let waiting = null;
+  // Bumped by reset(): a wait started before it no longer speaks for the gate.
+  let generation = 0;
 
   function run(hook, ...args) {
     try {
@@ -61,10 +63,11 @@ function createRoleGate({
     return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_RECHECK_MS;
   }
 
-  async function waitForRole() {
+  async function waitForRole(startedIn) {
     const since = now();
     let remindedAt = since;
     for (;;) {
+      if (startedIn !== generation) return;
       try {
         if (await checkRole()) break;
       } catch (error) {
@@ -77,6 +80,7 @@ function createRoleGate({
       }
       await sleep(recheckInterval());
     }
+    if (startedIn !== generation) return;
     lost = false;
     run(onRestored);
   }
@@ -95,17 +99,20 @@ function createRoleGate({
     ready() {
       if (!lost) return Promise.resolve();
       if (!waiting) {
-        waiting = waitForRole().finally(() => {
-          waiting = null;
+        const wait = waitForRole(generation).finally(() => {
+          if (waiting === wait) waiting = null;
         });
+        waiting = wait;
       }
       return waiting;
     },
 
     /** Back to "role held", for tests. */
     reset() {
+      // A wait still running belongs to the state being discarded: it ends without a word, and
+      // the next loss starts its own.
+      generation += 1;
       lost = false;
-      // A wait still running belongs to the state being discarded; the next loss starts its own.
       waiting = null;
     },
   };
