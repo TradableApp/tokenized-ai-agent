@@ -2,6 +2,7 @@
 pragma solidity ^0.8.21;
 
 import { IEVMAIAgentEscrow } from "./interfaces/IEVMAIAgentEscrow.sol";
+import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -15,11 +16,23 @@ import { Structs } from "./libraries/Structs.sol";
  *         Content is stored off-chain and referenced by Content IDs (CIDs).
  * @dev It is upgradeable using the UUPS proxy pattern.
  */
-contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+contract EVMAIAgent is
+  Initializable,
+  OwnableUpgradeable,
+  AccessControlUpgradeable,
+  UUPSUpgradeable
+{
+  // --- Constants ---
+
+  /// @notice The role an address must hold to submit answers. Several addresses can hold it.
+  bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
+
   // --- State Variables ---
 
-  /// @notice The TEE-based oracle address authorized to submit answers.
-  address public oracle;
+  /// @dev The single oracle address of the version before roles. It authorizes nothing now; it
+  ///      is kept because its slot cannot move, and `migrateOracleRole` reads it once.
+  /// @custom:oz-renamed-from oracle
+  address internal _legacyOracle;
   /// @notice The associated escrow contract that handles all payments.
   IEVMAIAgentEscrow public aiAgentEscrow;
   /// @notice The domain used for off-chain SIWE validation.
@@ -63,6 +76,13 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   /// @notice The block in which request `n` was recorded, so its event can be found by querying
   ///         that block alone. Zero for a number that has not been issued.
   mapping(uint256 => uint256) public requestBlock;
+
+  /// @notice The public key clients encrypt a prompt's session key to, shared by all oracles.
+  bytes public oracleEncryptionKey;
+
+  // New state variables go directly above this line, never between existing ones: the proxy's
+  // storage follows declaration order, and `__gap` at the end of the contract shrinks by the
+  // slots each addition takes. `test/StorageLayout.test.js` pins the order.
 
   // --- Events ---
 
@@ -250,10 +270,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   event AgentEscrowUpdated(address indexed newAIAgentEscrow);
 
   /**
-   * @notice Emitted when the oracle address is updated by a TEE.
-   * @param newOracle The address of the new oracle.
+   * @notice Emitted when the key clients encrypt a prompt's session key to is published.
+   * @param newKey The secp256k1 public key, compressed or uncompressed.
    */
-  event OracleUpdated(address indexed newOracle);
+  event OracleEncryptionKeyUpdated(bytes newKey);
 
   // --- Errors ---
 
@@ -262,11 +282,13 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   error ZeroAddress();
   /// @notice Reverts if an attempt is made to set the escrow address more than once.
   error AgentEscrowAlreadySet();
+  /// @notice Reverts if the bytes offered as the encryption key are not a secp256k1 public key.
+  error InvalidEncryptionKey();
 
   // Access Control Errors
   /// @notice Reverts if a function is called by an unauthorized user.
   error Unauthorized();
-  /// @notice Reverts if a function is called by an address that is not the authorized oracle.
+  /// @notice Reverts if a function is called by an address that does not hold the oracle role.
   error UnauthorizedOracle();
   /// @notice Reverts if a function is called by an address other than the linked escrow contract.
   error NotAIAgentEscrow();
@@ -286,9 +308,18 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   // --- Initialization ---
 
   /**
+   * @notice Locks the implementation contract so that only a proxy can be initialized.
+   * @dev Without this anyone could initialize the bare implementation and own it.
+   * @custom:oz-upgrades-unsafe-allow constructor
+   */
+  constructor() {
+    _disableInitializers();
+  }
+
+  /**
    * @notice Sets up the AI Agent smart contract.
    * @param _domain The domain used for off-chain SIWE validation.
-   * @param _oracle The initial TEE oracle address for accessing prompts.
+   * @param _oracle The first address authorized as an oracle (announced by `RoleGranted`).
    * @param _initialOwner The address that will have ownership of this contract.
    */
   function initialize(
@@ -300,10 +331,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
       revert ZeroAddress();
     }
     __Ownable_init(_initialOwner);
+    __AccessControl_init();
     __UUPSUpgradeable_init();
     domain = _domain;
-    oracle = _oracle;
-    emit OracleUpdated(_oracle);
+    _grantRole(ORACLE_ROLE, _oracle);
 
     // Initialize counters to start from 1 to avoid Zero ID Problem when creating new entities
     conversationIdCounter = 1;
@@ -313,10 +344,10 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   // --- Modifiers ---
 
   /**
-   * @notice Checks whether the transaction was signed by the oracle's private key.
+   * @notice Checks that the caller holds the oracle role.
    */
   modifier onlyOracle() {
-    if (msg.sender != oracle) {
+    if (!hasRole(ORACLE_ROLE, msg.sender)) {
       revert UnauthorizedOracle();
     }
     _;
@@ -351,16 +382,96 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
   }
 
   /**
-   * @notice Sets the oracle address that will be allowed to read prompts and submit answers.
-   * @dev This is a critical administrative function for security and can only be called by the contract owner.
-   * @param _newOracle The new address for the oracle.
+   * @notice Authorizes an address to submit answers as an oracle.
+   * @dev Owner only. Several oracles can be authorized at once, so a rotation is add, cut over,
+   *      remove, and a prompt in flight during the overlap can be answered by either. Nobody
+   *      holds `DEFAULT_ADMIN_ROLE`, so this and `removeOracle` are the only ways the set of
+   *      oracles changes, apart from an oracle giving up its own role with `renounceRole`.
+   *      Emits `RoleGranted`; adding an address that is already an oracle changes nothing.
+   *      The first add also retires the previous version's stored oracle address: from then on
+   *      the owner's explicit choices are the whole set.
+   * @param _oracle The address to authorize.
    */
-  function setOracle(address _newOracle) external onlyOwner {
-    if (_newOracle == address(0)) {
+  function addOracle(address _oracle) external onlyOwner {
+    if (_oracle == address(0)) {
       revert ZeroAddress();
     }
-    oracle = _newOracle;
-    emit OracleUpdated(_newOracle);
+    _retireLegacyOracle();
+    _grantRole(ORACLE_ROLE, _oracle);
+  }
+
+  /**
+   * @notice Withdraws an address's authorization to submit answers.
+   * @dev Owner only. Removing the last oracle is allowed, for a compromised key: prompts then
+   *      wait for a new oracle or for their timeout refund. Emits `RoleRevoked`. An address
+   *      that is not an oracle changes nothing and emits nothing, as adding an existing oracle
+   *      does: both calls can be repeated or simulated on their own, and the absence of
+   *      `RoleRevoked` is how a mistyped address shows. Removing the
+   *      previous version's stored oracle before it was migrated retires it, so the migration
+   *      cannot grant it afterwards.
+   * @param _oracle The address to remove.
+   */
+  function removeOracle(address _oracle) external onlyOwner {
+    if (_oracle == address(0)) {
+      revert ZeroAddress();
+    }
+    if (_oracle == _legacyOracle) {
+      _legacyOracle = address(0);
+    }
+    _revokeRole(ORACLE_ROLE, _oracle);
+  }
+
+  /**
+   * @notice Publishes the public key that clients encrypt a prompt's session key to.
+   * @dev Owner only. The key is shared by every authorized oracle, so there is one value and not
+   *      one per oracle. Clients read it from here, so a change reaches them without a rebuild.
+   * @param _newKey A secp256k1 public key: 33 bytes compressed or 65 bytes uncompressed.
+   */
+  function setOracleEncryptionKey(bytes calldata _newKey) external onlyOwner {
+    bool isCompressed = _newKey.length == 33 && (_newKey[0] == 0x02 || _newKey[0] == 0x03);
+    bool isUncompressed = _newKey.length == 65 && _newKey[0] == 0x04;
+    if (!isCompressed && !isUncompressed) {
+      revert InvalidEncryptionKey();
+    }
+    oracleEncryptionKey = _newKey;
+    emit OracleEncryptionKeyUpdated(_newKey);
+  }
+
+  /**
+   * @notice Carries the single oracle of the previous version over to the oracle role.
+   * @dev Runs once, in the same transaction as the upgrade from the single-oracle version
+   *      (`upgradeToAndCall`), so the proxy is never left upgraded with no oracle. Owner only,
+   *      which in that transaction is the account upgrading. On a proxy deployed fresh there
+   *      is no stored oracle and nothing is granted. If the owner has already added an oracle,
+   *      or removed the stored one, the stored address has been retired and nothing is granted
+   *      either, so a late migration can never bring back an oracle the owner has moved on from.
+   */
+  function migrateOracleRole() external reinitializer(2) onlyOwner {
+    __AccessControl_init();
+    address legacyOracle = _legacyOracle;
+    if (legacyOracle != address(0)) {
+      _legacyOracle = address(0);
+      _grantRole(ORACLE_ROLE, legacyOracle);
+    }
+  }
+
+  /**
+   * @notice Forgets the previous version's single oracle address once the owner manages the set.
+   * @dev After this, `migrateOracleRole` has nothing to grant.
+   */
+  function _retireLegacyOracle() private {
+    if (_legacyOracle != address(0)) {
+      _legacyOracle = address(0);
+    }
+  }
+
+  /**
+   * @notice Tells whether an address is authorized to submit answers.
+   * @param _account The address to check.
+   * @return isAuthorized True if the address holds the oracle role.
+   */
+  function isOracle(address _account) external view returns (bool isAuthorized) {
+    return hasRole(ORACLE_ROLE, _account);
   }
 
   // --- Core Functions ---
@@ -749,5 +860,5 @@ contract EVMAIAgent is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[34] private __gap;
+  uint256[33] private __gap;
 }

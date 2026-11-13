@@ -46,6 +46,13 @@ contract MockEVMAIAgent is IEVMAIAgent {
     _jobIdCounter = 1;
   }
 
+  /// @notice Mirrors the agent's role check: the mock's single oracle is its only role holder.
+  /// @param _account The address to check.
+  /// @return isAuthorized True if the address is the mock's oracle.
+  function isOracle(address _account) external view returns (bool isAuthorized) {
+    return _account == oracle;
+  }
+
   function reserveConversationId() external override returns (uint256) {
     uint256 id = _conversationIdCounter;
     _conversationIdCounter++;

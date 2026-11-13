@@ -68,8 +68,8 @@ describe("aiAgentOracle", function () {
           .stub()
           .resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),
         isJobFinalized: sinon.stub().resolves(false),
-        oracle: sinon.stub(),
-        setOracle: sinon.stub().resolves({ wait: () => Promise.resolve() }),
+        isOracle: sinon.stub(),
+        addOracle: sinon.stub().resolves({ wait: () => Promise.resolve() }),
         queryFilter: sinon.stub(),
         // Add stub for event listener attachment, required by start().
         on: sinon.stub(),
@@ -205,8 +205,8 @@ describe("aiAgentOracle", function () {
   describe("start", () => {
     beforeEach(() => {
       process.env.EVENT_BATCH_SIZE = "10000";
-      // The start function calls setOracleAddress and processPastEvents, which need these stubs.
-      stubs["./contractUtility"].initializeOracle().contract.oracle.resolves("0xOracleAddress");
+      // The start function calls ensureOracleAuthorized and processPastEvents, which need these stubs.
+      stubs["./contractUtility"].initializeOracle().contract.isOracle.resolves(true);
       stubs["./contractUtility"].initializeOracle().contract.queryFilter.resolves([]);
     });
 
@@ -962,29 +962,31 @@ describe("aiAgentOracle", function () {
   });
 
   describe("Oracle Reliability and Startup", () => {
-    it("setOracleAddress should do nothing if addresses match", async () => {
+    it("ensureOracleAuthorized should do nothing if the oracle already holds the role", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
-      mockedContract.oracle.resolves("0xOracleAddress"); // Matches signer
+      mockedContract.isOracle.resolves(true);
 
-      await aiAgentOracle.setOracleAddress();
+      await aiAgentOracle.ensureOracleAuthorized();
 
-      expect(mockedContract.setOracle.called).to.be.false;
+      expect(mockedContract.addOracle.called).to.be.false;
     });
 
-    it("setOracleAddress should send alert and throw on EVM if addresses mismatch", async () => {
+    it("ensureOracleAuthorized should send alert and throw on EVM if the role is missing", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
-      mockedContract.oracle.resolves("0xDifferentAddress");
+      mockedContract.isOracle.resolves(false);
 
       try {
-        await aiAgentOracle.setOracleAddress();
+        await aiAgentOracle.ensureOracleAuthorized();
         expect.fail("Should have thrown an error");
       } catch (error) {
-        expect(error.message).to.include("Oracle address mismatch on EVM chain");
+        expect(error.message).to.include("Oracle not authorized on EVM chain");
+        expect(error.message).to.include("addOracle");
         // Use sinon.assert to ensure this specific alert was sent, avoiding ambiguity.
         sinon.assert.calledWithMatch(
           stubs["./alerting"].sendAlert,
-          "CRITICAL: Oracle Address Mismatch",
+          "CRITICAL: Oracle Not Authorized",
         );
+        expect(mockedContract.addOracle.called).to.be.false;
       }
     });
 
