@@ -9,10 +9,11 @@ const { jsonReplacer } = require('../src/formatters');
  */
 
 describe('security hardening — BigInt-safe JSON serialisation', () => {
-  // The failed-jobs queue stores `event.args`, which ethers v6 populates with BigInt for every
-  // uint256. JSON.stringify THROWS on a BigInt, so the write that is supposed to queue a
-  // retryable job instead threw inside the error handler: the job was never queued AND the
-  // cursor was never persisted. A retryable failure became a silent loss.
+  // The failed-jobs queue used to store `event.args`, which ethers v6 populates with BigInt for
+  // every uint256. JSON.stringify THROWS on a BigInt, so the write that was supposed to queue a
+  // retryable job instead threw inside the error handler: a retryable failure became a silent
+  // loss. The queue now stores a pointer to the event instead, but the replacer still guards
+  // every other place chain values are serialised.
   it('serialises BigInt rather than throwing', () => {
     const job = { conversationId: 42n, blockNumber: 7 };
 

@@ -5,10 +5,17 @@ const proxyquire = require("proxyquire").noCallThru();
 const { RetryableError } = require("../src/errors");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
+const realStateStore = require("../src/oracleState/store");
+const realStateRuntime = require("../src/oracleState/runtime");
+const { createTempStateStore, txHash, failJobAttempts } = require("./helpers/tempStateStore");
 
 describe("aiAgentOracle", function () {
   let aiAgentOracle;
   let stubs;
+  // This test's state store (a real file store in a temp dir) and its clock.
+  let tempState;
+  let stateStore;
+  let storeClock;
   const FAKE_SESSION_KEY = crypto.randomBytes(32);
   const FAKE_ENCRYPTED_KEY = Buffer.from("fake-ecies-cipher-blob");
 
@@ -91,6 +98,14 @@ describe("aiAgentOracle", function () {
     // Prevent the terminal from hanging after tests by stubbing the global setInterval.
     sinon.stub(global, "setInterval");
 
+    // The oracle points both its default store and the one start() builds at
+    // oracle/oracle-state.json. Redirect both into a temp dir — every proxyquire load below
+    // spreads `stubs`, so the extra loads in this file are covered too — and assert through the
+    // store rather than on fs calls.
+    storeClock = { ms: Date.now() };
+    tempState = createTempStateStore({ now: () => new Date(storeClock.ms) });
+    stateStore = tempState.store;
+
     // Mock all external dependencies using a stubs object.
     stubs = {
       "./storage/storage": {
@@ -122,9 +137,15 @@ describe("aiAgentOracle", function () {
           }),
         text: () => Promise.resolve("Mocked AI Response"),
       }),
-      "fs/promises": {
-        writeFile: sinon.stub().resolves(),
-        readFile: sinon.stub().rejects(new Error("File not found")),
+      "./oracleState/store": { ...realStateStore, createFileStateStore: () => stateStore },
+      "./oracleState/runtime": {
+        ...realStateRuntime,
+        createStateStore: (options) =>
+          realStateRuntime.createStateStore({
+            ...options,
+            statePath: tempState.statePath,
+            jobsPath: tempState.jobsPath,
+          }),
       },
       "./ecies": {
         eciesDecrypt: sinon.stub().resolves(FAKE_SESSION_KEY),
@@ -178,7 +199,7 @@ describe("aiAgentOracle", function () {
     aiAgentOracle = proxyquire("../src/aiAgentOracle", stubs);
 
     // Initialize the module's internal state with our mocks before running any tests.
-    aiAgentOracle.initForTest(mockedOracleComponents);
+    aiAgentOracle.initForTest({ ...mockedOracleComponents, stateStore });
 
     // Wire global.fetch (used by oracle) through to the node-fetch stub so test
     // assertions on stubs["node-fetch"] reflect actual fetch calls made by the oracle.
@@ -192,6 +213,7 @@ describe("aiAgentOracle", function () {
 
   afterEach(() => {
     sinon.restore();
+    tempState.cleanup();
     // Clean up environment variables to ensure test isolation
     delete process.env.AI_PROVIDER;
     delete process.env.PRIVATE_KEY;
@@ -214,11 +236,9 @@ describe("aiAgentOracle", function () {
       delete process.env.EVENT_BATCH_SIZE;
     });
 
-    it("should start from a recent block if no state file exists", async () => {
-      // Setup: No state file, latest block is 10000.
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/oracle-state\.json$/))
-        .rejects(new Error("File not found"));
+    it("should start from a recent block if no cursor is stored", async () => {
+      // Setup: Nothing stored, latest block is 10000.
+      expect(await stateStore.loadCursor()).to.equal(null);
       const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
       mockedProvider.getBlockNumber.resolves(10000);
       const queryFilterStub = stubs["./contractUtility"].initializeOracle().contract.queryFilter;
@@ -231,18 +251,16 @@ describe("aiAgentOracle", function () {
       expect(queryFilterStub.firstCall.args[2]).to.equal(10000);
     });
 
-    it("should start from the last processed block if a state file exists", async () => {
-      // Setup: State file exists, latest block is 10000.
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/oracle-state\.json$/))
-        .resolves(JSON.stringify({ lastProcessedBlock: 8500 }));
+    it("should start from the last processed block if a cursor is stored", async () => {
+      // Setup: Cursor stored at 8500, latest block is 10000.
+      await stateStore.advanceCursor(8500);
       const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
       mockedProvider.getBlockNumber.resolves(10000);
       const queryFilterStub = stubs["./contractUtility"].initializeOracle().contract.queryFilter;
 
       await aiAgentOracle.start();
 
-      // Assert: It should start from the block *after* the one in the state file (8501 to 10000).
+      // Assert: It should start from the block *after* the stored one (8501 to 10000).
       expect(queryFilterStub.firstCall.args[1]).to.equal(8501);
       expect(queryFilterStub.firstCall.args[2]).to.equal(10000);
     });
@@ -962,6 +980,17 @@ describe("aiAgentOracle", function () {
   });
 
   describe("Oracle Reliability and Startup", () => {
+    /** Queue a failed PromptSubmitted the way handleAndRecord does, due now. */
+    const seedFailedJob = (overrides = {}) =>
+      stateStore.enqueueFailedJob({
+        transactionHash: txHash("failed-job"),
+        logIndex: 0,
+        eventName: "PromptSubmitted",
+        blockNumber: 101,
+        delayMs: 0,
+        ...overrides,
+      });
+
     it("ensureOracleAuthorized should do nothing if the oracle already holds the role", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
       mockedContract.isOracle.resolves(true);
@@ -1126,43 +1155,30 @@ describe("aiAgentOracle", function () {
       const fakePayloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(fakePayload, FAKE_SESSION_KEY),
       );
-      const fakeJob = {
-        eventName: "PromptSubmitted",
-        event: {
-          args: [
-            user,
-            conversationId,
-            promptMessageId,
-            answerMessageId,
-            fakePayloadBytes,
-            roflEncryptedKey,
-          ],
-          blockNumber: 101,
-          transactionHash: "0xhash123",
-        },
-        retryCount: 0,
-        nextAttemptAt: Date.now() - 1000,
-      };
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/))
-        .resolves(JSON.stringify([fakeJob]));
+      const eventArgs = [
+        user,
+        conversationId,
+        promptMessageId,
+        answerMessageId,
+        fakePayloadBytes,
+        roflEncryptedKey,
+      ];
+      const tx = txHash("retry-rerun");
+      await seedFailedJob({ transactionHash: tx, logIndex: 1, blockNumber: 101 });
       const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
       mockedProvider.getTransactionReceipt.resolves({
         logs: [
-          {
-            address: "0xMockedContractAddress",
-            transactionHash: "0xhash123",
-          },
+          // Same transaction, same contract, a different log: the index must pick the right one.
+          { address: "0xMockedContractAddress", index: 0, transactionHash: tx, which: "other" },
+          { address: "0xMockedContractAddress", index: 1, transactionHash: tx, which: "ours" },
         ],
         blockNumber: 101,
-        transactionHash: "0xhash123",
+        transactionHash: tx,
       });
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
-      mockedContract.interface.parseLog.returns({
-        name: "PromptSubmitted",
-        transactionHash: "0xhash123",
-        args: fakeJob.event.args,
-      });
+      mockedContract.interface.parseLog.callsFake((log) =>
+        log.which === "ours" ? { name: "PromptSubmitted", args: eventArgs } : null,
+      );
       mockedProvider.getBlock.resolves({ timestamp: Date.now() });
 
       // Invoke the retry logic and assert that the intended side-effect occurs.
@@ -1171,21 +1187,13 @@ describe("aiAgentOracle", function () {
       // Assert that the ultimate side-effect (submitting an answer) happened.
       expect(mockedContract.submitAnswer.calledOnce).to.be.true;
 
-      const writeFileCall = stubs["fs/promises"].writeFile.firstCall.args;
-      expect(writeFileCall[0]).to.include("failed-jobs.json");
-      expect(JSON.parse(writeFileCall[1])).to.deep.equal([]);
+      // ...and the job is gone from the queue.
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
 
-    it("should drop a job after max retries are exceeded", async () => {
-      const fakeJob = {
-        eventName: "PromptSubmitted",
-        event: { transactionHash: "0xhash123", blockNumber: 101, args: [] },
-        retryCount: 9, // This is the last attempt
-        nextAttemptAt: Date.now() - 1000,
-      };
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/))
-        .resolves(JSON.stringify([fakeJob]));
+    it("should stop retrying a job after max retries, keeping it as exhausted", async () => {
+      await seedFailedJob();
+      await failJobAttempts(stateStore, 9); // The next attempt is the last
 
       const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
       // Simulate the job failing again (e.g., RPC is down)
@@ -1193,30 +1201,25 @@ describe("aiAgentOracle", function () {
 
       await aiAgentOracle.retryFailedJobs();
 
-      // Assert a critical alert was sent for the dropped job.
+      // Assert a critical alert was sent for the given-up job.
       sinon.assert.calledWithMatch(
         stubs["./alerting"].sendAlert,
         "CRITICAL: Job Failed Permanently",
       );
 
-      // Assert the job queue was emptied.
-      const writeFileCall = stubs["fs/promises"].writeFile.firstCall.args;
-      expect(writeFileCall[0]).to.include("failed-jobs.json");
-      expect(JSON.parse(writeFileCall[1])).to.deep.equal([]);
+      // Kept on record for manual follow-up, but never handed out to a retry again.
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 1 });
+      storeClock.ms += 365 * 24 * 60 * 60 * 1000;
+      expect(await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 })).to.deep.equal([]);
     });
 
     it("should re-queue a job if the event log cannot be parsed from the receipt", async () => {
-      const fakeJob = {
-        eventName: "PromptSubmitted",
-        event: { transactionHash: "0xhash123", blockNumber: 101, args: [] },
-        retryCount: 0,
-        nextAttemptAt: Date.now() - 1000,
-      };
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/))
-        .resolves(JSON.stringify([fakeJob]));
+      await seedFailedJob();
       const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
-      mockedProvider.getTransactionReceipt.resolves({ logs: [{ address: "0xsomeOtherAddress" }] });
+      // The log at the job's index belongs to another contract, so it is not ours to parse.
+      mockedProvider.getTransactionReceipt.resolves({
+        logs: [{ address: "0xsomeOtherAddress", index: 0 }],
+      });
 
       // Explicitly stub parseLog to return null for the un-matching log address.
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
@@ -1226,40 +1229,31 @@ describe("aiAgentOracle", function () {
 
       // The job should fail and be re-queued, not dropped.
       expect(stubs["./alerting"].sendAlert.called).to.be.false;
-      const writeFileCall = stubs["fs/promises"].writeFile.firstCall.args;
-      const remainingJobs = JSON.parse(writeFileCall[1]);
-      expect(remainingJobs).to.have.lengthOf(1);
-      expect(remainingJobs[0].retryCount).to.equal(1);
+      expect(stubs["./storage/storage"].uploadData.called).to.be.false;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+      storeClock.ms += 24 * 60 * 60 * 1000;
+      const [requeued] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+      expect(requeued.attempts).to.equal(1);
+      expect(requeued.lastError).to.include("Could not re-parse");
     });
 
     it("should correctly calculate exponential backoff for a failed retry", async () => {
-      const clock = sinon.useFakeTimers();
-      const now = Date.now();
-
-      const fakeJob = {
-        eventName: "PromptSubmitted",
-        event: { transactionHash: "0xhash123", blockNumber: 101, args: [] },
-        retryCount: 1, // Second retry attempt (first was #0)
-        nextAttemptAt: now - 1000,
-      };
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/failed-jobs\.json$/))
-        .resolves(JSON.stringify([fakeJob]));
+      await seedFailedJob();
+      await failJobAttempts(stateStore, 1); // Second retry attempt (first was #0)
       stubs["./contractUtility"]
         .initializeOracle()
         .provider.getTransactionReceipt.rejects(new Error("RPC still down"));
 
       await aiAgentOracle.retryFailedJobs();
 
-      const writeFileCall = stubs["fs/promises"].writeFile.firstCall.args;
-      const remainingJobs = JSON.parse(writeFileCall[1]);
-      expect(remainingJobs[0].retryCount).to.equal(2);
-
+      // The store's clock is frozen, so the next attempt is due at exactly now + delay.
       const BASE_RETRY_DELAY_MS = 30 * 1000;
       const expectedDelay = BASE_RETRY_DELAY_MS * Math.pow(2, 2);
-      expect(remainingJobs[0].nextAttemptAt).to.be.closeTo(now + expectedDelay, 10);
-
-      clock.restore();
+      storeClock.ms += expectedDelay - 1;
+      expect(await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 })).to.deep.equal([]);
+      storeClock.ms += 1;
+      const [job] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+      expect(job.attempts).to.equal(2);
     });
   });
 
@@ -1713,7 +1707,6 @@ describe("aiAgentOracle", function () {
   describe("Error Handling", () => {
     it("should add a job to the retry queue if a retryable error occurs", async () => {
       stubs["./storage/storage"].uploadData.rejects(new Error("Irys is down"));
-      const writeFileStub = stubs["fs/promises"].writeFile;
       const user = "0xUser";
       const conversationId = 123;
       const promptMessageId = 456;
@@ -1727,7 +1720,8 @@ describe("aiAgentOracle", function () {
 
       const fakeEvent = {
         blockNumber: 100,
-        transactionHash: "0xhash",
+        transactionHash: txHash("irys-down"),
+        index: 0,
         args: [
           user,
           conversationId,
@@ -1751,18 +1745,13 @@ describe("aiAgentOracle", function () {
       // A retryable error should queue a job but not trigger a critical alert.
       expect(stubs["./alerting"].sendAlert.called).to.be.false;
 
-      const failedJobsCall = writeFileStub
-        .getCalls()
-        .find((call) => call.args[0].includes("failed-jobs.json"));
-      expect(failedJobsCall).to.not.be.undefined;
-      const jobQueue = JSON.parse(failedJobsCall.args[1]);
-      expect(jobQueue).to.have.lengthOf(1);
-      expect(jobQueue[0].eventName).to.equal("PromptSubmitted");
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+      storeClock.ms += 24 * 60 * 60 * 1000;
+      const [job] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+      expect(job.eventName).to.equal("PromptSubmitted");
 
-      const stateFileCall = writeFileStub
-        .getCalls()
-        .find((call) => call.args[0].includes("oracle-state.json"));
-      expect(stateFileCall).to.not.be.undefined;
+      // Queuing a job does not move the cursor: the scan that owns the batch does that.
+      expect(await stateStore.loadCursor()).to.equal(null);
     });
 
     it("queues a RetryableError for retry even when its message matches none of the legacy substrings", async () => {
@@ -1771,14 +1760,14 @@ describe("aiAgentOracle", function () {
       stubs["./storage/storage"].uploadData.rejects(
         new RetryableError("Failed to upload file chunk: Service Unavailable"),
       );
-      const writeFileStub = stubs["fs/promises"].writeFile;
       const clientPayload = { promptText: "Transient storage failure", isNewConversation: true };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
       );
       const fakeEvent = {
         blockNumber: 56696323,
-        transactionHash: "0xhash503",
+        transactionHash: txHash("service-unavailable"),
+        index: 7,
         args: ["0xUser", 281, 619, 620, payloadBytes, "0xkey"],
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
       };
@@ -1792,16 +1781,14 @@ describe("aiAgentOracle", function () {
         .getCalls()
         .find((c) => String(c.args[0]).includes("Oracle Fatal Error"));
       expect(fatal, "a typed retryable error is never fatal").to.be.undefined;
-      const failedJobsCall = writeFileStub
-        .getCalls()
-        .find((call) => call.args[0].includes("failed-jobs.json"));
-      expect(failedJobsCall, "the event must be queued for retry").to.not.be.undefined;
-      expect(JSON.parse(failedJobsCall.args[1])[0].event.blockNumber).to.equal(56696323);
+      storeClock.ms += 24 * 60 * 60 * 1000;
+      const jobs = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+      expect(jobs, "the event must be queued for retry").to.have.lengthOf(1);
+      expect(jobs[0].blockNumber).to.equal(56696323);
     });
     it("should send a critical alert for a non-retryable error", async () => {
       // Simulate a fatal error like a decryption failure.
       stubs["./ecies"].eciesDecrypt.rejects(new Error("Decryption failed"));
-      const writeFileStub = stubs["fs/promises"].writeFile;
 
       const user = "0xUser";
       const conversationId = 1;
@@ -1827,10 +1814,7 @@ describe("aiAgentOracle", function () {
       sinon.assert.calledWithMatch(stubs["./alerting"].sendAlert, "CRITICAL: Oracle Fatal Error");
 
       // Assert that the job was NOT added to the retry queue.
-      const failedJobsCall = writeFileStub
-        .getCalls()
-        .find((call) => call.args[0].includes("failed-jobs.json"));
-      expect(failedJobsCall).to.be.undefined;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
 
     it("should trigger a high lag alert if event is too old", async () => {

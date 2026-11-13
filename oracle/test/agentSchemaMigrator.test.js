@@ -6,6 +6,11 @@ const { expect } = require("chai");
 // (oracle_agent) the runtime's first `ensureAgentExists()` then fails with
 // `relation "agents" does not exist` (42P01). This module replicates that step.
 const { runServerLevelMigrations, SERVER_AGENT_ID } = require("../src/agentSchemaMigrator");
+const {
+  oracleStatePlugin,
+  oracleCursorTable,
+  oracleFailedJobTable,
+} = require("../src/oracleState/schema");
 
 // Fake @elizaos/plugin-sql: records the call sequence so we can assert ordering
 // without a live Postgres. Mirrors the real API surface the migrator drives.
@@ -70,10 +75,11 @@ describe("agentSchemaMigrator", () => {
       { postgresUrl: url },
       SERVER_AGENT_ID,
     ]);
-    // the core schema (agents, …) is registered from sqlPlugin's default export
-    expect(calls.find((c) => c[0] === "discoverAndRegisterPluginSchemas")[1]).to.deep.equal([
-      sqlPlugin,
-    ]);
+    // the core schema (agents, …) is registered from sqlPlugin's default export, and the oracle's
+    // own cursor + failed-job tables in the SAME run, so a fresh database gets both at boot
+    const registered = calls.find((c) => c[0] === "discoverAndRegisterPluginSchemas")[1];
+    expect(registered).to.deep.equal([sqlPlugin, oracleStatePlugin]);
+    expect(registered[1].schema).to.include({ oracleCursorTable, oracleFailedJobTable });
     // migrations run against the adapter's own db handle
     expect(calls.find((c) => c[0] === "initializeWithDatabase")[1]).to.equal(fakeDb);
     // strict ordering: init → initializeWithDatabase → register → runAll

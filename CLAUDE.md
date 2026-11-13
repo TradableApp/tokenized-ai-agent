@@ -129,7 +129,7 @@ The oracle has two distinct encryption paths, selected automatically by `contrac
 The main 1940-line orchestration file. High-level flow on each contract event:
 
 1. Event lands in `pollEvents()` → pushed to `p-queue` (concurrency 5)
-2. `handleAndRecord()` wraps each handler — catches validation errors to silently drop malicious payloads, records failures to `failed-jobs.json` for retry
+2. `handleAndRecord()` wraps each handler — catches validation errors to silently drop malicious payloads, queues retryable failures in the state store for retry. It never saves the chain cursor — the scan loops do, once a whole batch is handled
 3. Handler (`handlePrompt`, `handleRegeneration`, `handleBranch`, `handleMetadataUpdate`) decrypts payload, validates via Zod (`payloadValidator.js`)
 4. `reconstructHistory()` fetches prior messages from decentralized storage using the linked-list `parentCID` chain; raw encrypted strings are cached in LRU cache (100k items, 24h TTL) to avoid redundant fetches
 5. `queryAIModel()` routes to the AI tier (see below)
@@ -158,8 +158,12 @@ Conversation data is stored on Autonomys (`@autonomys/auto-drive`) with Irys as 
 
 ### State Persistence
 
-- `oracle-state.json` — tracks `lastProcessedBlock` to resume polling after restart
-- `failed-jobs.json` — retry queue; exponential backoff (base 30s, doubles per attempt, max 10 retries)
+The chain cursor and the failed-job queue live behind one store (`oracle/src/oracleState/`):
+
+- **Postgres** — tables `oracle_state.oracle_cursors` and `oracle_state.oracle_failed_jobs` in the oracle's own `oracle_agent` database, created at boot by the same plugin-sql migration that creates the agent tables (`agentSchemaMigrator.js`). Survives a restart and a `--wipe-storage` deploy.
+- **Files** (`oracle-state.json`, `failed-jobs.json`) — only where no Postgres is configured (localnet, e2e).
+
+The cursor only moves forward, except through the reorg rewind. A failed job is a pointer to the event (tx hash + log index); the retry re-reads the receipt. Retries are claimed under a 15-minute lease, back off exponentially (base 30s, doubles per attempt), and after 10 attempts the job is kept on record as `exhausted` with a CRITICAL alert. If the database cannot be read at start-up the oracle retries for about a minute, then falls back to a 1,800-block lookback and alerts. If the migration cannot create the tables the oracle does not boot. Failures it absorbs while running (cursor writes, queue reads, a poll loop stuck on one range) alert once when they last and once on recovery (`oracleState/outageTracker.js`).
 
 ## Environment Files
 

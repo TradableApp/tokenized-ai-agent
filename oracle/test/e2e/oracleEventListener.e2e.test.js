@@ -7,16 +7,24 @@ const {
   setupOracleTestEnv,
   cleanupOracleTestEnv,
   makeFakeEvent,
+  txHash,
 } = require("./helpers");
 
 describe("E2E: Oracle Event Listener", function () {
   let aiAgentOracle;
   let stubs;
   let mockedOracleComponents;
+  let stateStore;
+  // The state store's clock, so a queued job's backoff can be stepped over exactly.
+  let clock;
   const SESSION_KEY = crypto.randomBytes(32);
 
   beforeEach(() => {
-    ({ aiAgentOracle, stubs, mockedOracleComponents } = setupOracleTestEnv(SESSION_KEY));
+    clock = { ms: Date.now() };
+    ({ aiAgentOracle, stubs, mockedOracleComponents, stateStore } = setupOracleTestEnv(
+      SESSION_KEY,
+      { now: () => new Date(clock.ms) },
+    ));
   });
 
   afterEach(() => {
@@ -97,7 +105,7 @@ describe("E2E: Oracle Event Listener", function () {
   });
 
   describe("handleAndRecord Error Classification", function () {
-    it("drops malformed payloads silently and advances block checkpoint", async function () {
+    it("drops malformed payloads silently, leaving the checkpoint to the batch", async function () {
       const malformedPayload = ethers.toUtf8Bytes("not-encrypted-at-all");
       const fakeEvent = makeFakeEvent(6000, {
         args: ["0xUser", 1, 300, 301, malformedPayload, "0xkey"],
@@ -109,19 +117,12 @@ describe("E2E: Oracle Event Listener", function () {
         fakeEvent,
       );
 
-      // Block checkpoint saved
-      const stateWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("oracle-state.json"));
-      expect(stateWrite).to.not.be.undefined;
-      const state = JSON.parse(stateWrite.args[1]);
-      expect(state.lastProcessedBlock).to.equal(6000);
+      // One event never moves the checkpoint: only the scan that owns the whole batch does.
+      expect(await stateStore.loadCursor()).to.equal(null);
+      expect(aiAgentOracle.getLastProcessedBlock()).to.equal(null);
 
       // No retry queue entry
-      const failedJobsWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(failedJobsWrite).to.be.undefined;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
 
       // No alert sent for malformed payloads
       expect(stubs["./alerting"].sendAlert.called).to.be.false;
@@ -137,8 +138,10 @@ describe("E2E: Oracle Event Listener", function () {
         previousMessageCID: null,
       };
       const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
+      const tx = txHash("storage-failure");
       const fakeEvent = makeFakeEvent(6001, {
-        transactionHash: "0xfaketxhash",
+        transactionHash: tx,
+        index: 2,
         args: ["0xUser", 1, 302, 303, payloadBytes, "0xkey"],
       });
 
@@ -148,26 +151,25 @@ describe("E2E: Oracle Event Listener", function () {
         fakeEvent,
       );
 
-      const failedJobsWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("failed-jobs.json"));
-      expect(failedJobsWrite).to.not.be.undefined;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
 
-      const failedJobs = JSON.parse(failedJobsWrite.args[1]);
-      expect(failedJobs).to.have.lengthOf(1);
-      expect(failedJobs[0]).to.deep.include({
+      // Not due until the base backoff has passed; then it reads back as a pointer to the event
+      // (the retry re-reads the receipt), never a copy of its args.
+      expect(await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 })).to.deep.equal([]);
+      clock.ms += 30 * 1000;
+      const jobs = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+      expect(jobs).to.have.lengthOf(1);
+      expect(jobs[0]).to.deep.include({
         eventName: "PromptSubmitted",
-        retryCount: 0,
+        attempts: 0,
+        blockNumber: 6001,
+        transactionHash: tx,
+        logIndex: 2,
       });
-      expect(failedJobs[0].event.blockNumber).to.equal(6001);
-      expect(failedJobs[0].event.transactionHash).to.equal("0xfaketxhash");
-      expect(failedJobs[0].nextAttemptAt).to.be.a("number");
+      expect(jobs[0]).to.not.have.property("args");
 
-      // Block checkpoint also saved
-      const stateWrite = stubs["fs/promises"].writeFile
-        .getCalls()
-        .find((c) => c.args[0].includes("oracle-state.json"));
-      expect(stateWrite).to.not.be.undefined;
+      // The checkpoint is the batch's to move, once every event in it is handled or queued.
+      expect(await stateStore.loadCursor()).to.equal(null);
     });
 
     it("sends CRITICAL alert and captures Sentry exception for non-retryable errors", async function () {
@@ -195,6 +197,121 @@ describe("E2E: Oracle Event Listener", function () {
       expect(stubs["./alerting"].sendAlert.calledOnce).to.be.true;
       expect(stubs["./alerting"].sendAlert.firstCall.args[0]).to.include("CRITICAL");
       expect(stubs["@sentry/node"].captureException.called).to.be.true;
+    });
+  });
+
+  describe("Checkpoint and events still in flight", function () {
+    // Up to five events are handled at once and finish out of order. If one of them saved the
+    // checkpoint as it finished, a crash would resume AFTER an earlier event that was still
+    // being answered — and that prompt would never be answered.
+    it("does not move the checkpoint past an event still being handled in the same batch", async function () {
+      process.env.EVENT_BATCH_SIZE = "10000";
+      const now = () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) });
+      let releaseSlowEvent;
+      const slowEventStarted = new Promise((resolve) => {
+        releaseSlowEvent = resolve;
+      });
+      const event = (blockNumber, getBlock) => ({
+        eventName: "PromptSubmitted",
+        blockNumber,
+        transactionIndex: 0,
+        index: 0,
+        args: ["0xUser", 1, blockNumber, blockNumber + 1, "0x1234", "0xkey"],
+        getBlock,
+      });
+      mockedOracleComponents.contract.queryFilter
+        .onFirstCall()
+        .resolves([event(1000, () => slowEventStarted.then(now)), event(1004, now)])
+        .resolves([]);
+
+      const scan = aiAgentOracle.processPastEvents(1000, 1004);
+      // Give the fast event at block 1004 every chance to finish while block 1000 is held.
+      for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+
+      expect(await stateStore.loadCursor(), "while block 1000 is still in flight").to.equal(null);
+
+      releaseSlowEvent();
+      await scan;
+
+      expect(await stateStore.loadCursor(), "once the whole batch is done").to.equal(1004);
+    });
+
+    it("waits for every event of a failed batch before giving the batch back", async function () {
+      // If the scan gave up the moment one event failed, the loop would rescan the range while
+      // the other events were still being answered — and start each of them a second time.
+      process.env.EVENT_BATCH_SIZE = "10000";
+      stubs["./storage/storage"].uploadData.rejects(new Error("Autonomys network unreachable"));
+      sinon.stub(stateStore, "enqueueFailedJob").rejects(new Error("database unavailable"));
+      const clientPayload = {
+        promptText: "Queue is down",
+        isNewConversation: true,
+        previousMessageId: null,
+        previousMessageCID: null,
+      };
+      const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
+      const failing = makeFakeEvent(1001, {
+        eventName: "PromptSubmitted",
+        transactionIndex: 0,
+        args: ["0xUser", 1, 700, 701, payloadBytes, "0xkey"],
+      });
+      let releaseSlowEvent;
+      const held = new Promise((resolve) => {
+        releaseSlowEvent = resolve;
+      });
+      const slow = {
+        eventName: "PromptSubmitted",
+        blockNumber: 1003,
+        transactionIndex: 0,
+        index: 1,
+        args: ["0xUser", 1, 702, 703, "0x1234", "0xkey"],
+        getBlock: () => held.then(() => ({ timestamp: Math.floor(Date.now() / 1000) })),
+      };
+      mockedOracleComponents.contract.queryFilter.onFirstCall().resolves([failing, slow]).resolves([]);
+
+      let settled = false;
+      const scan = aiAgentOracle.processPastEvents(1000, 1004).then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      for (let i = 0; i < 100; i++) await new Promise((resolve) => setImmediate(resolve));
+
+      expect(settled, "while the slow event is still in flight").to.be.false;
+
+      releaseSlowEvent();
+      await scan;
+      expect(settled).to.be.true;
+      expect(await stateStore.loadCursor()).to.equal(null);
+    });
+
+    it("does not move the checkpoint when a failed event could not be queued for retry", async function () {
+      process.env.EVENT_BATCH_SIZE = "10000";
+      stubs["./storage/storage"].uploadData.rejects(new Error("Autonomys network unreachable"));
+      sinon.stub(stateStore, "enqueueFailedJob").rejects(new Error("database unavailable"));
+      const clientPayload = {
+        promptText: "Queue is down",
+        isNewConversation: true,
+        previousMessageId: null,
+        previousMessageCID: null,
+      };
+      const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
+      const fakeEvent = makeFakeEvent(1002, {
+        eventName: "PromptSubmitted",
+        transactionIndex: 0,
+        args: ["0xUser", 1, 700, 701, payloadBytes, "0xkey"],
+      });
+      mockedOracleComponents.contract.queryFilter.onFirstCall().resolves([fakeEvent]).resolves([]);
+
+      let error;
+      try {
+        await aiAgentOracle.processPastEvents(1000, 1004);
+      } catch (e) {
+        error = e;
+      }
+
+      // The event is neither answered nor queued, so the scan must see it again: the batch
+      // fails and the checkpoint stays where it was.
+      expect(error, "the scan must not report success").to.be.instanceOf(Error);
+      expect(await stateStore.loadCursor()).to.equal(null);
     });
   });
 
@@ -233,12 +350,8 @@ describe("E2E: Oracle Event Listener", function () {
 
       // All 5 events were processed (queued to the handler)
       // Since payloads are invalid, they get dropped silently — but the state advances
-      const stateWrites = stubs["fs/promises"].writeFile
-        .getCalls()
-        .filter((c) => c.args[0].includes("oracle-state.json"));
-      expect(stateWrites.length).to.be.greaterThan(0);
-      const lastState = JSON.parse(stateWrites[stateWrites.length - 1].args[1]);
-      expect(lastState.lastProcessedBlock).to.equal(1004);
+      expect(await stateStore.loadCursor()).to.equal(1004);
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
 
     it("processPastEvents processes events from multiple blocks without errors", async function () {
@@ -277,11 +390,7 @@ describe("E2E: Oracle Event Listener", function () {
       await aiAgentOracle.processPastEvents(1999, 2000);
 
       // All 3 events processed, checkpoint advances to end of batch
-      const stateWrites = stubs["fs/promises"].writeFile
-        .getCalls()
-        .filter((c) => c.args[0].includes("oracle-state.json"));
-      const lastState = JSON.parse(stateWrites[stateWrites.length - 1].args[1]);
-      expect(lastState.lastProcessedBlock).to.equal(2000);
+      expect(await stateStore.loadCursor()).to.equal(2000);
     });
   });
 
@@ -291,27 +400,16 @@ describe("E2E: Oracle Event Listener", function () {
       mockedOracleComponents.contract.isOracle.resolves(true);
       mockedOracleComponents.contract.queryFilter.resolves([]);
 
-      // First start: no state file, processes from lookback
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/oracle-state\.json$/))
-        .rejects(new Error("File not found"));
+      // First start: nothing stored, processes from lookback
+      expect(await stateStore.loadCursor()).to.equal(null);
       mockedOracleComponents.provider.getBlockNumber.resolves(10000);
 
       await aiAgentOracle.start();
 
-      // Verify state was written with lastProcessedBlock = 10000
-      const stateWrites1 = stubs["fs/promises"].writeFile
-        .getCalls()
-        .filter((c) => c.args[0].includes("oracle-state.json"));
-      const lastWrite1 = JSON.parse(stateWrites1[stateWrites1.length - 1].args[1]);
-      expect(lastWrite1.lastProcessedBlock).to.equal(10000);
+      // Verify the stored cursor is now 10000
+      expect(await stateStore.loadCursor()).to.equal(10000);
 
-      // Simulate restart: state file now exists with lastProcessedBlock=10000
-      stubs["fs/promises"].readFile.reset();
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/oracle-state\.json$/))
-        .resolves(JSON.stringify({ lastProcessedBlock: 10000 }));
-      stubs["fs/promises"].readFile.rejects(new Error("File not found"));
+      // Simulate restart: the second start reads back what the first one stored
       mockedOracleComponents.provider.getBlockNumber.resolves(10005);
       mockedOracleComponents.contract.queryFilter.resetHistory();
 
@@ -332,9 +430,6 @@ describe("E2E: Oracle Event Listener", function () {
     });
 
     it("initializes storage, verifies oracle address, and starts polling", async function () {
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/oracle-state\.json$/))
-        .rejects(new Error("File not found"));
       mockedOracleComponents.provider.getBlockNumber.resolves(10000);
 
       await aiAgentOracle.start();
@@ -342,16 +437,14 @@ describe("E2E: Oracle Event Listener", function () {
       expect(stubs["./storage/storage"].initializeStorage.calledOnce).to.be.true;
       expect(mockedOracleComponents.contract.isOracle.calledOnce).to.be.true;
 
-      const stateWrites = stubs["fs/promises"].writeFile
-        .getCalls()
-        .filter((c) => c.args[0].includes("oracle-state.json"));
-      expect(stateWrites.length).to.be.greaterThan(0);
+      // start() chose its store through createStateStore (no Postgres configured here, so the
+      // file backend) and caught the cursor up to the head before polling.
+      expect(stubs["./oracleState/runtime"].createStateStore.calledOnce).to.be.true;
+      expect(await stateStore.loadCursor()).to.equal(10000);
     });
 
-    it("resumes from last processed block stored in state file", async function () {
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/oracle-state\.json$/))
-        .resolves(JSON.stringify({ lastProcessedBlock: 9000 }));
+    it("resumes from last processed block stored in the state store", async function () {
+      await stateStore.advanceCursor(9000);
       mockedOracleComponents.provider.getBlockNumber.resolves(10000);
 
       await aiAgentOracle.start();
@@ -361,10 +454,20 @@ describe("E2E: Oracle Event Listener", function () {
       expect(queryFilterCall.args[2]).to.equal(10000);
     });
 
-    it("uses lookback window on fresh start (no state file)", async function () {
-      stubs["fs/promises"].readFile
-        .withArgs(sinon.match(/oracle-state\.json$/))
-        .rejects(new Error("File not found"));
+    it("rewinds a stored cursor that is ahead of the chain head before scanning", async function () {
+      // A reverted local chain, or an RPC that lags: the stored block does not exist yet. Left
+      // alone, the forward-only store would refuse every save until the head caught up, while
+      // memory claimed the head — and a restart in between would skip the difference.
+      await stateStore.advanceCursor(12000);
+      mockedOracleComponents.provider.getBlockNumber.resolves(10000);
+
+      await aiAgentOracle.start();
+
+      expect(await stateStore.loadCursor()).to.equal(10000);
+      expect(aiAgentOracle.getLastProcessedBlock()).to.equal(10000);
+    });
+
+    it("uses lookback window on fresh start (nothing stored)", async function () {
       mockedOracleComponents.provider.getBlockNumber.resolves(10000);
 
       await aiAgentOracle.start();

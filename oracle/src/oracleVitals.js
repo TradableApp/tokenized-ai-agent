@@ -80,7 +80,8 @@ async function probeDisk(diskPath) {
  *   Deliberately not a file read: the poll loop rewrites oracle-state.json every few seconds
  *   with fs.writeFile, which truncates first, so a read landing in that window returns "" and
  *   the field silently blanks. Seen in production 2026-08-22 — beat 1 null, beat 2 fine.
- * @param {Function} [deps.readFailedJobs] - resolves the failed-jobs array
+ * @param {Function} [deps.countFailedJobs] - resolves how many failed jobs the oracle is carrying
+ *   (waiting for a retry plus given up on); a throw is reported as unknown, never as 0
  * @param {Function} [deps.fetchAccountInfo] - Auto-Drive account info (upload/download credits)
  * @param {object} [deps.providerTally] - AI tier counters (`snapshot()`); see providerTally.js
  * @param {Function} [deps.mirrorSnapshot] - payload-mirror counters; see storage/mirror.js
@@ -93,7 +94,7 @@ async function collectVitals(deps = {}) {
     walletAddress,
     queue,
     getLastProcessedBlock,
-    readFailedJobs,
+    countFailedJobs,
     fetchAccountInfo,
     providerTally,
     mirrorSnapshot,
@@ -111,10 +112,10 @@ async function collectVitals(deps = {}) {
 
   // Probes run concurrently — a slow RPC should not serialise behind a slow disk when the whole
   // snapshot is meant to be a cheap periodic sample.
-  const [chainHead, walletBalanceWei, failedJobs, accountInfo, disk] = await Promise.all([
+  const [chainHead, walletBalanceWei, failedJobsCount, accountInfo, disk] = await Promise.all([
     safe(() => (provider ? provider.getBlockNumber() : null)),
     safe(() => (provider && walletAddress ? provider.getBalance(walletAddress) : null)),
-    safe(() => (readFailedJobs ? readFailedJobs() : null)),
+    safe(() => (countFailedJobs ? countFailedJobs() : null)),
     safe(() => (fetchAccountInfo ? fetchAccountInfo() : null)),
     safe(() => (diskPath ? probeDisk(diskPath) : null)),
   ]);
@@ -160,7 +161,7 @@ async function collectVitals(deps = {}) {
 
     walletBalanceEth: walletBalanceWei === null ? null : Number(walletBalanceWei) / WEI_PER_ETH,
 
-    failedJobsCount: Array.isArray(failedJobs) ? failedJobs.length : null,
+    failedJobsCount: Number.isInteger(failedJobsCount) ? failedJobsCount : null,
     queuePending: typeof queue?.pending === "number" ? queue.pending : null,
     queueSize: typeof queue?.size === "number" ? queue.size : null,
 

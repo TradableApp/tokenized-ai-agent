@@ -23,7 +23,7 @@ const OK_DEPS = () => ({
   walletAddress: "0x0DECafC0ffee00000000000000000000000009a12",
   queue: { pending: 2, size: 7 },
   getLastProcessedBlock: () => 45714300,
-  readFailedJobs: async () => [{ id: 1 }, { id: 2 }, { id: 3 }],
+  countFailedJobs: async () => 3,
   fetchAccountInfo: async () => ({
     pendingUploadCredits: 52428800,
     pendingDownloadCredits: 104857600,
@@ -129,7 +129,7 @@ describe("collectVitals", () => {
       walletAddress: "0xdead",
       queue: null,
       getLastProcessedBlock: boom,
-      readFailedJobs: boom,
+      countFailedJobs: boom,
       fetchAccountInfo: boom,
       diskPath: "/definitely/not/a/real/path/xyzzy",
     });
@@ -162,6 +162,42 @@ describe("collectVitals", () => {
     expect(v.chainHead).to.equal(45714325);
     expect(v.blockLag).to.equal(25);
     expect(v.failedJobsCount).to.equal(3);
+  });
+
+  it("reports failedJobsCount as null — not 0 — when the store cannot be read", async () => {
+    // "No failures" and "cannot tell" must never look the same: a confident 0 from a probe that
+    // never ran would hide a backlog of unanswered paid prompts.
+    const { collectVitals } = load();
+    const deps = OK_DEPS();
+    deps.countFailedJobs = async () => {
+      throw new Error("connection refused");
+    };
+
+    const v = await collectVitals(deps);
+
+    expect(v.failedJobsCount).to.equal(null);
+    expect(v.chainHead).to.equal(45714325);
+    expect(v.queuePending).to.equal(2);
+  });
+
+  it("reports a non-integer failed-jobs count as null rather than passing it through", async () => {
+    const { collectVitals } = load();
+    for (const bogus of [undefined, "3", 2.5, Number.NaN, { pending: 1, exhausted: 0 }]) {
+      const deps = OK_DEPS();
+      deps.countFailedJobs = async () => bogus;
+
+      const v = await collectVitals(deps);
+
+      expect(v.failedJobsCount, `for ${String(bogus)}`).to.equal(null);
+    }
+  });
+
+  it("reports a real 0 failed jobs as 0", async () => {
+    const { collectVitals } = load();
+    const deps = OK_DEPS();
+    deps.countFailedJobs = async () => 0;
+
+    expect((await collectVitals(deps)).failedJobsCount).to.equal(0);
   });
 
   it("returns a null blockLag rather than a bogus number when either side is unknown", async () => {
