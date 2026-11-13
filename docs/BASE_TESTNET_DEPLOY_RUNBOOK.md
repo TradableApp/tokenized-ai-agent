@@ -254,19 +254,20 @@ The metrics file gains a `settle` block (`settleMs`, `durationMs`, `fromBlock`, 
 `delta`, `answered`). It is absent when the window did not run.
 
 **What the oracle does across a restart (verified in `oracle/src/aiAgentOracle.js`):**
-- **Cursor file.** The chain cursor is mirrored to `oracle/oracle-state.json`
-  (`STATE_FILE_PATH`, `aiAgentOracle.js:55`), rewritten by `persistCursor` on each poll
-  (`:117-120`), and read once at start-up (`:2701`).
-- **Cold start.** If the file is missing or unreadable, `lastProcessedBlock` is 0 and the oracle
-  replays `[head − 1800, head]` (`:2709-2714`, about an hour on Base). Otherwise it resumes at
-  `lastProcessedBlock + 1`.
+- **Stored cursor.** The chain cursor is kept in the oracle's own `oracle_agent` database
+  (`oracle_state.oracle_cursors`, see `oracle/src/oracleState/`), saved by `persistCursor` after
+  each scanned batch and read once at start-up. It survives a machine restart and a
+  `--wipe-storage` deploy. (Before this, it was a file on the volume and a restart lost it.)
+- **Cold start.** With no stored cursor, or a database that cannot be read (which also raises an
+  alert), the oracle replays `[head − 1800, head]` (six minutes on Base at 200 ms blocks).
+  Otherwise it resumes at the stored block + 1.
 - **Duplicate guard.** Before sending, the oracle checks `isJobFinalized` and skips finalised
   jobs (`:1405`, and again inside the tx mutex at `:1670`). If that read errors it logs and
   proceeds anyway (`:1414`), which is why the settle check counts nonces as well as events.
-- **Persistence across the machine restart.** The brief states that `oracle-state.json` lives
-  inside the container with no volume. That was not verified here: the compose and `rofl.yaml`
-  files were not read. If the file does not survive the restart, the cold-start lookback applies,
-  and the replay is bounded by the finalised-job check above.
+- **Failed jobs across the restart.** The retry queue is in the same database
+  (`oracle_state.oracle_failed_jobs`), so queued retries survive too. Expect the start-up log line
+  `[OracleState] Cursor and failed jobs are kept in: postgres.` and no `No stored cursor found`
+  line after a restart.
 
 ---
 

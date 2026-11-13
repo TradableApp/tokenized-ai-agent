@@ -2737,7 +2737,7 @@ async function start() {
   }
 
   const latestBlock = await provider.getBlockNumber();
-  // On a fresh start, look back ~1 hour (1800 blocks on Base).
+  // With no stored cursor, look back 1,800 blocks (about six minutes on Base's 200 ms blocks).
   // Otherwise, start from the next block after the last processed one.
   const lookback = 1800;
   const fromBlock =
