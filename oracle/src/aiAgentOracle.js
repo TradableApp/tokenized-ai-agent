@@ -42,6 +42,7 @@ const { reconcileCursor } = require("./blockCursor");
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
+const { createRoleGate } = require("./oracleRoleGate");
 
 // --- Configuration & Initialization ---
 
@@ -147,6 +148,31 @@ const retryQueueOutage = absorbedFailureTracker({
     "Prompts waiting for a retry are not being retried and will only be settled by the one-hour refund. Check the oracle_agent database.",
   alertAfterMs: 10 * 60 * 1000,
   site: "retry_queue_outage",
+});
+
+// How often the oracle asks the chain whether its role is back, while it believes it is not.
+const DEFAULT_ROLE_RECHECK_MS = 30 * 1000;
+
+/**
+ * Holds event processing and retries while this oracle does not hold the oracle role: every
+ * submission would revert, so answering would spend model and storage credits for nothing. One
+ * page when the role is found missing, one notice when it is back (see oracleRoleGate.js).
+ */
+const oracleRole = createRoleGate({
+  checkRole: () => contract.isOracle(signer.address),
+  recheckMs: () => parseInt(process.env.ORACLE_ROLE_RECHECK_MS) || DEFAULT_ROLE_RECHECK_MS,
+  onLost: (error) => {
+    const message = `Oracle ${signer.address} does not hold the oracle role on ${contract.target}. It has stopped answering and is waiting; prompts stay queued and are answered once the role is granted, or refunded after the refund timeout. The contract owner must call addOracle(${signer.address}).${error ? ` Last error: ${error.message}` : ""}`;
+    console.error(`[OracleRole] ${message}`);
+    return sendAlert("CRITICAL: Oracle Not Authorized", message);
+  },
+  onRestored: () => {
+    console.log(`[OracleRole] Oracle address is authorized again: ${signer.address}`);
+    return sendAlert(
+      "Oracle is authorized again",
+      `Oracle ${signer.address} holds the oracle role again and has resumed answering.`,
+    );
+  },
 });
 
 const pollLoopOutage = absorbedFailureTracker({
@@ -307,6 +333,7 @@ function initForTest(testComponents) {
     cursorWriteOutage.reset();
     retryQueueOutage.reset();
     pollLoopOutage.reset();
+    oracleRole.reset();
   }
 }
 
@@ -2230,7 +2257,7 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
  * Ensures this oracle's address holds the oracle role on the agent contract.
  * Several oracles can hold the role at once, so this never displaces another oracle.
  * For Sapphire, the oracle registers itself with a TEE-signed transaction.
- * For EVM, this is a critical health check: only the contract owner can add an oracle.
+ * For EVM, only the contract owner can add an oracle: this waits until they have.
  */
 async function ensureOracleAuthorized() {
   if (await contract.isOracle(signer.address)) {
@@ -2239,41 +2266,40 @@ async function ensureOracleAuthorized() {
   }
   console.log(`Oracle address ${signer.address} does not hold the oracle role yet`);
 
+  if (!isSapphire) {
+    // On EVM only the contract owner can grant the role. Exiting here would only make the
+    // platform restart the oracle into the same state, so it waits instead: one page now, and
+    // it carries on by itself once the owner has called addOracle.
+    oracleRole.markLost();
+    await oracleRole.ready();
+    return;
+  }
+
   try {
-    if (isSapphire) {
-      const isLocalnet = NETWORK_NAME === "sapphire-localnet";
+    const isLocalnet = NETWORK_NAME === "sapphire-localnet";
 
-      if (isLocalnet) {
-        // On localnet, we can send a direct transaction as we control the TEE simulation.
-        const tx = await contract.addOracle(signer.address, { gasLimit: 1000000 });
+    if (isLocalnet) {
+      // On localnet, we can send a direct transaction as we control the TEE simulation.
+      const tx = await contract.addOracle(signer.address, { gasLimit: 1000000 });
 
-        await tx.wait();
-      } else {
-        // On testnet/mainnet, the transaction must be signed by the ROFL TEE.
-        console.log("Populating addOracle transaction...");
-        const txUnsigned = await contract.addOracle.populateTransaction(signer.address);
-
-        const txParams = {
-          to: AI_AGENT_CONTRACT_ADDRESS,
-          gas: 2000000, // addOracle is a simple transaction, a fixed high limit is safe
-          value: 0,
-          data: txUnsigned.data,
-        };
-
-        const txHash = await submitTx(txParams);
-        console.log(`addOracle transaction submitted: ${txHash}`);
-      }
-
-      console.log(`Successfully registered oracle address ${signer.address}`);
+      await tx.wait();
     } else {
-      // For EVM, this is a health check. The contract's owner must add the address.
-      // This oracle process does not have the permissions.
-      const errorMessage = `FATAL: Oracle not authorized on EVM chain. ${signer.address} does not hold the oracle role. The contract owner must call addOracle(${signer.address}).`;
+      // On testnet/mainnet, the transaction must be signed by the ROFL TEE.
+      console.log("Populating addOracle transaction...");
+      const txUnsigned = await contract.addOracle.populateTransaction(signer.address);
 
-      await sendAlert("CRITICAL: Oracle Not Authorized", errorMessage);
+      const txParams = {
+        to: AI_AGENT_CONTRACT_ADDRESS,
+        gas: 2000000, // addOracle is a simple transaction, a fixed high limit is safe
+        value: 0,
+        data: txUnsigned.data,
+      };
 
-      throw new Error(errorMessage);
+      const txHash = await submitTx(txParams);
+      console.log(`addOracle transaction submitted: ${txHash}`);
     }
+
+    console.log(`Successfully registered oracle address ${signer.address}`);
   } catch (err) {
     const errorMessage = `FATAL: Failed to confirm oracle authorization for ${signer.address}. Error: ${err.message}`;
 
@@ -2330,7 +2356,13 @@ async function handleAndRecord(eventName, handler, ...args) {
     // own retries) throws RetryableError. The substring chain below is the legacy fallback for
     // paths that still throw raw errors — it is not the contract, and it missed the Autonomys
     // SDK's `Failed to upload file chunk: Service Unavailable` on 2026-11-09 (#108).
+    // A submission refused for want of the oracle role is not the event's fault and not final:
+    // the event waits in the queue, and the role gate holds further work until the role is back.
+    const lostRole = isContractError(error, "UnauthorizedOracle");
+    if (lostRole) oracleRole.markLost(error);
+
     const isRetryable =
+      lostRole ||
       isRetryableError(error) ||
       error.message.includes("Irys") ||
       error.message.includes("fetch") ||
@@ -2449,6 +2481,16 @@ async function retryClaimedJob(job) {
     // Retries share the concurrency queue with fresh events.
     await queue.add(() => handler(...event.args, event));
   } catch (error) {
+    if (isContractError(error, "UnauthorizedOracle")) {
+      // Not an attempt at the job: the oracle may not submit anything right now. The job keeps
+      // its lease and is offered again afterwards, with its attempts untouched, so a long wait
+      // for the role cannot walk it to "failed permanently".
+      oracleRole.markLost(error);
+      console.warn(
+        `[Retry] ${job.eventName} (tx ${job.transactionHash}) is waiting for the oracle role; not counted as a failed attempt.`,
+      );
+      return;
+    }
     await recordFailedRetry(job, error);
     return;
   }
@@ -2523,6 +2565,9 @@ async function retryFailedJobs() {
   retryPassInFlight = true;
   try {
     for (let handled = 0; handled < RETRY_BATCH_LIMIT; handled++) {
+      // Nothing can be submitted without the role, so nothing is claimed until it is back.
+      await oracleRole.ready();
+
       let job;
       try {
         [job] = await stateStore.claimDueJobs({ limit: 1, leaseMs: RETRY_LEASE_MS });
@@ -2579,6 +2624,9 @@ async function processPastEvents(fromBlock, toBlock) {
   let currentStart = fromBlock;
 
   while (currentStart <= toBlock) {
+    // Without the role nothing can be submitted: hold the catch-up until it is back.
+    await oracleRole.ready();
+
     const currentEnd = Math.min(currentStart + BATCH_SIZE - 1, toBlock);
 
     console.log(`  -> Scanning batch: ${currentStart} to ${currentEnd}`);
@@ -2691,6 +2739,9 @@ async function pollEvents(startBlock) {
   let currentBlock = startBlock;
   while (true) {
     try {
+      // Without the role nothing can be submitted: hold here, cursor where it is, until it is back.
+      await oracleRole.ready();
+
       const latestBlock = await provider.getBlockNumber();
 
       // Reorg/revert reconciliation: if the head has dropped below our cursor (a

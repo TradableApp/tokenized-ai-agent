@@ -1108,6 +1108,8 @@ describe("aiAgentOracle", function () {
       it("does not count a retry that hits the lost role as a failed attempt", async () => {
         await seedRetryablePrompt("retry-unauthorized");
         mockedContract.submitAnswer.rejects(unauthorizedRevert());
+        // The pass then waits for the role before claiming anything else; grant it so the pass ends.
+        mockedContract.isOracle.resolves(true);
 
         await aiAgentOracle.retryFailedJobs();
 
