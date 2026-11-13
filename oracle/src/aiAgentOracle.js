@@ -41,6 +41,7 @@ const { validatePayload } = require("./payloadValidator");
 const { reconcileCursor } = require("./blockCursor");
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
+const { createOutageTracker } = require("./oracleState/outageTracker");
 
 // --- Configuration & Initialization ---
 
@@ -101,6 +102,61 @@ function toCursorBlock(blockNumber, caller) {
   return n;
 }
 
+const minutes = (ms) => Math.max(1, Math.round(ms / 60000));
+
+/**
+ * One alert per sustained failure of something the oracle otherwise absorbs, and one line when it
+ * ends. Without this an absorbed failure leaves the oracle looking healthy (see outageTracker.js).
+ */
+function absorbedFailureTracker({ what, consequence, alertAfterMs, site }) {
+  return createOutageTracker({
+    alertAfterMs,
+    onAlert: (error, { failingForMs, failures }) => {
+      Sentry.captureException(error, { tags: { site } });
+      return sendAlert(
+        `Oracle: ${what} has been failing for ${minutes(failingForMs)} min`,
+        `${what} has failed ${failures} time(s) over ${minutes(failingForMs)} minutes. ${consequence} Last error: ${error.message}`,
+      );
+    },
+    onRecover: ({ failedForMs, failures, alerted }) => {
+      console.log(
+        `[OracleState] ${what} recovered after ${minutes(failedForMs)} min (${failures} failure(s)).`,
+      );
+      if (alerted) {
+        return sendAlert(
+          `Oracle: ${what} recovered`,
+          `${what} is working again after ${minutes(failedForMs)} minutes.`,
+        );
+      }
+      return undefined;
+    },
+  });
+}
+
+const cursorWriteOutage = absorbedFailureTracker({
+  what: "Saving the chain cursor",
+  consequence:
+    "The oracle keeps answering prompts from memory, but if it restarts now it resumes from an old or missing cursor and prompts in between can be missed. Check the oracle_agent database.",
+  alertAfterMs: 5 * 60 * 1000,
+  site: "cursor_write_outage",
+});
+
+const retryQueueOutage = absorbedFailureTracker({
+  what: "Reading the failed-job queue",
+  consequence:
+    "Prompts waiting for a retry are not being retried and will only be settled by the one-hour refund. Check the oracle_agent database.",
+  alertAfterMs: 10 * 60 * 1000,
+  site: "retry_queue_outage",
+});
+
+const pollLoopOutage = absorbedFailureTracker({
+  what: "The event polling loop",
+  consequence:
+    "The oracle is stuck on the same block range, so new prompts are not being answered. Check the RPC endpoint and the oracle_agent database.",
+  alertAfterMs: 2 * 60 * 1000,
+  site: "poll_loop_outage",
+});
+
 // A database outage would otherwise log the same line on every poll tick.
 const CURSOR_WRITE_ERROR_LOG_INTERVAL_MS = 60 * 1000;
 let lastCursorWriteErrorLoggedAt = 0;
@@ -110,9 +166,12 @@ let lastCursorWriteErrorLoggedAt = 0;
  * handled or queued, and throwing here would send the poll loop back over them. The cost of a
  * stale stored cursor is only paid on the next restart, as a longer catch-up scan — every
  * handler already tolerates meeting an event twice. Memory keeps the true value, so the
- * heartbeat stays right and the next successful write catches the store up.
+ * heartbeat stays right and the next successful write catches the store up. A failure that
+ * lasts is alerted once (cursorWriteOutage): the heartbeat cannot show it.
  */
 function reportCursorWriteFailure(error, block) {
+  cursorWriteOutage.failure(error);
+
   const now = Date.now();
   if (now - lastCursorWriteErrorLoggedAt < CURSOR_WRITE_ERROR_LOG_INTERVAL_MS) return;
   lastCursorWriteErrorLoggedAt = now;
@@ -132,6 +191,7 @@ async function persistCursor(blockNumber) {
 
   try {
     await stateStore.advanceCursor(n);
+    cursorWriteOutage.success();
   } catch (error) {
     reportCursorWriteFailure(error, n);
   }
@@ -144,6 +204,7 @@ async function rewindCursor(blockNumber) {
 
   try {
     await stateStore.rewindCursor(n);
+    cursorWriteOutage.success();
   } catch (error) {
     reportCursorWriteFailure(error, n);
   }
@@ -2284,13 +2345,18 @@ async function handleAndRecord(eventName, handler, ...args) {
 
       // A pointer to the event, not a copy of it: the retry re-reads the receipt. Queuing the same
       // event twice (a catch-up scan meeting it again) is a no-op.
-      await stateStore.enqueueFailedJob({
+      const queued = await stateStore.enqueueFailedJob({
         transactionHash: event.transactionHash,
         logIndex: event.index,
         eventName,
         blockNumber: event.blockNumber,
         delayMs: BASE_RETRY_DELAY_MS,
       });
+      if (!queued) {
+        console.warn(
+          `${eventName} in tx ${event.transactionHash} is already in the retry queue (waiting, or given up on); not queued again.`,
+        );
+      }
 
       // If that enqueue throws, the error leaves this function on purpose: the event is neither
       // answered nor queued, so the scan that owns the batch must fail and meet it again.
@@ -2317,27 +2383,43 @@ async function loadEventForRetry(job) {
     throw new Error(`Could not find transaction receipt for hash ${job.transactionHash}`);
   }
 
+  // Every log of this contract in the transaction that parses as the event we are after.
   const contractAddress = contract.target.toLowerCase();
-  let parsed = null;
+  const candidates = [];
+  let parseError = null;
   for (const log of receipt.logs) {
-    // The log index pins the exact event: one transaction can carry several of the same name.
-    if (log.index !== job.logIndex || log.address.toLowerCase() !== contractAddress) continue;
+    if (log.address.toLowerCase() !== contractAddress) continue;
     try {
-      parsed = contract.interface.parseLog(log);
+      const parsed = contract.interface.parseLog(log);
+      if (parsed && parsed.name === job.eventName) candidates.push({ log, parsed });
     } catch (e) {
-      parsed = null;
+      parseError = e;
     }
-    break;
   }
 
-  if (!parsed || parsed.name !== job.eventName) {
-    throw new Error(`Could not re-parse event '${job.eventName}' from transaction receipt.`);
+  // The stored log index is the log's position in its BLOCK, so it pins the event exactly — until
+  // a reorg re-includes the transaction somewhere else and every position shifts. Then the name
+  // decides, as long as it is not ambiguous.
+  let match = candidates.find(({ log }) => log.index === job.logIndex);
+  if (!match && candidates.length === 1) {
+    [match] = candidates;
+  }
+  if (!match && candidates.length > 1) {
+    throw new Error(
+      `Transaction ${job.transactionHash} has more than one '${job.eventName}' event and none at the stored log position ${job.logIndex}; refusing to guess which to retry.`,
+    );
+  }
+  if (!match) {
+    throw new Error(
+      `Could not re-parse event '${job.eventName}' from transaction receipt.${parseError ? ` Parse error: ${parseError.message}` : ""}`,
+      parseError ? { cause: parseError } : undefined,
+    );
   }
 
   return {
-    args: parsed.args,
+    args: match.parsed.args,
     transactionHash: job.transactionHash,
-    index: job.logIndex,
+    index: match.log.index,
     blockNumber: receipt.blockNumber,
     getBlock: () => provider.getBlock(receipt.blockNumber),
   };
@@ -2350,75 +2432,124 @@ const RETRY_HANDLERS = {
   MetadataUpdateRequested: (...args) => handleMetadataUpdate(...args),
 };
 
-/**
- * Periodically retries failed jobs from the state store, with exponential backoff.
- *
- * Each due job is CLAIMED first (leased for RETRY_LEASE_MS), so a slow retry is not started a
- * second time by the next tick or by another oracle. Then exactly one of three things happens to
- * it: it worked and is removed; it failed and is rescheduled; it failed for the last time and is
- * kept on record as exhausted, with an alert.
- */
-async function retryFailedJobs() {
-  let dueJobs;
+/** Retry one claimed job and record what happened to it. Never throws. */
+async function retryClaimedJob(job) {
+  console.log(`[Retry] Retrying job for event: ${job.eventName} from block ${job.blockNumber}`);
   try {
-    dueJobs = await stateStore.claimDueJobs({ limit: RETRY_BATCH_LIMIT, leaseMs: RETRY_LEASE_MS });
+    const handler = RETRY_HANDLERS[job.eventName];
+    if (!handler) {
+      throw new Error(`No handler for event '${job.eventName}'.`);
+    }
+
+    const event = await loadEventForRetry(job);
+
+    // Retries share the concurrency queue with fresh events.
+    await queue.add(() => handler(...event.args, event));
   } catch (error) {
-    // The queue cannot be read right now. The jobs are still there; the next tick tries again.
-    console.error(`[Retry] Could not read the failed-job queue: ${error.message}`);
+    await recordFailedRetry(job, error);
     return;
   }
 
-  if (dueJobs.length === 0) return;
-
-  console.log(`[Retry] Retrying ${dueJobs.length} failed job(s)...`);
-  for (const job of dueJobs) {
-    console.log(`[Retry] Retrying job for event: ${job.eventName} from block ${job.blockNumber}`);
-    try {
-      const handler = RETRY_HANDLERS[job.eventName];
-      if (!handler) {
-        throw new Error(`No handler for event '${job.eventName}'.`);
-      }
-
-      const event = await loadEventForRetry(job);
-
-      // Retries share the concurrency queue with fresh events.
-      await queue.add(() => handler(...event.args, event));
-
-      await stateStore.completeJob(job.id);
-      console.log(`[Retry] Job succeeded and was removed from the queue.`);
-    } catch (error) {
-      const attempt = job.attempts + 1;
-      console.error(
-        `[Retry] Attempt #${attempt} failed for event ${job.eventName}. Error: ${error.message}`,
-      );
-
-      try {
-        if (attempt >= MAX_RETRIES) {
-          await stateStore.exhaustJob(job.id, { error });
-          Sentry.captureException(error, {
-            tags: {
-              site: "retry_permanent_failure",
-              eventName: job.eventName,
-              blockNumber: job.blockNumber,
-            },
-          });
-          await sendAlert(
-            "CRITICAL: Job Failed Permanently",
-            `A job for event ${job.eventName} from block ${job.blockNumber} (tx ${job.transactionHash}) has failed all ${MAX_RETRIES} retries and will not be retried again. It stays on record as exhausted. Manual intervention required. Final error: ${error.message}`,
-          );
-        } else {
-          const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
-          await stateStore.rescheduleJob(job.id, { delayMs, error });
-        }
-      } catch (storeError) {
-        // The outcome could not be recorded. The job keeps its lease and comes back when that
-        // runs out, with this attempt uncounted — a retry too many, never a job lost.
-        console.error(
-          `[Retry] Could not record the failed attempt for ${job.eventName} (tx ${job.transactionHash}): ${storeError.message}`,
-        );
-      }
-    }
+  // Outside the try above on purpose: the retry WORKED. If only the bookkeeping fails, counting
+  // it as a failed attempt would walk an answered job towards a false "failed permanently".
+  try {
+    await stateStore.completeJob(job.id);
+    console.log(`[Retry] Job succeeded and was removed from the queue.`);
+  } catch (storeError) {
+    // The job keeps its lease and is offered again when that runs out; the handler's own
+    // already-answered check then makes that pass a cheap no-op.
+    console.error(
+      `[Retry] ${job.eventName} (tx ${job.transactionHash}) was retried successfully but could not be removed from the queue: ${storeError.message}`,
+    );
+    Sentry.captureException(storeError, {
+      tags: { site: "retry_complete_failed", eventName: job.eventName },
+    });
   }
+}
+
+async function recordFailedRetry(job, error) {
+  const attempt = job.attempts + 1;
+  console.error(
+    `[Retry] Attempt #${attempt} failed for event ${job.eventName}. Error: ${error.message}`,
+  );
+
+  try {
+    if (attempt >= MAX_RETRIES) {
+      await stateStore.exhaustJob(job.id, { error });
+      Sentry.captureException(error, {
+        tags: {
+          site: "retry_permanent_failure",
+          eventName: job.eventName,
+          blockNumber: job.blockNumber,
+        },
+      });
+      await sendAlert(
+        "CRITICAL: Job Failed Permanently",
+        `A job for event ${job.eventName} from block ${job.blockNumber} (tx ${job.transactionHash}) has failed all ${MAX_RETRIES} retries and will not be retried again. It stays on record as exhausted. Manual intervention required. Final error: ${error.message}`,
+      );
+    } else {
+      const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
+      await stateStore.rescheduleJob(job.id, { delayMs, error });
+    }
+  } catch (storeError) {
+    // The outcome could not be recorded. The job keeps its lease and comes back when that runs
+    // out, with this attempt uncounted — a retry too many, never a job lost.
+    console.error(
+      `[Retry] Could not record the failed attempt for ${job.eventName} (tx ${job.transactionHash}): ${storeError.message}`,
+    );
+    Sentry.captureException(storeError, {
+      tags: { site: "retry_record_failed", eventName: job.eventName },
+    });
+  }
+}
+
+// The timer fires every RETRY_INTERVAL_MS; a pass can take longer than that.
+let retryPassInFlight = false;
+
+/**
+ * Periodically retries failed jobs from the state store, with exponential backoff.
+ *
+ * Jobs are CLAIMED one at a time, each leased for RETRY_LEASE_MS from the moment its own retry
+ * starts, and passes never overlap — so a slow retry is not started a second time by the next
+ * tick or by another oracle. Then exactly one of three things happens to a job: it worked and is
+ * removed; it failed and is rescheduled; it failed for the last time and is kept on record as
+ * exhausted, with an alert.
+ */
+async function retryFailedJobs() {
+  if (retryPassInFlight) return;
+  retryPassInFlight = true;
+  try {
+    for (let handled = 0; handled < RETRY_BATCH_LIMIT; handled++) {
+      let job;
+      try {
+        [job] = await stateStore.claimDueJobs({ limit: 1, leaseMs: RETRY_LEASE_MS });
+        retryQueueOutage.success();
+      } catch (error) {
+        // The queue cannot be read right now. The jobs are still there; the next tick tries
+        // again, and a failure that lasts is alerted once.
+        console.error(`[Retry] Could not read the failed-job queue: ${error.message}`);
+        retryQueueOutage.failure(error);
+        return;
+      }
+
+      if (!job) return;
+      await retryClaimedJob(job);
+    }
+  } finally {
+    retryPassInFlight = false;
+  }
+}
+
+/**
+ * Wait for EVERY task of a batch, then fail if any of them failed.
+ *
+ * Not Promise.all: that rejects on the first failure while the other events are still being
+ * answered, and the caller would rescan the range and start each of them a second time.
+ */
+async function settleBatch(tasks) {
+  const results = await Promise.allSettled(tasks);
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
 }
 
 /**
@@ -2506,7 +2637,7 @@ async function processPastEvents(fromBlock, toBlock) {
 
         // Wait for ALL tasks in this batch to complete before updating state.
         // This ensures if the process crashes, we re-process this batch rather than skipping it.
-        await Promise.all(tasks);
+        await settleBatch(tasks);
       }
 
       // Update checkpoint after every successful batch to avoid re-processing
@@ -2632,12 +2763,13 @@ async function pollEvents(startBlock) {
         });
 
         // Wait for the queue to accept and process the batch
-        await Promise.all(tasks);
+        await settleBatch(tasks);
 
         // Update the state file to the block we just finished checking (toBlock).
         // This happens even if allEvents.length is 0.
         currentBlock = toBlock;
         await persistCursor(currentBlock);
+        pollLoopOutage.success();
 
         // This confirms the oracle is moving forward and saving state.
         if (allEvents.length > 0) {
@@ -2658,6 +2790,9 @@ async function pollEvents(startBlock) {
       }
     } catch (error) {
       console.error(`Error in polling loop: ${error.message}`);
+      // One failed pass is routine (an RPC hiccup). A loop that keeps failing is stuck on the
+      // same range and answering nothing; that is alerted once.
+      pollLoopOutage.failure(error);
       // Wait a bit longer before retrying if RPC is erroring
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
@@ -2702,14 +2837,13 @@ async function start() {
   // has one. initializeEliza() above has already run the migration that creates the tables,
   // against this same url.
   const { chainId } = await provider.getNetwork();
-  const selected = createStateStore({
+  ({ store: stateStore } = createStateStore({
     postgresUrl: agentStateDbUrl,
     chainId,
     contractAddress: contract.target,
     statePath: STATE_FILE_PATH,
     jobsPath: FAILED_JOBS_FILE_PATH,
-  });
-  stateStore = selected.store;
+  }));
   console.log(`[OracleState] Cursor and failed jobs are kept in: ${stateStore.backend}.`);
 
   // Process any failed jobs from previous runs before catching up on past events.
@@ -2718,7 +2852,6 @@ async function start() {
   // Catch up on any events that were missed while the oracle was offline.
   const resume = await resolveResumeCursor({
     store: stateStore,
-    legacyFileStore: selected.legacyFileStore,
     onUnavailable: async (error) => {
       console.error(`[OracleState] Could not read the stored cursor: ${error.message}`);
       Sentry.captureException(error, { tags: { site: "cursor_read_failed" } });
@@ -2729,19 +2862,28 @@ async function start() {
     },
   });
   if (resume.source === "none") {
-    console.log("No stored cursor found. Will start processing from a recent block.");
-  } else if (resume.source === "legacy-file") {
-    console.log(
-      `[OracleState] Carrying over cursor ${resume.cursor} from the previous state file.`,
-    );
+    // Normal on the very first start. On Postgres any later occurrence means the cursor row is
+    // gone, so it is a warning there: the lookback below can skip prompts.
+    const log = stateStore.backend === "postgres" ? console.warn : console.log;
+    log("No stored cursor found. Will start processing from a recent block.");
   }
 
   const latestBlock = await provider.getBlockNumber();
   // With no stored cursor, look back 1,800 blocks (about six minutes on Base's 200 ms blocks).
   // Otherwise, start from the next block after the last processed one.
   const lookback = 1800;
-  const fromBlock =
-    resume.cursor === null ? Math.max(0, latestBlock - lookback) : resume.cursor + 1;
+  let resumeCursor = resume.cursor;
+  if (resumeCursor !== null && resumeCursor > latestBlock) {
+    // The stored block does not exist (a reverted local chain, an RPC that lags). The store only
+    // moves forward, so it would refuse every save until the head caught up while memory claimed
+    // the head — and a restart in between would skip the difference.
+    console.warn(
+      `[OracleState] Stored cursor ${resumeCursor} is ahead of chain head ${latestBlock}; rewinding to the head.`,
+    );
+    resumeCursor = latestBlock;
+    await rewindCursor(resumeCursor);
+  }
+  const fromBlock = resumeCursor === null ? Math.max(0, latestBlock - lookback) : resumeCursor + 1;
 
   // 1. Catch Up Phase
   // Note: processPastEvents stores the cursor as it goes.

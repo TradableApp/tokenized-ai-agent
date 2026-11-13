@@ -89,18 +89,25 @@ describe("chain cursor persistence", () => {
       ).to.deep.equal([]);
     });
 
-    it("calls rewindCursor only from the reorg branch", () => {
+    it("calls rewindCursor only where the chain head is behind the cursor", () => {
+      // Two places may find the head behind the cursor: the poll loop (a reorg) and start-up (a
+      // stored cursor for blocks that do not exist). Nothing else may move the cursor backwards.
       const reorgIf = SOURCE.indexOf("if (reconciledBlock !== currentBlock)");
+      const aheadOfHeadIf = SOURCE.indexOf("if (resumeCursor !== null && resumeCursor > latestBlock)");
       expect(reorgIf, "the reorg branch should exist").to.be.greaterThan(-1);
+      expect(aheadOfHeadIf, "the start-up ahead-of-head branch should exist").to.be.greaterThan(-1);
 
       // Calls only: not the definition, not the store method it delegates to.
       const calls = matchesOf(SOURCE, /(?<![\w.])rewindCursor\(/g).filter(
         ({ offset }) => !SOURCE.slice(0, offset).endsWith("function "),
       );
-      expect(calls, "the reorg branch must rewind the cursor").to.have.lengthOf.at.least(1);
+      expect(calls, "both branches must rewind the cursor").to.have.lengthOf(2);
       expect(
-        calls.filter(outside(blockExtent(SOURCE, reorgIf))).map((m) => m.label),
-        "only a reorg may move the cursor backwards",
+        calls
+          .filter(outside(blockExtent(SOURCE, reorgIf)))
+          .filter(outside(blockExtent(SOURCE, aheadOfHeadIf)))
+          .map((m) => m.label),
+        "only a head behind the cursor may move it backwards",
       ).to.deep.equal([]);
     });
 

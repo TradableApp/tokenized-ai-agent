@@ -42,8 +42,7 @@ function defaultCreateDb(connectionString) {
  *   postgresUrl?: string|null, chainId: number|bigint, contractAddress: string,
  *   statePath: string, jobsPath: string, createDb?: (url: string) => object,
  * }} options
- * @returns {{ store: object, legacyFileStore: object|null }} `legacyFileStore` is set only on
- *   Postgres: the files an older oracle version may have left on the volume.
+ * @returns {{ store: object }}
  */
 function createStateStore({
   postgresUrl,
@@ -53,45 +52,66 @@ function createStateStore({
   jobsPath,
   createDb = defaultCreateDb,
 }) {
-  const fileStore = createFileStateStore({ statePath, jobsPath });
   if (!postgresUrl || !postgresUrl.trim()) {
-    return { store: fileStore, legacyFileStore: null };
+    return { store: createFileStateStore({ statePath, jobsPath }) };
   }
-  const store = createPostgresStateStore({ db: createDb(postgresUrl), chainId, contractAddress });
-  return { store, legacyFileStore: fileStore };
+  return {
+    store: createPostgresStateStore({ db: createDb(postgresUrl), chainId, contractAddress }),
+  };
+}
+
+// A database restart or a slow first connection at boot is common and short. About a minute of
+// patience is cheap next to what falling back costs (see resolveResumeCursor).
+const RESUME_RETRY_DELAYS_MS = [2000, 4000, 8000, 16000, 30000];
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * The block the oracle last finished, or null when it has to fall back to a recent-block lookback.
  *
  * Never throws: a database that cannot be read at start-up must not stop the oracle from
- * answering new prompts. It is reported through `onUnavailable` so the caller can alert — a
- * lookback after a long outage can skip prompts, and someone has to know.
+ * answering new prompts. But it does not give up quickly either. Falling back is not free — the
+ * oracle then saves the chain head over the cursor it could not read, and whatever lay between
+ * that cursor and the lookback window is skipped for good — so the read is retried first, and a
+ * fallback is reported through `onUnavailable` so the caller can alert.
  *
- * @param {{ store: object, legacyFileStore?: object|null, onUnavailable?: (error: Error) => any }} options
- * @returns {Promise<{ cursor: number|null, source: "store"|"legacy-file"|"none"|"unavailable" }>}
+ * A cursor file left by an older oracle version is deliberately NOT used: its cursor is past
+ * whatever sat in that version's failed-jobs file, which this store cannot read.
+ *
+ * @param {{
+ *   store: object, onUnavailable?: (error: Error) => any,
+ *   retryDelaysMs?: number[], sleep?: (ms: number) => Promise<any>,
+ * }} options
+ * @returns {Promise<{ cursor: number|null, source: "store"|"none"|"unavailable" }>}
  */
-async function resolveResumeCursor({ store, legacyFileStore = null, onUnavailable = () => {} }) {
-  let stored;
-  try {
-    stored = await store.loadCursor();
-  } catch (error) {
-    await onUnavailable(error);
-    return { cursor: null, source: "unavailable" };
-  }
-  if (stored !== null) {
-    return { cursor: stored, source: "store" };
-  }
-
-  // First boot on Postgres: carry over the cursor file the previous version wrote, if the volume
-  // still has it, so the deploy that introduces the database does not itself cause a lookback.
-  if (legacyFileStore) {
-    const legacy = await legacyFileStore.loadCursor().catch(() => null);
-    if (legacy !== null) {
-      return { cursor: legacy, source: "legacy-file" };
+async function resolveResumeCursor({
+  store,
+  onUnavailable = () => {},
+  retryDelaysMs = RESUME_RETRY_DELAYS_MS,
+  sleep = defaultSleep,
+}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+    try {
+      const stored = await store.loadCursor();
+      return stored === null
+        ? { cursor: null, source: "none" }
+        : { cursor: stored, source: "store" };
+    } catch (error) {
+      lastError = error;
+      if (attempt < retryDelaysMs.length) {
+        console.warn(
+          `[OracleState] Could not read the stored cursor (attempt ${attempt + 1}): ${error.message}. Retrying in ${retryDelaysMs[attempt]} ms.`,
+        );
+        await sleep(retryDelaysMs[attempt]);
+      }
     }
   }
-  return { cursor: null, source: "none" };
+
+  await onUnavailable(lastError);
+  return { cursor: null, source: "unavailable" };
 }
 
 module.exports = { createStateStore, resolveResumeCursor };
