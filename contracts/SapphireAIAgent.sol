@@ -569,6 +569,8 @@ contract SapphireAIAgent is Ownable, AccessControl {
 
     // A regeneration recorded its conversation when it was requested. A first answer has none
     // yet (nor has a regeneration requested before that was recorded): it takes its prompt's.
+    // Conversation ids start at 1 and the escrow never opens conversation 0, so 0 means
+    // "not recorded".
     uint256 conversationId = messageToConversation[_answerMessageId];
     if (conversationId == 0) {
       conversationId = messageToConversation[_promptMessageId];
@@ -651,10 +653,13 @@ contract SapphireAIAgent is Ownable, AccessControl {
     uint256 _newConversationId,
     string calldata _payload
   ) external onlyAIAgentEscrow {
-    // The new id must be free: a branch never takes over a conversation that has an owner.
+    // The new id must be free and already handed out by the counter, the same rule as for a
+    // prompt: a branch never takes over a conversation that has an owner.
     if (
       conversationToOwner[_originalConversationId] != _user ||
-      conversationToOwner[_newConversationId] != address(0)
+      conversationToOwner[_newConversationId] != address(0) ||
+      // solhint-disable-next-line gas-strict-inequalities
+      _newConversationId >= conversationIdCounter
     ) {
       revert Unauthorized();
     }

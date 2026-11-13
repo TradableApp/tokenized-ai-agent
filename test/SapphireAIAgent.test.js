@@ -540,6 +540,8 @@ describe("SapphireAIAgent", function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
       const newConversationId = 2;
+      // The branch takes an id the agent has handed out, as the escrow does.
+      await mockEscrow.callReserveConversationId();
 
       await expect(
         mockEscrow.callSubmitBranchRequest(
@@ -605,6 +607,8 @@ describe("SapphireAIAgent", function () {
       const originalConversationId = 1;
       const branchPointMessageId = 1;
       const newConversationId = 2;
+      // The branch takes an id the agent has handed out, as the escrow does.
+      await mockEscrow.callReserveConversationId();
       await mockEscrow.callSubmitBranchRequest(
         user.address,
         originalConversationId,
