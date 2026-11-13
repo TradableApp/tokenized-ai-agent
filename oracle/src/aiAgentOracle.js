@@ -2222,6 +2222,10 @@ async function setOracleAddress() {
 /**
  * A wrapper for event handlers that distinguishes between retryable and fatal errors.
  * Retryable errors are saved to a queue for later processing.
+ *
+ * It never saves the chain cursor. Up to five of these run at once and finish out of order, so a
+ * save from here could move the cursor past an earlier event that is still being answered; a
+ * crash would then resume after it. The scan loops save the cursor once the whole batch is done.
  * @param {string} eventName - The name of the event being processed.
  * @param {Function} handler - The async event handler function to execute.
  * @param  {...any} args - The arguments passed by the ethers.js event listener.
@@ -2244,8 +2248,6 @@ async function handleAndRecord(eventName, handler, ...args) {
     }
 
     await handler(...args);
-
-    await persistCursor(event.blockNumber);
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
     // Membership is by TYPE now, not by message text: payloadValidator raises BadInputError on a
@@ -2256,9 +2258,6 @@ async function handleAndRecord(eventName, handler, ...args) {
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${error.message}`,
       );
       // We do NOT throw, we do NOT alert, we do NOT queue for retry.
-      // We update state and move on.
-      await persistCursor(event.blockNumber);
-
       return;
     }
 
@@ -2293,11 +2292,8 @@ async function handleAndRecord(eventName, handler, ...args) {
         delayMs: BASE_RETRY_DELAY_MS,
       });
 
-      // Only NOW is the block progress safe to save: the job is durably queued, so advancing the
-      // cursor hands responsibility to the retry loop rather than dropping the event. If the
-      // enqueue above throws, this is correctly skipped and the catch-up scanner sees the event
-      // again — which is why the write must come first.
-      await persistCursor(event.blockNumber);
+      // If that enqueue throws, the error leaves this function on purpose: the event is neither
+      // answered nor queued, so the scan that owns the batch must fail and meet it again.
     } else {
       const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
       console.error(alertMessage, error);
