@@ -355,6 +355,25 @@ describe("Conversations and regenerations — who owns what, and where an answer
           ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
           expect(await aiAgent.conversationToOwner(next)).to.equal(ethers.ZeroAddress);
         });
+
+        it("never gives conversation id 0 an owner, by prompt or by branch", async function () {
+          // The counter starts at 1, so 0 is never handed out; the agent reads 0 as "no
+          // conversation recorded". The escrow never passes it on, and the agent refuses it too.
+          const [deployer, user, oracle] = await ethers.getSigners();
+          const aiAgent = await chain.deployAgent(deployer, oracle);
+          await aiAgent.connect(deployer).setAgentEscrow(deployer.address);
+          const asEscrow = aiAgent.connect(deployer);
+          await asEscrow.reserveConversationId();
+          await chain.promptRequest(asEscrow, user.address, 1, 0, 1);
+
+          await expect(
+            chain.promptRequest(asEscrow, user.address, 0, 2, 3),
+          ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+          await expect(
+            chain.branchRequest(asEscrow, user.address, 1, 0, 0),
+          ).to.be.revertedWithCustomError(aiAgent, "Unauthorized");
+          expect(await aiAgent.conversationToOwner(0)).to.equal(ethers.ZeroAddress);
+        });
       });
 
       describe("where a regeneration's answer is filed", function () {
