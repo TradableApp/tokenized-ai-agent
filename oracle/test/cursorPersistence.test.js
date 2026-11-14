@@ -132,8 +132,8 @@ describe("chain cursor persistence", () => {
       const calls = matchesOf(POLLER_SOURCE, /(?<![\w.])persistCursor\(/g);
 
       expect(calls).to.have.lengthOf(1);
-      expect(pass.indexOf("await settle(")).to.be.greaterThan(-1);
-      expect(pass.indexOf("persistCursor(")).to.be.greaterThan(pass.indexOf("await settle("));
+      expect(pass.indexOf("await settleTasks(")).to.be.greaterThan(-1);
+      expect(pass.indexOf("persistCursor(")).to.be.greaterThan(pass.indexOf("await settleTasks("));
     });
 
     it("defines the helpers it depends on (so the guard cannot pass vacuously)", () => {

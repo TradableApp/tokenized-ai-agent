@@ -38,9 +38,14 @@ const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
-const { queryOracleWorkEvents } = require("./eventLogQuery");
+const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
 const { createRangePoller } = require("./eventPoller");
-const { createPollBackoff } = require("./pollBackoff");
+const {
+  DEFAULT_POLL_BACKOFF_CAP_MS,
+  DEFAULT_POLL_INTERVAL_MS,
+  createPollBackoff,
+} = require("./pollBackoff");
+const { describeError } = require("./errorDescription");
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
@@ -118,7 +123,7 @@ function absorbedFailureTracker({ what, consequence, alertAfterMs, site }) {
       Sentry.captureException(error, { tags: { site } });
       return sendAlert(
         `Oracle: ${what} has been failing for ${minutes(failingForMs)} min`,
-        `${what} has failed ${failures} time(s) over ${minutes(failingForMs)} minutes. ${consequence} Last error: ${error.message}`,
+        `${what} has failed ${failures} time(s) over ${minutes(failingForMs)} minutes. ${consequence} Last error: ${describeError(error)}`,
       );
     },
     onRecover: ({ failedForMs, failures, alerted }) => {
@@ -2698,7 +2703,9 @@ async function processPastEvents(fromBlock, toBlock) {
 
     try {
       // One query for all four event types, already in chain order.
-      const allEvents = await queryOracleWorkEvents(contract, currentStart, currentEnd);
+      const allEvents = await queryOracleWorkEvents(contract, currentStart, currentEnd, {
+        onUndecodable: reportUndecodableLog,
+      });
 
       if (allEvents.length > 0) {
         console.log(`     Found ${allEvents.length} events in batch. Queueing...`);
@@ -2719,8 +2726,9 @@ async function processPastEvents(fromBlock, toBlock) {
       // Optional: Small delay to be nice to the RPC
       await new Promise((resolve) => setTimeout(resolve, 1000));
     } catch (error) {
-      const alertMessage = `Failed during historical event catch-up process between blocks ${currentStart}-${currentEnd}. The oracle may need intervention. Error: ${error.message}`;
-      console.error(alertMessage, error);
+      // Described, and the raw error not printed: a provider error carries the request address.
+      const alertMessage = `Failed during historical event catch-up process between blocks ${currentStart}-${currentEnd}. The oracle may need intervention. Error: ${describeError(error)}`;
+      console.error(alertMessage);
 
       // Critical failure in catch-up stops the oracle startup
       await sendAlert("Oracle Catch-up Failed", alertMessage);
@@ -2732,13 +2740,10 @@ async function processPastEvents(fromBlock, toBlock) {
   console.log("Catch-up complete.");
 }
 
-// The wait between poll passes when nothing is failing, and the longest wait while the provider
-// is refusing requests. The right base depends on the provider's limits, not on the block time:
-// Base produces a block far more often than a free endpoint allows a log query.
-const DEFAULT_POLL_INTERVAL_MS = 4000;
-const DEFAULT_POLL_BACKOFF_CAP_MS = 60 * 1000;
-
-/** A positive whole number from the environment, or the default when unset or not one. */
+/**
+ * A positive whole number from the environment, or the default when unset. Start-up validation
+ * (startupConfig.js) has already refused a set value that is not one.
+ */
 function positiveIntFromEnv(name, fallback) {
   const value = Number(process.env[name]);
 
@@ -2751,6 +2756,31 @@ const EVENT_HANDLERS = {
   BranchRequested: handleBranch,
   MetadataUpdateRequested: handleMetadataUpdate,
 };
+
+// The filter asks for ORACLE_WORK_EVENTS; an event with no handler here would be fetched and
+// then ignored, so the two lists must name the same events.
+if (
+  ORACLE_WORK_EVENTS.length !== Object.keys(EVENT_HANDLERS).length ||
+  !ORACLE_WORK_EVENTS.every((name) => typeof EVENT_HANDLERS[name] === "function")
+) {
+  throw new Error("aiAgentOracle: every oracle-work event needs exactly one handler");
+}
+
+/**
+ * A log matched the oracle-work filter but the ABI could not decode it: a paid request this
+ * oracle will not answer. The cursor moves on, so page someone. Fire-and-forget.
+ */
+function reportUndecodableLog(log) {
+  const where = `block ${log.blockNumber}, tx ${log.transactionHash}, log ${log.index}`;
+  Sentry.captureMessage(`Undecodable oracle-work log (${where})`, {
+    level: "error",
+    tags: { site: "undecodable_log" },
+  });
+  sendAlert(
+    "Oracle: an event could not be decoded and was skipped",
+    `A log at ${where} matched the oracle's event filter but could not be decoded with the ABI in this build, so it was not answered. The contract's ABI and this image are probably out of step. The user is refunded only by the one-hour timeout.`,
+  ).catch((err) => console.error("sendAlert (undecodable log) failed:", err.message));
+}
 
 /**
  * Hand one oracle-work event to its handler.
@@ -2784,7 +2814,8 @@ async function pollEvents(startBlock) {
     batchSize: parseInt(process.env.EVENT_BATCH_SIZE) || 2000,
     getHead: () => provider.getBlockNumber(),
     roleReady: () => oracleRole.ready(),
-    queryEvents: (fromBlock, toBlock) => queryOracleWorkEvents(contract, fromBlock, toBlock),
+    queryEvents: (fromBlock, toBlock) =>
+      queryOracleWorkEvents(contract, fromBlock, toBlock, { onUndecodable: reportUndecodableLog }),
     handleEvent: (event) => queue.add(() => dispatchEvent(event)),
     settle: settleBatch,
     persistCursor,

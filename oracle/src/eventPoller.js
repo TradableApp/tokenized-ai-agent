@@ -1,6 +1,7 @@
 "use strict";
 
 const { reconcileCursor } = require("./blockCursor");
+const { describeError } = require("./errorDescription");
 
 /**
  * One pass of the poll loop, as a function the caller runs and then sleeps after.
@@ -45,7 +46,7 @@ function createRangePoller({
   onReorg = () => {},
   outage,
   backoff,
-  settle = settleAll,
+  settle,
   catchUpDelayMs = 500,
   log = console,
 }) {
@@ -54,6 +55,7 @@ function createRangePoller({
   }
 
   let cursor = startBlock;
+  const settleTasks = settle ?? ((tasks) => settleAll(tasks, log));
 
   async function reconcileWithHead(head) {
     const rewoundTo = reconcileCursor(cursor, head);
@@ -84,7 +86,7 @@ function createRangePoller({
     const toBlock = Math.min(cursor + batchSize, head);
 
     const events = await queryEvents(fromBlock, toBlock);
-    await settle(events.map((event) => handleEvent(event)));
+    await settleTasks(events.map((event) => handleEvent(event)));
 
     // Saved even when the range held no events, so an idle chain still moves the cursor.
     cursor = toBlock;
@@ -107,13 +109,22 @@ function createRangePoller({
         const stillRaised = backoff.isRaised();
         const waitMs = backoff.success();
 
-        // Behind the head: come straight back, unless the provider has just been refusing.
-        return !reachedHead && !stillRaised ? catchUpDelayMs : waitMs;
+        if (reachedHead) return waitMs;
+
+        // Behind the head: come straight back. After a failure, a little less eagerly until
+        // the backoff has recovered, but never at the full backed-off wait: with a narrow log
+        // range the chain would pull further ahead on every pass.
+        return stillRaised
+          ? Math.min(waitMs, catchUpDelayMs * RECOVERING_CATCH_UP_FACTOR)
+          : catchUpDelayMs;
       } catch (error) {
-        log.error(`Error in polling loop: ${error.message}`);
+        // Described, not passed on as it is: a provider error's own message carries the
+        // request's address. The same text is what the outage alert quotes.
+        const described = new Error(describeError(error));
+        log.error(`Error in polling loop: ${described.message}`);
         // One failed pass is routine. A loop that keeps failing is stuck on the same range and
         // answering nothing; the outage tracker alerts on that once.
-        outage.failure(error);
+        outage.failure(described);
 
         return backoff.failure(error);
       }
@@ -129,12 +140,20 @@ function createRangePoller({
 /**
  * Wait for every task, then fail if any failed. Not Promise.all: that rejects on the first
  * failure while the other events are still being answered, and the rescan would start each of
- * them a second time. The oracle passes its own version, which also reports the other failures.
+ * them a second time. The first failure is thrown; the others are logged so they do not vanish.
  */
-async function settleAll(tasks) {
+async function settleAll(tasks, log) {
   const results = await Promise.allSettled(tasks);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) throw failed.reason;
+  const failures = results.filter((result) => result.status === "rejected");
+  for (const { reason } of failures.slice(1)) {
+    log.error(`[Poll] Another event of the same pass also failed: ${describeError(reason)}`);
+  }
+  if (failures.length > 0) throw failures[0].reason;
 }
+
+// While recovering from a failure and behind the head, wait this many catch-up waits per pass.
+// 4 × 500 ms = 2 s: with a 10-block range that is 5 blocks a second, the rate at which Base
+// produces them (200 ms blocks), so the oracle holds its distance until the backoff has gone.
+const RECOVERING_CATCH_UP_FACTOR = 4;
 
 module.exports = { createRangePoller };

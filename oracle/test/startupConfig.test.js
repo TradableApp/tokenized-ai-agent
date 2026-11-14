@@ -208,7 +208,11 @@ describe("startup config validation", () => {
     it("accepts them unset, and as positive whole numbers", () => {
       expect(problemsOf({})).to.equal("");
       expect(
-        problemsOf({ POLL_INTERVAL_MS: "3000", POLL_BACKOFF_CAP_MS: "60000", EVENT_BATCH_SIZE: "10" }),
+        problemsOf({
+          POLL_INTERVAL_MS: "3000",
+          POLL_BACKOFF_CAP_MS: "60000",
+          EVENT_BATCH_SIZE: "10",
+        }),
       ).to.equal("");
     });
 

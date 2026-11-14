@@ -34,21 +34,31 @@ function compareLogOrder(a, b) {
  *
  * The caller keeps the range inside the provider's limit; a failed query is thrown to it.
  *
+ * A log that matched the filter but could not be decoded is left out and handed to
+ * `onUndecodable`. ethers returns such a log, with no event name, when the ABI in use does not
+ * fit the deployed contract (an `indexed` flag that differs is enough, since it is not part of
+ * the signature). The caller's cursor moves past it, so the report is the only trace of it.
+ *
  * @param {import("ethers").Contract} contract
  * @param {number} fromBlock
  * @param {number} toBlock
+ * @param {{ onUndecodable?: (log: any) => any }} [options]
  * @returns {Promise<import("ethers").EventLog[]>}
  */
-async function queryOracleWorkEvents(contract, fromBlock, toBlock) {
+async function queryOracleWorkEvents(contract, fromBlock, toBlock, { onUndecodable } = {}) {
   const logs = await contract.queryFilter(oracleWorkTopicFilter(contract), fromBlock, toBlock);
 
-  // ethers returns a bare Log, with no event name, for a topic its interface cannot decode.
-  // The filter only asks for signatures taken from that interface, so this is not expected.
   const named = logs.filter((log) => {
     if (log.eventName) return true;
+
     console.warn(
-      `[Poll] A log in block ${log.blockNumber} matched the oracle-work filter but could not be decoded; skipped.`,
+      `[Poll] A log in block ${log.blockNumber} (tx ${log.transactionHash}, log ${log.index}) matched the oracle-work filter but could not be decoded; skipped.`,
     );
+    try {
+      onUndecodable?.(log);
+    } catch (error) {
+      console.error(`[Poll] Reporting an undecodable log failed: ${error.message}`);
+    }
 
     return false;
   });

@@ -58,18 +58,30 @@ function createPollBackoff({ baseMs, capMs }) {
 /**
  * The Retry-After a provider sent with a refusal, in milliseconds; 0 when there is none.
  *
- * ethers attaches the HTTP response to the error it throws (`error.info.response`, headers in
+ * ethers attaches the HTTP response to the error it throws (`error.response`, header names in
  * lower case). Only the whole-seconds form is read; the HTTP-date form falls back to the doubled
- * wait.
+ * wait. A value above the cap is held to the cap by the caller: the cap is the longest the loop
+ * goes without looking at the chain.
  *
  * @param {any} error
  * @returns {number}
  */
 function retryAfterMs(error) {
-  const value = error?.info?.response?.headers?.["retry-after"];
+  const value = error?.response?.headers?.["retry-after"];
   if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return 0;
 
   return Number(value.trim()) * 1000;
 }
 
-module.exports = { createPollBackoff, retryAfterMs };
+// The wait between poll passes when nothing is failing, and the longest wait while the provider
+// is refusing requests. The right base depends on the provider's limits, not on the block time:
+// Base produces a block far more often than a free endpoint allows a log query.
+const DEFAULT_POLL_INTERVAL_MS = 4000;
+const DEFAULT_POLL_BACKOFF_CAP_MS = 60 * 1000;
+
+module.exports = {
+  DEFAULT_POLL_BACKOFF_CAP_MS,
+  DEFAULT_POLL_INTERVAL_MS,
+  createPollBackoff,
+  retryAfterMs,
+};
