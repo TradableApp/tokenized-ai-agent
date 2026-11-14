@@ -65,11 +65,12 @@ function createRangePoller({
     log.warn(
       `  ↩ Chain head ${head} dropped below cursor ${cursor} (reorg/revert) — rewinding cursor to ${rewoundTo}.`,
     );
-    // Reporting must not stall or fail the rewind.
+    // Reporting must not stall or fail the rewind, whether it throws or rejects later.
+    const reportFailed = (error) => log.error(`Reorg report failed: ${describeError(error)}`);
     try {
-      onReorg({ head, cursor, rewoundTo });
+      Promise.resolve(onReorg({ head, cursor, rewoundTo })).catch(reportFailed);
     } catch (error) {
-      log.error(`Reorg report failed: ${error.message}`);
+      reportFailed(error);
     }
     cursor = rewoundTo;
     await rewindCursor(cursor);

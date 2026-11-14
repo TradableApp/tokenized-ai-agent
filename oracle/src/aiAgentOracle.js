@@ -2687,7 +2687,7 @@ async function processPastEvents(fromBlock, toBlock) {
   // BATCHING CONFIGURATION
   // The widest block range one log query may cover. Providers differ widely (some free tiers
   // allow as few as 5 or 10 blocks), so set EVENT_BATCH_SIZE to the endpoint's limit.
-  const BATCH_SIZE = parseInt(process.env.EVENT_BATCH_SIZE) || 2000;
+  const BATCH_SIZE = positiveIntFromEnv("EVENT_BATCH_SIZE", DEFAULT_EVENT_BATCH_SIZE);
 
   let currentStart = fromBlock;
 
@@ -2737,6 +2737,9 @@ async function processPastEvents(fromBlock, toBlock) {
 
   console.log("Catch-up complete.");
 }
+
+// The widest block range of one log query when EVENT_BATCH_SIZE is unset.
+const DEFAULT_EVENT_BATCH_SIZE = 2000;
 
 /**
  * A positive whole number from the environment, or the default when unset. Start-up validation
@@ -2809,7 +2812,7 @@ async function pollEvents(startBlock) {
   const poller = createRangePoller({
     startBlock,
     // The same range limit as the catch-up, to respect the provider's eth_getLogs block range.
-    batchSize: parseInt(process.env.EVENT_BATCH_SIZE) || 2000,
+    batchSize: positiveIntFromEnv("EVENT_BATCH_SIZE", DEFAULT_EVENT_BATCH_SIZE),
     getHead: () => provider.getBlockNumber(),
     roleReady: () => oracleRole.ready(),
     queryEvents: (fromBlock, toBlock) =>
