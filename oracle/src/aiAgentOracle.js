@@ -3033,7 +3033,9 @@ async function start() {
   // Process any failed jobs from previous runs before catching up on past events.
   await retryFailedJobs();
 
-  // The head as it is now: a wait for the role above can have lasted any length of time.
+  // The head as it is after that first wait, which can have lasted any length of time. Blocks
+  // added during a further wait inside the catch-up scan are picked up by the poll loop, which
+  // reads the head again.
   const latestBlock = await provider.getBlockNumber();
 
   // 1. Catch Up Phase
