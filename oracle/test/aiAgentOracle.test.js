@@ -123,6 +123,9 @@ describe("aiAgentOracle", function () {
       "./roflUtility": {
         submitTx: sinon.stub().resolves("0xRoflTxHash"),
       },
+      "./oracleHeartbeat": {
+        startOracleHeartbeat: sinon.stub().resolves({ stop: () => {} }),
+      },
       "./alerting": {
         sendAlert: sinon.stub().resolves(),
       },
@@ -218,6 +221,7 @@ describe("aiAgentOracle", function () {
     delete process.env.AI_PROVIDER;
     delete process.env.PRIVATE_KEY;
     delete process.env.CHAIN_GPT_API_KEY;
+    delete process.env.ORACLE_ROLE_RECHECK_MS;
     // RESTORED, not deleted — contractUtility reads this at MODULE LOAD, so clearing it starves
     // any later file that requires aiAgentOracle fresh. Same pattern as e2e/helpers.js.
     if (originalAgentAddress === undefined) delete process.env.AI_AGENT_CONTRACT_ADDRESS;
@@ -1000,23 +1004,332 @@ describe("aiAgentOracle", function () {
       expect(mockedContract.addOracle.called).to.be.false;
     });
 
-    it("ensureOracleAuthorized should send alert and throw on EVM if the role is missing", async () => {
+    it("ensureOracleAuthorized on EVM pages once when the role is missing, and does not exit", async () => {
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
       mockedContract.isOracle.resolves(false);
 
-      try {
-        await aiAgentOracle.ensureOracleAuthorized();
-        expect.fail("Should have thrown an error");
-      } catch (error) {
-        expect(error.message).to.include("Oracle not authorized on EVM chain");
-        expect(error.message).to.include("addOracle");
-        // Use sinon.assert to ensure this specific alert was sent, avoiding ambiguity.
+      // Returns: start-up carries on (state store, heartbeat) and the gated steps do the waiting.
+      await aiAgentOracle.ensureOracleAuthorized();
+
+      const notAuthorized = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes("Oracle Not Authorized"));
+      expect(notAuthorized).to.have.lengthOf(1);
+      expect(notAuthorized[0].args[1]).to.include("addOracle(0xOracleAddress)");
+      // Only the contract owner can grant the role on EVM; the oracle never tries.
+      expect(mockedContract.addOracle.called).to.be.false;
+    });
+
+    it("ensureOracleAuthorized on Sapphire registers the oracle itself and pages nobody", async () => {
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      aiAgentOracle.initForTest({
+        ...stubs["./contractUtility"].initializeOracle(),
+        isSapphire: true,
+      });
+      mockedContract.isOracle.resolves(false);
+      mockedContract.addOracle.populateTransaction = sinon.stub().resolves({ data: "0xdata" });
+
+      await aiAgentOracle.ensureOracleAuthorized();
+
+      // Directly on the Sapphire localnet, through the ROFL app anywhere else.
+      const registered = mockedContract.addOracle.called || stubs["./roflUtility"].submitTx.called;
+      expect(registered, "the oracle registers itself").to.be.true;
+      const notAuthorized = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes("Oracle Not Authorized"));
+      expect(notAuthorized).to.have.lengthOf(0);
+    });
+
+    it("start() on EVM begins the heartbeat before it waits for the role, then catches up", async () => {
+      process.env.ORACLE_ROLE_RECHECK_MS = "1";
+      process.env.EVENT_BATCH_SIZE = "10000";
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      mockedContract.queryFilter.resolves([]);
+      // Start-up check and one recheck find no role; then it is granted.
+      mockedContract.isOracle.onCall(0).resolves(false);
+      mockedContract.isOracle.onCall(1).resolves(false);
+      mockedContract.isOracle.resolves(true);
+
+      await aiAgentOracle.start();
+      delete process.env.EVENT_BATCH_SIZE;
+
+      // Nothing was scanned before the role was confirmed.
+      expect(mockedContract.isOracle.callCount).to.be.at.least(3);
+      sinon.assert.callOrder(mockedContract.isOracle, mockedContract.queryFilter);
+      // The heartbeat is what tells a waiting oracle from a dead one, so it must not sit behind
+      // the wait: it began before the check that found the role granted.
+      const heartbeat = stubs["./oracleHeartbeat"].startOracleHeartbeat;
+      sinon.assert.calledOnce(heartbeat);
+      expect(heartbeat.firstCall.calledBefore(mockedContract.isOracle.getCall(2))).to.be.true;
+    });
+
+    describe("losing the oracle role while running", () => {
+      // The revert an oracle gets from the agent when it does not hold the role.
+      const UNAUTHORIZED_SELECTOR = ethers.id("UnauthorizedOracle()").slice(0, 10);
+      const unauthorizedRevert = () =>
+        Object.assign(new Error("execution reverted"), { data: UNAUTHORIZED_SELECTOR });
+      const fatalAlerts = () =>
+        stubs["./alerting"].sendAlert
+          .getCalls()
+          .filter((c) => String(c.args[0]).includes("Oracle Fatal Error"));
+      let mockedContract;
+      let mockedProvider;
+
+      beforeEach(() => {
+        process.env.ORACLE_ROLE_RECHECK_MS = "1";
+        mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+        mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
+        mockedContract.interface.getError = (name) =>
+          name === "UnauthorizedOracle" ? { selector: UNAUTHORIZED_SELECTOR } : null;
+        // The role is missing unless a test grants it.
+        mockedContract.isOracle.resolves(false);
+      });
+
+      /** From now on: `stillMissing` rechecks find no role, then it is granted. */
+      const grantRoleAfter = (stillMissing) => {
+        mockedContract.isOracle.resetHistory();
+        for (let call = 0; call < stillMissing; call++) {
+          mockedContract.isOracle.onCall(call).resolves(false);
+        }
+        mockedContract.isOracle.onCall(stillMissing).resolves(true);
+      };
+
+      // What ethers gives when the revert happens as the transaction is mined rather than at gas
+      // estimation: a receipt, and no revert data at all.
+      const minedRevert = () =>
+        Object.assign(new Error("transaction execution reverted"), {
+          code: "CALL_EXCEPTION",
+          data: null,
+          receipt: { status: 0 },
+        });
+
+      const eventFor = (name) => ({
+        blockNumber: 101,
+        transactionHash: txHash(name),
+        index: 0,
+        args: [],
+        getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+      });
+
+      /** A queued prompt whose receipt and log resolve, so a retry reaches submitAnswer. */
+      const seedRetryablePrompt = async (name) => {
+        const payload = ethers.toUtf8Bytes(
+          createEncryptedString(
+            { promptText: "held while unauthorized", isNewConversation: true },
+            FAKE_SESSION_KEY,
+          ),
+        );
+        const tx = txHash(name);
+        await seedFailedJob({ transactionHash: tx, logIndex: 0, blockNumber: 101 });
+        mockedProvider.getTransactionReceipt.resolves({
+          logs: [{ address: "0xMockedContractAddress", index: 0, transactionHash: tx }],
+          blockNumber: 101,
+          transactionHash: tx,
+        });
+        mockedContract.interface.parseLog.returns({
+          name: "PromptSubmitted",
+          args: ["0xUser", 1, 2, 3, payload, "key"],
+        });
+        mockedProvider.getBlock.resolves({ timestamp: Date.now() });
+      };
+
+      it("queues the event for retry instead of dropping it as fatal", async () => {
+        const event = eventFor("role-lost");
+
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(unauthorizedRevert()),
+          event,
+        );
+
+        expect(fatalAlerts(), "a lost role is not a fatal error").to.have.lengthOf(0);
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
         sinon.assert.calledWithMatch(
           stubs["./alerting"].sendAlert,
           "CRITICAL: Oracle Not Authorized",
         );
-        expect(mockedContract.addOracle.called).to.be.false;
-      }
+      });
+
+      it("pages once for a batch of events that all hit the lost role", async () => {
+        // Already being answered together when the role went; each is refused in turn.
+        await Promise.all(
+          ["lost-a", "lost-b", "lost-c"].map((name) =>
+            aiAgentOracle.handleAndRecord(
+              "PromptSubmitted",
+              sinon.stub().rejects(unauthorizedRevert()),
+              eventFor(name),
+            ),
+          ),
+        );
+
+        const pages = stubs["./alerting"].sendAlert
+          .getCalls()
+          .filter((c) => String(c.args[0]).includes("Oracle Not Authorized"));
+        expect(pages).to.have.lengthOf(1);
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 3, exhausted: 0 });
+      });
+
+      it("does not count a retry that hits the lost role as a failed attempt", async () => {
+        await seedRetryablePrompt("retry-unauthorized");
+        mockedContract.submitAnswer.rejects(unauthorizedRevert());
+        // The role is there when the pass starts and gone when the answer is submitted; once the
+        // loss is confirmed the pass waits, so grant it again for the pass to end.
+        mockedContract.isOracle.resetHistory();
+        mockedContract.isOracle.onCall(0).resolves(false);
+        mockedContract.isOracle.resolves(true);
+
+        await aiAgentOracle.retryFailedJobs();
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+        // The job keeps its lease; once that runs out it is offered again, attempts untouched.
+        storeClock.ms += 24 * 60 * 60 * 1000;
+        const [job] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+        expect(job.attempts).to.equal(0);
+      });
+
+      it("does not count a retry refused in a moment the role was gone, even if it is back", async () => {
+        await seedRetryablePrompt("retry-refused-role-back");
+        mockedContract.submitAnswer.rejects(unauthorizedRevert());
+        // Refused, but the owner has granted the role again by the time the oracle asks.
+        mockedContract.isOracle.resolves(true);
+
+        await aiAgentOracle.retryFailedJobs();
+
+        sinon.assert.neverCalledWithMatch(stubs["./alerting"].sendAlert, "Oracle Not Authorized");
+        storeClock.ms += 24 * 60 * 60 * 1000;
+        const [job] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+        expect(job.attempts).to.equal(0);
+      });
+
+      it("holds the retry pass until the role is back, then answers the queued prompt", async () => {
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(unauthorizedRevert()),
+          eventFor("role-lost-then-restored"),
+        );
+        // Drop that queue entry: this test follows one prompt it can resolve end to end.
+        storeClock.ms += 24 * 60 * 60 * 1000;
+        const [first] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+        await stateStore.completeJob(first.id);
+        await seedRetryablePrompt("answered-after-restore");
+        grantRoleAfter(1);
+
+        await aiAgentOracle.retryFailedJobs();
+
+        expect(mockedContract.isOracle.callCount).to.equal(2);
+        // Nothing was submitted before the role was confirmed.
+        sinon.assert.callOrder(mockedContract.isOracle, mockedContract.submitAnswer);
+        expect(mockedContract.submitAnswer.calledOnce).to.be.true;
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+      });
+
+      it("recognises a revert at mining time, which carries no reason, by asking the chain", async () => {
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(minedRevert()),
+          eventFor("mined-revert-role-gone"),
+        );
+
+        expect(fatalAlerts()).to.have.lengthOf(0);
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+        sinon.assert.calledWithMatch(
+          stubs["./alerting"].sendAlert,
+          "CRITICAL: Oracle Not Authorized",
+        );
+      });
+
+      it("leaves a reasonless revert fatal when the oracle does hold the role", async () => {
+        mockedContract.isOracle.resolves(true);
+
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(minedRevert()),
+          eventFor("mined-revert-other-cause"),
+        );
+
+        expect(fatalAlerts()).to.have.lengthOf(1);
+        sinon.assert.neverCalledWithMatch(stubs["./alerting"].sendAlert, "Oracle Not Authorized");
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+      });
+
+      it("queues the event without paging when the role is already back", async () => {
+        // Refused, but by the time the oracle asks, the owner has granted the role again.
+        mockedContract.isOracle.resolves(true);
+
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(unauthorizedRevert()),
+          eventFor("refused-then-granted"),
+        );
+
+        expect(fatalAlerts()).to.have.lengthOf(0);
+        sinon.assert.neverCalledWithMatch(stubs["./alerting"].sendAlert, "Oracle Not Authorized");
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+      });
+
+      it("does not take the selector from the transaction's own calldata or the message", async () => {
+        mockedContract.isOracle.resolves(true);
+        const lookalike = Object.assign(new Error(`bad thing ${UNAUTHORIZED_SELECTOR}`), {
+          transaction: { data: UNAUTHORIZED_SELECTOR + "00".repeat(32) },
+        });
+
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(lookalike),
+          eventFor("selector-lookalike"),
+        );
+
+        expect(mockedContract.isOracle.called, "not even a candidate").to.be.false;
+        expect(fatalAlerts()).to.have.lengthOf(1);
+      });
+
+      it("holds an event that was already queued, before any work is spent on it", async () => {
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(unauthorizedRevert()),
+          eventFor("first-to-hit"),
+        );
+        grantRoleAfter(1);
+        const handler = sinon.stub().resolves();
+
+        await aiAgentOracle.handleAndRecord("PromptSubmitted", handler, eventFor("queued-behind"));
+
+        expect(mockedContract.isOracle.callCount).to.equal(2);
+        sinon.assert.callOrder(mockedContract.isOracle, mockedContract.isOracle, handler);
+      });
+
+      it("holds the catch-up scan until the role is back", async () => {
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(unauthorizedRevert()),
+          eventFor("lost-before-catch-up"),
+        );
+        grantRoleAfter(1);
+        mockedContract.queryFilter.resolves([]);
+
+        await aiAgentOracle.processPastEvents(1, 10);
+
+        expect(mockedContract.isOracle.callCount).to.equal(2);
+        sinon.assert.callOrder(mockedContract.isOracle, mockedContract.queryFilter);
+      });
+
+      it("tells a Sapphire operator to restart, not to ask the owner", async () => {
+        aiAgentOracle.initForTest({
+          ...stubs["./contractUtility"].initializeOracle(),
+          isSapphire: true,
+        });
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          sinon.stub().rejects(unauthorizedRevert()),
+          eventFor("sapphire-role-lost"),
+        );
+
+        const page = stubs["./alerting"].sendAlert
+          .getCalls()
+          .find((c) => String(c.args[0]).includes("Oracle Not Authorized"));
+        expect(page.args[1]).to.include("Restart the oracle");
+        expect(page.args[1]).to.not.include("contract owner must call");
+      });
     });
 
     it("processPastEvents should correctly route all event types", async () => {

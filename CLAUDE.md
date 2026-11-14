@@ -138,6 +138,8 @@ The main 1940-line orchestration file. High-level flow on each contract event:
 
 Sequential transaction submission is enforced by `txMutex` (async-mutex) to prevent nonce collisions.
 
+**Oracle role.** Every submission needs the oracle role on the agent (`isOracle(address)`; the owner grants it with `addOracle`). The oracle never exits for want of it (`oracle/src/oracleRoleGate.js`). At start-up on EVM it pages once ("CRITICAL: Oracle Not Authorized", naming the `addOracle` call) and carries on booting, heartbeat included; every step that would answer a prompt (`handleAndRecord`, the poll loop, the catch-up scan, the retry pass) waits at the gate. While running, a refused submission is confirmed with `isOracle` before the role is treated as lost: revert data naming `UnauthorizedOracle`, or a revert at mining time that carries no reason (`lostOracleRole`). The event is then queued for retry instead of dropped, and a retry that hits the missing role is not counted as a failed attempt. While waiting it asks the chain every 30 s, pages again each hour ("CRITICAL: Oracle Still Not Authorized"), and sends "Oracle is authorized again" when it resumes. On Sapphire the ROFL app registers itself at start-up, so a role lost while running needs a restart. Prompts older than the refund timeout are still refunded by the escrow.
+
 ### AI Routing Hierarchy
 
 `classifyIntent()` (`oracle/src/geminiDirect.js`) classifies the intent with a direct Gemini small-model call (JSON-constrained; any failure routes to MARKET), then dispatches:
