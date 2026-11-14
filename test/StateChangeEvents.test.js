@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
+const { publishEncryptionKey } = require("./helpers/encryptionKeyProof");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
@@ -76,6 +77,23 @@ describe("State changes are announced by the contract that makes them", function
       await expect(aiAgent.deploymentTransaction())
         .to.emit(aiAgent, "RoleGranted")
         .withArgs(ethers.id("ORACLE_ROLE"), oracle.address, deployer.address);
+    });
+    it("the agent announces the withdrawal of the encryption key when its publisher is removed", async function () {
+      const [deployer, , oracle] = await ethers.getSigners();
+      const aiAgent = await upgrades.deployProxy(
+        await ethers.getContractFactory("EVMAIAgent"),
+        ["example.com", oracle.address, deployer.address],
+        { initializer: "initialize", kind: "uups" },
+      );
+      await aiAgent.waitForDeployment();
+      const key = new ethers.SigningKey(ethers.id("state-change-events-encryption-key"));
+      await expect(publishEncryptionKey(aiAgent, oracle, key))
+        .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
+        .withArgs(oracle.address, key.publicKey);
+
+      await expect(aiAgent.connect(deployer).removeOracle(oracle.address))
+        .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
+        .withArgs(ethers.ZeroAddress, "0x");
     });
   });
 

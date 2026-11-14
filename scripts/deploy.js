@@ -89,9 +89,6 @@ async function main() {
 
   console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
 
-  const rpcUrl = hre.network.config.url;
-  console.log(`[DEBUG] RPC URL detected: ${rpcUrl}`);
-
   // Required env
   const domain = process.env.DOMAIN;
   const privateKey = process.env.PRIVATE_KEY;

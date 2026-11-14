@@ -2,6 +2,10 @@ const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const { needsOracleRoleMigration } = require("../scripts/deploy");
+const {
+  encryptionKeyProof: keyProof,
+  publishEncryptionKey,
+} = require("./helpers/encryptionKeyProof");
 
 /**
  * Oracle authorization is a role that several addresses can hold at once (ADR-0006).
@@ -11,9 +15,10 @@ const { needsOracleRoleMigration } = require("../scripts/deploy");
  * refund. With a role, a rotation is add → cut over → remove, and during the overlap either
  * oracle can answer, so nothing in flight is lost.
  *
- * Only the owner adds or removes an oracle. The contract also publishes the public key that
+ * Only the owner adds or removes an oracle. The contract also holds the public key that
  * prompts' session keys are encrypted to, so a client reads it from chain and a rotation reaches
- * every client.
+ * every client. An oracle publishes that key itself, with a signature made by the key, so the
+ * owner never handles it; the key is withdrawn when the oracle that published it leaves.
  */
 describe("Oracle role — several oracles can be authorized at once", function () {
   const INITIAL_ALLOWANCE = ethers.parseEther("100");
@@ -35,6 +40,7 @@ describe("Oracle role — several oracles can be authorized at once", function (
   const THROWAWAY_KEY = new ethers.SigningKey(ethers.id("oracle-role-test-encryption-key"));
   const COMPRESSED_KEY = THROWAWAY_KEY.compressedPublicKey;
   const UNCOMPRESSED_KEY = THROWAWAY_KEY.publicKey;
+  const OTHER_KEY = new ethers.SigningKey(ethers.id("oracle-role-test-other-encryption-key"));
 
   describe("EVMAIAgent", function () {
     async function deployFixture() {
@@ -305,48 +311,218 @@ describe("Oracle role — several oracles can be authorized at once", function (
     });
 
     describe("the encryption key clients read from chain", function () {
-      it("is empty until the owner publishes one", async function () {
+      const publish = (aiAgent, sender, signingKey = THROWAWAY_KEY) =>
+        publishEncryptionKey(aiAgent, sender, signingKey);
+
+      it("is empty, with no publisher, until an oracle publishes one", async function () {
         const { aiAgent } = await loadFixture(deployFixture);
 
         expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(ethers.ZeroAddress);
       });
 
-      it("the owner publishes a compressed or an uncompressed key, announced with the key", async function () {
-        const { aiAgent, deployer } = await loadFixture(deployFixture);
+      it("an oracle publishes a key it holds, announced with the oracle and the key", async function () {
+        const { aiAgent, oracle } = await loadFixture(deployFixture);
 
-        await expect(aiAgent.connect(deployer).setOracleEncryptionKey(COMPRESSED_KEY))
+        await expect(publish(aiAgent, oracle))
           .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
-          .withArgs(COMPRESSED_KEY);
-        expect(await aiAgent.oracleEncryptionKey()).to.equal(COMPRESSED_KEY);
+          .withArgs(oracle.address, UNCOMPRESSED_KEY);
 
-        await expect(aiAgent.connect(deployer).setOracleEncryptionKey(UNCOMPRESSED_KEY))
+        expect(await aiAgent.oracleEncryptionKey()).to.equal(UNCOMPRESSED_KEY);
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(oracle.address);
+      });
+
+      it("only an oracle can publish: the owner and a stranger are refused", async function () {
+        const { aiAgent, deployer, stranger } = await loadFixture(deployFixture);
+
+        for (const sender of [deployer, stranger]) {
+          await expect(publish(aiAgent, sender)).to.be.revertedWithCustomError(
+            aiAgent,
+            "UnauthorizedOracle",
+          );
+        }
+        expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
+      });
+
+      it("refuses a key whose proof was not made by that key", async function () {
+        const { aiAgent, oracle } = await loadFixture(deployFixture);
+        // OTHER_KEY signs a statement about THROWAWAY_KEY's public key.
+        const proof = await keyProof(OTHER_KEY, aiAgent, oracle, { publicKey: UNCOMPRESSED_KEY });
+
+        await expect(
+          aiAgent.connect(oracle).setOracleEncryptionKey(UNCOMPRESSED_KEY, proof),
+        ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKeyProof");
+      });
+
+      it("refuses a proof made for another oracle, another agent or another chain", async function () {
+        const { aiAgent, oracle, secondOracle, stranger } = await loadFixture(deployFixture);
+        const { chainId } = await ethers.provider.getNetwork();
+        const proofs = [
+          await keyProof(THROWAWAY_KEY, aiAgent, secondOracle),
+          await keyProof(THROWAWAY_KEY, aiAgent, oracle, { agent: stranger.address }),
+          await keyProof(THROWAWAY_KEY, aiAgent, oracle, { chainId: chainId + 1n }),
+        ];
+
+        for (const proof of proofs) {
+          await expect(
+            aiAgent.connect(oracle).setOracleEncryptionKey(UNCOMPRESSED_KEY, proof),
+          ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKeyProof");
+        }
+      });
+
+      it("refuses a proof that is not a signature at all", async function () {
+        const { aiAgent, oracle } = await loadFixture(deployFixture);
+        const valid = await keyProof(THROWAWAY_KEY, aiAgent, oracle);
+        // Empty, one byte short, and a full-length signature whose `s` is zero.
+        const zeroS = ethers.concat([ethers.dataSlice(valid, 0, 32), ethers.ZeroHash, "0x1b"]);
+
+        for (const proof of ["0x", ethers.dataSlice(valid, 0, 64), zeroS]) {
+          await expect(
+            aiAgent.connect(oracle).setOracleEncryptionKey(UNCOMPRESSED_KEY, proof),
+          ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKeyProof");
+        }
+      });
+
+      it("refuses bytes that are not an uncompressed secp256k1 public key", async function () {
+        const { aiAgent, oracle } = await loadFixture(deployFixture);
+        const proof = await keyProof(THROWAWAY_KEY, aiAgent, oracle);
+        const wrongLength = ethers.dataSlice(UNCOMPRESSED_KEY, 0, 64);
+        const wrongPrefix = "0x02" + UNCOMPRESSED_KEY.slice(4);
+
+        // The compressed form is refused too: the proof is checked against the full point.
+        for (const badKey of ["0x", wrongLength, wrongPrefix, COMPRESSED_KEY]) {
+          await expect(
+            aiAgent.connect(oracle).setOracleEncryptionKey(badKey, proof),
+          ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKey");
+        }
+      });
+
+      it("publishing the key that is already there changes nothing and announces nothing", async function () {
+        const { aiAgent, deployer, oracle, secondOracle } = await loadFixture(deployFixture);
+        await aiAgent.connect(deployer).addOracle(secondOracle.address);
+        await publish(aiAgent, oracle);
+
+        // The publisher again, and a second oracle that holds the same key (a replica).
+        for (const sender of [oracle, secondOracle]) {
+          await expect(publish(aiAgent, sender)).to.not.emit(aiAgent, "OracleEncryptionKeyUpdated");
+        }
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(oracle.address);
+      });
+
+      it("the key that is already there is still refused without a valid proof", async function () {
+        const { aiAgent, deployer, oracle, secondOracle } = await loadFixture(deployFixture);
+        await aiAgent.connect(deployer).addOracle(secondOracle.address);
+        await publish(aiAgent, oracle);
+        // A transaction that succeeds always means its sender holds the key, changed or not.
+        const proofForTheOtherOracle = await keyProof(THROWAWAY_KEY, aiAgent, oracle);
+
+        for (const proof of ["0x", proofForTheOtherOracle]) {
+          await expect(
+            aiAgent.connect(secondOracle).setOracleEncryptionKey(UNCOMPRESSED_KEY, proof),
+          ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKeyProof");
+        }
+      });
+
+      it("the event's publisher is indexed, so it can be filtered on and the signature is fixed", async function () {
+        const { aiAgent } = await loadFixture(deployFixture);
+        const event = aiAgent.interface.getEvent("OracleEncryptionKeyUpdated");
+
+        expect(event.format("sighash")).to.equal("OracleEncryptionKeyUpdated(address,bytes)");
+        expect(event.inputs.map((input) => input.indexed)).to.deep.equal([true, false]);
+      });
+
+      it("the publisher can replace its own key", async function () {
+        const { aiAgent, oracle } = await loadFixture(deployFixture);
+        await publish(aiAgent, oracle);
+
+        await expect(publish(aiAgent, oracle, OTHER_KEY))
           .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
-          .withArgs(UNCOMPRESSED_KEY);
+          .withArgs(oracle.address, OTHER_KEY.publicKey);
+        expect(await aiAgent.oracleEncryptionKey()).to.equal(OTHER_KEY.publicKey);
+      });
+
+      it("another oracle cannot replace a key its publisher still stands behind", async function () {
+        const { aiAgent, deployer, oracle, secondOracle } = await loadFixture(deployFixture);
+        await aiAgent.connect(deployer).addOracle(secondOracle.address);
+        await publish(aiAgent, oracle);
+
+        await expect(publish(aiAgent, secondOracle, OTHER_KEY))
+          .to.be.revertedWithCustomError(aiAgent, "EncryptionKeyHeldByAnotherOracle")
+          .withArgs(oracle.address);
         expect(await aiAgent.oracleEncryptionKey()).to.equal(UNCOMPRESSED_KEY);
       });
 
-      it("only the owner can publish it, and an oracle cannot", async function () {
-        const { aiAgent, oracle, stranger } = await loadFixture(deployFixture);
+      it("removing the publisher withdraws its key, and another oracle can then publish", async function () {
+        const { aiAgent, deployer, oracle, secondOracle } = await loadFixture(deployFixture);
+        await aiAgent.connect(deployer).addOracle(secondOracle.address);
+        await publish(aiAgent, oracle);
 
-        await expect(
-          aiAgent.connect(stranger).setOracleEncryptionKey(COMPRESSED_KEY),
-        ).to.be.revertedWithCustomError(aiAgent, "OwnableUnauthorizedAccount");
-        await expect(
-          aiAgent.connect(oracle).setOracleEncryptionKey(COMPRESSED_KEY),
-        ).to.be.revertedWithCustomError(aiAgent, "OwnableUnauthorizedAccount");
+        const removal = aiAgent.connect(deployer).removeOracle(oracle.address);
+        await expect(removal)
+          .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
+          .withArgs(ethers.ZeroAddress, "0x");
+        await expect(removal)
+          .to.emit(aiAgent, "RoleRevoked")
+          .withArgs(ORACLE_ROLE, oracle.address, deployer.address);
+        expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(ethers.ZeroAddress);
+
+        await expect(publish(aiAgent, secondOracle, OTHER_KEY))
+          .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
+          .withArgs(secondOracle.address, OTHER_KEY.publicKey);
       });
 
-      it("refuses bytes that are not a secp256k1 public key encoding", async function () {
-        const { aiAgent, deployer } = await loadFixture(deployFixture);
-        const wrongLength = ethers.dataSlice(UNCOMPRESSED_KEY, 0, 64);
-        const wrongCompressedPrefix = "0x04" + COMPRESSED_KEY.slice(4);
-        const wrongUncompressedPrefix = "0x02" + UNCOMPRESSED_KEY.slice(4);
+      it("adding a removed publisher back does not bring its key back", async function () {
+        const { aiAgent, deployer, oracle } = await loadFixture(deployFixture);
+        await publish(aiAgent, oracle);
+        await aiAgent.connect(deployer).removeOracle(oracle.address);
 
-        for (const badKey of ["0x", wrongLength, wrongCompressedPrefix, wrongUncompressedPrefix]) {
-          await expect(
-            aiAgent.connect(deployer).setOracleEncryptionKey(badKey),
-          ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKey");
+        await expect(aiAgent.connect(deployer).addOracle(oracle.address)).to.not.emit(
+          aiAgent,
+          "OracleEncryptionKeyUpdated",
+        );
+        expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(ethers.ZeroAddress);
+      });
+
+      it("a publisher that gives up its role withdraws its key too", async function () {
+        const { aiAgent, oracle } = await loadFixture(deployFixture);
+        await publish(aiAgent, oracle);
+
+        await expect(aiAgent.connect(oracle).renounceRole(ORACLE_ROLE, oracle.address))
+          .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
+          .withArgs(ethers.ZeroAddress, "0x");
+        expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
+      });
+
+      it("removing an oracle that did not publish the key leaves the key alone", async function () {
+        const { aiAgent, deployer, oracle, secondOracle, stranger } =
+          await loadFixture(deployFixture);
+        await aiAgent.connect(deployer).addOracle(secondOracle.address);
+        await publish(aiAgent, oracle);
+
+        // An oracle that is not the publisher, then an address that is not an oracle at all.
+        for (const account of [secondOracle, stranger]) {
+          await expect(aiAgent.connect(deployer).removeOracle(account.address)).to.not.emit(
+            aiAgent,
+            "OracleEncryptionKeyUpdated",
+          );
         }
+        expect(await aiAgent.oracleEncryptionKey()).to.equal(UNCOMPRESSED_KEY);
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(oracle.address);
+      });
+
+      it("a prompt paid for before the publisher was removed is still refundable", async function () {
+        const { aiAgent, escrow, deployer, user, oracle, stranger } =
+          await loadFixture(deployFixture);
+        await publish(aiAgent, oracle);
+        const { answerMessageId } = await submitPrompt(aiAgent, escrow, user);
+        await aiAgent.connect(deployer).removeOracle(oracle.address);
+        await time.increase(Number(await escrow.REFUND_TIMEOUT()) + 1);
+
+        await expect(escrow.connect(stranger).processRefund(answerMessageId))
+          .to.emit(escrow, "PaymentRefunded")
+          .withArgs(answerMessageId);
       });
     });
 
@@ -389,6 +565,31 @@ describe("Oracle role — several oracles can be authorized at once", function (
           aiAgent,
           "InvalidInitialization",
         );
+      });
+
+      it("the migration leaves a published key and its publisher alone", async function () {
+        // Deployed directly: this test needs the initial oracle to keep its role.
+        const [deployer, , initialOracle, legacyOracle] = await ethers.getSigners();
+        const aiAgent = await upgrades.deployProxy(
+          await ethers.getContractFactory("EVMAIAgentLegacyOracleHarness"),
+          ["example.com", initialOracle.address, deployer.address],
+          { initializer: "initialize", kind: "uups" },
+        );
+        await aiAgent.waitForDeployment();
+        await aiAgent
+          .connect(initialOracle)
+          .setOracleEncryptionKey(
+            UNCOMPRESSED_KEY,
+            await keyProof(THROWAWAY_KEY, aiAgent, initialOracle),
+          );
+        await aiAgent.seedLegacyOracle(legacyOracle.address);
+
+        const migration = aiAgent.connect(deployer).migrateOracleRole();
+
+        await expect(migration).to.emit(aiAgent, "RoleGranted");
+        await expect(migration).to.not.emit(aiAgent, "OracleEncryptionKeyUpdated");
+        expect(await aiAgent.oracleEncryptionKey()).to.equal(UNCOMPRESSED_KEY);
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(initialOracle.address);
       });
 
       it("the deploy script asks for the migration only while the legacy address is stored", async function () {
@@ -584,15 +785,16 @@ describe("Oracle role — several oracles can be authorized at once", function (
     });
 
     it("a published key is checked, stored and announced", async function () {
-      const { aiAgent } = await loadFixture(deployFixture);
+      const { aiAgent, stranger } = await loadFixture(deployFixture);
 
       await expect(aiAgent.setOracleEncryptionKeyForTest("0x1234")).to.be.revertedWithCustomError(
         aiAgent,
         "InvalidEncryptionKey",
       );
-      await expect(aiAgent.setOracleEncryptionKeyForTest(COMPRESSED_KEY))
+      // The event names who published, as the EVM agent's does: one event shape for both.
+      await expect(aiAgent.connect(stranger).setOracleEncryptionKeyForTest(COMPRESSED_KEY))
         .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
-        .withArgs(COMPRESSED_KEY);
+        .withArgs(stranger.address, COMPRESSED_KEY);
       expect(await aiAgent.oracleEncryptionKey()).to.equal(COMPRESSED_KEY);
     });
   });

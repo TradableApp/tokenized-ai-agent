@@ -18,11 +18,19 @@ const {
   findEvent,
   verifyGetter,
 } = require("../scripts/admin-rehearsal");
+const { publishEncryptionKey: publishKey } = require("./helpers/encryptionKeyProof");
 
 describe("scripts/admin-rehearsal", function () {
   const DOMAIN = "tradable.app";
   const PROMPT_FEE = ethers.parseEther("1");
   const REHEARSAL_FEE = ethers.parseEther("2");
+
+  /** Publishes a throwaway encryption key as `oracle` and returns it. */
+  async function publishEncryptionKey(aiAgent, oracle) {
+    const key = new ethers.SigningKey(ethers.id("admin-rehearsal-encryption-key"));
+    await publishKey(aiAgent, oracle, key);
+    return key.publicKey;
+  }
 
   async function deployFixture() {
     const [deployer, oracle, treasury, safe, stranger] = await ethers.getSigners();
@@ -84,6 +92,44 @@ describe("scripts/admin-rehearsal", function () {
       expect(state.escrowOwner).to.equal(deployer.address);
       expect(state.treasury).to.equal(treasury.address);
       expect(state.promptFee).to.equal(PROMPT_FEE);
+    });
+
+    it("captures the published encryption key and who published it", async function () {
+      const { contracts, oracle } = await loadFixture(deployFixture);
+      const before = await readState(contracts);
+      expect(before.encryptionKey).to.equal("0x");
+      expect(before.encryptionKeyPublisher).to.equal(ethers.ZeroAddress);
+
+      const key = await publishEncryptionKey(contracts.aiAgent, oracle);
+
+      const after = await readState(contracts);
+      expect(after.encryptionKey).to.equal(key);
+      expect(after.encryptionKeyPublisher).to.equal(oracle.address);
+    });
+    it("leaves the encryption key out for an agent that does not have it yet", async function () {
+      const { contracts, deployer } = await loadFixture(deployFixture);
+      // The agent's interface at the escrow's address: the owner reads work, the two key getters
+      // revert, as they do on a proxy still running the version before the key.
+      const olderAgent = contracts.aiAgent.attach(await contracts.escrow.getAddress());
+
+      const state = await readState({ ...contracts, aiAgent: olderAgent });
+
+      expect(state.agentOwner).to.equal(deployer.address);
+      expect(state).to.not.have.property("encryptionKey");
+      expect(state).to.not.have.property("encryptionKeyPublisher");
+    });
+    it("does not take a node's own error for a missing key, even when its text mentions a revert", async function () {
+      const { contracts } = await loadFixture(deployFixture);
+      const refused = Object.assign(new Error("429: request reverted by rate limiter"), {
+        code: "SERVER_ERROR",
+      });
+      const failingAgent = {
+        owner: () => contracts.aiAgent.owner(),
+        oracleEncryptionKey: () => Promise.reject(refused),
+        oracleEncryptionKeyPublisher: () => contracts.aiAgent.oracleEncryptionKeyPublisher(),
+      };
+
+      await expect(readState({ ...contracts, aiAgent: failingAgent })).to.be.rejectedWith(refused);
     });
   });
 
@@ -405,6 +451,25 @@ describe("scripts/admin-rehearsal", function () {
         { field: "oracleAuthorized", expected: "true", actual: "false" },
       ]);
     });
+    it("watches the encryption key: a rehearsal that leaves clients without it is reported", async function () {
+      const { contracts, deployer, oracle } = await loadFixture(deployFixture);
+      const key = await publishEncryptionKey(contracts.aiAgent, oracle);
+      const state = await readState(contracts);
+
+      // Removing the publisher withdraws the key clients encrypt to.
+      await contracts.aiAgent.connect(deployer).removeOracle(oracle.address);
+
+      const result = await verifyReturned({ contracts, state });
+      expect(result.ok).to.equal(false);
+      expect(result.mismatches).to.deep.equal([
+        { field: "encryptionKey", expected: key, actual: "0x" },
+        {
+          field: "encryptionKeyPublisher",
+          expected: oracle.address,
+          actual: ethers.ZeroAddress,
+        },
+      ]);
+    });
   });
 
   describe("parseRehearsalFee", function () {
@@ -455,6 +520,8 @@ describe("scripts/admin-rehearsal", function () {
         escrowOwner: fixture.state.escrowOwner,
         treasury: fixture.state.treasury,
         promptFee: String(fixture.state.promptFee),
+        encryptionKey: "0x",
+        encryptionKeyPublisher: ethers.ZeroAddress,
       });
       expect(await fixture.contracts.aiAgent.owner()).to.equal(fixture.safeContractAddress);
     });
@@ -578,6 +645,22 @@ describe("scripts/admin-rehearsal", function () {
       await expect(confirmPhase({ contracts, log, snapshotFile: missing })).to.be.rejectedWith(
         /run the forward phase first/,
       );
+    });
+    it("says so when the snapshot was taken without the encryption key, and confirms the rest", async function () {
+      const { contracts, state } = await loadFixture(deployFixture);
+      // Its own log: the fixture's is shared with the tests before this one.
+      const lines = [];
+      const log = (line) => lines.push(String(line));
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-older-"));
+      const snapshotFile = path.join(dir, "snapshot.json");
+      const older = { ...state, promptFee: String(state.promptFee) };
+      delete older.encryptionKey;
+      delete older.encryptionKeyPublisher;
+      fs.writeFileSync(snapshotFile, JSON.stringify(older));
+
+      await confirmPhase({ contracts, log, snapshotFile });
+
+      expect(lines.join("\n")).to.match(/encryption key is not in the snapshot/);
     });
   });
 

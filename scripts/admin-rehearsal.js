@@ -24,21 +24,62 @@ const ORACLE_ROLE = ethers.id("ORACLE_ROLE");
  * The oracle set cannot be listed from the contract, so the snapshot watches one address: the
  * live oracle named by the caller. Its authorization is recorded before the rehearsal and
  * compared afterwards, so a rehearsal that leaves the live oracle without its role is caught.
+ *
+ * The encryption key clients read from the agent is in the snapshot too, with its publisher:
+ * removing the publishing oracle withdraws the key, and clients then cannot submit a prompt.
  */
 async function readState({ aiAgent, escrow, oracleAddress }) {
-  const [agentOwner, escrowOwner, treasury, promptFee] = await Promise.all([
+  const [agentOwner, escrowOwner, treasury, promptFee, encryption] = await Promise.all([
     aiAgent.owner(),
     escrow.owner(),
     escrow.treasury(),
     escrow.promptFee(),
+    readEncryptionKey(aiAgent),
   ]);
-  const state = { agentOwner, escrowOwner, treasury, promptFee };
+  const state = { agentOwner, escrowOwner, treasury, promptFee, ...encryption };
   if (!oracleAddress) {
     return state;
   }
   const oracle = ethers.getAddress(oracleAddress);
   return { ...state, oracle, oracleAuthorized: await aiAgent.isOracle(oracle) };
 }
+
+/**
+ * The published encryption key and its publisher, or neither when a getter reverts. A proxy
+ * from before the key has neither getter; one from the version between has the key but not the
+ * publisher. Both are left out in either case, so the snapshot never holds half of the pair,
+ * and the rehearsal still runs against such a proxy. Any other failure is thrown.
+ */
+async function readEncryptionKey(aiAgent) {
+  try {
+    const [encryptionKey, encryptionKeyPublisher] = await Promise.all([
+      aiAgent.oracleEncryptionKey(),
+      aiAgent.oracleEncryptionKeyPublisher(),
+    ]);
+    return { encryptionKey, encryptionKeyPublisher };
+  } catch (error) {
+    if (!isRevert(error)) {
+      throw error;
+    }
+    return {};
+  }
+}
+
+/**
+ * True when a read failed because the contract reverted, as opposed to the node not answering.
+ * ethers reports a revert as CALL_EXCEPTION. The in-process Hardhat network throws its own
+ * error with no ethers code, recognizable only by its text; an error that carries any other
+ * code came from a real node and is never taken for a revert, whatever its text says.
+ */
+function isRevert(error) {
+  if (error?.code === "CALL_EXCEPTION") return true;
+  if (typeof error?.code === "string") return false;
+
+  return /revert/i.test(String(error?.message));
+}
+
+const NO_ENCRYPTION_KEY_NOTE =
+  "The encryption key is not in the snapshot (the agent did not have one to read when it was taken), so it is not checked.";
 
 function assertSafeAddress(safeAddress, state) {
   if (!ethers.isAddress(safeAddress) || safeAddress === ethers.ZeroAddress) {
@@ -397,6 +438,9 @@ async function forwardPhase({
 
 async function confirmPhase({ contracts, log, snapshotFile }) {
   const state = readSnapshot(snapshotFile);
+  if (!("encryptionKey" in state)) {
+    log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
+  }
   const { ok, mismatches } = await verifyReturned({ contracts, state });
   if (!ok) {
     for (const m of mismatches) {

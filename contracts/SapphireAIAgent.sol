@@ -208,8 +208,10 @@ contract SapphireAIAgent is Ownable, AccessControl {
   /// @param newAIAgentEscrow The address of the new escrow contract.
   event AgentEscrowUpdated(address indexed newAIAgentEscrow);
   /// @notice Emitted when the key clients encrypt a prompt's session key to is published.
+  /// @dev The same shape as the EVM agent's event, so one ABI entry reads both.
+  /// @param publisher The address that published the key from inside the TEE.
   /// @param newKey The secp256k1 public key, compressed or uncompressed.
-  event OracleEncryptionKeyUpdated(bytes newKey);
+  event OracleEncryptionKeyUpdated(address indexed publisher, bytes newKey);
 
   // --- Errors ---
 
@@ -373,7 +375,7 @@ contract SapphireAIAgent is Ownable, AccessControl {
       revert InvalidEncryptionKey();
     }
     oracleEncryptionKey = _newKey;
-    emit OracleEncryptionKeyUpdated(_newKey);
+    emit OracleEncryptionKeyUpdated(msg.sender, _newKey);
   }
 
   /**
