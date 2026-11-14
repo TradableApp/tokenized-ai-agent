@@ -330,6 +330,27 @@ describe("eventPoller — one pass of the poll loop", () => {
     expect(logged).to.include("second");
   });
 
+  it("a reorg report that rejects later is caught, and logged", async () => {
+    head = 90;
+    onReorg.rejects(new Error("alert channel down"));
+    const unhandled = sinon.stub();
+    process.on("unhandledRejection", unhandled);
+
+    try {
+      const p = poller();
+      await p.tick();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(unhandled.called).to.equal(false);
+      expect(log.error.args.map((args) => args.join(" ")).join("\n")).to.include(
+        "Reorg report failed: alert channel down",
+      );
+      expect(p.cursor()).to.equal(90);
+    } finally {
+      process.removeListener("unhandledRejection", unhandled);
+    }
+  });
+
   it("refuses a batch size that is not a positive whole number", () => {
     expect(() => poller({ batchSize: 0 })).to.throw(/batchSize/);
     expect(() => poller({ batchSize: 2.5 })).to.throw(/batchSize/);
