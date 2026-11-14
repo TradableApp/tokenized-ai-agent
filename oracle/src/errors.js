@@ -84,10 +84,23 @@ const TRANSIENT_PROVIDER_CODES = new Set([
 function isTransientProviderError(error) {
   if (error === null || typeof error !== "object") return false;
   if (TRANSIENT_PROVIDER_CODES.has(error.code)) return true;
-  // ethers reports ANY JSON-RPC error answered to eth_call or eth_estimateGas as a call
-  // exception: a rate limit, "header not found". Those carry no revert data and no receipt. A
-  // contract's own revert carries data ("0x" at least), and one found at mining has a receipt.
-  return error.code === "CALL_EXCEPTION" && error.data == null && !error.receipt;
+  return isRpcErrorThatIsNotARevert(error);
+}
+
+/**
+ * ethers reports ANY JSON-RPC error answered to eth_call or eth_estimateGas as a call exception
+ * with no revert data: a rate limit and "header not found" as much as a revert whose data the
+ * provider left out. The provider's own error is kept under `info.error`, and its message is
+ * what tells them apart.
+ *
+ * Only an error whose message is there and does not speak of a revert counts. A revert is the
+ * contract's answer; retrying it would pay for the model and storage again to be refused again.
+ * When there is nothing to tell which it was, it is not assumed transient.
+ */
+function isRpcErrorThatIsNotARevert(error) {
+  if (error.code !== "CALL_EXCEPTION" || error.data != null || error.receipt) return false;
+  const message = error.info?.error?.message;
+  return typeof message === "string" && message !== "" && !/revert/i.test(message);
 }
 
 module.exports = {
