@@ -49,6 +49,8 @@ function createMockedOracleComponents() {
       },
       interface: {
         parseLog: sinon.stub(),
+        // The poll and catch-up build one topic filter from the four event signatures.
+        getEvent: (name) => ({ topicHash: `topic:${name}` }),
       },
     },
     isSapphire: false,
