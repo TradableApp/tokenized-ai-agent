@@ -28,6 +28,7 @@
  */
 
 const crypto = require("node:crypto");
+const { describeError } = require("../errorDescription");
 const fs = require("node:fs/promises");
 const { and, asc, eq, inArray, lte, sql } = require("drizzle-orm");
 
@@ -90,7 +91,9 @@ function normalizeJob(job) {
 function errorText(error) {
   if (error === undefined || error === null) return null;
   // Bounded: an RPC or storage error can carry a whole response body.
-  return String(error?.message ?? error).slice(0, 2000);
+  // Described: this is kept in the database, and a provider error's message has the address
+  // of the request in it.
+  return describeError(error).slice(0, 2000);
 }
 
 function byChainOrder(a, b) {

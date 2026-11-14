@@ -29,6 +29,8 @@
  *   now?: () => number,
  * }} options
  */
+
+const { describeError } = require("./errorDescription");
 const DEFAULT_RECHECK_MS = 30 * 1000;
 const DEFAULT_REMIND_EVERY_MS = 60 * 60 * 1000;
 
@@ -50,10 +52,10 @@ function createRoleGate({
   function run(hook, ...args) {
     try {
       Promise.resolve(hook(...args)).catch((error) => {
-        console.error(`[OracleRole] hook failed: ${error.message}`);
+        console.error(`[OracleRole] hook failed: ${describeError(error)}`);
       });
     } catch (error) {
-      console.error(`[OracleRole] hook failed: ${error.message}`);
+      console.error(`[OracleRole] hook failed: ${describeError(error)}`);
     }
   }
 
@@ -72,7 +74,7 @@ function createRoleGate({
         if (await checkRole()) break;
       } catch (error) {
         // Not knowing is not having: keep holding, and ask again.
-        console.warn(`[OracleRole] Could not check the oracle role: ${error.message}`);
+        console.warn(`[OracleRole] Could not check the oracle role: ${describeError(error)}`);
       }
       if (now() - remindedAt >= remindEveryMs) {
         remindedAt = now();

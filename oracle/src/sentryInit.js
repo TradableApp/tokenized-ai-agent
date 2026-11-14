@@ -197,6 +197,17 @@ function initSentry() {
     dsn,
     environment,
     tracesSampleRate,
+    // Sentry's default prints an unhandled rejection's stack itself, as it is. The process's
+    // own handler (index.js) prints the described error; Sentry still reports the rejection.
+    integrations: [Sentry.onUnhandledRejectionIntegration({ mode: "none" })],
+    // Spans of outgoing requests carry the address requested.
+    beforeSendTransaction(event) {
+      try {
+        return scrubSensitiveData(event);
+      } catch (error) {
+        return redactedStandIn(event, error);
+      }
+    },
     beforeSend(event) {
       // Last line of defence. scrubSensitiveData is written not to throw, but if it ever does,
       // Sentry drops the event and monitoring goes dark without a word. Send a minimal

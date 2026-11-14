@@ -21,6 +21,8 @@
  *   now?: () => number,
  * }} options
  */
+
+const { describeError } = require("../errorDescription");
 function createOutageTracker({ alertAfterMs, onAlert, onRecover = () => {}, now = Date.now }) {
   let failingSince = null;
   let failures = 0;
@@ -29,10 +31,10 @@ function createOutageTracker({ alertAfterMs, onAlert, onRecover = () => {}, now 
   function run(hook, ...args) {
     try {
       Promise.resolve(hook(...args)).catch((error) => {
-        console.error(`[OutageTracker] hook failed: ${error.message}`);
+        console.error(`[OutageTracker] hook failed: ${describeError(error)}`);
       });
     } catch (error) {
-      console.error(`[OutageTracker] hook failed: ${error.message}`);
+      console.error(`[OutageTracker] hook failed: ${describeError(error)}`);
     }
   }
 

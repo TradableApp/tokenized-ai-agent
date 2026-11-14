@@ -1577,9 +1577,11 @@ async function handlePrompt(
       return;
     }
   } catch (err) {
+    // The provider gave no answer: whether the job is done is unknown, so nothing is spent on
+    // it now. The event goes to the retry queue and is looked at again.
+    if (isTransientProviderError(err)) throw err;
     console.warn(
-      `  ⚠️ Could not check isJobFinalized status (RPC error?), proceeding anyway.`,
-      err.message,
+      `  ⚠️ Could not check isJobFinalized status, proceeding anyway. ${describeError(err)}`,
     );
   }
 
@@ -1658,9 +1660,10 @@ async function handlePrompt(
         return;
       }
     } catch (err) {
+      // The model has already been paid for: the answer is carried on to the submission, which
+      // checks again.
       console.warn(
-        `  ⚠️ Could not check isJobFinalized status (RPC error?), proceeding anyway.`,
-        err.message,
+        `  ⚠️ Could not check isJobFinalized status, proceeding anyway. ${describeError(err)}`,
       );
     }
 
@@ -1952,7 +1955,12 @@ async function handleRegeneration(
       return;
     }
   } catch (err) {
-    console.warn(`  ⚠️ Could not check isJobFinalized status, proceeding anyway.`);
+    // The provider gave no answer: whether the job is done is unknown, so nothing is spent on
+    // it now. The event goes to the retry queue and is looked at again.
+    if (isTransientProviderError(err)) throw err;
+    console.warn(
+      `  ⚠️ Could not check isJobFinalized status, proceeding anyway. ${describeError(err)}`,
+    );
   }
 
   try {
@@ -2017,9 +2025,10 @@ async function handleRegeneration(
         return;
       }
     } catch (err) {
+      // The model has already been paid for: the answer is carried on to the submission, which
+      // checks again.
       console.warn(
-        `  ⚠️ Could not check isJobFinalized status (RPC error?), proceeding anyway.`,
-        err.message,
+        `  ⚠️ Could not check isJobFinalized status, proceeding anyway. ${describeError(err)}`,
       );
     }
 
@@ -2371,7 +2380,7 @@ async function lostOracleRole(error) {
     return { refused, lost: !(await contract.isOracle(signer.address)) };
   } catch (checkError) {
     console.warn(
-      `[OracleRole] Could not confirm the oracle role after a refused submission: ${checkError.message}`,
+      `[OracleRole] Could not confirm the oracle role after a refused submission: ${describeError(checkError)}`,
     );
     return { refused, lost: false };
   }
@@ -2749,8 +2758,8 @@ async function processPastEvents(fromBlock, toBlock) {
       // Critical failure in catch-up stops the oracle startup
       await sendAlert("Oracle Catch-up Failed", alertMessage);
 
-      // Thrown to stop the oracle from starting in a potentially broken state. It ends in the
-      // process's crash handler, which prints and reports it, so it is the described error.
+      // Thrown to stop the oracle from starting in a potentially broken state. start() rejects
+      // with it and index.js prints it, reports it and exits, so it is the described error.
       throw describedError(error);
     }
   }

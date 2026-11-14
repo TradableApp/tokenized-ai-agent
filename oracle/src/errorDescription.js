@@ -23,7 +23,9 @@ function describeError(error) {
  * @returns {string}
  */
 function withoutAddresses(text) {
-  return String(text).replace(ADDRESS, "[address removed]");
+  return String(text).replace(ADDRESS, (address) =>
+    PUBLIC_ADDRESSES.has(address) ? address : "[address removed]",
+  );
 }
 
 /**
@@ -55,22 +57,45 @@ function describedError(error) {
   return described;
 }
 
-// Greedy on purpose: everything up to the next space, quote or bracket goes, trailing
-// punctuation included. Stopping at a dot or a colon would stop inside the host name and leave
-// the path behind, which is where a provider puts the access key.
-const ADDRESS = /\b(?:https?|wss?):\/\/[^\s"'<>)\]]+/gi;
+// Any scheme (a database address carries a password as an RPC address carries a key), with the
+// slashes plain or escaped as JSON escapes them. Greedy on purpose: everything up to the next
+// space, quote or closing parenthesis goes, trailing punctuation included. Stopping at a dot or
+// a colon would stop inside the host name and leave the path behind, which is where a provider
+// puts the access key; stopping at a square bracket would stop inside an IPv6 host.
+const ADDRESS = /[a-z][a-z0-9+.-]*:(?:\\?\/){2}[^\s"'<>)]+/gi;
+
+// Addresses an alert shows on purpose: where the operator goes to act on it. Matched whole, so
+// anything longer that starts the same way is removed like any other address.
+const PUBLIC_ADDRESSES = new Set(["https://ai3.storage/"]);
 
 function textOf(error) {
   if (error === null || typeof error !== "object") return String(error);
 
   const { shortMessage, message, code } = error;
   if (typeof shortMessage === "string" && shortMessage) {
-    return typeof code === "string" && code ? `${code}: ${shortMessage}` : shortMessage;
+    const short = typeof code === "string" && code ? `${code}: ${shortMessage}` : shortMessage;
+    return `${short}${revertDetail(error)}`;
   }
   if (typeof message === "string" && message) return message;
   if (typeof code === "string" && code) return code;
 
   return "unknown error";
+}
+
+/**
+ * What a revert reverted with. The short message of a custom error is only "execution reverted
+ * (unknown custom error)"; the decoded error, or failing that the revert data, is what tells
+ * one from another.
+ */
+function revertDetail(error) {
+  if (error.code !== "CALL_EXCEPTION") return "";
+  const signature = error.revert?.signature;
+  if (typeof signature === "string" && signature) return ` (reverted with ${signature})`;
+  const { data } = error;
+  if (typeof data === "string" && /^0x[0-9a-f]+$/i.test(data)) {
+    return ` (revert data ${data.slice(0, 138)})`;
+  }
+  return "";
 }
 
 module.exports = { describeError, describedError, withoutAddresses };

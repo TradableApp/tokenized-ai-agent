@@ -54,10 +54,25 @@ function isRetryableError(error) {
 }
 
 /**
- * The codes ethers gives a request that did not get an answer: the provider refused it or
- * answered with an error status, nothing came back in time, or the network could not be reached.
+ * The codes ethers gives a request that did not get a usable answer.
+ *
+ * - SERVER_ERROR, TIMEOUT, NETWORK_ERROR: the provider refused it or answered with an error
+ *   status, nothing came back in time, or the network could not be reached. SERVER_ERROR covers
+ *   every status, a revoked key's 401 included: the event is still valid, and the poll loop's
+ *   outage alert is what reports a provider that stays down.
+ * - UNKNOWN_ERROR: a JSON-RPC error ethers could not place, which is how a rate limit answered
+ *   in the response body arrives.
+ * - NONCE_EXPIRED, REPLACEMENT_UNDERPRICED: the provider answered with a stale pending nonce
+ *   (one node of a load-balanced endpoint behind the others). The transaction was not accepted.
  */
-const TRANSIENT_PROVIDER_CODES = new Set(["SERVER_ERROR", "TIMEOUT", "NETWORK_ERROR"]);
+const TRANSIENT_PROVIDER_CODES = new Set([
+  "SERVER_ERROR",
+  "TIMEOUT",
+  "NETWORK_ERROR",
+  "UNKNOWN_ERROR",
+  "NONCE_EXPIRED",
+  "REPLACEMENT_UNDERPRICED",
+]);
 
 /**
  * Did a request to the chain provider fail in a way that says nothing about what was asked?
@@ -67,7 +82,12 @@ const TRANSIENT_PROVIDER_CODES = new Set(["SERVER_ERROR", "TIMEOUT", "NETWORK_ER
  * queue. By code, which ethers sets, and not by message text.
  */
 function isTransientProviderError(error) {
-  return error !== null && typeof error === "object" && TRANSIENT_PROVIDER_CODES.has(error.code);
+  if (error === null || typeof error !== "object") return false;
+  if (TRANSIENT_PROVIDER_CODES.has(error.code)) return true;
+  // ethers reports ANY JSON-RPC error answered to eth_call or eth_estimateGas as a call
+  // exception: a rate limit, "header not found". Those carry no revert data and no receipt. A
+  // contract's own revert carries data ("0x" at least), and one found at mining has a receipt.
+  return error.code === "CALL_EXCEPTION" && error.data == null && !error.receipt;
 }
 
 module.exports = {

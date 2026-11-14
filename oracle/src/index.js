@@ -49,4 +49,10 @@ try {
 const { start } = require("./aiAgentOracle");
 
 console.log("Starting Node.js ROFL Oracle Service...");
-start();
+// A start-up that fails must end the process: by then the database pool is open and the
+// heartbeat may be running, and an oracle left half-started looks alive while answering nothing.
+start().catch((error) => {
+  console.error("[Fatal] The oracle could not start:", describedError(error));
+  Sentry.captureException(error);
+  Sentry.flush(2000).finally(() => process.exit(1));
+});
