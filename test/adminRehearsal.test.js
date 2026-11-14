@@ -634,7 +634,10 @@ describe("scripts/admin-rehearsal", function () {
       );
     });
     it("says so when the snapshot was taken without the encryption key, and confirms the rest", async function () {
-      const { contracts, state, lines, log } = await loadFixture(deployFixture);
+      const { contracts, state } = await loadFixture(deployFixture);
+      // Its own log: the fixture's is shared with the tests before this one.
+      const lines = [];
+      const log = (line) => lines.push(String(line));
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-older-"));
       const snapshotFile = path.join(dir, "snapshot.json");
       const older = { ...state, promptFee: String(state.promptFee) };

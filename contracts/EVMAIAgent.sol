@@ -439,14 +439,18 @@ contract EVMAIAgent is
 
   /**
    * @notice An oracle publishes the public key that clients encrypt a prompt's session key to.
-   * @dev Oracle only, and the oracle must show it holds the private key: nobody, the owner
-   *      included, can point clients at a key no oracle can decrypt with. There is one key and
-   *      not one per oracle, because every instance of the oracle holds the same key.
-   *      Publishing is allowed when no key is published or when the caller published the
-   *      current one. Another oracle's key cannot be replaced: the owner removes that oracle,
-   *      which withdraws its key. Publishing the key that is already there changes nothing and
-   *      emits nothing, whoever sends it, so several instances can each try at start-up.
-   *      Clients read the key from here, so a change reaches them without a rebuild.
+   * @dev Oracle only, and the oracle must show it holds the private key: the only key that can
+   *      be published is one whose holder signed for an address with the oracle role, so
+   *      clients are never pointed at a key no oracle can decrypt with. The proof says who holds
+   *      the key, not where the key was made: the owner decides which addresses are oracles.
+   *      There is one key and not one per oracle, because every instance of the oracle holds
+   *      the same key. Publishing is allowed when no key is published or when the caller
+   *      published the current one. Another oracle's key cannot be replaced: the owner removes
+   *      that oracle, which withdraws its key. Publishing the key that is already there, with a
+   *      valid proof, changes nothing and emits nothing, whoever sends it, so several instances
+   *      can each try at start-up. A proof has no expiry: a publisher can publish a key it
+   *      published before. Clients read the key from here, so a change reaches them without a
+   *      rebuild.
    * @param _newKey The secp256k1 public key, 65 bytes uncompressed (0x04, then X and Y).
    * @param _proof A 65-byte signature made with the private key of `_newKey` over the EIP-191
    *        personal-message hash of `keccak256(abi.encode("SenseAI oracle encryption key v1",
@@ -461,14 +465,9 @@ contract EVMAIAgent is
       revert InvalidEncryptionKey();
     }
     bytes32 newKeyHash = keccak256(_newKey);
-    if (newKeyHash == keccak256(oracleEncryptionKey)) {
-      return;
-    }
-    address publisher = oracleEncryptionKeyPublisher;
-    if (publisher != address(0) && publisher != msg.sender) {
-      revert EncryptionKeyHeldByAnotherOracle(publisher);
-    }
 
+    // Checked before anything else, so a call that succeeds always means its sender holds the
+    // key, including the call that finds the key already published.
     bytes32 statement = keccak256(
       abi.encode(ENCRYPTION_KEY_PROOF_DOMAIN, block.chainid, address(this), msg.sender, newKeyHash)
     );
@@ -480,6 +479,14 @@ contract EVMAIAgent is
     address keyAddress = address(uint160(uint256(keccak256(_newKey[1:]))));
     if (recoverError != ECDSA.RecoverError.NoError || signer != keyAddress) {
       revert InvalidEncryptionKeyProof();
+    }
+
+    if (newKeyHash == keccak256(oracleEncryptionKey)) {
+      return;
+    }
+    address publisher = oracleEncryptionKeyPublisher;
+    if (publisher != address(0) && publisher != msg.sender) {
+      revert EncryptionKeyHeldByAnotherOracle(publisher);
     }
 
     oracleEncryptionKey = _newKey;
