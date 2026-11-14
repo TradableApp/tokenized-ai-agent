@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const util = require("node:util");
+const { ethers } = require("ethers");
 const { describeError, describedError, withoutAddresses } = require("../src/errorDescription");
 const { isTransientProviderError } = require("../src/errors");
 const { refusedByProvider } = require("./helpers/refusedByProvider");
@@ -60,6 +61,60 @@ describe("errorDescription — what an error is, without the address it was sent
     expect(withoutAddresses("nothing to remove")).to.equal("nothing to remove");
   });
 
+  it("removes an address whatever its scheme, host form or escaping", () => {
+    for (const address of [
+      "http://[::1]:8545/v2/not-a-real-key",
+      "postgres://oracle:not-a-real-key@db.example/oracle_agent",
+      "https:\\/\\/rpc.example\\/v2\\/not-a-real-key",
+    ]) {
+      const text = withoutAddresses(`request to ${address} failed`);
+      expect(text, address).to.equal("request to [address removed] failed");
+    }
+    expect(withoutAddresses("xhttps://rpc.example/v2/not-a-real-key")).to.not.include(
+      "not-a-real-key",
+    );
+  });
+
+  it("keeps the public address an alert sends the operator to", () => {
+    const text = "Please top up the account at https://ai3.storage/";
+    expect(withoutAddresses(text)).to.equal(text);
+    // Only that address exactly: anything after it is treated like any other address.
+    expect(withoutAddresses("https://ai3.storage/v1/not-a-real-key")).to.equal("[address removed]");
+  });
+
+  describe("a revert", () => {
+    const revert = (extra) =>
+      ethers.makeError("execution reverted (unknown custom error)", "CALL_EXCEPTION", {
+        action: "estimateGas",
+        data: "0x82b42900",
+        reason: null,
+        transaction: { to: null, data: "0x" },
+        invocation: null,
+        revert: null,
+        ...extra,
+      });
+
+    it("is described with its revert data, which is what identifies it", () => {
+      expect(describeError(revert())).to.equal(
+        "CALL_EXCEPTION: execution reverted (unknown custom error) (revert data 0x82b42900)",
+      );
+    });
+
+    it("is described with the decoded error when ethers decoded one", () => {
+      expect(
+        describeError(
+          revert({ revert: { signature: "JobAlreadyFinalized()", name: "x", args: [] } }),
+        ),
+      ).to.include("(reverted with JobAlreadyFinalized())");
+    });
+
+    it("adds nothing when the revert carries no data", () => {
+      expect(describeError(revert({ data: null }))).to.equal(
+        "CALL_EXCEPTION: execution reverted (unknown custom error)",
+      );
+    });
+  });
+
   describe("describedError — an error that can be thrown, logged or reported whole", () => {
     it("has the description as its message and no address anywhere in it", () => {
       const error = describedError(refusedByProvider(503, "Service Unavailable"));
@@ -98,8 +153,24 @@ describe("isTransientProviderError — a provider request that a later attempt m
     expect(isTransientProviderError({ code: "NETWORK_ERROR" })).to.be.true;
   });
 
+  it("is true for the shapes ethers gives a JSON-RPC error that is not a revert", () => {
+    // A rate limit or "header not found" answered to eth_call or eth_estimateGas: ethers
+    // reports it as a call exception with no revert data and no receipt.
+    expect(isTransientProviderError({ code: "CALL_EXCEPTION", data: null })).to.be.true;
+    expect(isTransientProviderError({ code: "UNKNOWN_ERROR" })).to.be.true;
+    // A provider behind a load balancer answering with a stale pending nonce.
+    expect(isTransientProviderError({ code: "NONCE_EXPIRED" })).to.be.true;
+    expect(isTransientProviderError({ code: "REPLACEMENT_UNDERPRICED" })).to.be.true;
+  });
+
+  it("is false for a revert that carries data or was mined", () => {
+    expect(isTransientProviderError({ code: "CALL_EXCEPTION", data: "0x82b42900" })).to.be.false;
+    expect(isTransientProviderError({ code: "CALL_EXCEPTION", data: null, receipt: {} })).to.be
+      .false;
+  });
+
   it("is false for a revert, a plain error and a value that is not an error", () => {
-    expect(isTransientProviderError({ code: "CALL_EXCEPTION" })).to.be.false;
+    expect(isTransientProviderError({ code: "CALL_EXCEPTION", data: "0x" })).to.be.false;
     expect(isTransientProviderError(new Error("Decryption failed"))).to.be.false;
     expect(isTransientProviderError(null)).to.be.false;
   });

@@ -142,4 +142,48 @@ describe('sentryInit', () => {
       expect(result).to.not.have.property('extra');
     });
   });
+
+  describe('initSentry', () => {
+    const sinon = require('sinon');
+    const proxyquire = require('proxyquire');
+
+    const initWith = () => {
+      const sentry = {
+        init: sinon.stub(),
+        onUnhandledRejectionIntegration: sinon.stub().callsFake((options) => ({
+          name: 'OnUnhandledRejection',
+          options,
+        })),
+      };
+      const previous = process.env.SENTRY_DSN;
+      process.env.SENTRY_DSN = 'https://public@sentry.example/1';
+      const log = sinon.stub(console, 'log');
+      try {
+        proxyquire('../src/sentryInit', { '@sentry/node': sentry }).initSentry();
+      } finally {
+        log.restore();
+        if (previous === undefined) delete process.env.SENTRY_DSN;
+        else process.env.SENTRY_DSN = previous;
+      }
+      return sentry.init.firstCall.args[0];
+    };
+
+    it('tells Sentry not to print an unhandled rejection itself', () => {
+      // Sentry's default prints the rejection's stack as it is; the process's own handler
+      // prints the described error.
+      const options = initWith();
+
+      const integration = options.integrations.find((i) => i.name === 'OnUnhandledRejection');
+      expect(integration.options).to.deep.equal({ mode: 'none' });
+    });
+
+    it('scrubs transactions as it scrubs events', () => {
+      const options = initWith();
+
+      const scrubbed = options.beforeSendTransaction({
+        spans: [{ data: { 'url.full': 'https://rpc.example/v2/not-a-real-key' } }],
+      });
+      expect(JSON.stringify(scrubbed)).to.not.include('rpc.example');
+    });
+  });
 });

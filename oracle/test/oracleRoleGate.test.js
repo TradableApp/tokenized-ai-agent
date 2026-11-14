@@ -2,6 +2,7 @@ const { expect } = require("chai");
 const sinon = require("sinon");
 
 const { createRoleGate } = require("../src/oracleRoleGate");
+const { refusedByProvider } = require("./helpers/refusedByProvider");
 
 describe("oracleRoleGate — work waits while the oracle does not hold its role", () => {
   let checkRole;
@@ -37,6 +38,24 @@ describe("oracleRoleGate — work waits while the oracle does not hold its role"
 
     expect(roleGate.isLost()).to.equal(true);
     sinon.assert.calledOnceWithExactly(onLost, error);
+  });
+
+  it("says a role check failed without the address the check was sent to", async () => {
+    const warn = sinon.stub(console, "warn");
+    try {
+      checkRole.onCall(0).rejects(refusedByProvider(500, "Internal Server Error"));
+      checkRole.onCall(1).resolves(true);
+      const roleGate = gate();
+      roleGate.markLost();
+
+      await roleGate.ready();
+
+      const printed = warn.args.map((args) => args.join(" ")).join("\n");
+      expect(printed).to.include("SERVER_ERROR");
+      expect(printed).to.not.include("rpc.example");
+    } finally {
+      warn.restore();
+    }
   });
 
   it("holds work until the role is granted, checking again after each interval", async () => {
