@@ -93,7 +93,7 @@ describe("chain cursor persistence", () => {
       // Two places may find the head behind the cursor: the poll loop (a reorg) and start-up (a
       // stored cursor for blocks that do not exist). Nothing else may move the cursor backwards.
       const reorgIf = SOURCE.indexOf("if (reconciledBlock !== currentBlock)");
-      const aheadOfHeadIf = SOURCE.indexOf("if (resumeCursor !== null && resumeCursor > latestBlock)");
+      const aheadOfHeadIf = SOURCE.indexOf("if (resumeCursor !== null && resumeCursor > bootBlock)");
       expect(reorgIf, "the reorg branch should exist").to.be.greaterThan(-1);
       expect(aheadOfHeadIf, "the start-up ahead-of-head branch should exist").to.be.greaterThan(-1);
 

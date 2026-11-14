@@ -2985,10 +2985,9 @@ async function start() {
     diskPath: path.dirname(STATE_FILE_PATH),
   });
 
-  // Process any failed jobs from previous runs before catching up on past events.
-  await retryFailedJobs();
-
-  // Catch up on any events that were missed while the oracle was offline.
+  // Where to resume from is settled here, before the first step that can wait for the oracle
+  // role. Measured after a wait, the look-back would start at the head as it is then, and
+  // prompts submitted earlier in a wait longer than the look-back would be skipped.
   const resume = await resolveResumeCursor({
     store: stateStore,
     onUnavailable: async (error) => {
@@ -3007,22 +3006,37 @@ async function start() {
     log("No stored cursor found. Will start processing from a recent block.");
   }
 
-  const latestBlock = await provider.getBlockNumber();
+  const bootBlock = await provider.getBlockNumber();
   // With no stored cursor, look back 1,800 blocks (about six minutes on Base's 200 ms blocks).
   // Otherwise, start from the next block after the last processed one.
   const lookback = 1800;
   let resumeCursor = resume.cursor;
-  if (resumeCursor !== null && resumeCursor > latestBlock) {
+  if (resumeCursor !== null && resumeCursor > bootBlock) {
     // The stored block does not exist (a reverted local chain, an RPC that lags). The store only
     // moves forward, so it would refuse every save until the head caught up while memory claimed
     // the head — and a restart in between would skip the difference.
     console.warn(
-      `[OracleState] Stored cursor ${resumeCursor} is ahead of chain head ${latestBlock}; rewinding to the head.`,
+      `[OracleState] Stored cursor ${resumeCursor} is ahead of chain head ${bootBlock}; rewinding to the head.`,
     );
-    resumeCursor = latestBlock;
+    resumeCursor = bootBlock;
     await rewindCursor(resumeCursor);
   }
-  const fromBlock = resumeCursor === null ? Math.max(0, latestBlock - lookback) : resumeCursor + 1;
+  const fromBlock = resumeCursor === null ? Math.max(0, bootBlock - lookback) : resumeCursor + 1;
+  if (resume.source === "none" && fromBlock > 0) {
+    // Stored now, so a restart during a wait resumes from this same block instead of measuring
+    // a new look-back from a later head. Not when the cursor could not be read: one may exist,
+    // and a restart that can read it must find it as it was. Not at block 0 either (a chain
+    // younger than the look-back): there is no earlier block to store.
+    await persistCursor(fromBlock - 1);
+  }
+
+  // Process any failed jobs from previous runs before catching up on past events.
+  await retryFailedJobs();
+
+  // The head as it is after that first wait, which can have lasted any length of time. Blocks
+  // added during a further wait inside the catch-up scan are picked up by the poll loop, which
+  // reads the head again.
+  const latestBlock = await provider.getBlockNumber();
 
   // 1. Catch Up Phase
   // Note: processPastEvents stores the cursor as it goes.
