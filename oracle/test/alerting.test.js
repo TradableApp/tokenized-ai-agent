@@ -88,6 +88,29 @@ describe("alerting", function () {
     );
   });
 
+  it("removes the address of a request from an alert, whoever wrote the text", async () => {
+    enableEmail();
+    process.env.SLACK_ACCESS_TOKEN = "fake-slack-token";
+    process.env.SLACK_ALERT_CHANNEL = "#fake-channel";
+    process.env.SEND_GRID_API_KEY = "fake-sendgrid-key";
+    process.env.SEND_GRID_ALERT_TEMPLATE_ID = "d-123";
+    process.env.ALERT_FROM_EMAIL = "from@test.com";
+    process.env.ALERT_TO_EMAIL = "to@test.com";
+
+    await sendAlert(
+      "Failed at https://rpc.example/v2/not-a-real-key",
+      "Error: missing response (https://rpc.example/v2/not-a-real-key)",
+    );
+
+    const slackText = slackStub.chat.postMessage.firstCall.args[0].text;
+    const emailBody = fetchStub.firstCall.args[1].body;
+    const logged = consoleErrorStub.getCalls().map((c) => c.args.join(" ")).join("\n");
+    for (const text of [slackText, emailBody, logged]) {
+      expect(text).to.not.include("rpc.example");
+    }
+    expect(slackText).to.include("[address removed]");
+  });
+
   it("should only send an email alert if Slack vars are missing", async () => {
     enableEmail();
     // ONLY set SendGrid vars

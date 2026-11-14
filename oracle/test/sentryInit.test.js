@@ -56,6 +56,18 @@ describe('sentryInit', () => {
       expect(result.walletPrivateKey).to.equal('[REDACTED]');
     });
 
+    it('removes the address of a request from text at any depth', () => {
+      const result = scrubSensitiveData({
+        message: 'GET https://rpc.example/v2/not-a-real-key failed',
+        exception: { values: [{ value: 'missing response (url="https://rpc.example/v2/not-a-real-key")' }] },
+        breadcrumbs: [{ data: { url: 'https://rpc.example/v2/not-a-real-key', status_code: 503 } }],
+      });
+
+      expect(JSON.stringify(result)).to.not.include('rpc.example');
+      expect(result.message).to.equal('GET [address removed] failed');
+      expect(result.breadcrumbs[0].data.status_code).to.equal(503);
+    });
+
     it('returns non-object values unchanged', () => {
       expect(scrubSensitiveData(null)).to.equal(null);
       expect(scrubSensitiveData('string')).to.equal('string');
