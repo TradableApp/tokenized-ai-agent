@@ -21,6 +21,7 @@
  */
 
 const { SUPPORTED_NETWORKS } = require("./contractUtility");
+const { DEFAULT_POLL_BACKOFF_CAP_MS, DEFAULT_POLL_INTERVAL_MS } = require("./pollBackoff");
 const { REQUIRED_BASE_KEYS, CERT_KEY_PAIRS } = require("./postgresBootstrap");
 
 /** Thrown when the process must not continue. Typed so callers can distinguish it from bugs. */
@@ -283,8 +284,37 @@ function validateConfig(env = process.env) {
   }
 
   validatePayloadMirror(env, problems);
+  validatePollSettings(env, problems);
 
   if (problems.length) throw new ConfigError(problems);
+}
+
+/**
+ * The poll loop's numbers. Each is optional, but a set value that is not a positive whole number
+ * used to be replaced by the default without a word (`POLL_INTERVAL_MS=3s` ran at the default),
+ * and a cap below the interval is only discovered when the loop is built, after the catch-up
+ * has already run. Both are knowable here.
+ */
+function validatePollSettings(env, problems) {
+  const read = (name, fallback) => {
+    if (isBlank(env[name])) return fallback;
+    const value = env[name].trim();
+    if (/^\d+$/.test(value) && Number(value) > 0) return Number(value);
+    problems.push(`${name} "${value}" is not a positive whole number`);
+
+    return null;
+  };
+
+  read("EVENT_BATCH_SIZE", null);
+  const intervalMs = read("POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS);
+  const capMs = read("POLL_BACKOFF_CAP_MS", DEFAULT_POLL_BACKOFF_CAP_MS);
+  if (intervalMs !== null && capMs !== null && capMs < intervalMs) {
+    const capIs = isBlank(env.POLL_BACKOFF_CAP_MS) ? `its default ${capMs}` : capMs;
+    problems.push(
+      `POLL_BACKOFF_CAP_MS (${capIs}) is below POLL_INTERVAL_MS (${intervalMs}) — the longest ` +
+        `wait cannot be shorter than the normal one`,
+    );
+  }
 }
 
 /**

@@ -91,6 +91,8 @@ describe("aiAgentOracle", function () {
         // The interface is needed for retryFailedJobs to parse logs from receipts.
         interface: {
           parseLog: sinon.stub(),
+          // The poll and catch-up build one topic filter from the four event signatures.
+          getEvent: (name) => ({ topicHash: `topic:${name}` }),
         },
       },
       isSapphire: false,
@@ -1504,21 +1506,30 @@ describe("aiAgentOracle", function () {
         getBlock,
       };
 
-      // Make the queryFilter stub intelligent, returning the correct events for each filter.
-      mockedContract.filters.PromptSubmitted.returns("PROMPT_FILTER");
-      mockedContract.filters.RegenerationRequested.returns("REGEN_FILTER");
-      mockedContract.filters.BranchRequested.returns("BRANCH_FILTER");
-      mockedContract.filters.MetadataUpdateRequested.returns("META_FILTER");
-      mockedContract.queryFilter.callsFake(async (filter) => {
-        if (filter === "PROMPT_FILTER") return [fakePromptEvent];
-        if (filter === "REGEN_FILTER") return [fakeRegenEvent];
-        if (filter === "BRANCH_FILTER") return [fakeBranchEvent];
-        if (filter === "META_FILTER") return [fakeMetadataEvent];
-        return [];
-      });
+      // One query returns all four event types; the routing is by each event's name.
+      mockedContract.queryFilter.resolves([
+        fakePromptEvent,
+        fakeRegenEvent,
+        fakeBranchEvent,
+        fakeMetadataEvent,
+      ]);
 
       // This makes the test a true integration test of the routing logic.
       await aiAgentOracle.processPastEvents(1, 10);
+
+      expect(mockedContract.queryFilter.callCount, "one log query for the whole range").to.equal(1);
+      expect(mockedContract.queryFilter.firstCall.args).to.deep.equal([
+        [
+          [
+            "topic:PromptSubmitted",
+            "topic:RegenerationRequested",
+            "topic:BranchRequested",
+            "topic:MetadataUpdateRequested",
+          ],
+        ],
+        1,
+        10,
+      ]);
 
       // Assert that the final contract submission method for each handler was called.
       expect(mockedContract.submitAnswer.callCount).to.equal(2); // Prompt and Regen

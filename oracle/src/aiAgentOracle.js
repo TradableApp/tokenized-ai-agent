@@ -38,7 +38,14 @@ const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
-const { reconcileCursor } = require("./blockCursor");
+const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
+const { createRangePoller } = require("./eventPoller");
+const {
+  DEFAULT_POLL_BACKOFF_CAP_MS,
+  DEFAULT_POLL_INTERVAL_MS,
+  createPollBackoff,
+} = require("./pollBackoff");
+const { describeError } = require("./errorDescription");
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
@@ -116,7 +123,7 @@ function absorbedFailureTracker({ what, consequence, alertAfterMs, site }) {
       Sentry.captureException(error, { tags: { site } });
       return sendAlert(
         `Oracle: ${what} has been failing for ${minutes(failingForMs)} min`,
-        `${what} has failed ${failures} time(s) over ${minutes(failingForMs)} minutes. ${consequence} Last error: ${error.message}`,
+        `${what} has failed ${failures} time(s) over ${minutes(failingForMs)} minutes. ${consequence} Last error: ${describeError(error)}`,
       );
     },
     onRecover: ({ failedForMs, failures, alerted }) => {
@@ -2379,6 +2386,8 @@ async function handleAndRecord(eventName, handler, ...args) {
 
     const nowTimestamp = Math.floor(Date.now() / 1000);
     const lagInSeconds = nowTimestamp - eventTimestamp;
+    // In seconds because block timestamps are whole seconds: no finer figure exists.
+    console.log(`[Lag] ${eventName} block=${event.blockNumber} block_to_start_s=${lagInSeconds}`);
     const lagThreshold = 300; // 5 minutes
 
     if (lagInSeconds > lagThreshold) {
@@ -2676,8 +2685,9 @@ async function processPastEvents(fromBlock, toBlock) {
   console.log(`Catching up on missed events from block ${fromBlock} to ${toBlock}...`);
 
   // BATCHING CONFIGURATION
-  // Use a very safe, small batch size to respect restrictive RPCs (QuickNode Free is 5 blocks).
-  const BATCH_SIZE = parseInt(process.env.EVENT_BATCH_SIZE) || 2000;
+  // The widest block range one log query may cover. Providers differ widely (some free tiers
+  // allow as few as 5 or 10 blocks), so set EVENT_BATCH_SIZE to the endpoint's limit.
+  const BATCH_SIZE = positiveIntFromEnv("EVENT_BATCH_SIZE", DEFAULT_EVENT_BATCH_SIZE);
 
   let currentStart = fromBlock;
 
@@ -2690,64 +2700,15 @@ async function processPastEvents(fromBlock, toBlock) {
     console.log(`  -> Scanning batch: ${currentStart} to ${currentEnd}`);
 
     try {
-      const eventPromises = [
-        contract.queryFilter(contract.filters.PromptSubmitted(), currentStart, currentEnd),
-        contract.queryFilter(contract.filters.RegenerationRequested(), currentStart, currentEnd),
-        contract.queryFilter(contract.filters.BranchRequested(), currentStart, currentEnd),
-        contract.queryFilter(contract.filters.MetadataUpdateRequested(), currentStart, currentEnd),
-      ];
-
-      const allEventsNested = await Promise.all(eventPromises);
-
-      // Sort events strictly by their on-chain order to ensure correct processing.
-      const allEvents = allEventsNested.flat();
-      allEvents.sort((a, b) => {
-        if (a.blockNumber !== b.blockNumber) {
-          return a.blockNumber - b.blockNumber;
-        }
-
-        return a.transactionIndex - b.transactionIndex;
+      // One query for all four event types, already in chain order.
+      const allEvents = await queryOracleWorkEvents(contract, currentStart, currentEnd, {
+        onUndecodable: reportUndecodableLog,
       });
 
       if (allEvents.length > 0) {
         console.log(`     Found ${allEvents.length} events in batch. Queueing...`);
 
-        // Map all events to queue tasks
-        const tasks = allEvents.map((event) => {
-          return queue.add(async () => {
-            // Use a switch on the event name to call the correct handler
-            switch (event.eventName) {
-              case "PromptSubmitted":
-                await handleAndRecord("PromptSubmitted", handlePrompt, ...event.args, event);
-
-                break;
-              case "RegenerationRequested":
-                await handleAndRecord(
-                  "RegenerationRequested",
-                  handleRegeneration,
-                  ...event.args,
-                  event,
-                );
-
-                break;
-              case "BranchRequested":
-                await handleAndRecord("BranchRequested", handleBranch, ...event.args, event);
-
-                break;
-              case "MetadataUpdateRequested":
-                await handleAndRecord(
-                  "MetadataUpdateRequested",
-                  handleMetadataUpdate,
-                  ...event.args,
-                  event,
-                );
-
-                break;
-              default:
-                console.warn(`Unknown event encountered during catch-up: ${event.eventName}`);
-            }
-          });
-        });
+        const tasks = allEvents.map((event) => queue.add(() => dispatchEvent(event)));
 
         // Wait for ALL tasks in this batch to complete before updating state.
         // This ensures if the process crashes, we re-process this batch rather than skipping it.
@@ -2763,8 +2724,9 @@ async function processPastEvents(fromBlock, toBlock) {
       // Optional: Small delay to be nice to the RPC
       await new Promise((resolve) => setTimeout(resolve, 1000));
     } catch (error) {
-      const alertMessage = `Failed during historical event catch-up process between blocks ${currentStart}-${currentEnd}. The oracle may need intervention. Error: ${error.message}`;
-      console.error(alertMessage, error);
+      // Described, and the raw error not printed: a provider error carries the request address.
+      const alertMessage = `Failed during historical event catch-up process between blocks ${currentStart}-${currentEnd}. The oracle may need intervention. Error: ${describeError(error)}`;
+      console.error(alertMessage);
 
       // Critical failure in catch-up stops the oracle startup
       await sendAlert("Oracle Catch-up Failed", alertMessage);
@@ -2776,146 +2738,108 @@ async function processPastEvents(fromBlock, toBlock) {
   console.log("Catch-up complete.");
 }
 
+// The widest block range of one log query when EVENT_BATCH_SIZE is unset.
+const DEFAULT_EVENT_BATCH_SIZE = 2000;
+
+/**
+ * A positive whole number from the environment, or the default when unset. Start-up validation
+ * (startupConfig.js) has already refused a set value that is not one.
+ */
+function positiveIntFromEnv(name, fallback) {
+  const value = Number(process.env[name]);
+
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+const EVENT_HANDLERS = {
+  PromptSubmitted: handlePrompt,
+  RegenerationRequested: handleRegeneration,
+  BranchRequested: handleBranch,
+  MetadataUpdateRequested: handleMetadataUpdate,
+};
+
+// The filter asks for ORACLE_WORK_EVENTS; an event with no handler here would be fetched and
+// then ignored, so the two lists must name the same events.
+if (
+  ORACLE_WORK_EVENTS.length !== Object.keys(EVENT_HANDLERS).length ||
+  !ORACLE_WORK_EVENTS.every((name) => typeof EVENT_HANDLERS[name] === "function")
+) {
+  throw new Error("aiAgentOracle: every oracle-work event needs exactly one handler");
+}
+
+/**
+ * A log matched the oracle-work filter but the ABI could not decode it: a paid request this
+ * oracle will not answer. The cursor moves on, so page someone. Fire-and-forget.
+ */
+function reportUndecodableLog(log) {
+  const where = `block ${log.blockNumber}, tx ${log.transactionHash}, log ${log.index}`;
+  Sentry.captureMessage(`Undecodable oracle-work log (${where})`, {
+    level: "error",
+    tags: { site: "undecodable_log" },
+  });
+  sendAlert(
+    "Oracle: an event could not be decoded and was skipped",
+    `A log at ${where} matched the oracle's event filter but could not be decoded with the ABI in this build, so it was not answered. The contract's ABI and this image are probably out of step. The user is refunded only by the one-hour timeout.`,
+  ).catch((err) => console.error("sendAlert (undecodable log) failed:", err.message));
+}
+
+/**
+ * Hand one oracle-work event to its handler.
+ * @param {import("ethers").EventLog} event
+ */
+async function dispatchEvent(event) {
+  const handler = EVENT_HANDLERS[event.eventName];
+  if (!handler) {
+    console.warn(`Unknown event encountered: ${event.eventName}`);
+
+    return;
+  }
+
+  await handleAndRecord(event.eventName, handler, ...event.args, event);
+}
+
 /**
  * Continuously polls the blockchain for new events in specific block ranges.
- * Updates the state file after every batch to ensure progress is saved even during periods of inactivity.
+ * Saves the cursor after every pass so progress survives periods of inactivity.
+ *
+ * The pass itself is in eventPoller.js; this is the loop around it. A pass never throws: a
+ * failure comes back as a longer wait.
  * @param {number} startBlock - The block to start polling from.
  */
 async function pollEvents(startBlock) {
   console.log(`✅ Oracle is running and listening for new events from block ${startBlock}.`);
 
-  // Use the same batch size config as catch-up to respect RPC limits
-  const BATCH_SIZE = parseInt(process.env.EVENT_BATCH_SIZE) || 2000;
+  const poller = createRangePoller({
+    startBlock,
+    // The same range limit as the catch-up, to respect the provider's eth_getLogs block range.
+    batchSize: positiveIntFromEnv("EVENT_BATCH_SIZE", DEFAULT_EVENT_BATCH_SIZE),
+    getHead: () => provider.getBlockNumber(),
+    roleReady: () => oracleRole.ready(),
+    queryEvents: (fromBlock, toBlock) =>
+      queryOracleWorkEvents(contract, fromBlock, toBlock, { onUndecodable: reportUndecodableLog }),
+    handleEvent: (event) => queue.add(() => dispatchEvent(event)),
+    settle: settleBatch,
+    persistCursor,
+    rewindCursor,
+    // Page on-call: a reorg on a real chain is as operationally significant as the
+    // processing-lag/fatal alerts already routed through sendAlert. Fire-and-forget so an
+    // alert failure can't stall the rewind (a localnet evm_revert takes the same path).
+    onReorg: ({ head, cursor, rewoundTo }) => {
+      sendAlert(
+        "Chain reorg detected — oracle cursor rewound",
+        `Head ${head} dropped below cursor ${cursor}. Rewound to ${rewoundTo}; re-mined events will be re-processed.`,
+      ).catch((err) => console.error("sendAlert (reorg) failed:", err.message));
+    },
+    outage: pollLoopOutage,
+    backoff: createPollBackoff({
+      baseMs: positiveIntFromEnv("POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS),
+      capMs: positiveIntFromEnv("POLL_BACKOFF_CAP_MS", DEFAULT_POLL_BACKOFF_CAP_MS),
+    }),
+  });
 
-  const filters = [
-    contract.filters.PromptSubmitted(),
-    contract.filters.RegenerationRequested(),
-    contract.filters.BranchRequested(),
-    contract.filters.MetadataUpdateRequested(),
-  ];
-
-  let currentBlock = startBlock;
   while (true) {
-    try {
-      // Without the role nothing can be submitted: hold here, cursor where it is, until it is back.
-      await oracleRole.ready();
-
-      const latestBlock = await provider.getBlockNumber();
-
-      // Reorg/revert reconciliation: if the head has dropped below our cursor (a
-      // chain reorg, or a localnet Hardhat evm_revert between e2e tests), rewind
-      // so the re-mined blocks get re-scanned instead of being skipped forever.
-      const reconciledBlock = reconcileCursor(currentBlock, latestBlock);
-      if (reconciledBlock !== currentBlock) {
-        console.warn(
-          `  ↩ Chain head ${latestBlock} dropped below cursor ${currentBlock} (reorg/revert) — rewinding cursor to ${reconciledBlock}.`,
-        );
-        // Page on-call: a reorg on a real chain is as operationally significant as the
-        // processing-lag/fatal alerts already routed through sendAlert. Fire-and-forget
-        // so an alert failure can't stall the rewind (localnet evm_revert is benign and
-        // frequent, but the same path covers a genuine Base reorg in production).
-        sendAlert(
-          "Chain reorg detected — oracle cursor rewound",
-          `Head ${latestBlock} dropped below cursor ${currentBlock}. Rewound to ${reconciledBlock}; re-mined events will be re-processed.`,
-        ).catch((err) => console.error("sendAlert (reorg) failed:", err.message));
-        currentBlock = reconciledBlock;
-        await rewindCursor(currentBlock);
-      }
-
-      // Only proceed if there are new blocks to check
-      if (latestBlock > currentBlock) {
-        // Determine the end of the batch (don't exceed RPC limit or latest block)
-        const toBlock = Math.min(currentBlock + BATCH_SIZE, latestBlock);
-        const fromQueryBlock = currentBlock + 1; // For logging clarity
-
-        // Query all filters in parallel for the specific range
-        const promises = filters.map((filter) =>
-          contract.queryFilter(filter, fromQueryBlock, toBlock),
-        );
-
-        const results = await Promise.all(promises);
-        const allEvents = results.flat();
-
-        // Sort by block and transaction index to process in order
-        allEvents.sort((a, b) => {
-          if (a.blockNumber !== b.blockNumber) {
-            return a.blockNumber - b.blockNumber;
-          }
-
-          return a.index - b.index;
-        });
-
-        // Process any found events
-        const tasks = allEvents.map((event) => {
-          return queue.add(async () => {
-            switch (event.eventName) {
-              case "PromptSubmitted":
-                await handleAndRecord("PromptSubmitted", handlePrompt, ...event.args, event);
-
-                break;
-              case "RegenerationRequested":
-                await handleAndRecord(
-                  "RegenerationRequested",
-                  handleRegeneration,
-                  ...event.args,
-                  event,
-                );
-
-                break;
-              case "BranchRequested":
-                await handleAndRecord("BranchRequested", handleBranch, ...event.args, event);
-
-                break;
-              case "MetadataUpdateRequested":
-                await handleAndRecord(
-                  "MetadataUpdateRequested",
-                  handleMetadataUpdate,
-                  ...event.args,
-                  event,
-                );
-
-                break;
-            }
-          });
-        });
-
-        // Wait for the queue to accept and process the batch
-        await settleBatch(tasks);
-
-        // Update the state file to the block we just finished checking (toBlock).
-        // This happens even if allEvents.length is 0.
-        currentBlock = toBlock;
-        await persistCursor(currentBlock);
-        pollLoopOutage.success();
-
-        // This confirms the oracle is moving forward and saving state.
-        if (allEvents.length > 0) {
-          console.log(
-            `  ✓ Polled ${fromQueryBlock} to ${currentBlock} -> Processed ${allEvents.length} events.`,
-          );
-        } else {
-          console.log(`  ✓ Polled ${fromQueryBlock} to ${currentBlock}`);
-        }
-
-        // If we are lagging far behind (e.g. more batches needed), don't wait. Loop immediately.
-        if (toBlock < latestBlock) {
-          // Optional: Small delay to be nice to the RPC
-          await new Promise((resolve) => setTimeout(resolve, 500));
-
-          continue;
-        }
-      }
-    } catch (error) {
-      console.error(`Error in polling loop: ${error.message}`);
-      // One failed pass is routine (an RPC hiccup). A loop that keeps failing is stuck on the
-      // same range and answering nothing; that is alerted once.
-      pollLoopOutage.failure(error);
-      // Wait a bit longer before retrying if RPC is erroring
-      await new Promise((resolve) => setTimeout(resolve, 5000));
-    }
-
-    // Wait before next poll (Base block time is ~2s, so 2s-4s is healthy)
-    await new Promise((resolve) => setTimeout(resolve, 4000));
+    const waitMs = await poller.tick();
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 }
 

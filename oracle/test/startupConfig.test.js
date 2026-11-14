@@ -195,6 +195,52 @@ describe("startup config validation", () => {
     }
   });
 
+  describe("poll settings", () => {
+    const problemsOf = (overrides) => {
+      try {
+        validateConfig(baseEnv(overrides));
+      } catch (err) {
+        return err.message;
+      }
+      return "";
+    };
+
+    it("accepts them unset, and as positive whole numbers", () => {
+      expect(problemsOf({})).to.equal("");
+      expect(
+        problemsOf({
+          POLL_INTERVAL_MS: "3000",
+          POLL_BACKOFF_CAP_MS: "60000",
+          EVENT_BATCH_SIZE: "10",
+        }),
+      ).to.equal("");
+    });
+
+    for (const name of ["POLL_INTERVAL_MS", "POLL_BACKOFF_CAP_MS", "EVENT_BATCH_SIZE"]) {
+      for (const value of ["3s", "0", "-5", "2.5", "10blocks"]) {
+        it(`refuses ${name}=${value} instead of quietly using the default`, () => {
+          const message = problemsOf({ [name]: value });
+
+          expect(message).to.include(name);
+          expect(message).to.include("positive whole number");
+        });
+      }
+    }
+
+    it("refuses a backoff cap below the poll interval", () => {
+      // Found at start-up, not after the catch-up has run and the loop refuses to build.
+      const message = problemsOf({ POLL_INTERVAL_MS: "120000", POLL_BACKOFF_CAP_MS: "60000" });
+
+      expect(message).to.include("POLL_BACKOFF_CAP_MS");
+      expect(message).to.include("POLL_INTERVAL_MS");
+    });
+
+    it("refuses an interval above the default cap when no cap is set", () => {
+      // The default cap is 60000.
+      expect(problemsOf({ POLL_INTERVAL_MS: "120000" })).to.include("POLL_BACKOFF_CAP_MS");
+    });
+  });
+
   it("rejects the placeholder contract address", () => {
     // THE ENS BUG. ethers constructs a Contract with this happily and fails asynchronously
     // later with "contract runner does not support name resolution" — a message that names
