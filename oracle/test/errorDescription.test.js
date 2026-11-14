@@ -153,14 +153,36 @@ describe("isTransientProviderError — a provider request that a later attempt m
     expect(isTransientProviderError({ code: "NETWORK_ERROR" })).to.be.true;
   });
 
-  it("is true for the shapes ethers gives a JSON-RPC error that is not a revert", () => {
-    // A rate limit or "header not found" answered to eth_call or eth_estimateGas: ethers
-    // reports it as a call exception with no revert data and no receipt.
-    expect(isTransientProviderError({ code: "CALL_EXCEPTION", data: null })).to.be.true;
+  // What ethers builds for a JSON-RPC error answered to eth_call or eth_estimateGas: a call
+  // exception with no revert data, and the provider's own error under `info.error`.
+  const answeredWith = (rpcError) => ({
+    code: "CALL_EXCEPTION",
+    data: null,
+    info: { error: rpcError, payload: { method: "eth_estimateGas" } },
+  });
+
+  it("is true for a JSON-RPC error that is not a revert", () => {
+    expect(isTransientProviderError(answeredWith({ code: -32005, message: "rate limit exceeded" })))
+      .to.be.true;
+    expect(isTransientProviderError(answeredWith({ code: -32000, message: "header not found" }))).to
+      .be.true;
     expect(isTransientProviderError({ code: "UNKNOWN_ERROR" })).to.be.true;
     // A provider behind a load balancer answering with a stale pending nonce.
     expect(isTransientProviderError({ code: "NONCE_EXPIRED" })).to.be.true;
     expect(isTransientProviderError({ code: "REPLACEMENT_UNDERPRICED" })).to.be.true;
+  });
+
+  it("is false for a revert the provider reported without its data", () => {
+    // Some providers leave the data out of a revert on eth_estimateGas. It is still the
+    // contract's answer, and trying again would pay for the same refusal each time.
+    expect(isTransientProviderError(answeredWith({ code: 3, message: "execution reverted" }))).to.be
+      .false;
+    expect(
+      isTransientProviderError(answeredWith({ code: -32000, message: "VM Exception: revert" })),
+    ).to.be.false;
+    // Nothing to tell which it was: not assumed transient.
+    expect(isTransientProviderError({ code: "CALL_EXCEPTION", data: null })).to.be.false;
+    expect(isTransientProviderError(answeredWith({ code: -32000 }))).to.be.false;
   });
 
   it("is false for a revert that carries data or was mined", () => {
