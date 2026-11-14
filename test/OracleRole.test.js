@@ -2,6 +2,10 @@ const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const { needsOracleRoleMigration } = require("../scripts/deploy");
+const {
+  encryptionKeyProof: keyProof,
+  publishEncryptionKey,
+} = require("./helpers/encryptionKeyProof");
 
 /**
  * Oracle authorization is a role that several addresses can hold at once (ADR-0006).
@@ -37,28 +41,6 @@ describe("Oracle role — several oracles can be authorized at once", function (
   const COMPRESSED_KEY = THROWAWAY_KEY.compressedPublicKey;
   const UNCOMPRESSED_KEY = THROWAWAY_KEY.publicKey;
   const OTHER_KEY = new ethers.SigningKey(ethers.id("oracle-role-test-other-encryption-key"));
-  const KEY_PROOF_DOMAIN = "SenseAI oracle encryption key v1";
-
-  /**
-   * The signature an oracle sends with the key it publishes: made by the key itself, over the
-   * chain, the agent, the publishing oracle and the key, as an EIP-191 personal message.
-   */
-  async function keyProof(signingKey, aiAgent, sender, overrides = {}) {
-    const { chainId } = await ethers.provider.getNetwork();
-    const statement = ethers.keccak256(
-      ethers.AbiCoder.defaultAbiCoder().encode(
-        ["string", "uint256", "address", "address", "bytes32"],
-        [
-          KEY_PROOF_DOMAIN,
-          overrides.chainId ?? chainId,
-          overrides.agent ?? (await aiAgent.getAddress()),
-          sender.address,
-          ethers.keccak256(overrides.publicKey ?? signingKey.publicKey),
-        ],
-      ),
-    );
-    return signingKey.sign(ethers.hashMessage(ethers.getBytes(statement))).serialized;
-  }
 
   describe("EVMAIAgent", function () {
     async function deployFixture() {
@@ -329,15 +311,8 @@ describe("Oracle role — several oracles can be authorized at once", function (
     });
 
     describe("the encryption key clients read from chain", function () {
-      /** Publishes `signingKey`'s public key as `sender`, with a valid proof. */
-      async function publish(aiAgent, sender, signingKey = THROWAWAY_KEY) {
-        return aiAgent
-          .connect(sender)
-          .setOracleEncryptionKey(
-            signingKey.publicKey,
-            await keyProof(signingKey, aiAgent, sender),
-          );
-      }
+      const publish = (aiAgent, sender, signingKey = THROWAWAY_KEY) =>
+        publishEncryptionKey(aiAgent, sender, signingKey);
 
       it("is empty, with no publisher, until an oracle publishes one", async function () {
         const { aiAgent } = await loadFixture(deployFixture);
@@ -434,6 +409,28 @@ describe("Oracle role — several oracles can be authorized at once", function (
         expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(oracle.address);
       });
 
+      it("the key that is already there is still refused without a valid proof", async function () {
+        const { aiAgent, deployer, oracle, secondOracle } = await loadFixture(deployFixture);
+        await aiAgent.connect(deployer).addOracle(secondOracle.address);
+        await publish(aiAgent, oracle);
+        // A transaction that succeeds always means its sender holds the key, changed or not.
+        const proofForTheOtherOracle = await keyProof(THROWAWAY_KEY, aiAgent, oracle);
+
+        for (const proof of ["0x", proofForTheOtherOracle]) {
+          await expect(
+            aiAgent.connect(secondOracle).setOracleEncryptionKey(UNCOMPRESSED_KEY, proof),
+          ).to.be.revertedWithCustomError(aiAgent, "InvalidEncryptionKeyProof");
+        }
+      });
+
+      it("the event's publisher is indexed, so it can be filtered on and the signature is fixed", async function () {
+        const { aiAgent } = await loadFixture(deployFixture);
+        const event = aiAgent.interface.getEvent("OracleEncryptionKeyUpdated");
+
+        expect(event.format("sighash")).to.equal("OracleEncryptionKeyUpdated(address,bytes)");
+        expect(event.inputs.map((input) => input.indexed)).to.deep.equal([true, false]);
+      });
+
       it("the publisher can replace its own key", async function () {
         const { aiAgent, oracle } = await loadFixture(deployFixture);
         await publish(aiAgent, oracle);
@@ -460,15 +457,32 @@ describe("Oracle role — several oracles can be authorized at once", function (
         await aiAgent.connect(deployer).addOracle(secondOracle.address);
         await publish(aiAgent, oracle);
 
-        await expect(aiAgent.connect(deployer).removeOracle(oracle.address))
+        const removal = aiAgent.connect(deployer).removeOracle(oracle.address);
+        await expect(removal)
           .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
           .withArgs(ethers.ZeroAddress, "0x");
+        await expect(removal)
+          .to.emit(aiAgent, "RoleRevoked")
+          .withArgs(ORACLE_ROLE, oracle.address, deployer.address);
         expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
         expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(ethers.ZeroAddress);
 
         await expect(publish(aiAgent, secondOracle, OTHER_KEY))
           .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
           .withArgs(secondOracle.address, OTHER_KEY.publicKey);
+      });
+
+      it("adding a removed publisher back does not bring its key back", async function () {
+        const { aiAgent, deployer, oracle } = await loadFixture(deployFixture);
+        await publish(aiAgent, oracle);
+        await aiAgent.connect(deployer).removeOracle(oracle.address);
+
+        await expect(aiAgent.connect(deployer).addOracle(oracle.address)).to.not.emit(
+          aiAgent,
+          "OracleEncryptionKeyUpdated",
+        );
+        expect(await aiAgent.oracleEncryptionKey()).to.equal("0x");
+        expect(await aiAgent.oracleEncryptionKeyPublisher()).to.equal(ethers.ZeroAddress);
       });
 
       it("a publisher that gives up its role withdraws its key too", async function () {

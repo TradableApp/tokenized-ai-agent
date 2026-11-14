@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
+const { publishEncryptionKey } = require("./helpers/encryptionKeyProof");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
@@ -86,21 +87,7 @@ describe("State changes are announced by the contract that makes them", function
       );
       await aiAgent.waitForDeployment();
       const key = new ethers.SigningKey(ethers.id("state-change-events-encryption-key"));
-      const { chainId } = await ethers.provider.getNetwork();
-      const statement = ethers.keccak256(
-        ethers.AbiCoder.defaultAbiCoder().encode(
-          ["string", "uint256", "address", "address", "bytes32"],
-          [
-            "SenseAI oracle encryption key v1",
-            chainId,
-            await aiAgent.getAddress(),
-            oracle.address,
-            ethers.keccak256(key.publicKey),
-          ],
-        ),
-      );
-      const proof = key.sign(ethers.hashMessage(ethers.getBytes(statement))).serialized;
-      await expect(aiAgent.connect(oracle).setOracleEncryptionKey(key.publicKey, proof))
+      await expect(publishEncryptionKey(aiAgent, oracle, key))
         .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
         .withArgs(oracle.address, key.publicKey);
 
