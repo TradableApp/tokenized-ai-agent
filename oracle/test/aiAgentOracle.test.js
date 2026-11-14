@@ -15,6 +15,7 @@ describe("aiAgentOracle", function () {
   // This test's state store (a real file store in a temp dir) and its clock.
   let tempState;
   let stateStore;
+  let resumeCursorOverride;
   let storeClock;
   const FAKE_SESSION_KEY = crypto.randomBytes(32);
   const FAKE_ENCRYPTED_KEY = Buffer.from("fake-ecies-cipher-blob");
@@ -143,6 +144,9 @@ describe("aiAgentOracle", function () {
       "./oracleState/store": { ...realStateStore, createFileStateStore: () => stateStore },
       "./oracleState/runtime": {
         ...realStateRuntime,
+        // A test can stand in for the cursor read (the real one retries for about a minute).
+        resolveResumeCursor: (options) =>
+          (resumeCursorOverride ?? realStateRuntime.resolveResumeCursor)(options),
         createStateStore: (options) =>
           realStateRuntime.createStateStore({
             ...options,
@@ -1084,7 +1088,6 @@ describe("aiAgentOracle", function () {
 
       await aiAgentOracle.start();
       delete process.env.EVENT_BATCH_SIZE;
-      mockedProvider.getBlockNumber.resolves(10000);
 
       // Look-back of 1,800 blocks from the boot head: 10,000 - 1,800 = 8,200 is the first block
       // scanned, so 8,199 is the last block treated as done.
@@ -1095,6 +1098,59 @@ describe("aiAgentOracle", function () {
       expect(firstFrom).to.equal(8200);
       expect(firstTo).to.equal(20000);
       expect(await stateStore.loadCursor()).to.equal(20000);
+    });
+
+    it("start() does not write a starting block over a cursor it could not read", async () => {
+      process.env.ORACLE_ROLE_RECHECK_MS = "1";
+      process.env.EVENT_BATCH_SIZE = "20000";
+      const { contract: mockedContract, provider: mockedProvider } =
+        stubs["./contractUtility"].initializeOracle();
+      mockedContract.queryFilter.resolves([]);
+      mockedProvider.getBlockNumber.resolves(10000);
+      // A cursor exists, but the read fails at boot while writes still work.
+      await stateStore.advanceCursor(5000);
+      resumeCursorOverride = async ({ onUnavailable }) => {
+        await onUnavailable(new Error("read timed out"));
+        return { cursor: null, source: "unavailable" };
+      };
+      let cursorDuringWait;
+      mockedContract.isOracle.onCall(0).resolves(false);
+      mockedContract.isOracle.onCall(1).callsFake(async () => {
+        cursorDuringWait = await stateStore.loadCursor();
+        return false;
+      });
+      mockedContract.isOracle.resolves(true);
+
+      try {
+        await aiAgentOracle.start();
+      } finally {
+        resumeCursorOverride = undefined;
+        delete process.env.EVENT_BATCH_SIZE;
+      }
+
+      // Still the real cursor during the wait: a restart with the store readable again resumes
+      // from 5,000 rather than from the look-back (10,000 - 1,800 - 1 = 8,199).
+      expect(cursorDuringWait).to.equal(5000);
+    });
+
+    it("start() never ends its catch-up below the stored cursor when the head reads lower after the wait", async () => {
+      process.env.ORACLE_ROLE_RECHECK_MS = "1";
+      const { contract: mockedContract, provider: mockedProvider } =
+        stubs["./contractUtility"].initializeOracle();
+      mockedContract.queryFilter.resolves([]);
+      await stateStore.advanceCursor(9000);
+      // 10,000 at boot; a lagging node answers 8,900 once the role is held.
+      mockedProvider.getBlockNumber.resolves(8900);
+      mockedProvider.getBlockNumber.onCall(0).resolves(10000);
+      mockedContract.isOracle.onCall(0).resolves(false);
+      mockedContract.isOracle.resolves(true);
+
+      await aiAgentOracle.start();
+
+      // Blocks up to 9,000 are done. Treating 8,900 as the place to carry on from would answer
+      // 8,901 to 9,000 a second time.
+      expect(aiAgentOracle.getLastProcessedBlock()).to.equal(9000);
+      expect(await stateStore.loadCursor()).to.equal(9000);
     });
 
     describe("losing the oracle role while running", () => {
