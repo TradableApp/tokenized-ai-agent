@@ -1063,6 +1063,40 @@ describe("aiAgentOracle", function () {
       expect(heartbeat.firstCall.calledBefore(mockedContract.isOracle.getCall(2))).to.be.true;
     });
 
+    it("start() with no stored cursor fixes its starting block before it waits for the role", async () => {
+      process.env.ORACLE_ROLE_RECHECK_MS = "1";
+      process.env.EVENT_BATCH_SIZE = "20000";
+      const { contract: mockedContract, provider: mockedProvider } =
+        stubs["./contractUtility"].initializeOracle();
+      mockedContract.queryFilter.resolves([]);
+      // The head is 10,000 when the oracle boots and 20,000 by the time the role is granted.
+      mockedProvider.getBlockNumber.resolves(20000);
+      mockedProvider.getBlockNumber.onCall(0).resolves(10000);
+      // What the store holds while the oracle is still waiting: a restart then must resume from
+      // the same place, not from a look-back measured at the later restart.
+      let cursorDuringWait;
+      mockedContract.isOracle.onCall(0).resolves(false);
+      mockedContract.isOracle.onCall(1).callsFake(async () => {
+        cursorDuringWait = await stateStore.loadCursor();
+        return false;
+      });
+      mockedContract.isOracle.resolves(true);
+
+      await aiAgentOracle.start();
+      delete process.env.EVENT_BATCH_SIZE;
+      mockedProvider.getBlockNumber.resolves(10000);
+
+      // Look-back of 1,800 blocks from the boot head: 10,000 - 1,800 = 8,200 is the first block
+      // scanned, so 8,199 is the last block treated as done.
+      expect(cursorDuringWait).to.equal(8199);
+      // Prompts submitted during the wait (blocks 10,001 to 20,000) are scanned, from the block
+      // fixed at boot up to the head as it is once the role is held.
+      const [, firstFrom, firstTo] = mockedContract.queryFilter.firstCall.args;
+      expect(firstFrom).to.equal(8200);
+      expect(firstTo).to.equal(20000);
+      expect(await stateStore.loadCursor()).to.equal(20000);
+    });
+
     describe("losing the oracle role while running", () => {
       // The revert an oracle gets from the agent when it does not hold the role.
       const UNAUTHORIZED_SELECTOR = ethers.id("UnauthorizedOracle()").slice(0, 10);
