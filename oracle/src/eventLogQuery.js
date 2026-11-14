@@ -54,10 +54,13 @@ async function queryOracleWorkEvents(contract, fromBlock, toBlock, { onUndecodab
     console.warn(
       `[Poll] A log in block ${log.blockNumber} (tx ${log.transactionHash}, log ${log.index}) matched the oracle-work filter but could not be decoded; skipped.`,
     );
+    // The report may throw or return a promise that rejects; neither may lose the other events.
+    const reportFailed = (error) =>
+      console.error(`[Poll] Reporting an undecodable log failed: ${error?.message}`);
     try {
-      onUndecodable?.(log);
+      Promise.resolve(onUndecodable?.(log)).catch(reportFailed);
     } catch (error) {
-      console.error(`[Poll] Reporting an undecodable log failed: ${error.message}`);
+      reportFailed(error);
     }
 
     return false;

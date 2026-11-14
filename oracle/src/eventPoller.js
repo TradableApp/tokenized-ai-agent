@@ -2,6 +2,7 @@
 
 const { reconcileCursor } = require("./blockCursor");
 const { describeError } = require("./errorDescription");
+const { retryAfterMs } = require("./pollBackoff");
 
 /**
  * One pass of the poll loop, as a function the caller runs and then sleeps after.
@@ -126,7 +127,15 @@ function createRangePoller({
         // answering nothing; the outage tracker alerts on that once.
         outage.failure(described);
 
-        return backoff.failure(error);
+        const waitMs = backoff.failure(error);
+        const askedMs = retryAfterMs(error);
+        if (askedMs > waitMs) {
+          log.warn(
+            `  The provider asked for a ${askedMs / 1000} s wait; the longest wait is ${waitMs / 1000} s, so the next pass may be refused again.`,
+          );
+        }
+
+        return waitMs;
       }
     },
 

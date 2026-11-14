@@ -15,6 +15,9 @@ function describeError(error) {
   return textOf(error).replace(ADDRESS, "[address removed]");
 }
 
+// Greedy on purpose: everything up to the next space, quote or bracket goes, trailing
+// punctuation included. Stopping at a dot or a colon would stop inside the host name and leave
+// the path behind, which is where a provider puts the access key.
 const ADDRESS = /\b(?:https?|wss?):\/\/[^\s"'<>)\]]+/gi;
 
 function textOf(error) {

@@ -2386,10 +2386,8 @@ async function handleAndRecord(eventName, handler, ...args) {
 
     const nowTimestamp = Math.floor(Date.now() / 1000);
     const lagInSeconds = nowTimestamp - eventTimestamp;
-    // Block timestamps are whole seconds, so this is good to about a second either way.
-    console.log(
-      `[Lag] ${eventName} block=${event.blockNumber} block_to_start_ms=${lagInSeconds * 1000}`,
-    );
+    // In seconds because block timestamps are whole seconds: no finer figure exists.
+    console.log(`[Lag] ${eventName} block=${event.blockNumber} block_to_start_s=${lagInSeconds}`);
     const lagThreshold = 300; // 5 minutes
 
     if (lagInSeconds > lagThreshold) {
