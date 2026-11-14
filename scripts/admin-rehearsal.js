@@ -45,9 +45,10 @@ async function readState({ aiAgent, escrow, oracleAddress }) {
 }
 
 /**
- * The published encryption key and its publisher, or nothing for an agent that does not have
- * them: a proxy still running the version before the key reverts on both getters, and the
- * rehearsal must still run against it. Any other failure is thrown.
+ * The published encryption key and its publisher, or neither when a getter reverts. A proxy
+ * from before the key has neither getter; one from the version between has the key but not the
+ * publisher. Both are left out in either case, so the snapshot never holds half of the pair,
+ * and the rehearsal still runs against such a proxy. Any other failure is thrown.
  */
 async function readEncryptionKey(aiAgent) {
   try {
@@ -66,11 +67,15 @@ async function readEncryptionKey(aiAgent) {
 
 /**
  * True when a read failed because the contract reverted, as opposed to the node not answering.
- * ethers reports a revert as CALL_EXCEPTION; the in-process Hardhat network throws its own
- * error, recognizable only by its text.
+ * ethers reports a revert as CALL_EXCEPTION. The in-process Hardhat network throws its own
+ * error with no ethers code, recognizable only by its text; an error that carries any other
+ * code came from a real node and is never taken for a revert, whatever its text says.
  */
 function isRevert(error) {
-  return error?.code === "CALL_EXCEPTION" || /revert/i.test(String(error?.message));
+  if (error?.code === "CALL_EXCEPTION") return true;
+  if (typeof error?.code === "string") return false;
+
+  return /revert/i.test(String(error?.message));
 }
 
 const NO_ENCRYPTION_KEY_NOTE =

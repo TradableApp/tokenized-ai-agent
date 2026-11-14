@@ -118,6 +118,19 @@ describe("scripts/admin-rehearsal", function () {
       expect(state).to.not.have.property("encryptionKey");
       expect(state).to.not.have.property("encryptionKeyPublisher");
     });
+    it("does not take a node's own error for a missing key, even when its text mentions a revert", async function () {
+      const { contracts } = await loadFixture(deployFixture);
+      const refused = Object.assign(new Error("429: request reverted by rate limiter"), {
+        code: "SERVER_ERROR",
+      });
+      const failingAgent = {
+        owner: () => contracts.aiAgent.owner(),
+        oracleEncryptionKey: () => Promise.reject(refused),
+        oracleEncryptionKeyPublisher: () => contracts.aiAgent.oracleEncryptionKeyPublisher(),
+      };
+
+      await expect(readState({ ...contracts, aiAgent: failingAgent })).to.be.rejectedWith(refused);
+    });
   });
 
   describe("buildPlan", function () {
