@@ -1,5 +1,7 @@
 const Sentry = require("@sentry/node");
 
+const { withoutAddresses } = require("./errorDescription");
+
 const TRACE_RATES = {
   localnet: 1.0,
   testnet: 0.5,
@@ -143,8 +145,15 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
         continue;
       }
 
-      result[key] =
-        value && typeof value === "object" ? scrubSensitiveData(value, path, depth + 1) : value;
+      if (value && typeof value === "object") {
+        result[key] = scrubSensitiveData(value, path, depth + 1);
+      } else if (typeof value === "string") {
+        // An error's message, a breadcrumb's request: wherever an address ends up in an event,
+        // it goes. A provider's address carries the account's access key.
+        result[key] = withoutAddresses(value);
+      } else {
+        result[key] = value;
+      }
     }
     return result;
   } finally {

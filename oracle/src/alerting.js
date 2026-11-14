@@ -1,5 +1,7 @@
 const { WebClient } = require("@slack/web-api");
 
+const { withoutAddresses } = require("./errorDescription");
+
 /**
  * Sends a formatted alert message to a specified Slack channel.
  * @param {string} title The title of the alert.
@@ -111,7 +113,12 @@ async function sendEmailAlert(title, message) {
  * @param {string} title The title of the alert.
  * @param {string} message The detailed alert message.
  */
-async function sendAlert(title, message) {
+async function sendAlert(rawTitle, rawMessage) {
+  // Here, once, for every caller: an alert leaves the machine for Slack and email, and its
+  // text is often built around an error's message, which can carry the address of a request.
+  const title = withoutAddresses(rawTitle);
+  const message = withoutAddresses(rawMessage);
+
   console.error(`🚨 ALERT: ${title} - ${message}`);
   // Run both in parallel and don't let one failure stop the other.
   await Promise.all([sendSlackAlert(title, message), sendEmailAlert(title, message)]);

@@ -104,7 +104,10 @@ describe("alerting", function () {
 
     const slackText = slackStub.chat.postMessage.firstCall.args[0].text;
     const emailBody = fetchStub.firstCall.args[1].body;
-    const logged = consoleErrorStub.getCalls().map((c) => c.args.join(" ")).join("\n");
+    const logged = consoleErrorStub
+      .getCalls()
+      .map((c) => c.args.join(" "))
+      .join("\n");
     for (const text of [slackText, emailBody, logged]) {
       expect(text).to.not.include("rpc.example");
     }

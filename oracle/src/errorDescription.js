@@ -12,7 +12,47 @@
  * @returns {string}
  */
 function describeError(error) {
-  return textOf(error).replace(ADDRESS, "[address removed]");
+  return withoutAddresses(textOf(error));
+}
+
+/**
+ * `text` with every address in it removed. For text this module did not write: an alert built
+ * elsewhere, a field of an error report.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function withoutAddresses(text) {
+  return String(text).replace(ADDRESS, "[address removed]");
+}
+
+/**
+ * An error that says what `error` says and can be thrown, printed or reported whole.
+ *
+ * `describeError` gives a line of text. Where an Error object is needed (a rethrow that ends in
+ * the process's crash handler, a log line that should keep the frames), the original cannot be
+ * used: its message, its stack and the request it carries all hold the address. This one has
+ * the description as its message, the original's frames, and its code for callers that branch
+ * on it. Nothing else of the original comes along.
+ *
+ * @param {unknown} error
+ * @returns {Error}
+ */
+function describedError(error) {
+  const described = new Error(describeError(error));
+  if (error === null || typeof error !== "object") return described;
+
+  if (typeof error.name === "string" && error.name) described.name = error.name;
+  if (typeof error.code === "string" && error.code) described.code = error.code;
+
+  const frames =
+    typeof error.stack === "string"
+      ? error.stack.split("\n").filter((line) => /^\s+at /.test(line))
+      : [];
+  described.stack = withoutAddresses(
+    [`${described.name}: ${described.message}`, ...frames].join("\n"),
+  );
+  return described;
 }
 
 // Greedy on purpose: everything up to the next space, quote or bracket goes, trailing
@@ -33,4 +73,4 @@ function textOf(error) {
   return "unknown error";
 }
 
-module.exports = { describeError };
+module.exports = { describeError, describedError, withoutAddresses };

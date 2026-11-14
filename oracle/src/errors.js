@@ -53,4 +53,27 @@ function isRetryableError(error) {
   return error instanceof RetryableError;
 }
 
-module.exports = { BadInputError, isBadInputError, RetryableError, isRetryableError };
+/**
+ * The codes ethers gives a request that did not get an answer: the provider refused it or
+ * answered with an error status, nothing came back in time, or the network could not be reached.
+ */
+const TRANSIENT_PROVIDER_CODES = new Set(["SERVER_ERROR", "TIMEOUT", "NETWORK_ERROR"]);
+
+/**
+ * Did a request to the chain provider fail in a way that says nothing about what was asked?
+ *
+ * Any read made while an event is being handled can fail like this (the event's block, a
+ * contract read, a gas estimate). The event is as valid as it was, so it belongs in the retry
+ * queue. By code, which ethers sets, and not by message text.
+ */
+function isTransientProviderError(error) {
+  return error !== null && typeof error === "object" && TRANSIENT_PROVIDER_CODES.has(error.code);
+}
+
+module.exports = {
+  BadInputError,
+  isBadInputError,
+  RetryableError,
+  isRetryableError,
+  isTransientProviderError,
+};

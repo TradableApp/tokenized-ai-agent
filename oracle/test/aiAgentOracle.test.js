@@ -2290,7 +2290,9 @@ describe("aiAgentOracle", function () {
         );
 
       it("is not printed or put in an alert when the error is fatal", async () => {
-        stubs["./ecies"].eciesDecrypt.rejects(new Error(`Decryption service at ${ADDRESS} refused`));
+        stubs["./ecies"].eciesDecrypt.rejects(
+          new Error(`Decryption service at ${ADDRESS} refused`),
+        );
 
         await handle(eventFailingWith("fatal-with-address"));
 

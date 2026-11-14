@@ -33,7 +33,12 @@ const {
   createMessageFile,
   createSearchIndexDeltaFile,
 } = require("./formatters");
-const { BadInputError, isBadInputError, isRetryableError } = require("./errors");
+const {
+  BadInputError,
+  isBadInputError,
+  isRetryableError,
+  isTransientProviderError,
+} = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
@@ -45,7 +50,7 @@ const {
   DEFAULT_POLL_INTERVAL_MS,
   createPollBackoff,
 } = require("./pollBackoff");
-const { describeError } = require("./errorDescription");
+const { describeError, describedError } = require("./errorDescription");
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
@@ -173,7 +178,7 @@ const oracleRole = createRoleGate({
     const remedy = isSapphire
       ? "Restart the oracle so it registers itself again."
       : `The contract owner must call addOracle(${signer.address}).`;
-    const message = `Oracle ${signer.address} does not hold the oracle role on ${contract.target}. It has stopped answering and is waiting; prompts stay queued and are answered once it holds the role, or refunded after the refund timeout. ${remedy}${error ? ` Last error: ${error.message}` : ""}`;
+    const message = `Oracle ${signer.address} does not hold the oracle role on ${contract.target}. It has stopped answering and is waiting; prompts stay queued and are answered once it holds the role, or refunded after the refund timeout. ${remedy}${error ? ` Last error: ${describeError(error)}` : ""}`;
     console.error(`[OracleRole] ${message}`);
     return sendAlert("CRITICAL: Oracle Not Authorized", message);
   },
@@ -218,7 +223,7 @@ function reportCursorWriteFailure(error, block) {
   if (now - lastCursorWriteErrorLoggedAt < CURSOR_WRITE_ERROR_LOG_INTERVAL_MS) return;
   lastCursorWriteErrorLoggedAt = now;
   console.error(
-    `[OracleState] Could not store cursor ${block}; continuing with it in memory. Error: ${error.message}`,
+    `[OracleState] Could not store cursor ${block}; continuing with it in memory. Error: ${describeError(error)}`,
   );
   Sentry.captureException(error, { tags: { site: "cursor_write_failed", blockNumber: block } });
 }
@@ -1900,7 +1905,7 @@ async function handlePrompt(
       tags: { site: "handle_prompt" },
       extra: { convId: conversationId?.toString() },
     });
-    console.error(`Error in handlePrompt for convId ${conversationId}:`, error);
+    console.error(`Error in handlePrompt for convId ${conversationId}:`, describedError(error));
 
     throw error; // Propagate error to be caught by handleAndRecord
   }
@@ -2114,7 +2119,10 @@ async function handleRegeneration(
       });
     }
 
-    console.error(`Error in handleRegeneration for promptId ${promptMessageId}:`, error);
+    console.error(
+      `Error in handleRegeneration for promptId ${promptMessageId}:`,
+      describedError(error),
+    );
     throw error;
   }
 
@@ -2219,7 +2227,10 @@ async function handleBranch(
       );
     });
   } catch (error) {
-    console.error(`Error in handleBranch for convId ${originalConversationId}:`, error);
+    console.error(
+      `Error in handleBranch for convId ${originalConversationId}:`,
+      describedError(error),
+    );
     throw error;
   }
 }
@@ -2261,7 +2272,10 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
       );
     });
   } catch (error) {
-    console.error(`Error in handleMetadataUpdate for convId ${conversationId}:`, error);
+    console.error(
+      `Error in handleMetadataUpdate for convId ${conversationId}:`,
+      describedError(error),
+    );
 
     throw error;
   }
@@ -2318,7 +2332,7 @@ async function ensureOracleAuthorized() {
 
     console.log(`Successfully registered oracle address ${signer.address}`);
   } catch (err) {
-    const errorMessage = `FATAL: Failed to confirm oracle authorization for ${signer.address}. Error: ${err.message}`;
+    const errorMessage = `FATAL: Failed to confirm oracle authorization for ${signer.address}. Error: ${describeError(err)}`;
 
     await sendAlert("CRITICAL: Oracle Setup Failed", errorMessage);
 
@@ -2405,7 +2419,7 @@ async function handleAndRecord(eventName, handler, ...args) {
     // point — a transient failure whose message merely reads like a parse error is retried.
     if (isBadInputError(error)) {
       console.warn(
-        `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${error.message}`,
+        `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${describeError(error)}`,
       );
       // We do NOT throw, we do NOT alert, we do NOT queue for retry.
       return;
@@ -2422,10 +2436,13 @@ async function handleAndRecord(eventName, handler, ...args) {
     const role = await lostOracleRole(error);
     if (role.lost) oracleRole.markLost(error);
 
+    // A request to the chain provider that got no answer (refused, timed out, unreachable) is
+    // the same: any read made while handling the event can fail that way.
     const isRetryable =
       role.lost ||
       role.refused ||
       isRetryableError(error) ||
+      isTransientProviderError(error) ||
       error.message.includes("Irys") ||
       error.message.includes("fetch") ||
       error.message.includes("insufficient funds") ||
@@ -2437,7 +2454,7 @@ async function handleAndRecord(eventName, handler, ...args) {
 
     if (isRetryable) {
       console.warn(
-        `Encountered a retryable error for ${eventName}. Adding to retry queue. Error: ${error.message}`,
+        `Encountered a retryable error for ${eventName}. Adding to retry queue. Error: ${describeError(error)}`,
       );
 
       // A pointer to the event, not a copy of it: the retry re-reads the receipt. Queuing the same
@@ -2458,8 +2475,9 @@ async function handleAndRecord(eventName, handler, ...args) {
       // If that enqueue throws, the error leaves this function on purpose: the event is neither
       // answered nor queued, so the scan that owns the batch must fail and meet it again.
     } else {
-      const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${error.message}`;
-      console.error(alertMessage, error);
+      // Described, and the raw error not printed: its message can carry a request address.
+      const alertMessage = `Encountered a FATAL, non-retryable error for event '${eventName}' in block ${event.blockNumber}. Manual intervention required. Error: ${describeError(error)}`;
+      console.error(alertMessage, describedError(error));
 
       Sentry.captureException(error, {
         tags: { site: "handle_and_record_fatal", eventName, blockNumber: event.blockNumber },
@@ -2582,7 +2600,7 @@ async function retryClaimedJob(job) {
 async function recordFailedRetry(job, error) {
   const attempt = job.attempts + 1;
   console.error(
-    `[Retry] Attempt #${attempt} failed for event ${job.eventName}. Error: ${error.message}`,
+    `[Retry] Attempt #${attempt} failed for event ${job.eventName}. Error: ${describeError(error)}`,
   );
 
   try {
@@ -2597,7 +2615,7 @@ async function recordFailedRetry(job, error) {
       });
       await sendAlert(
         "CRITICAL: Job Failed Permanently",
-        `A job for event ${job.eventName} from block ${job.blockNumber} (tx ${job.transactionHash}) has failed all ${MAX_RETRIES} retries and will not be retried again. It stays on record as exhausted. Manual intervention required. Final error: ${error.message}`,
+        `A job for event ${job.eventName} from block ${job.blockNumber} (tx ${job.transactionHash}) has failed all ${MAX_RETRIES} retries and will not be retried again. It stays on record as exhausted. Manual intervention required. Final error: ${describeError(error)}`,
       );
     } else {
       const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
@@ -2642,7 +2660,7 @@ async function retryFailedJobs() {
       } catch (error) {
         // The queue cannot be read right now. The jobs are still there; the next tick tries
         // again, and a failure that lasts is alerted once.
-        console.error(`[Retry] Could not read the failed-job queue: ${error.message}`);
+        console.error(`[Retry] Could not read the failed-job queue: ${describeError(error)}`);
         retryQueueOutage.failure(error);
         return;
       }
@@ -2666,7 +2684,7 @@ async function settleBatch(tasks) {
   const failures = results.filter((result) => result.status === "rejected");
   // The caller gets the first failure; the others must not vanish with it.
   for (const { reason } of failures.slice(1)) {
-    console.error(`[Batch] Another event of the same batch also failed: ${reason?.message}`);
+    console.error(`[Batch] Another event of the same batch also failed: ${describeError(reason)}`);
     Sentry.captureException(reason, { tags: { site: "settle_batch_secondary" } });
   }
   if (failures.length > 0) throw failures[0].reason;
@@ -2731,7 +2749,9 @@ async function processPastEvents(fromBlock, toBlock) {
       // Critical failure in catch-up stops the oracle startup
       await sendAlert("Oracle Catch-up Failed", alertMessage);
 
-      throw error; // Throw to stop the oracle from starting in a potentially broken state.
+      // Thrown to stop the oracle from starting in a potentially broken state. It ends in the
+      // process's crash handler, which prints and reports it, so it is the described error.
+      throw describedError(error);
     }
   }
 
@@ -2780,7 +2800,7 @@ function reportUndecodableLog(log) {
   sendAlert(
     "Oracle: an event could not be decoded and was skipped",
     `A log at ${where} matched the oracle's event filter but could not be decoded with the ABI in this build, so it was not answered. The contract's ABI and this image are probably out of step. The user is refunded only by the one-hour timeout.`,
-  ).catch((err) => console.error("sendAlert (undecodable log) failed:", err.message));
+  ).catch((err) => console.error("sendAlert (undecodable log) failed:", describeError(err)));
 }
 
 /**
@@ -2828,7 +2848,7 @@ async function pollEvents(startBlock) {
       sendAlert(
         "Chain reorg detected — oracle cursor rewound",
         `Head ${head} dropped below cursor ${cursor}. Rewound to ${rewoundTo}; re-mined events will be re-processed.`,
-      ).catch((err) => console.error("sendAlert (reorg) failed:", err.message));
+      ).catch((err) => console.error("sendAlert (reorg) failed:", describeError(err)));
     },
     outage: pollLoopOutage,
     backoff: createPollBackoff({
@@ -2915,11 +2935,11 @@ async function start() {
   const resume = await resolveResumeCursor({
     store: stateStore,
     onUnavailable: async (error) => {
-      console.error(`[OracleState] Could not read the stored cursor: ${error.message}`);
+      console.error(`[OracleState] Could not read the stored cursor: ${describeError(error)}`);
       Sentry.captureException(error, { tags: { site: "cursor_read_failed" } });
       await sendAlert(
         "Oracle could not read its stored cursor",
-        `The oracle started but could not read where it left off (${error.message}). It is resuming from a recent-block lookback, so prompts submitted before that window and not yet answered will be missed until they are refunded. Check the oracle_agent database.`,
+        `The oracle started but could not read where it left off (${describeError(error)}). It is resuming from a recent-block lookback, so prompts submitted before that window and not yet answered will be missed until they are refunded. Check the oracle_agent database.`,
       );
     },
   });
@@ -2974,7 +2994,7 @@ async function start() {
 
   // 2. Listening Phase — fire-and-forget; the infinite poll loop never resolves
   pollEvents(latestBlock).catch((err) => {
-    console.error("Fatal polling loop error:", err);
+    console.error("Fatal polling loop error:", describedError(err));
     process.exit(1);
   });
 }

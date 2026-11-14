@@ -3,17 +3,21 @@ initSentry();
 
 const Sentry = require("@sentry/node");
 
+const { describedError } = require("./errorDescription");
+
 // Crash handlers FIRST, so every fatal path below gets the same clean shutdown — including the
 // config guard's ConfigError and any throw from a module-scope side effect during the requires
 // that follow. Registering them after those lines meant the earliest, most operationally
 // interesting crashes were the ones that skipped the flush.
+// Printed as described errors: whatever reaches here is unknown, and a provider error carries
+// the address of its request. Sentry gets the original, which its scrubber clears of addresses.
 process.on("unhandledRejection", (reason) => {
-  console.error("[Fatal] Unhandled promise rejection:", reason);
+  console.error("[Fatal] Unhandled promise rejection:", describedError(reason));
   Sentry.captureException(reason);
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[Fatal] Uncaught exception:", error);
+  console.error("[Fatal] Uncaught exception:", describedError(error));
   Sentry.captureException(error);
   Sentry.flush(2000).finally(() => process.exit(1));
 });
