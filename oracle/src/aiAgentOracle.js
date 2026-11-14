@@ -2986,8 +2986,8 @@ async function start() {
   });
 
   // Where to resume from is settled here, before the first step that can wait for the oracle
-  // role. Measured after a wait, the look-back would start at the head as it is then, and every
-  // prompt submitted during the wait would be skipped.
+  // role. Measured after a wait, the look-back would start at the head as it is then, and
+  // prompts submitted earlier in a wait longer than the look-back would be skipped.
   const resume = await resolveResumeCursor({
     store: stateStore,
     onUnavailable: async (error) => {
@@ -3022,9 +3022,11 @@ async function start() {
     await rewindCursor(resumeCursor);
   }
   const fromBlock = resumeCursor === null ? Math.max(0, bootBlock - lookback) : resumeCursor + 1;
-  if (resumeCursor === null && fromBlock > 0) {
+  if (resume.source === "none" && fromBlock > 0) {
     // Stored now, so a restart during a wait resumes from this same block instead of measuring
-    // a new look-back from a later head.
+    // a new look-back from a later head. Not when the cursor could not be read: one may exist,
+    // and a restart that can read it must find it as it was. Not at block 0 either (a chain
+    // younger than the look-back): there is no earlier block to store.
     await persistCursor(fromBlock - 1);
   }
 

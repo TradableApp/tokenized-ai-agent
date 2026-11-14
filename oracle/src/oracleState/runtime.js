@@ -73,7 +73,7 @@ function defaultSleep(ms) {
  *
  * Never throws: a database that cannot be read at start-up must not stop the oracle from
  * answering new prompts. But it does not give up quickly either. Falling back is not free — the
- * oracle then saves the chain head over the cursor it could not read, and whatever lay between
+ * oracle's first scan then saves a recent block over the cursor it could not read, and whatever lay between
  * that cursor and the lookback window is skipped for good — so the read is retried first, and a
  * fallback is reported through `onUnavailable` so the caller can alert.
  *

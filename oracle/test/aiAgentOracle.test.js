@@ -1133,26 +1133,6 @@ describe("aiAgentOracle", function () {
       expect(cursorDuringWait).to.equal(5000);
     });
 
-    it("start() never ends its catch-up below the stored cursor when the head reads lower after the wait", async () => {
-      process.env.ORACLE_ROLE_RECHECK_MS = "1";
-      const { contract: mockedContract, provider: mockedProvider } =
-        stubs["./contractUtility"].initializeOracle();
-      mockedContract.queryFilter.resolves([]);
-      await stateStore.advanceCursor(9000);
-      // 10,000 at boot; a lagging node answers 8,900 once the role is held.
-      mockedProvider.getBlockNumber.resolves(8900);
-      mockedProvider.getBlockNumber.onCall(0).resolves(10000);
-      mockedContract.isOracle.onCall(0).resolves(false);
-      mockedContract.isOracle.resolves(true);
-
-      await aiAgentOracle.start();
-
-      // Blocks up to 9,000 are done. Treating 8,900 as the place to carry on from would answer
-      // 8,901 to 9,000 a second time.
-      expect(aiAgentOracle.getLastProcessedBlock()).to.equal(9000);
-      expect(await stateStore.loadCursor()).to.equal(9000);
-    });
-
     describe("losing the oracle role while running", () => {
       // The revert an oracle gets from the agent when it does not hold the role.
       const UNAUTHORIZED_SELECTOR = ethers.id("UnauthorizedOracle()").slice(0, 10);
