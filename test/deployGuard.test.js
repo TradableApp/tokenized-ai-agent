@@ -101,6 +101,16 @@ describe("scripts/deploy — Base mainnet guard", function () {
   });
 });
 
+describe("scripts/deploy — what it prints", function () {
+  it("never reads the network's RPC address, which carries the provider's access key", function () {
+    const source = fs.readFileSync(path.join(__dirname, "..", "scripts", "deploy.js"), "utf8");
+
+    // Hardhat already holds the address; the script has no use for it except to print it.
+    expect(source).to.not.match(/network\.config\.url/);
+    expect(source).to.not.match(/rpcUrl/i);
+  });
+});
+
 describe("hardhat.config — Basescan verify endpoints", function () {
   it("base verifies against the mainnet API, baseSepolia against the sepolia API", function () {
     expect(hardhatConfig.networks.base.verify.etherscan.apiUrl).to.equal(
