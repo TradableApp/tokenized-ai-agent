@@ -24,6 +24,27 @@ describe("scripts/admin-rehearsal", function () {
   const PROMPT_FEE = ethers.parseEther("1");
   const REHEARSAL_FEE = ethers.parseEther("2");
 
+  /** Publishes a throwaway encryption key as `oracle`, with the proof the agent asks for. */
+  async function publishEncryptionKey(aiAgent, oracle) {
+    const key = new ethers.SigningKey(ethers.id("admin-rehearsal-encryption-key"));
+    const { chainId } = await ethers.provider.getNetwork();
+    const statement = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["string", "uint256", "address", "address", "bytes32"],
+        [
+          "SenseAI oracle encryption key v1",
+          chainId,
+          await aiAgent.getAddress(),
+          oracle.address,
+          ethers.keccak256(key.publicKey),
+        ],
+      ),
+    );
+    const proof = key.sign(ethers.hashMessage(ethers.getBytes(statement))).serialized;
+    await aiAgent.connect(oracle).setOracleEncryptionKey(key.publicKey, proof);
+    return key.publicKey;
+  }
+
   async function deployFixture() {
     const [deployer, oracle, treasury, safe, stranger] = await ethers.getSigners();
 
@@ -84,6 +105,19 @@ describe("scripts/admin-rehearsal", function () {
       expect(state.escrowOwner).to.equal(deployer.address);
       expect(state.treasury).to.equal(treasury.address);
       expect(state.promptFee).to.equal(PROMPT_FEE);
+    });
+
+    it("captures the published encryption key and who published it", async function () {
+      const { contracts, oracle } = await loadFixture(deployFixture);
+      const before = await readState(contracts);
+      expect(before.encryptionKey).to.equal("0x");
+      expect(before.encryptionKeyPublisher).to.equal(ethers.ZeroAddress);
+
+      const key = await publishEncryptionKey(contracts.aiAgent, oracle);
+
+      const after = await readState(contracts);
+      expect(after.encryptionKey).to.equal(key);
+      expect(after.encryptionKeyPublisher).to.equal(oracle.address);
     });
   });
 
@@ -403,6 +437,25 @@ describe("scripts/admin-rehearsal", function () {
       expect(result.ok).to.equal(false);
       expect(result.mismatches).to.deep.equal([
         { field: "oracleAuthorized", expected: "true", actual: "false" },
+      ]);
+    });
+    it("watches the encryption key: a rehearsal that leaves clients without it is reported", async function () {
+      const { contracts, deployer, oracle } = await loadFixture(deployFixture);
+      const key = await publishEncryptionKey(contracts.aiAgent, oracle);
+      const state = await readState(contracts);
+
+      // Removing the publisher withdraws the key clients encrypt to.
+      await contracts.aiAgent.connect(deployer).removeOracle(oracle.address);
+
+      const result = await verifyReturned({ contracts, state });
+      expect(result.ok).to.equal(false);
+      expect(result.mismatches).to.deep.equal([
+        { field: "encryptionKey", expected: key, actual: "0x" },
+        {
+          field: "encryptionKeyPublisher",
+          expected: oracle.address,
+          actual: ethers.ZeroAddress,
+        },
       ]);
     });
   });

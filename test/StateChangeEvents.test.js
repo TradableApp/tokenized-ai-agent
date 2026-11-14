@@ -77,6 +77,37 @@ describe("State changes are announced by the contract that makes them", function
         .to.emit(aiAgent, "RoleGranted")
         .withArgs(ethers.id("ORACLE_ROLE"), oracle.address, deployer.address);
     });
+    it("the agent announces the withdrawal of the encryption key when its publisher is removed", async function () {
+      const [deployer, , oracle] = await ethers.getSigners();
+      const aiAgent = await upgrades.deployProxy(
+        await ethers.getContractFactory("EVMAIAgent"),
+        ["example.com", oracle.address, deployer.address],
+        { initializer: "initialize", kind: "uups" },
+      );
+      await aiAgent.waitForDeployment();
+      const key = new ethers.SigningKey(ethers.id("state-change-events-encryption-key"));
+      const { chainId } = await ethers.provider.getNetwork();
+      const statement = ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(
+          ["string", "uint256", "address", "address", "bytes32"],
+          [
+            "SenseAI oracle encryption key v1",
+            chainId,
+            await aiAgent.getAddress(),
+            oracle.address,
+            ethers.keccak256(key.publicKey),
+          ],
+        ),
+      );
+      const proof = key.sign(ethers.hashMessage(ethers.getBytes(statement))).serialized;
+      await expect(aiAgent.connect(oracle).setOracleEncryptionKey(key.publicKey, proof))
+        .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
+        .withArgs(oracle.address, key.publicKey);
+
+      await expect(aiAgent.connect(deployer).removeOracle(oracle.address))
+        .to.emit(aiAgent, "OracleEncryptionKeyUpdated")
+        .withArgs(ethers.ZeroAddress, "0x");
+    });
   });
 
   describe("Sapphire", function () {
