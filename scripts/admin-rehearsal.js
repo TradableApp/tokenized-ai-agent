@@ -24,15 +24,28 @@ const ORACLE_ROLE = ethers.id("ORACLE_ROLE");
  * The oracle set cannot be listed from the contract, so the snapshot watches one address: the
  * live oracle named by the caller. Its authorization is recorded before the rehearsal and
  * compared afterwards, so a rehearsal that leaves the live oracle without its role is caught.
+ *
+ * The encryption key clients read from the agent is in the snapshot too, with its publisher:
+ * removing the publishing oracle withdraws the key, and clients then cannot submit a prompt.
  */
 async function readState({ aiAgent, escrow, oracleAddress }) {
-  const [agentOwner, escrowOwner, treasury, promptFee] = await Promise.all([
-    aiAgent.owner(),
-    escrow.owner(),
-    escrow.treasury(),
-    escrow.promptFee(),
-  ]);
-  const state = { agentOwner, escrowOwner, treasury, promptFee };
+  const [agentOwner, escrowOwner, treasury, promptFee, encryptionKey, encryptionKeyPublisher] =
+    await Promise.all([
+      aiAgent.owner(),
+      escrow.owner(),
+      escrow.treasury(),
+      escrow.promptFee(),
+      aiAgent.oracleEncryptionKey(),
+      aiAgent.oracleEncryptionKeyPublisher(),
+    ]);
+  const state = {
+    agentOwner,
+    escrowOwner,
+    treasury,
+    promptFee,
+    encryptionKey,
+    encryptionKeyPublisher,
+  };
   if (!oracleAddress) {
     return state;
   }

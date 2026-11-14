@@ -6,6 +6,8 @@ import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/ac
 import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { Structs } from "./libraries/Structs.sol";
 
 /**
@@ -26,6 +28,9 @@ contract EVMAIAgent is
 
   /// @notice The role an address must hold to submit answers. Several addresses can hold it.
   bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
+  /// @dev First field of the statement an encryption key signs to be published. The version is
+  ///      part of the text, so a signature made for another purpose or scheme cannot be reused.
+  string private constant ENCRYPTION_KEY_PROOF_DOMAIN = "SenseAI oracle encryption key v1";
 
   // --- State Variables ---
 
@@ -78,7 +83,10 @@ contract EVMAIAgent is
   mapping(uint256 => uint256) public requestBlock;
 
   /// @notice The public key clients encrypt a prompt's session key to, shared by all oracles.
+  ///         Empty while none is published: a client must not submit a prompt then.
   bytes public oracleEncryptionKey;
+  /// @notice The oracle that published `oracleEncryptionKey`; zero while none is published.
+  address public oracleEncryptionKeyPublisher;
 
   // New state variables go directly above this line, never between existing ones: the proxy's
   // storage follows declaration order, and `__gap` at the end of the contract shrinks by the
@@ -270,10 +278,11 @@ contract EVMAIAgent is
   event AgentEscrowUpdated(address indexed newAIAgentEscrow);
 
   /**
-   * @notice Emitted when the key clients encrypt a prompt's session key to is published.
-   * @param newKey The secp256k1 public key, compressed or uncompressed.
+   * @notice Emitted when the key clients encrypt a prompt's session key to changes.
+   * @param publisher The oracle that published the key; zero when the key was withdrawn.
+   * @param newKey The uncompressed secp256k1 public key; empty when the key was withdrawn.
    */
-  event OracleEncryptionKeyUpdated(bytes newKey);
+  event OracleEncryptionKeyUpdated(address indexed publisher, bytes newKey);
 
   // --- Errors ---
 
@@ -282,8 +291,15 @@ contract EVMAIAgent is
   error ZeroAddress();
   /// @notice Reverts if an attempt is made to set the escrow address more than once.
   error AgentEscrowAlreadySet();
-  /// @notice Reverts if the bytes offered as the encryption key are not a secp256k1 public key.
+  /// @notice Reverts if the bytes offered as the encryption key are not an uncompressed
+  ///         secp256k1 public key.
   error InvalidEncryptionKey();
+  /// @notice Reverts if the proof sent with an encryption key was not made by that key for this
+  ///         chain, this contract and the calling oracle.
+  error InvalidEncryptionKeyProof();
+  /// @notice Reverts if an oracle tries to replace a key that another authorized oracle published.
+  /// @param publisher The oracle whose key is published.
+  error EncryptionKeyHeldByAnotherOracle(address publisher);
 
   // Access Control Errors
   /// @notice Reverts if a function is called by an unauthorized user.
@@ -422,19 +438,53 @@ contract EVMAIAgent is
   }
 
   /**
-   * @notice Publishes the public key that clients encrypt a prompt's session key to.
-   * @dev Owner only. The key is shared by every authorized oracle, so there is one value and not
-   *      one per oracle. Clients read it from here, so a change reaches them without a rebuild.
-   * @param _newKey A secp256k1 public key: 33 bytes compressed or 65 bytes uncompressed.
+   * @notice An oracle publishes the public key that clients encrypt a prompt's session key to.
+   * @dev Oracle only, and the oracle must show it holds the private key: nobody, the owner
+   *      included, can point clients at a key no oracle can decrypt with. There is one key and
+   *      not one per oracle, because every instance of the oracle holds the same key.
+   *      Publishing is allowed when no key is published or when the caller published the
+   *      current one. Another oracle's key cannot be replaced: the owner removes that oracle,
+   *      which withdraws its key. Publishing the key that is already there changes nothing and
+   *      emits nothing, whoever sends it, so several instances can each try at start-up.
+   *      Clients read the key from here, so a change reaches them without a rebuild.
+   * @param _newKey The secp256k1 public key, 65 bytes uncompressed (0x04, then X and Y).
+   * @param _proof A 65-byte signature made with the private key of `_newKey` over the EIP-191
+   *        personal-message hash of `keccak256(abi.encode("SenseAI oracle encryption key v1",
+   *        block.chainid, address(this), msg.sender, keccak256(_newKey)))`. Recovering the
+   *        key's own address from it also shows the bytes are a point on the curve.
    */
-  function setOracleEncryptionKey(bytes calldata _newKey) external onlyOwner {
-    bool isCompressed = _newKey.length == 33 && (_newKey[0] == 0x02 || _newKey[0] == 0x03);
-    bool isUncompressed = _newKey.length == 65 && _newKey[0] == 0x04;
-    if (!isCompressed && !isUncompressed) {
+  function setOracleEncryptionKey(
+    bytes calldata _newKey,
+    bytes calldata _proof
+  ) external onlyOracle {
+    if (_newKey.length != 65 || _newKey[0] != 0x04) {
       revert InvalidEncryptionKey();
     }
+    bytes32 newKeyHash = keccak256(_newKey);
+    if (newKeyHash == keccak256(oracleEncryptionKey)) {
+      return;
+    }
+    address publisher = oracleEncryptionKeyPublisher;
+    if (publisher != address(0) && publisher != msg.sender) {
+      revert EncryptionKeyHeldByAnotherOracle(publisher);
+    }
+
+    bytes32 statement = keccak256(
+      abi.encode(ENCRYPTION_KEY_PROOF_DOMAIN, block.chainid, address(this), msg.sender, newKeyHash)
+    );
+    (address signer, ECDSA.RecoverError recoverError, ) = ECDSA.tryRecover(
+      MessageHashUtils.toEthSignedMessageHash(statement),
+      _proof
+    );
+    // An Ethereum address is the last 20 bytes of the hash of the key's X and Y.
+    address keyAddress = address(uint160(uint256(keccak256(_newKey[1:]))));
+    if (recoverError != ECDSA.RecoverError.NoError || signer != keyAddress) {
+      revert InvalidEncryptionKeyProof();
+    }
+
     oracleEncryptionKey = _newKey;
-    emit OracleEncryptionKeyUpdated(_newKey);
+    oracleEncryptionKeyPublisher = msg.sender;
+    emit OracleEncryptionKeyUpdated(msg.sender, _newKey);
   }
 
   /**
@@ -462,6 +512,25 @@ contract EVMAIAgent is
   function _retireLegacyOracle() private {
     if (_legacyOracle != address(0)) {
       _legacyOracle = address(0);
+    }
+  }
+
+  /**
+   * @notice Withdraws the published encryption key when the oracle that published it loses the
+   *         oracle role, by removal or by giving the role up.
+   * @dev Clients stop encrypting to the key of an oracle that is gone or was removed as
+   *      compromised; until an authorized oracle publishes again there is no key, and a client
+   *      refuses to submit. Emits `OracleEncryptionKeyUpdated(address(0), "")`.
+   * @param role The role being revoked.
+   * @param account The address losing it.
+   * @return revoked True if the address held the role.
+   */
+  function _revokeRole(bytes32 role, address account) internal override returns (bool revoked) {
+    revoked = super._revokeRole(role, account);
+    if (revoked && role == ORACLE_ROLE && account == oracleEncryptionKeyPublisher) {
+      delete oracleEncryptionKey;
+      oracleEncryptionKeyPublisher = address(0);
+      emit OracleEncryptionKeyUpdated(address(0), "");
     }
   }
 
@@ -895,5 +964,5 @@ contract EVMAIAgent is
     // Intentionally left blank. The onlyOwner modifier provides the necessary access control.
   }
 
-  uint256[33] private __gap;
+  uint256[32] private __gap;
 }

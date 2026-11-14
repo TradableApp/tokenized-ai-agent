@@ -508,6 +508,8 @@ describe("scripts/admin-rehearsal", function () {
         escrowOwner: fixture.state.escrowOwner,
         treasury: fixture.state.treasury,
         promptFee: String(fixture.state.promptFee),
+        encryptionKey: "0x",
+        encryptionKeyPublisher: ethers.ZeroAddress,
       });
       expect(await fixture.contracts.aiAgent.owner()).to.equal(fixture.safeContractAddress);
     });
