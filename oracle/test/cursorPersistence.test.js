@@ -24,12 +24,18 @@ const { createTempStateStore } = require("./helpers/tempStateStore");
 // would make the oracle re-answer blocks it has already finished.
 
 const SOURCE = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf-8");
+// The poll pass lives in its own module; its cursor writes are guarded here too.
+const POLLER_SOURCE = fs.readFileSync(path.join(__dirname, "../src/eventPoller.js"), "utf-8");
 
-/** [start, end) of a top-level function's body, ending at its closing brace in column 0. */
+/**
+ * [start, end) of a function's body, ending at its closing brace at the signature's own
+ * indentation (column 0 for a top-level function).
+ */
 function functionExtent(source, signature) {
   const start = source.indexOf(signature);
   expect(start, `${signature} should exist`).to.be.greaterThan(-1);
-  return [start, source.indexOf("\n}", start)];
+  const indent = signature.match(/^ */)[0];
+  return [start, source.indexOf(`\n${indent}}`, start)];
 }
 
 /** [start, end) of the block opened by the first `{` at or after `from`, by brace matching. */
@@ -90,25 +96,44 @@ describe("chain cursor persistence", () => {
     });
 
     it("calls rewindCursor only where the chain head is behind the cursor", () => {
-      // Two places may find the head behind the cursor: the poll loop (a reorg) and start-up (a
-      // stored cursor for blocks that do not exist). Nothing else may move the cursor backwards.
-      const reorgIf = SOURCE.indexOf("if (reconciledBlock !== currentBlock)");
+      // Two places may find the head behind the cursor: the poll pass (a reorg; eventPoller.js)
+      // and start-up (a stored cursor for blocks that do not exist). Nothing else may move the
+      // cursor backwards.
       const aheadOfHeadIf = SOURCE.indexOf("if (resumeCursor !== null && resumeCursor > bootBlock)");
-      expect(reorgIf, "the reorg branch should exist").to.be.greaterThan(-1);
       expect(aheadOfHeadIf, "the start-up ahead-of-head branch should exist").to.be.greaterThan(-1);
 
-      // Calls only: not the definition, not the store method it delegates to.
+      // Calls only: not the definition, not the store method it delegates to. Handing the
+      // function to the poller (`rewindCursor,`) is not a call.
       const calls = matchesOf(SOURCE, /(?<![\w.])rewindCursor\(/g).filter(
         ({ offset }) => !SOURCE.slice(0, offset).endsWith("function "),
       );
-      expect(calls, "both branches must rewind the cursor").to.have.lengthOf(2);
+      expect(calls, "start-up is the only caller left in this file").to.have.lengthOf(1);
       expect(
-        calls
-          .filter(outside(blockExtent(SOURCE, reorgIf)))
-          .filter(outside(blockExtent(SOURCE, aheadOfHeadIf)))
-          .map((m) => m.label),
+        calls.filter(outside(blockExtent(SOURCE, aheadOfHeadIf))).map((m) => m.label),
         "only a head behind the cursor may move it backwards",
       ).to.deep.equal([]);
+      expect(SOURCE, "the poll pass is given the one rewind helper").to.match(
+        /createRangePoller\(\{[\s\S]*?\n {4}rewindCursor,\n/,
+      );
+    });
+
+    it("the poll pass rewinds only in its head-behind-cursor branch", () => {
+      const reorg = functionExtent(POLLER_SOURCE, "  async function reconcileWithHead(");
+      const calls = matchesOf(POLLER_SOURCE, /(?<![\w.])rewindCursor\(/g);
+
+      expect(calls, "the reorg branch must rewind the cursor").to.have.lengthOf(1);
+      expect(calls.filter(outside(reorg)).map((m) => m.label)).to.deep.equal([]);
+      // And that branch is entered only when reconcileCursor moved the cursor back.
+      expect(POLLER_SOURCE).to.include("if (rewoundTo === cursor) return;");
+    });
+
+    it("the poll pass saves the cursor only after the whole range has been handled", () => {
+      const pass = POLLER_SOURCE.slice(...functionExtent(POLLER_SOURCE, "  async function pass("));
+      const calls = matchesOf(POLLER_SOURCE, /(?<![\w.])persistCursor\(/g);
+
+      expect(calls).to.have.lengthOf(1);
+      expect(pass.indexOf("await settle(")).to.be.greaterThan(-1);
+      expect(pass.indexOf("persistCursor(")).to.be.greaterThan(pass.indexOf("await settle("));
     });
 
     it("defines the helpers it depends on (so the guard cannot pass vacuously)", () => {
