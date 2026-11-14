@@ -108,6 +108,12 @@ describe("errorDescription — what an error is, without the address it was sent
       ).to.include("(reverted with JobAlreadyFinalized())");
     });
 
+    it("marks long revert data as cut", () => {
+      const text = describeError(revert({ data: `0x${"ab".repeat(200)}` }));
+
+      expect(text).to.match(/\(revert data 0x(ab){68}…\)$/);
+    });
+
     it("adds nothing when the revert carries no data", () => {
       expect(describeError(revert({ data: null }))).to.equal(
         "CALL_EXCEPTION: execution reverted (unknown custom error)",

@@ -93,7 +93,8 @@ function revertDetail(error) {
   if (typeof signature === "string" && signature) return ` (reverted with ${signature})`;
   const { data } = error;
   if (typeof data === "string" && /^0x[0-9a-f]+$/i.test(data)) {
-    return ` (revert data ${data.slice(0, 138)})`;
+    // Selector plus two words is enough to identify it; the rest is marked as cut.
+    return ` (revert data ${data.length > 138 ? `${data.slice(0, 138)}…` : data})`;
   }
   return "";
 }
