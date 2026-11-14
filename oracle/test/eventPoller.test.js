@@ -247,6 +247,26 @@ describe("eventPoller — one pass of the poll loop", () => {
       expect(reported.message).to.not.include("rpc.example");
     });
 
+    it("says so when the provider asked for longer than the cap allows", async () => {
+      queryEvents.rejects(refusedByProvider(429, "Too Many Requests", { "Retry-After": "600" }));
+      head = 101;
+
+      expect(await poller().tick()).to.equal(60000);
+
+      const warned = log.warn.args.map((args) => args.join(" ")).join("\n");
+      expect(warned).to.include("600 s");
+      expect(warned).to.include("60 s");
+    });
+
+    it("says nothing about the cap when the provider's wait fits inside it", async () => {
+      queryEvents.rejects(refusedByProvider(429, "Too Many Requests", { "Retry-After": "30" }));
+      head = 101;
+
+      await poller().tick();
+
+      expect(log.warn.called).to.equal(false);
+    });
+
     it("still honours the provider's Retry-After after describing the error", async () => {
       queryEvents.rejects(refusedByProvider(429, "Too Many Requests", { "Retry-After": "30" }));
       head = 101;

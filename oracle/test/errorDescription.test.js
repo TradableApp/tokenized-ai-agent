@@ -28,6 +28,16 @@ describe("errorDescription — what an error is, without the address it was sent
     expect(text).to.equal("connect ECONNREFUSED [address removed] while polling");
   });
 
+  it("takes everything up to the next space with the address, punctuation included", () => {
+    // Deliberately greedy: stopping at a dot or a colon would stop inside the host name and
+    // leave the path, which is where a provider puts the access key.
+    expect(
+      describeError(
+        new Error("connect failed to https://rpc.example:8545/v2/not-a-real-key: timeout"),
+      ),
+    ).to.equal("connect failed to [address removed] timeout");
+  });
+
   it("removes websocket addresses too", () => {
     expect(describeError(new Error("closed wss://rpc.example/ws/not-a-real-key"))).to.equal(
       "closed [address removed]",

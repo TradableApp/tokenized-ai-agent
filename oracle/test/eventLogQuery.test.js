@@ -124,6 +124,24 @@ describe("eventLogQuery — one log query finds every event the oracle works on"
     expect(events.map((e) => e.eventName)).to.deep.equal(["PromptSubmitted"]);
   });
 
+  it("a report that rejects later is caught too", async () => {
+    contract.queryFilter.resolves([{ blockNumber: 10, index: 0 }, log("PromptSubmitted", 10, 1)]);
+    const unhandled = sinon.stub();
+    process.on("unhandledRejection", unhandled);
+    const onUndecodable = sinon.stub().rejects(new Error("alert channel down"));
+
+    try {
+      const events = await queryOracleWorkEvents(contract, 10, 10, { onUndecodable });
+      // Unhandled rejections are reported after the microtask queue drains.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(events.map((e) => e.eventName)).to.deep.equal(["PromptSubmitted"]);
+      expect(unhandled.called).to.equal(false);
+    } finally {
+      process.removeListener("unhandledRejection", unhandled);
+    }
+  });
+
   it("lets a failed query reach the caller", async () => {
     contract.queryFilter.rejects(new Error("429 Too Many Requests"));
 
