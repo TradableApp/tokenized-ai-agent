@@ -103,10 +103,7 @@ describe("eventLogQuery — one log query finds every event the oracle works on"
 
   it("leaves out a log the contract interface could not name", async () => {
     // ethers hands back a bare Log (no eventName) when topic 0 is not in the ABI.
-    contract.queryFilter.resolves([
-      { blockNumber: 10, index: 0 },
-      log("PromptSubmitted", 10, 1),
-    ]);
+    contract.queryFilter.resolves([{ blockNumber: 10, index: 0 }, log("PromptSubmitted", 10, 1)]);
 
     const events = await queryOracleWorkEvents(contract, 10, 10);
 
@@ -124,6 +121,55 @@ describe("eventLogQuery — one log query finds every event the oracle works on"
     }
 
     expect(thrown?.message).to.equal("429 Too Many Requests");
+  });
+
+  it("decodes all four from one eth_getLogs through a real ethers Contract", async () => {
+    // The stub above cannot show that ethers accepts a bare topic array and names each log.
+    const iface = new ethers.Interface(AGENT_EVENTS);
+    const address = "0x00000000000000000000000000000000000000Aa";
+    const user = "0x0000000000000000000000000000000000000001";
+    const encoded = (name, args, blockNumber, index) => {
+      const { topics, data } = iface.encodeEventLog(name, args);
+      return {
+        address,
+        topics,
+        data,
+        blockNumber,
+        index,
+        transactionIndex: 0,
+        transactionHash: `0x${"11".repeat(32)}`,
+        blockHash: `0x${"22".repeat(32)}`,
+        removed: false,
+      };
+    };
+    const getLogs = sinon.stub();
+    const provider = { getLogs, resolveName: async (name) => name };
+    provider.provider = provider;
+    getLogs.callsFake(async () =>
+      [
+        encoded("MetadataUpdateRequested", [user, 1, "0x01", "0x02"], 12, 0),
+        encoded("PromptSubmitted", [user, 1, 2, 3, "0x01", "0x02"], 10, 5),
+        encoded("BranchRequested", [user, 1, 2, 3, "0x01", "0x02"], 10, 1),
+        encoded("RegenerationRequested", [user, 1, 2, 3, 4, "0x01", "0x02"], 11, 0),
+      ].map((raw) => new ethers.Log(raw, provider)),
+    );
+    const real = new ethers.Contract(address, AGENT_EVENTS, provider);
+
+    const events = await queryOracleWorkEvents(real, 10, 12);
+
+    expect(getLogs.callCount).to.equal(1);
+    const sent = getLogs.firstCall.args[0];
+    expect(sent.address).to.equal(address);
+    // ethers sorts the alternatives; what matters is that topic 0 offers exactly the four.
+    expect(sent.topics).to.have.lengthOf(1);
+    expect(sent.topics[0]).to.have.members(oracleWorkTopicFilter(real)[0]);
+    expect([sent.fromBlock, sent.toBlock]).to.deep.equal([10, 12]);
+    expect(events.map((e) => [e.eventName, e.blockNumber, e.index, e.args.length])).to.deep.equal([
+      ["BranchRequested", 10, 1, 6],
+      ["PromptSubmitted", 10, 5, 6],
+      ["RegenerationRequested", 11, 0, 7],
+      ["MetadataUpdateRequested", 12, 0, 4],
+    ]);
   });
 
   it("compareLogOrder sorts by block, then by position in the block", () => {

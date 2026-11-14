@@ -112,9 +112,9 @@ describe("pollBackoff — the wait between polls grows on failure and comes back
     it("is 0 for a value that is not a positive number of seconds", () => {
       // The HTTP-date form is not worth parsing here: the doubled wait applies instead.
       for (const value of ["soon", "-5", "", "Wed, 21 Oct 2026 07:28:00 GMT"]) {
-        expect(retryAfterMs({ info: { response: { headers: { "retry-after": value } } } })).to.equal(
-          0,
-        );
+        expect(
+          retryAfterMs({ info: { response: { headers: { "retry-after": value } } } }),
+        ).to.equal(0);
       }
     });
   });
