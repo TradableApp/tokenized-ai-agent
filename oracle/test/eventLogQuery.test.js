@@ -101,11 +101,25 @@ describe("eventLogQuery — one log query finds every event the oracle works on"
     expect(fromProvider.map((e) => e.blockNumber)).to.deep.equal([12, 10]);
   });
 
-  it("leaves out a log the contract interface could not name", async () => {
-    // ethers hands back a bare Log (no eventName) when topic 0 is not in the ABI.
-    contract.queryFilter.resolves([{ blockNumber: 10, index: 0 }, log("PromptSubmitted", 10, 1)]);
+  it("leaves out a log that could not be decoded, and reports it", async () => {
+    // ethers returns a log with no event name when the ABI cannot decode it (for example the
+    // deployed contract indexes a field this ABI does not). The cursor will move past it, so
+    // it must not go unreported: that prompt is paid for and will only be refunded.
+    const undecodable = { blockNumber: 10, index: 0, transactionHash: "0xabc" };
+    contract.queryFilter.resolves([undecodable, log("PromptSubmitted", 10, 1)]);
+    const onUndecodable = sinon.stub();
 
-    const events = await queryOracleWorkEvents(contract, 10, 10);
+    const events = await queryOracleWorkEvents(contract, 10, 10, { onUndecodable });
+
+    expect(events.map((e) => e.eventName)).to.deep.equal(["PromptSubmitted"]);
+    expect(onUndecodable.calledOnceWithExactly(undecodable)).to.equal(true);
+  });
+
+  it("a report that throws does not lose the events that did decode", async () => {
+    contract.queryFilter.resolves([{ blockNumber: 10, index: 0 }, log("PromptSubmitted", 10, 1)]);
+    const onUndecodable = sinon.stub().throws(new Error("alert channel down"));
+
+    const events = await queryOracleWorkEvents(contract, 10, 10, { onUndecodable });
 
     expect(events.map((e) => e.eventName)).to.deep.equal(["PromptSubmitted"]);
   });

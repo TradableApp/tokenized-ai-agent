@@ -3,6 +3,7 @@ const sinon = require("sinon");
 
 const { createRangePoller } = require("../src/eventPoller");
 const { createPollBackoff } = require("../src/pollBackoff");
+const { refusedByProvider } = require("./helpers/refusedByProvider");
 
 describe("eventPoller — one pass of the poll loop", () => {
   let head;
@@ -211,8 +212,46 @@ describe("eventPoller — one pass of the poll loop", () => {
       const p = poller();
 
       expect(await p.tick()).to.equal(8000);
-      // Behind the head, but the provider has just refused: 4000 + (8000 - 4000) / 2, not 500.
-      expect(await p.tick()).to.equal(6000);
+      // Behind the head, but the provider has just refused: four times the catch-up wait, not
+      // 500 and not the 6000 the backoff is on (that would let the chain pull further ahead).
+      expect(await p.tick()).to.equal(2000);
+    });
+
+    it("goes back to the short catch-up wait once the backoff has fully recovered", async () => {
+      head = 100000;
+      queryEvents.onCall(0).rejects(rateLimited());
+      const p = poller();
+      await p.tick(); // 8000
+
+      const waits = [];
+      for (let i = 0; i < 14; i++) waits.push(await p.tick());
+
+      // 6000, 5000, 4500, 4250, ... settles on the base after 12 halvings of 4000.
+      expect(waits.slice(0, 11).every((wait) => wait === 2000)).to.equal(true);
+      expect(waits[13]).to.equal(500);
+    });
+
+    it("keeps the provider's address out of the log line and out of what the outage alert gets", async () => {
+      queryEvents.rejects(refusedByProvider());
+      head = 101;
+      const p = poller();
+
+      await p.tick();
+
+      const logged = log.error.firstCall.args.join(" ");
+      expect(logged).to.include("SERVER_ERROR: server response 429 Too Many Requests");
+      expect(logged).to.not.include("rpc.example");
+      const reported = outage.failure.firstCall.args[0];
+      expect(reported).to.be.an.instanceOf(Error);
+      expect(reported.message).to.equal("SERVER_ERROR: server response 429 Too Many Requests");
+      expect(reported.message).to.not.include("rpc.example");
+    });
+
+    it("still honours the provider's Retry-After after describing the error", async () => {
+      queryEvents.rejects(refusedByProvider(429, "Too Many Requests", { "Retry-After": "30" }));
+      head = 101;
+
+      expect(await poller().tick()).to.equal(30000);
     });
 
     it("treats a refused head read the same way", async () => {
@@ -249,6 +288,26 @@ describe("eventPoller — one pass of the poll loop", () => {
       expect(rewindCursor.calledOnceWithExactly(89)).to.equal(true);
       expect(p.cursor()).to.equal(90);
     });
+  });
+
+  it("survives a thrown value that is not an Error", async () => {
+    getHead.callsFake(() => Promise.reject(null)); // eslint-disable-line prefer-promise-reject-errors
+
+    expect(await poller().tick()).to.equal(8000);
+    expect(outage.failure.firstCall.args[0].message).to.equal("null");
+  });
+
+  it("the default settle reports every failure of a pass, not only the first", async () => {
+    head = 102;
+    queryEvents.resolves([event("PromptSubmitted", 101, 0), event("PromptSubmitted", 102, 0)]);
+    handleEvent.onFirstCall().rejects(new Error("first"));
+    handleEvent.onSecondCall().rejects(new Error("second"));
+
+    await poller().tick();
+
+    const logged = log.error.args.map((args) => args.join(" ")).join("\n");
+    expect(logged).to.include("first");
+    expect(logged).to.include("second");
   });
 
   it("refuses a batch size that is not a positive whole number", () => {

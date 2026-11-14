@@ -1,6 +1,7 @@
 const { expect } = require("chai");
 
 const { createPollBackoff, retryAfterMs } = require("../src/pollBackoff");
+const { refusedByProvider } = require("./helpers/refusedByProvider");
 
 describe("pollBackoff — the wait between polls grows on failure and comes back in steps", () => {
   const backoff = () => createPollBackoff({ baseMs: 4000, capMs: 60000 });
@@ -65,9 +66,9 @@ describe("pollBackoff — the wait between polls grows on failure and comes back
 
   it("waits at least as long as the provider asks in Retry-After", () => {
     const b = backoff();
-    const limited = Object.assign(new Error("429"), {
-      info: { response: { statusCode: 429, headers: { "retry-after": "30" } } },
-    });
+    // Built by ethers: the header is on `error.response`, where a hand-made error would not
+    // have shown it.
+    const limited = refusedByProvider(429, "Too Many Requests", { "Retry-After": "30" });
 
     // The doubled wait would be 8000; the provider asked for 30 s.
     expect(b.failure(limited)).to.equal(30000);
@@ -75,10 +76,9 @@ describe("pollBackoff — the wait between polls grows on failure and comes back
 
   it("holds a Retry-After to the cap as well", () => {
     const b = backoff();
-    const limited = Object.assign(new Error("429"), {
-      info: { response: { statusCode: 429, headers: { "retry-after": "600" } } },
-    });
+    const limited = refusedByProvider(429, "Too Many Requests", { "Retry-After": "600" });
 
+    // The cap is the longest the loop will go without looking at the chain.
     expect(b.failure(limited)).to.equal(60000);
   });
 
@@ -97,24 +97,22 @@ describe("pollBackoff — the wait between polls grows on failure and comes back
   });
 
   describe("retryAfterMs", () => {
-    it("reads whole seconds from the response headers ethers attaches", () => {
-      const error = { info: { response: { headers: { "retry-after": "7" } } } };
-
-      expect(retryAfterMs(error)).to.equal(7000);
+    it("reads whole seconds from the response ethers attaches to its error", () => {
+      expect(retryAfterMs(refusedByProvider(503, "Unavailable", { "Retry-After": "7" }))).to.equal(
+        7000,
+      );
     });
 
     it("is 0 when there is no header, no response, or no error", () => {
       expect(retryAfterMs(new Error("plain"))).to.equal(0);
-      expect(retryAfterMs({ info: { response: { headers: {} } } })).to.equal(0);
+      expect(retryAfterMs(refusedByProvider())).to.equal(0);
       expect(retryAfterMs(undefined)).to.equal(0);
     });
 
     it("is 0 for a value that is not a positive number of seconds", () => {
       // The HTTP-date form is not worth parsing here: the doubled wait applies instead.
       for (const value of ["soon", "-5", "", "Wed, 21 Oct 2026 07:28:00 GMT"]) {
-        expect(
-          retryAfterMs({ info: { response: { headers: { "retry-after": value } } } }),
-        ).to.equal(0);
+        expect(retryAfterMs({ response: { headers: { "retry-after": value } } })).to.equal(0);
       }
     });
   });
