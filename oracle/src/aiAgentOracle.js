@@ -1428,7 +1428,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
       return answer;
     } catch (err) {
-      console.error("[queryAIModel] ChainGPT provider failed.", err.message);
+      console.error("[queryAIModel] ChainGPT provider failed.", describeError(err));
       // Bypass configured but the provider failed — no answer produced.
       providerTally.recordServed("none");
 
@@ -1444,7 +1444,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
       return answer;
     } catch (err) {
-      console.error("[queryAIModel] Direct Gemini provider failed.", err.message);
+      console.error("[queryAIModel] Direct Gemini provider failed.", describeError(err));
       // Bypass configured but the provider failed — no answer produced.
       providerTally.recordServed("none");
 
@@ -2598,7 +2598,7 @@ async function retryClaimedJob(job) {
     // The job keeps its lease and is offered again when that runs out; the handler's own
     // already-answered check then makes that pass a cheap no-op.
     console.error(
-      `[Retry] ${job.eventName} (tx ${job.transactionHash}) was retried successfully but could not be removed from the queue: ${storeError.message}`,
+      `[Retry] ${job.eventName} (tx ${job.transactionHash}) was retried successfully but could not be removed from the queue: ${describeError(storeError)}`,
     );
     Sentry.captureException(storeError, {
       tags: { site: "retry_complete_failed", eventName: job.eventName },
@@ -2634,7 +2634,7 @@ async function recordFailedRetry(job, error) {
     // The outcome could not be recorded. The job keeps its lease and comes back when that runs
     // out, with this attempt uncounted — a retry too many, never a job lost.
     console.error(
-      `[Retry] Could not record the failed attempt for ${job.eventName} (tx ${job.transactionHash}): ${storeError.message}`,
+      `[Retry] Could not record the failed attempt for ${job.eventName} (tx ${job.transactionHash}): ${describeError(storeError)}`,
     );
     Sentry.captureException(storeError, {
       tags: { site: "retry_record_failed", eventName: job.eventName },
