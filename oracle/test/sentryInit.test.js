@@ -214,5 +214,23 @@ describe('sentryInit', () => {
       expect(JSON.stringify(result).toLowerCase()).to.not.include(KEY);
       expect(result.message).to.equal('could not use [REDACTED]');
     });
+
+    it('removes a registered key held as bytes', () => {
+      registerSecretValue(KEY);
+      const bytes = Buffer.from(KEY, 'hex');
+
+      const result = scrubSensitiveData({ extra: { raw: new Uint8Array(bytes), buffer: bytes } });
+
+      expect(result.extra.raw).to.equal('[REDACTED]');
+      expect(result.extra.buffer).to.equal('[REDACTED]');
+    });
+
+    it('leaves other bytes as they were', () => {
+      registerSecretValue(KEY);
+
+      const result = scrubSensitiveData({ extra: { raw: new Uint8Array([1, 2, 3]) } });
+
+      expect(Array.from(Object.values(result.extra.raw))).to.deep.equal([1, 2, 3]);
+    });
   });
 });

@@ -288,6 +288,7 @@ describe("aiAgentOracle", function () {
           'The RPC for network "sapphire-testnet" is on chain 84532, not 23295; refusing to start',
         );
         expect(contract.queryFilter.called, "nothing was scanned").to.equal(false);
+        expect(contract.isOracle.called, "the role was not read on that chain").to.equal(false);
       });
 
       it("starts when the RPC is on the chain of the network name", async () => {

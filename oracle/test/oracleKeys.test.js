@@ -109,6 +109,41 @@ describe("oracle keys", () => {
   });
 
   describe("on a local network", () => {
+    // The socket is only there inside a ROFL machine. A machine told it is on a local network
+    // would otherwise run on a key somebody wrote into its settings.
+    it("refuses the environment's key where the ROFL key service is present", async () => {
+      let failure;
+      try {
+        await obtainOracleKeys({
+          env: { NETWORK_NAME: "base-localnet", PRIVATE_KEY: ENV_KEY },
+          keyServicePresent: () => true,
+          log: quiet,
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure?.message).to.equal(
+        'NETWORK_NAME "base-localnet" is a local network, but this is a ROFL machine; ' +
+          "a local network's key is not used here",
+      );
+    });
+
+    it("says what is wrong with a PRIVATE_KEY that is no key, without repeating it", async () => {
+      let failure;
+      try {
+        await obtainOracleKeys({
+          env: { NETWORK_NAME: "base-localnet", PRIVATE_KEY: "0x1234abcd-not-a-key" },
+          keyServicePresent: () => false,
+          log: quiet,
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure?.message).to.equal("PRIVATE_KEY is not a 32-byte hex key");
+    });
+
     it("uses PRIVATE_KEY for signing and decryption, and asks the key service nothing", async () => {
       const service = keyService();
 
@@ -316,6 +351,45 @@ describe("oracle keys", () => {
       }
       expect(failure).to.equal(stop);
       expect(time.now()).to.be.greaterThan(2 * 60 * 60 * 1000);
+    });
+
+    it("keeps asking while an alert is still being sent", async () => {
+      const time = clock();
+      let failing = true;
+      const service = keyService();
+
+      const keys = await obtainOracleKeys({
+        env: env(),
+        generateKey: async (...args) => {
+          if (time.now() > 10 * 60 * 1000) failing = false;
+          if (failing) throw new Error("not initialized");
+
+          return service.generateKey(...args);
+        },
+        getAppId: async () => "rofl1app",
+        sleep: time.sleep,
+        now: time.now,
+        // An alert that never finishes: paging must not hold the oracle back.
+        alert: () => new Promise(() => {}),
+        log: quiet,
+      });
+
+      expect(keys.mode).to.equal("rofl");
+    });
+
+    it("does not wait for the app id once it has the keys", async () => {
+      const lines = [];
+
+      const keys = await obtainOracleKeys({
+        env: env(),
+        generateKey: keyService().generateKey,
+        getAppId: () => new Promise(() => {}),
+        appIdTimeoutMs: 20,
+        log: { ...quiet, log: (...args) => lines.push(args.join(" ")) },
+      });
+
+      expect(keys.mode).to.equal("rofl");
+      expect(lines.join("\n")).to.include("app=unknown");
     });
 
     it("does not accept one key for both purposes", async () => {

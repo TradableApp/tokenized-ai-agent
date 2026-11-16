@@ -33,6 +33,15 @@ describe("secret values", () => {
     expect(() => registerSecretValue("abcd")).to.throw(/at least 32/);
   });
 
+  it("removes the key in its base64 and byte-list forms from text", () => {
+    const bytes = Buffer.from(KEY, "hex");
+    registerSecretValue(KEY);
+
+    expect(redactSecrets(`a ${bytes.toString("base64")} b`)).to.equal("a [REDACTED] b");
+    expect(redactSecrets(`[${Array.from(bytes).join(", ")}]`)).to.equal("[[REDACTED]]");
+    expect(redactSecrets(`<Buffer ${KEY.match(/../g).join(" ")}>`)).to.equal("<Buffer [REDACTED]>");
+  });
+
   it("returns what is not a string as it is", () => {
     registerSecretValue(KEY);
     const object = { a: 1 };
@@ -59,7 +68,7 @@ describe("secret values", () => {
 
       target.log("identity", `key=${KEY}`);
 
-      expect(lines).to.deep.equal([{ method: "log", args: ["identity", "key=[REDACTED]"] }]);
+      expect(lines).to.deep.equal([{ method: "log", args: ["identity key=[REDACTED]"] }]);
     });
 
     it("removes it from an error's message and stack", () => {
@@ -68,7 +77,7 @@ describe("secret values", () => {
 
       target.error("failed:", new Error(`bad key ${KEY}`));
 
-      const printed = lines[0].args[1];
+      const printed = lines[0].args[0];
       expect(printed).to.be.a("string");
       expect(printed).to.include("bad key [REDACTED]");
       expect(printed).to.not.include(KEY);
@@ -91,6 +100,43 @@ describe("secret values", () => {
       target.info(harmless);
 
       expect(lines[0].args[0]).to.equal(harmless);
+    });
+
+    it("removes a value put together by the format string", () => {
+      registerSecretValue(KEY);
+      const { target, lines } = capture();
+
+      target.log("%s%s", KEY.slice(0, 32), KEY.slice(32));
+
+      expect(lines[0].args).to.deep.equal(["[REDACTED]"]);
+    });
+
+    it("removes the key shown as bytes, as a buffer or in base64", () => {
+      const bytes = Buffer.from(KEY, "hex");
+      registerSecretValue(KEY);
+      const { target, lines } = capture();
+
+      target.log("buffer", bytes);
+      target.log("bytes", new Uint8Array(bytes));
+      target.log("base64", bytes.toString("base64"));
+      target.log({ nested: [new Uint8Array(bytes)] });
+
+      const printed = JSON.stringify(lines);
+      expect(printed).to.not.include(bytes.toString("base64"));
+      expect(printed).to.not.include(Array.from(bytes).join(", "));
+      expect(printed).to.not.include(KEY.match(/../g).join(" "));
+      expect(printed.match(/\[REDACTED\]/g)).to.have.length(4);
+    });
+
+    it("covers console.dir as well", () => {
+      registerSecretValue(KEY);
+      const lines = [];
+      const target = { dir: (...args) => lines.push(args), log() {} };
+      wrapConsole(target);
+
+      target.dir({ key: KEY }, { depth: null });
+
+      expect(JSON.stringify(lines)).to.not.include(KEY);
     });
 
     it("wraps a console once, however often it is asked", () => {

@@ -134,6 +134,42 @@ describe("roflUtility", function () {
       expect(failure.message).to.include("ENOENT");
     });
 
+    it("gives up on a socket that accepts the request and never answers", async () => {
+      server.removeAllListeners("request");
+      server.on("request", () => {});
+
+      let failure;
+      try {
+        await generateKey("id", "secp256k1", socketPath, { timeoutMs: 50 });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure?.message).to.equal("The ROFL key service did not answer within 50 ms");
+    });
+
+    it("refuses an answer that is not a success, or is far larger than a key", async () => {
+      mockStatusCode = 302;
+      mockResponse = { key: KEY };
+      let failure;
+      try {
+        await generateKey("id", "secp256k1", socketPath);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure?.message).to.match(/^The ROFL key service answered 302/);
+
+      mockStatusCode = 200;
+      mockResponse = { key: KEY, padding: "x".repeat(100 * 1024) };
+      failure = undefined;
+      try {
+        await generateKey("id", "secp256k1", socketPath);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure?.message).to.equal("The ROFL key service's answer is too large");
+    });
+
     it("prints nothing", async () => {
       mockResponse = { key: KEY };
       const spy = sinon.spy(console, "log");

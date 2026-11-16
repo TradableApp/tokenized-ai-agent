@@ -14,10 +14,16 @@ describe("loading the oracle module", function () {
     delete env.ENV_FILE;
     const script = `
       delete process.env.PRIVATE_KEY;
+      const contractUtility = require("./src/contractUtility");
+      let built = 0;
+      contractUtility.initializeOracle = () => { built += 1; throw new Error("built at load"); };
       const oracle = require("./src/aiAgentOracle");
       if (typeof oracle.configure !== "function") { console.error("no configure"); process.exit(2); }
-      if (process.env.PRIVATE_KEY) { console.error("PRIVATE_KEY came back"); process.exit(3); }
-      process.exit(0);
+      if (built !== 0) { console.error("the wallet and contract were built at load"); process.exit(3); }
+      oracle.getSessionKey("0x", "0x01", null).then(
+        () => { console.error("decrypted without keys"); process.exit(4); },
+        (error) => process.exit(error.message === "The oracle has not been given its keys" ? 0 : 5),
+      );
     `;
 
     const result = spawnSync(process.execPath, ["-e", script], {

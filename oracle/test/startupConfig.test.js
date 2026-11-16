@@ -607,6 +607,15 @@ describe("startup config validation", () => {
       }
     });
 
+    // The rest of the oracle reads NETWORK_NAME as written. A padded name passed here would
+    // be taken for a different network there.
+    it("refuses a NETWORK_NAME with spaces around it", () => {
+      expect(() => validateConfig(localEnv({ NETWORK_NAME: "base-localnet " }))).to.throw(
+        ConfigError,
+        /NETWORK_NAME "base-localnet " has spaces around it/,
+      );
+    });
+
     it("counts a blank PRIVATE_KEY as not set", () => {
       expect(() => validateConfig(baseEnv({ PRIVATE_KEY: "  " }))).to.not.throw();
     });
