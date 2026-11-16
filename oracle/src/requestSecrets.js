@@ -118,9 +118,10 @@ let pattern = null;
  * @param {Record<string, string | undefined>} [env]
  */
 function refreshRequestSecrets(env = process.env) {
-  // Longest first, so a secret that contains another is removed whole.
+  // Longest first, so a secret that contains another is removed whole. Any case: the host of
+  // an address is read in lower case whatever case it was written in.
   const secrets = requestSecretsIn(env).sort((a, b) => b.length - a.length);
-  pattern = secrets.length ? new RegExp(secrets.map(escapeForPattern).join("|"), "g") : null;
+  pattern = secrets.length ? new RegExp(secrets.map(escapeForPattern).join("|"), "gi") : null;
 }
 
 /** The text without any configured secret. Anything that is not a string is returned as it is. */
