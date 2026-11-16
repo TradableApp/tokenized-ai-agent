@@ -27,7 +27,6 @@ function baseEnv(overrides = {}) {
     // compose files use NETWORK_NAME=baseSepolia and NETWORK_NAME=base. This fixture had the
     // wrong one until the allowlist check caught it.
     NETWORK_NAME: "baseSepolia",
-    PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
     AI_AGENT_CONTRACT_ADDRESS: "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
     USE_MOCK_STORAGE: "true",
     // Postgres is part of a complete configuration now — the agent runtime has no working
@@ -44,6 +43,18 @@ function baseEnv(overrides = {}) {
     POSTGRES_SERVER_CA_CERT_PATH: "/certs/ca.crt",
     ...overrides,
   };
+}
+
+/**
+ * The same, on a local network. Only there does the oracle take its key from PRIVATE_KEY, so
+ * every check of that variable's shape runs against this.
+ */
+function localEnv(overrides = {}) {
+  return baseEnv({
+    NETWORK_NAME: "base-localnet",
+    PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+    ...overrides,
+  });
 }
 
 describe("startup config validation", () => {
@@ -186,11 +197,11 @@ describe("startup config validation", () => {
     // five deploy cycles. In a TEE, each of those is an image build, an on-chain update and a
     // restart — so batching is not a nicety.
     try {
-      validateConfig({ USE_MOCK_STORAGE: "true" });
+      validateConfig({ USE_MOCK_STORAGE: "true", NETWORK_NAME: "" });
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.message).to.include("NETWORK_NAME");
-      expect(err.message).to.include("PRIVATE_KEY");
+      expect(err.message).to.include("POSTGRES_AGENT_DATABASE");
       expect(err.message).to.include("AI_AGENT_CONTRACT_ADDRESS");
     }
   });
@@ -273,7 +284,7 @@ describe("startup config validation", () => {
         `ethers should accept ${key.slice(0, 6)}…`,
       ).to.not.throw();
       expect(
-        () => validateConfig(baseEnv({ PRIVATE_KEY: key })),
+        () => validateConfig(localEnv({ PRIVATE_KEY: key })),
         `guard must accept what ethers accepts: ${key.slice(0, 6)}…`,
       ).to.not.throw();
     }
@@ -285,7 +296,7 @@ describe("startup config validation", () => {
     // bad key throws during `require` — earlier than any guard inside start() could name it.
     for (const bad of ["0xabc", "not-a-key", "0x" + "z".repeat(64)]) {
       try {
-        validateConfig(baseEnv({ PRIVATE_KEY: bad }));
+        validateConfig(localEnv({ PRIVATE_KEY: bad }));
         expect.fail(`expected a ConfigError for ${bad}`);
       } catch (err) {
         expect(err.message).to.include("PRIVATE_KEY");
@@ -298,7 +309,7 @@ describe("startup config validation", () => {
     // and hides the cause — an operator reads it as a formatting problem and goes looking for
     // the wrong thing. Same treatment the address placeholder already got.
     try {
-      validateConfig(baseEnv({ PRIVATE_KEY: "your_funding_wallet_private_key_here" }));
+      validateConfig(localEnv({ PRIVATE_KEY: "your_funding_wallet_private_key_here" }));
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.message).to.include("PRIVATE_KEY");
@@ -335,7 +346,7 @@ describe("startup config validation", () => {
     // approve bytes the consumer then rejects — reproducing the opaque ethers error this guard
     // exists to replace. A leading space from a compose-file quoting mistake is the usual shape.
     for (const env of [
-      baseEnv({ PRIVATE_KEY: ` 0x${"1".repeat(64)}` }),
+      localEnv({ PRIVATE_KEY: ` 0x${"1".repeat(64)}` }),
       baseEnv({ AI_AGENT_CONTRACT_ADDRESS: " 0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D" }),
     ]) {
       expect(() => validateConfig(env)).to.throw(ConfigError);
@@ -549,10 +560,53 @@ describe("startup config validation", () => {
   it("treats a whitespace-only value as missing", () => {
     // A quoted empty string in a compose file is the common shape of this mistake.
     try {
-      validateConfig(baseEnv({ PRIVATE_KEY: "   " }));
+      validateConfig(localEnv({ PRIVATE_KEY: "   " }));
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.message).to.include("PRIVATE_KEY");
     }
+  });
+
+  describe("where the oracle's own key comes from", () => {
+    const KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+
+    it("requires PRIVATE_KEY on a local network", () => {
+      for (const network of ["base-localnet", "sapphire-localnet"]) {
+        expect(
+          () => validateConfig(localEnv({ NETWORK_NAME: network, PRIVATE_KEY: undefined })),
+          network,
+        ).to.throw(ConfigError, /PRIVATE_KEY is missing or empty/);
+        expect(() => validateConfig(localEnv({ NETWORK_NAME: network })), network).to.not.throw();
+      }
+    });
+
+    it("needs no PRIVATE_KEY on a network that is not local", () => {
+      for (const network of ["baseSepolia", "base", "sapphire", "sapphire-testnet"]) {
+        expect(() => validateConfig(baseEnv({ NETWORK_NAME: network })), network).to.not.throw();
+      }
+    });
+
+    // The keys of a deployed oracle are made inside the TEE. A PRIVATE_KEY left in the secrets
+    // would be a copy of a key held outside it, so it stops the boot until it is removed.
+    it("refuses to start with PRIVATE_KEY set on a network that is not local", () => {
+      for (const network of ["baseSepolia", "base", "sapphire", "sapphire-testnet"]) {
+        let failure;
+        try {
+          validateConfig(baseEnv({ NETWORK_NAME: network, PRIVATE_KEY: KEY }));
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure, network).to.be.instanceOf(ConfigError);
+        expect(failure.message, network).to.include(
+          "PRIVATE_KEY is set, but on this network the oracle takes its keys from the ROFL key " +
+            "service; remove the secret",
+        );
+        expect(failure.message, network).to.not.include(KEY);
+      }
+    });
+
+    it("counts a blank PRIVATE_KEY as not set", () => {
+      expect(() => validateConfig(baseEnv({ PRIVATE_KEY: "  " }))).to.not.throw();
+    });
   });
 });

@@ -186,4 +186,33 @@ describe('sentryInit', () => {
       expect(JSON.stringify(scrubbed)).to.not.include('rpc.example');
     });
   });
+
+  describe('the oracle\'s own keys', () => {
+    const { registerSecretValue, forgetSecretValuesForTest } = require('../src/secretValues');
+    const KEY = '59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+
+    afterEach(() => forgetSecretValuesForTest());
+
+    it('redacts fields named for the decryption key or key material', () => {
+      const result = scrubSensitiveData({ decryptionKey: 'a', key_material: 'b', keyId: 'c' });
+
+      expect(result.decryptionKey).to.equal('[REDACTED]');
+      expect(result.key_material).to.equal('[REDACTED]');
+      expect(result.keyId).to.equal('c');
+    });
+
+    it('removes a registered key from any text, whatever the field is called', () => {
+      registerSecretValue(KEY);
+
+      const result = scrubSensitiveData({
+        message: `could not use ${KEY}`,
+        exception: { values: [{ type: 'Error', value: `bad 0x${KEY.toUpperCase()}` }] },
+        breadcrumbs: [{ message: KEY }],
+      });
+
+      expect(JSON.stringify(result)).to.not.include(KEY);
+      expect(JSON.stringify(result).toLowerCase()).to.not.include(KEY);
+      expect(result.message).to.equal('could not use [REDACTED]');
+    });
+  });
 });
