@@ -5,12 +5,17 @@ const path = require("path");
 
 const { wrapEthersProvider, wrapEthersSigner } = require("@oasisprotocol/sapphire-ethers-v6");
 
+const { refreshRequestSecrets } = require("./requestSecrets");
+
 // Load the specific environment file first for precedence.
 if (process.env.ENV_FILE) {
   dotenv.config({ path: process.env.ENV_FILE });
 }
 // Load the base .env.oracle file to fill in any missing non-secret variables.
 dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
+// The addresses above are configured now; their secret parts are removed from whatever is
+// printed or reported from here on.
+refreshRequestSecrets();
 
 // A Set for easy and efficient checking of Sapphire network names.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);

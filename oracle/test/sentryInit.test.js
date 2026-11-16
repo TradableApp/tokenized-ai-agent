@@ -187,6 +187,41 @@ describe('sentryInit', () => {
     });
   });
 
+  describe('fields that hold the path or the query of a request', () => {
+    const { refreshRequestSecrets } = require('../src/requestSecrets');
+    const KEY = 'aB3dE6gH9jK2mN5pQ8sT';
+
+    afterEach(() => refreshRequestSecrets(process.env));
+
+    it('are redacted by name, since a path has no scheme for the address scrubber to find', () => {
+      const result = scrubSensitiveData({
+        data: {
+          'http.target': `/v2/${KEY}`,
+          'http.query': `?dkey=${KEY}`,
+          'url.path': `/v2/${KEY}`,
+          'url.query': `dkey=${KEY}`,
+          query_string: `dkey=${KEY}`,
+          'http.method': 'POST',
+        },
+      });
+
+      expect(JSON.stringify(result)).to.not.include(KEY);
+      expect(result.data['http.method']).to.equal('POST');
+    });
+
+    it('lose a configured access key wherever else it is written', () => {
+      refreshRequestSecrets({ BASE_SEPOLIA_TESTNET_RPC: `https://base.example/v2/${KEY}` });
+
+      const result = scrubSensitiveData({
+        transaction: `POST /v2/${KEY}`,
+        spans: [{ description: `POST /v2/${KEY}` }],
+      });
+
+      expect(result.transaction).to.equal('POST /v2/[REDACTED]');
+      expect(JSON.stringify(result)).to.not.include(KEY);
+    });
+  });
+
   describe('the oracle\'s own keys', () => {
     const { registerSecretValue, forgetSecretValuesForTest } = require('../src/secretValues');
     const KEY = '59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';

@@ -202,4 +202,18 @@ describe("isTransientProviderError — a provider request that a later attempt m
     expect(isTransientProviderError(new Error("Decryption failed"))).to.be.false;
     expect(isTransientProviderError(null)).to.be.false;
   });
+
+  describe("a configured access key with no address around it", () => {
+    const { refreshRequestSecrets } = require("../src/requestSecrets");
+
+    afterEach(() => refreshRequestSecrets(process.env));
+
+    it("is removed from text as an address is", () => {
+      refreshRequestSecrets({ RPC: "https://base.example/v2/aB3dE6gH9jK2mN5pQ8sT" });
+
+      expect(withoutAddresses("request POST /v2/aB3dE6gH9jK2mN5pQ8sT refused")).to.equal(
+        "request POST /v2/[REDACTED] refused",
+      );
+    });
+  });
 });

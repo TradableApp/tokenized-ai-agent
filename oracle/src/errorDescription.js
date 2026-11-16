@@ -1,5 +1,7 @@
 "use strict";
 
+const { withoutRequestSecrets } = require("./requestSecrets");
+
 /**
  * A one-line description of an error that is safe to log and to put in an alert.
  *
@@ -23,9 +25,12 @@ function describeError(error) {
  * @returns {string}
  */
 function withoutAddresses(text) {
-  return String(text).replace(ADDRESS, (address) =>
+  const withoutWholeAddresses = String(text).replace(ADDRESS, (address) =>
     PUBLIC_ADDRESSES.has(address) ? address : "[address removed]",
   );
+
+  // A request described in parts ("POST /v2/<key>") has no address to find, only the key.
+  return withoutRequestSecrets(withoutWholeAddresses);
 }
 
 /**
