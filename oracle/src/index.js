@@ -4,6 +4,12 @@ initSentry();
 const Sentry = require("@sentry/node");
 
 const { describedError } = require("./errorDescription");
+const { obtainOracleKeys } = require("./oracleKeys");
+const { wrapConsole } = require("./secretValues");
+
+// The oracle's own keys are removed from everything printed from here on, whoever prints it.
+// A machine's logs are kept, and its admin can read them.
+wrapConsole(console);
 
 // Crash handlers FIRST, so every fatal path below gets the same clean shutdown — including the
 // config guard's ConfigError and any throw from a module-scope side effect during the requires
@@ -22,13 +28,8 @@ process.on("uncaughtException", (error) => {
   Sentry.flush(2000).finally(() => process.exit(1));
 });
 
-// BEFORE requiring aiAgentOracle, and that ordering is the whole point.
-//
-// aiAgentOracle calls initializeOracle() at MODULE SCOPE, which constructs an ethers Wallet and
-// Contract as a side effect of `require`. So a malformed PRIVATE_KEY throws during the require
-// below — before start(), and therefore before any guard living inside start() could name it.
-// Validating there would have promised named variables and quietly not delivered for exactly the
-// failures that crash earliest.
+// Before anything that needs a key. Naming a bad variable here costs one restart; the same
+// mistake found later costs a boot that looks alive and answers nothing.
 const { validateConfig, ConfigError } = require("./startupConfig");
 
 try {
@@ -46,12 +47,24 @@ try {
   throw err; // genuine bugs still reach uncaughtException → Sentry
 }
 
-const { start } = require("./aiAgentOracle");
+/**
+ * Keys first, then the oracle. The keys of a deployed oracle come from the ROFL key service,
+ * which is asked over a socket and may not be ready yet, so the wallet and the contract can
+ * only be built once they have arrived. Until then the process waits; it uses no other key.
+ */
+async function main() {
+  const keys = await obtainOracleKeys();
+  // Required here, not at the top: nothing of the oracle is built before it has its keys.
+  // eslint-disable-next-line global-require
+  const oracle = require("./aiAgentOracle");
+  oracle.configure(keys);
+  console.log("Starting Node.js ROFL Oracle Service...");
+  await oracle.start();
+}
 
-console.log("Starting Node.js ROFL Oracle Service...");
 // A start-up that fails must end the process: by then the database pool is open and the
 // heartbeat may be running, and an oracle left half-started looks alive while answering nothing.
-start().catch((error) => {
+main().catch((error) => {
   console.error("[Fatal] The oracle could not start:", describedError(error));
   Sentry.captureException(error);
   Sentry.flush(2000).finally(() => process.exit(1));

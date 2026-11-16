@@ -1,4 +1,5 @@
 const { expect } = require("chai");
+const { withTestKeys } = require("./helpers/oracleTestKeys");
 const sinon = require("sinon");
 const { ethers } = require("ethers");
 const fs = require("node:fs");
@@ -191,7 +192,7 @@ describe("chain cursor persistence", () => {
       process.env.PRIVATE_KEY = w.privateKey;
       process.env.AI_AGENT_CONTRACT_ADDRESS = w.address;
       delete require.cache[require.resolve("../src/aiAgentOracle")];
-      oracle = require("../src/aiAgentOracle");
+      oracle = withTestKeys(require("../src/aiAgentOracle"));
     });
 
     after(() => {

@@ -54,7 +54,7 @@ describe("contractUtility", function () {
 
     it("should throw an error for a missing private key", () => {
       expect(() => initializeOracle("sapphire-testnet", null, FAKE_CONTRACT_ADDRESS)).to.throw(
-        "Missing required env variable: PRIVATE_KEY",
+        "The oracle has no signing key",
       );
     });
 

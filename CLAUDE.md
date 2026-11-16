@@ -119,10 +119,21 @@ Both families expose the same event interface (`PromptSubmitted`, `RegenerationR
 
 The oracle has two distinct encryption paths, selected automatically by `contractUtility.js`:
 
-- **Sapphire**: The chain's TEE encrypts all calldata at the protocol level. Event payloads arrive as encrypted strings. The oracle decrypts them using the session key derived from `fetchKey()` via the ROFL appd UNIX socket (`/run/rofl-appd.sock`).
+- **Sapphire**: The chain's TEE encrypts all calldata at the protocol level. Event payloads arrive as encrypted strings. The oracle decrypts them with the session key carried in the event payload.
 - **Base (EVM)**: No protocol-level encryption. The oracle uses ECIES (`eth-crypto`) to decrypt an asymmetrically encrypted session key, then AES-256-GCM to decrypt the conversation payload client-side.
 
 `contractUtility.js:initializeOracle()` detects which mode applies by checking the network name and wraps the ethers provider/signer with Sapphire helpers when needed.
+
+### The Oracle's Own Keys (`oracle/src/oracleKeys.js`)
+
+The oracle has two keys: one signs its transactions, the other decrypts the session key of each prompt. Where they come from follows from `NETWORK_NAME` alone, with no setting to choose:
+
+- **A local network** (`base-localnet`, `sapphire-localnet`): both are `PRIVATE_KEY`.
+- **Every other network**: both are made by the ROFL key service (`POST /rofl/v1/keys/generate` on the appd socket), under two key ids that hold the chain id and the agent address. The same app and id always give the same key, so nothing is stored. `PRIVATE_KEY` must not be set there: `startupConfig.js` refuses to start if it is. If the key service does not answer, the oracle waits, alerts after two minutes and then hourly, and uses no other key.
+
+`index.js` obtains the keys, then calls `configure(keys)` on `aiAgentOracle.js`, then `start()`. Nothing is built while the module loads. The rest of the oracle receives a `decryptor` (`publicKey`, `decrypt`, `proveKey`) and never the key itself. The key ids are pinned by `oracle/test/oracleKeys.test.js`; changing one changes the oracle's address and its encryption key.
+
+Both keys are registered with `oracle/src/secretValues.js` when obtained, and removed by value from everything the console prints and everything sent to Sentry. A new call to the appd socket that returns key material must go through the quiet request helper in `roflUtility.js`, which never repeats an answer.
 
 ### Oracle Event Flow (`oracle/src/aiAgentOracle.js`)
 
