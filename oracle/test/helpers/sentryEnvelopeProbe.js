@@ -12,7 +12,8 @@ const http = require("http");
 const address = process.env.PROBE_ADDRESS;
 
 async function main() {
-  process.env.BASE_SEPOLIA_TESTNET_RPC = address;
+  // The address is deliberately NOT in the configuration, so nothing knows its key by value:
+  // what is tested here is that nothing about the request is recorded in the first place.
   process.env.SENTRY_DSN = "https://public@sentry.invalid/1";
   process.env.SENTRY_ENVIRONMENT = "localnet"; // every transaction sampled
 
@@ -28,13 +29,18 @@ async function main() {
       }),
   });
 
-  await new Promise((resolve, reject) => {
-    http
-      .request(address, { method: "POST" }, (res) => res.resume().on("end", resolve))
-      .on("error", reject)
-      .end("{}");
+  // Inside a span, as a request made while handling an event would be: only then would a
+  // span for the request itself be recorded.
+  await Sentry.startSpan({ name: "probe: handling an event", op: "probe" }, async () => {
+    await new Promise((resolve, reject) => {
+      http
+        .request(address, { method: "POST" }, (res) => res.resume().on("end", resolve))
+        .on("error", reject)
+        .end("{}");
+    });
+    await (await fetch(address, { method: "POST", body: "{}" })).text();
+    console.log("a line printed while handling the event");
   });
-  await (await fetch(address, { method: "POST", body: "{}" })).text();
   Sentry.captureException(new Error("the oracle failed after its requests"));
   await Sentry.flush(5000);
 

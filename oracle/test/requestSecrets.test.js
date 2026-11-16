@@ -37,6 +37,63 @@ describe("request secrets", () => {
       expect(secrets).to.deep.equal([PATH_KEY]);
     });
 
+    // An ordinary setting is not a secret. Collected, "mainnet" or "require" would be removed
+    // from every line that says them: a network name, a stack frame, an environment tag.
+    it("is not an ordinary query value, a short password or a number", () => {
+      expect(
+        requestSecretsIn({
+          A: "https://h.example/v1?network=mainnet&sslmode=require&schema=public",
+          B: "postgres://user:x@127.0.0.1:5432/db",
+          C: "postgres://user:postgres@127.0.0.1:5432/db",
+          SENTRY_DSN: "https://publickey@o1.ingest.example/4507000000000000",
+        }),
+      ).to.deep.equal([]);
+    });
+
+    it("is a query value whose name says it is a credential, even a short one", () => {
+      for (const name of ["key", "apikey", "api_key", "dkey", "token", "access_token", "secret"]) {
+        expect(
+          requestSecretsIn({ A: `https://h.example/v1?${name}=${QUERY_KEY}` }),
+          name,
+        ).to.include(QUERY_KEY);
+      }
+    });
+
+    it("is a long value in any part of an address: user name, fragment, bare query, host label", () => {
+      const secrets = requestSecretsIn({
+        A: `https://${PATH_KEY}1@h.example/`,
+        B: `https://h.example/#${PATH_KEY}2`,
+        C: `https://h.example/v1?${PATH_KEY}3`,
+        D: `https://${PATH_KEY}4.h.example/`,
+      });
+
+      expect(secrets).to.include.members([1, 2, 3].map((n) => `${PATH_KEY}${n}`));
+      expect(secrets).to.include(`${PATH_KEY}4`.toLowerCase());
+    });
+
+    it("reads a quoted value and each address of a list", () => {
+      expect(requestSecretsIn({ A: `"https://h.example/${PATH_KEY}"` })).to.deep.equal([PATH_KEY]);
+      expect(
+        requestSecretsIn({ A: `https://a.example/${PATH_KEY}1,https://b.example/${PATH_KEY}2` }),
+      ).to.have.members([`${PATH_KEY}1`, `${PATH_KEY}2`]);
+    });
+
+    it("is the value of a setting named as a credential, when it is long enough to be one", () => {
+      const secrets = requestSecretsIn({
+        POSTGRES_PASSWORD: "a-Long-Db-Password-1",
+        AUTONOMYS_API_KEY: "autonomysKey0123456789",
+        SLACK_ACCESS_TOKEN: "xoxb-not-a-real-token",
+        SOME_SECRET: "short",
+        POSTGRES_USER: "senseai-oracle-user",
+      });
+
+      expect(secrets).to.have.members([
+        "a-Long-Db-Password-1",
+        "autonomysKey0123456789",
+        "xoxb-not-a-real-token",
+      ]);
+    });
+
     it("reads a value with spaces around it, and ignores one that cannot be parsed", () => {
       expect(
         requestSecretsIn({ A: `  https://h.example/${PATH_KEY}  `, B: "https://" }),

@@ -61,11 +61,19 @@ describe("what Sentry is sent about the oracle's outgoing requests", function ()
     expect(everything).to.not.include(QUERY_KEY);
   });
 
-  it("records no span or breadcrumb for an outgoing request at all", () => {
+  it("records the work the requests were part of, and no span for the requests", () => {
     const everything = sent.join("\n");
 
-    expect(everything).to.not.include('"type":"transaction"');
+    // The parent span was sent, so a span for each request would have been sent with it.
+    expect(everything).to.include("probe: handling an event");
     expect(everything).to.not.include("http.client");
+    expect(everything).to.include('"spans":[]');
+  });
+
+  it("records no breadcrumb for a request, while other breadcrumbs still arrive", () => {
+    const everything = sent.join("\n");
+
+    expect(everything).to.include("a line printed while handling the event");
     expect(everything).to.not.include('"category":"http"');
   });
 });
