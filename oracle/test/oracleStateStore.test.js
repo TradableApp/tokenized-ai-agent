@@ -193,6 +193,20 @@ function behavesLikeAStateStore(setup) {
       expect(retried.lastError).to.equal("503 from storage");
     });
 
+    it("keeps the error of a failed attempt without the address of the request", async () => {
+      await ctx.store.enqueueFailedJob(job());
+      const [claimed] = await ctx.store.claimDueJobs({ limit: 10, leaseMs: MINUTE });
+
+      await ctx.store.rescheduleJob(claimed.id, {
+        delayMs: 10 * MINUTE,
+        error: new Error("missing response from https://rpc.example/v2/not-a-real-key"),
+      });
+
+      clock.ms += 11 * MINUTE;
+      const [retried] = await ctx.store.claimDueJobs({ limit: 10, leaseMs: MINUTE });
+      expect(retried.lastError).to.equal("missing response from [address removed]");
+    });
+
     it("keeps an exhausted job on record but never hands it out again", async () => {
       await ctx.store.enqueueFailedJob(job());
       const [claimed] = await ctx.store.claimDueJobs({ limit: 10, leaseMs: MINUTE });

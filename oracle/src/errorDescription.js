@@ -12,20 +12,69 @@
  * @returns {string}
  */
 function describeError(error) {
-  return textOf(error).replace(ADDRESS, "[address removed]");
+  return withoutAddresses(textOf(error));
 }
 
-// Greedy on purpose: everything up to the next space, quote or bracket goes, trailing
-// punctuation included. Stopping at a dot or a colon would stop inside the host name and leave
-// the path behind, which is where a provider puts the access key.
-const ADDRESS = /\b(?:https?|wss?):\/\/[^\s"'<>)\]]+/gi;
+/**
+ * `text` with every address in it removed. For text this module did not write: an alert built
+ * elsewhere, a field of an error report.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function withoutAddresses(text) {
+  return String(text).replace(ADDRESS, (address) =>
+    PUBLIC_ADDRESSES.has(address) ? address : "[address removed]",
+  );
+}
+
+/**
+ * An error that says what `error` says and can be thrown, printed or reported whole.
+ *
+ * `describeError` gives a line of text. Where an Error object is needed (a rethrow that ends in
+ * the process's crash handler, a log line that should keep the frames), the original cannot be
+ * used: its message, its stack and the request it carries all hold the address. This one has
+ * the description as its message, the original's frames, and its code for callers that branch
+ * on it. Nothing else of the original comes along.
+ *
+ * @param {unknown} error
+ * @returns {Error}
+ */
+function describedError(error) {
+  const described = new Error(describeError(error));
+  if (error === null || typeof error !== "object") return described;
+
+  if (typeof error.name === "string" && error.name) described.name = error.name;
+  if (typeof error.code === "string" && error.code) described.code = error.code;
+
+  const frames =
+    typeof error.stack === "string"
+      ? error.stack.split("\n").filter((line) => /^\s+at /.test(line))
+      : [];
+  described.stack = withoutAddresses(
+    [`${described.name}: ${described.message}`, ...frames].join("\n"),
+  );
+  return described;
+}
+
+// Any scheme (a database address carries a password as an RPC address carries a key), with the
+// slashes plain or escaped as JSON escapes them. Greedy on purpose: everything up to the next
+// space, quote or closing parenthesis goes, trailing punctuation included. Stopping at a dot or
+// a colon would stop inside the host name and leave the path behind, which is where a provider
+// puts the access key; stopping at a square bracket would stop inside an IPv6 host.
+const ADDRESS = /[a-z][a-z0-9+.-]*:(?:\\?\/){2}[^\s"'<>)]+/gi;
+
+// Addresses an alert shows on purpose: where the operator goes to act on it. Matched whole, so
+// anything longer that starts the same way is removed like any other address.
+const PUBLIC_ADDRESSES = new Set(["https://ai3.storage/"]);
 
 function textOf(error) {
   if (error === null || typeof error !== "object") return String(error);
 
   const { shortMessage, message, code } = error;
   if (typeof shortMessage === "string" && shortMessage) {
-    return typeof code === "string" && code ? `${code}: ${shortMessage}` : shortMessage;
+    const short = typeof code === "string" && code ? `${code}: ${shortMessage}` : shortMessage;
+    return `${short}${revertDetail(error)}`;
   }
   if (typeof message === "string" && message) return message;
   if (typeof code === "string" && code) return code;
@@ -33,4 +82,21 @@ function textOf(error) {
   return "unknown error";
 }
 
-module.exports = { describeError };
+/**
+ * What a revert reverted with. The short message of a custom error is only "execution reverted
+ * (unknown custom error)"; the decoded error, or failing that the revert data, is what tells
+ * one from another.
+ */
+function revertDetail(error) {
+  if (error.code !== "CALL_EXCEPTION") return "";
+  const signature = error.revert?.signature;
+  if (typeof signature === "string" && signature) return ` (reverted with ${signature})`;
+  const { data } = error;
+  if (typeof data === "string" && /^0x[0-9a-f]+$/i.test(data)) {
+    // Selector plus two words is enough to identify it; the rest is marked as cut.
+    return ` (revert data ${data.length > 138 ? `${data.slice(0, 138)}…` : data})`;
+  }
+  return "";
+}
+
+module.exports = { describeError, describedError, withoutAddresses };

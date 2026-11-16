@@ -2,6 +2,8 @@ const chai = require("chai");
 const sinon = require("sinon");
 const { expect } = chai;
 const proxyquire = require("proxyquire").noCallThru();
+const util = require("node:util");
+const { refusedByProvider } = require("./helpers/refusedByProvider");
 const { RetryableError } = require("../src/errors");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
@@ -2209,6 +2211,178 @@ describe("aiAgentOracle", function () {
 
       // Assert that the job was NOT added to the retry queue.
       expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+    });
+
+    it("queues an event for retry when the provider refuses a request made while handling it", async () => {
+      // Reading the event's block is a provider request like any other, and the provider
+      // refusing it says nothing about the event: a paid prompt must not be dropped for it.
+      const fakeEvent = {
+        blockNumber: 102,
+        transactionHash: txHash("provider-refused"),
+        index: 0,
+        args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+        // 500: nothing in its message is on the legacy list of retried words.
+        getBlock: () => Promise.reject(refusedByProvider(500, "Internal Server Error")),
+      };
+
+      await aiAgentOracle.handleAndRecord(
+        "PromptSubmitted",
+        aiAgentOracle.handlePrompt,
+        ...fakeEvent.args,
+        fakeEvent,
+      );
+
+      const fatal = stubs["./alerting"].sendAlert
+        .getCalls()
+        .find((c) => String(c.args[0]).includes("Oracle Fatal Error"));
+      expect(fatal, "a refused provider request is never fatal").to.be.undefined;
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+    });
+
+    for (const code of ["TIMEOUT", "NETWORK_ERROR"]) {
+      it(`queues an event for retry on a provider ${code}`, async () => {
+        const fakeEvent = {
+          blockNumber: 103,
+          transactionHash: txHash(`provider-${code}`),
+          index: 0,
+          args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+          getBlock: () => Promise.reject(Object.assign(new Error("request failed"), { code })),
+        };
+
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          aiAgentOracle.handlePrompt,
+          ...fakeEvent.args,
+          fakeEvent,
+        );
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+      });
+    }
+
+    describe("an error that carries the address of a request", () => {
+      const ADDRESS = "https://rpc.example/v2/not-a-real-key";
+      let printed;
+
+      beforeEach(() => {
+        printed = [];
+        for (const level of ["error", "warn", "log"]) {
+          sinon.stub(console, level).callsFake((...args) => {
+            printed.push(args.map((arg) => util.inspect(arg)).join(" "));
+          });
+        }
+      });
+
+      const eventFailingWith = (name, error) => ({
+        blockNumber: 104,
+        transactionHash: txHash(name),
+        index: 0,
+        args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+        getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+        error,
+      });
+
+      const handle = (event) =>
+        aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          aiAgentOracle.handlePrompt,
+          ...event.args,
+          event,
+        );
+
+      it("is not printed or put in an alert when the error is fatal", async () => {
+        stubs["./ecies"].eciesDecrypt.rejects(
+          new Error(`Decryption service at ${ADDRESS} refused`),
+        );
+
+        await handle(eventFailingWith("fatal-with-address"));
+
+        sinon.assert.calledWithMatch(stubs["./alerting"].sendAlert, "CRITICAL: Oracle Fatal Error");
+        const alerts = stubs["./alerting"].sendAlert.getCalls().map((c) => c.args.join(" "));
+        expect(alerts.join("\n")).to.not.include("rpc.example");
+        expect(printed.join("\n")).to.not.include("rpc.example");
+      });
+
+      it("is not printed when the error is queued for retry", async () => {
+        stubs["./ecies"].eciesDecrypt.rejects(refusedByProvider(502, "Bad Gateway"));
+
+        await handle(eventFailingWith("retry-with-address"));
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+        expect(printed.join("\n")).to.not.include("rpc.example");
+      });
+
+      it("is not printed when the first read of a prompt is refused, and nothing is spent on it", async () => {
+        mockedContractFor().isJobFinalized.rejects(refusedByProvider(500, "Internal Server Error"));
+
+        await handle(eventFailingWith("precheck-refused"));
+
+        // Not knowing whether the prompt is answered, the oracle does not answer it again.
+        expect(stubs["./ecies"].eciesDecrypt.called, "no work before the check").to.be.false;
+        expect(stubs["./storage/storage"].uploadData.called).to.be.false;
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+        expect(printed.join("\n")).to.not.include("rpc.example");
+      });
+
+      it("is not printed when the first read of a regeneration is refused, and nothing is spent on it", async () => {
+        mockedContractFor().isJobFinalized.rejects(refusedByProvider(500, "Internal Server Error"));
+        const event = eventFailingWith("regeneration-precheck-refused");
+
+        await aiAgentOracle.handleAndRecord(
+          "RegenerationRequested",
+          aiAgentOracle.handleRegeneration,
+          "0xUser",
+          1,
+          2,
+          3,
+          4,
+          "0xpayload",
+          "0xkey",
+          event,
+        );
+
+        expect(stubs["./ecies"].eciesDecrypt.called, "no work before the check").to.be.false;
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+        expect(printed.join("\n")).to.not.include("rpc.example");
+      });
+
+      it("is not stored with a failed retry", async () => {
+        await handle(eventFailingWithRetryable("stored-with-retry"));
+        storeClock.ms += 24 * 60 * 60 * 1000;
+        stubs["./contractUtility"]
+          .initializeOracle()
+          .provider.getTransactionReceipt.rejects(refusedByProvider(500, "Internal Server Error"));
+
+        await aiAgentOracle.retryFailedJobs();
+
+        storeClock.ms += 24 * 60 * 60 * 1000;
+        const [job] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+        expect(job.lastError).to.include("SERVER_ERROR");
+        expect(job.lastError).to.not.include("rpc.example");
+      });
+
+      function eventFailingWithRetryable(name) {
+        stubs["./ecies"].eciesDecrypt.rejects(new RetryableError("storage is down"));
+        return eventFailingWith(name);
+      }
+
+      it("is not in the error a failed catch-up scan throws", async () => {
+        mockedContractFor().queryFilter.rejects(refusedByProvider(503, "Service Unavailable"));
+
+        const thrown = await aiAgentOracle.processPastEvents(1, 10).then(
+          () => null,
+          (error) => error,
+        );
+
+        expect(thrown, "the catch-up must still fail").to.be.an("error");
+        expect(util.inspect(thrown)).to.not.include("rpc.example");
+        expect(thrown.message).to.include("503");
+        expect(printed.join("\n")).to.not.include("rpc.example");
+      });
+
+      function mockedContractFor() {
+        return stubs["./contractUtility"].initializeOracle().contract;
+      }
     });
 
     it("should trigger a high lag alert if event is too old", async () => {

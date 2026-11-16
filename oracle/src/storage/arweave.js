@@ -1,6 +1,7 @@
 const { Uploader } = require("@irys/upload");
 const { BaseEth } = require("@irys/upload-ethereum");
 const { sendAlert } = require("../alerting");
+const { describeError, describedError } = require("../errorDescription");
 
 let irysUploader;
 const graphqlEndpoint = "https://uploader.irys.xyz/graphql"; // Use the main query endpoint
@@ -68,9 +69,9 @@ async function topUpIrysBalanceIfNeeded() {
       );
     }
   } catch (e) {
-    console.error("CRITICAL: Failed to check or top-up Irys balance: ", e);
+    console.error("CRITICAL: Failed to check or top-up Irys balance: ", describedError(e));
 
-    const alertMessage = `The oracle failed to fund its Irys balance. Manual intervention is required immediately. Error: ${e.message}`;
+    const alertMessage = `The oracle failed to fund its Irys balance. Manual intervention is required immediately. Error: ${describeError(e)}`;
 
     await sendAlert("CRITICAL: Irys Auto-Funding FAILED", alertMessage);
 

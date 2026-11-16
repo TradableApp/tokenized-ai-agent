@@ -1,5 +1,7 @@
 const Sentry = require("@sentry/node");
 
+const { withoutAddresses } = require("./errorDescription");
+
 const TRACE_RATES = {
   localnet: 1.0,
   testnet: 0.5,
@@ -143,8 +145,15 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
         continue;
       }
 
-      result[key] =
-        value && typeof value === "object" ? scrubSensitiveData(value, path, depth + 1) : value;
+      if (value && typeof value === "object") {
+        result[key] = scrubSensitiveData(value, path, depth + 1);
+      } else if (typeof value === "string") {
+        // An error's message, a breadcrumb's request: wherever an address ends up in an event,
+        // it goes. A provider's address carries the account's access key.
+        result[key] = withoutAddresses(value);
+      } else {
+        result[key] = value;
+      }
     }
     return result;
   } finally {
@@ -188,6 +197,17 @@ function initSentry() {
     dsn,
     environment,
     tracesSampleRate,
+    // Sentry's default prints an unhandled rejection's stack itself, as it is. The process's
+    // own handler (index.js) prints the described error; Sentry still reports the rejection.
+    integrations: [Sentry.onUnhandledRejectionIntegration({ mode: "none" })],
+    // Spans of outgoing requests carry the address requested.
+    beforeSendTransaction(event) {
+      try {
+        return scrubSensitiveData(event);
+      } catch (error) {
+        return redactedStandIn(event, error);
+      }
+    },
     beforeSend(event) {
       // Last line of defence. scrubSensitiveData is written not to throw, but if it ever does,
       // Sentry drops the event and monitoring goes dark without a word. Send a minimal

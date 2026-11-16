@@ -7,6 +7,7 @@
  */
 
 const { createFileStateStore, createPostgresStateStore } = require("./store");
+const { describeError } = require("../errorDescription");
 
 // Short: this pool serves a cursor write every few seconds and the retry tick. A hung query must
 // not stall the poll loop behind it.
@@ -27,7 +28,7 @@ function defaultCreateDb(connectionString) {
   // An idle client that errors (database restart, network drop) emits on the pool; without a
   // listener that is an unhandled 'error' event and the process dies.
   pool.on("error", (error) => {
-    console.error("[OracleState] idle Postgres client error:", error.message);
+    console.error("[OracleState] idle Postgres client error:", describeError(error));
   });
   return drizzle(pool);
 }
@@ -103,7 +104,7 @@ async function resolveResumeCursor({
       lastError = error;
       if (attempt < retryDelaysMs.length) {
         console.warn(
-          `[OracleState] Could not read the stored cursor (attempt ${attempt + 1}): ${error.message}. Retrying in ${retryDelaysMs[attempt]} ms.`,
+          `[OracleState] Could not read the stored cursor (attempt ${attempt + 1}): ${describeError(error)}. Retrying in ${retryDelaysMs[attempt]} ms.`,
         );
         await sleep(retryDelaysMs[attempt]);
       }
