@@ -1,5 +1,8 @@
 const { expect } = require("chai");
-const { spawnSync } = require("child_process");
+const { spawn } = require("child_process");
+const fs = require("fs");
+const http = require("http");
+const os = require("os");
 const path = require("path");
 
 // An RPC provider's address carries the account's access key, in the path or in the query.
@@ -13,18 +16,38 @@ describe("what Sentry is sent about the oracle's outgoing requests", function ()
   const QUERY_KEY = "queryKeyq7Wx2Zr9";
   let sent;
 
-  before(() => {
-    const result = spawnSync(
+  before(async () => {
+    const output = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sentry-probe-")), "sent.json");
+    const requests = [];
+    const server = http.createServer((req, res) => {
+      requests.push(req.url);
+      res.end("{}");
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = `http://127.0.0.1:${server.address().port}/v2/${PATH_KEY}?dkey=${QUERY_KEY}`;
+
+    // Not spawnSync: this process has to stay free to serve the probe's requests.
+    const probe = spawn(
       process.execPath,
       [path.resolve(__dirname, "helpers/sentryEnvelopeProbe.js")],
       {
         cwd: path.resolve(__dirname, ".."),
-        env: { ...process.env, PROBE_PATH_KEY: PATH_KEY, PROBE_QUERY_KEY: QUERY_KEY },
-        encoding: "utf8",
+        env: { ...process.env, PROBE_ADDRESS: address, PROBE_OUTPUT: output },
       },
     );
-    expect(result.status, result.stderr).to.equal(0);
-    sent = JSON.parse(result.stdout.split("@@SENT@@")[1]);
+    let stderr = "";
+    probe.stderr.on("data", (chunk) => (stderr += chunk));
+    const status = await new Promise((resolve) => probe.on("close", resolve));
+    await new Promise((resolve) => server.close(resolve));
+
+    expect(status, stderr).to.equal(0);
+    // Both requests were really made, with the key in them.
+    expect(requests).to.deep.equal([
+      `/v2/${PATH_KEY}?dkey=${QUERY_KEY}`,
+      `/v2/${PATH_KEY}?dkey=${QUERY_KEY}`,
+    ]);
+    sent = JSON.parse(fs.readFileSync(output, "utf8"));
+    fs.rmSync(path.dirname(output), { recursive: true, force: true });
   });
 
   it("still reports the error", () => {

@@ -59,6 +59,13 @@ const SENSITIVE_KEYS = [
   "credential",
   "authorization",
   "cookie",
+  // The path and the query of a request, recorded apart from its address. A provider's access
+  // key sits in one or the other, and nothing here needs either.
+  "httptarget",
+  "httpquery",
+  "urlpath",
+  "urlquery",
+  "querystring",
 ];
 
 /** Collapse case and separators so PRIVATE_KEY, privateKey and private-key all compare equal. */
@@ -183,7 +190,24 @@ function redactedStandIn(event, error) {
   };
 }
 
-function initSentry() {
+/**
+ * Nothing is recorded about the oracle's own outgoing requests: no span, no breadcrumb, no
+ * trace header added to them. Their addresses carry access keys (an RPC provider's in the
+ * path, others in the query), and a span or breadcrumb stores the path and the query as
+ * fields of their own. The oracle serves no requests, so there is no trace for these to
+ * belong to; what is given up is the timing of single outgoing calls.
+ */
+function outgoingRequestIntegrations() {
+  const silent = { breadcrumbs: false, tracePropagation: false, ignoreOutgoingRequests: () => true };
+
+  return [Sentry.httpIntegration(silent), Sentry.nativeNodeFetchIntegration(silent)];
+}
+
+/**
+ * @param {{ transport?: Function }} [options] `transport` replaces the network, for tests that
+ *        read what would have been sent.
+ */
+function initSentry({ transport } = {}) {
   const dsn = process.env.SENTRY_DSN;
   if (!dsn) {
     console.log("[Sentry] SENTRY_DSN not set — error monitoring disabled.");
@@ -199,7 +223,11 @@ function initSentry() {
     tracesSampleRate,
     // Sentry's default prints an unhandled rejection's stack itself, as it is. The process's
     // own handler (index.js) prints the described error; Sentry still reports the rejection.
-    integrations: [Sentry.onUnhandledRejectionIntegration({ mode: "none" })],
+    integrations: [
+      Sentry.onUnhandledRejectionIntegration({ mode: "none" }),
+      ...outgoingRequestIntegrations(),
+    ],
+    ...(transport ? { transport } : {}),
     // Spans of outgoing requests carry the address requested.
     beforeSendTransaction(event) {
       try {

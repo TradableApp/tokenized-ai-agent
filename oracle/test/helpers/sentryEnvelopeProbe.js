@@ -4,15 +4,14 @@
 // Makes the requests an oracle makes (node's http module, as ethers does, and fetch) to an
 // address shaped like a provider's, with an access key in the path and in the query, reports
 // an error, and prints everything Sentry would have sent.
+const fs = require("fs");
 const http = require("http");
 
-const PATH_KEY = process.env.PROBE_PATH_KEY;
-const QUERY_KEY = process.env.PROBE_QUERY_KEY;
+// The address is served by the test's own process, so the only requests this process knows of
+// are the ones it makes.
+const address = process.env.PROBE_ADDRESS;
 
 async function main() {
-  const server = http.createServer((req, res) => res.end("{}"));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = `http://127.0.0.1:${server.address().port}/v2/${PATH_KEY}?dkey=${QUERY_KEY}`;
   process.env.BASE_SEPOLIA_TESTNET_RPC = address;
   process.env.SENTRY_DSN = "https://public@sentry.invalid/1";
   process.env.SENTRY_ENVIRONMENT = "localnet"; // every transaction sampled
@@ -38,9 +37,9 @@ async function main() {
   await (await fetch(address, { method: "POST", body: "{}" })).text();
   Sentry.captureException(new Error("the oracle failed after its requests"));
   await Sentry.flush(5000);
-  server.close();
 
-  process.stdout.write(`@@SENT@@${JSON.stringify(sent)}`);
+  // To a file: a pipe may not be drained before the process ends.
+  fs.writeFileSync(process.env.PROBE_OUTPUT, JSON.stringify(sent));
 }
 
 main().catch((error) => {
