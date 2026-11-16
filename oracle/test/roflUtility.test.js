@@ -4,7 +4,9 @@ const { expect, assert } = chai; // Using assert for the fail case
 const fs = require("fs");
 const http = require("http");
 const cbor = require("cbor");
-const { fetchKey, submitTx } = require("../src/roflUtility");
+const roflUtility = require("../src/roflUtility");
+
+const { generateKey, getAppId, submitTx } = roflUtility;
 
 describe("roflUtility", function () {
   let server;
@@ -48,35 +50,157 @@ describe("roflUtility", function () {
     });
   });
 
-  describe("fetchKey", function () {
-    it("should return a key on success", async () => {
-      mockResponse = { key: "test_key" };
-      const key = await fetchKey("test_id", socketPath);
-      expect(key).to.equal("test_key");
+  describe("generateKey", function () {
+    const KEY = "ab".repeat(32);
+    let lastRequest;
+
+    beforeEach(() => {
+      lastRequest = null;
+      server.removeAllListeners("request");
+      server.on("request", (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          lastRequest = { method: req.method, url: req.url, body };
+          res.writeHead(mockStatusCode, { "Content-Type": "application/json" });
+          res.end(typeof mockResponse === "string" ? mockResponse : JSON.stringify(mockResponse));
+        });
+      });
     });
 
-    it("should throw an error if the request fails", async () => {
-      try {
-        await fetchKey("test_id", "/invalid/socket/path");
-        // If the above line does not throw, this test should fail.
-        assert.fail("Expected fetchKey to throw but it did not.");
-      } catch (error) {
-        expect(error).to.be.an("Error");
-        expect(error.message).to.include("connect ENOENT /invalid/socket/path");
+    it("asks the key service for the named key and returns its 32 bytes", async () => {
+      mockResponse = { key: KEY };
+
+      const key = await generateKey("some/key/id", "secp256k1", socketPath);
+
+      expect(Buffer.from(key).toString("hex")).to.equal(KEY);
+      expect(key).to.be.instanceOf(Uint8Array);
+      expect(lastRequest.method).to.equal("POST");
+      expect(lastRequest.url).to.equal("/rofl/v1/keys/generate");
+      expect(JSON.parse(lastRequest.body)).to.deep.equal({
+        key_id: "some/key/id",
+        kind: "secp256k1",
+      });
+    });
+
+    it("accepts a key written with 0x or in upper case", async () => {
+      mockResponse = { key: `0x${KEY.toUpperCase()}` };
+
+      const key = await generateKey("id", "secp256k1", socketPath);
+
+      expect(Buffer.from(key).toString("hex")).to.equal(KEY);
+    });
+
+    it("refuses an answer that is not a 32-byte key, without repeating it", async () => {
+      for (const answer of [{ key: "not-a-key-but-a-secret" }, { key: KEY.slice(2) }, {}, "junk"]) {
+        mockResponse = answer;
+        let failure;
+        try {
+          await generateKey("id", "secp256k1", socketPath);
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure, JSON.stringify(answer)).to.be.an("Error");
+        expect(failure.message).to.include("not a 32-byte key");
+        expect(failure.message).to.not.include("secret");
+        expect(failure.message).to.not.include(KEY.slice(2));
       }
     });
 
-    it("should throw an error for a non-200 status code", async () => {
-      mockStatusCode = 500;
-      mockResponse = { error: "Internal Server Error" };
+    it("reports a refusal by its status and length only", async () => {
+      mockStatusCode = 400;
+      mockResponse = { error: "not initialized, with detail that must not be printed" };
+
+      let failure;
       try {
-        await fetchKey("test_id", socketPath);
-        assert.fail("Expected fetchKey to throw but it did not.");
+        await generateKey("id", "secp256k1", socketPath);
       } catch (error) {
-        expect(error).to.be.an("Error");
-        expect(error.message).to.include("Status 500");
+        failure = error;
+      }
+
+      expect(failure.message).to.match(/^The ROFL key service answered 400 \(\d+ bytes\)$/);
+      expect(failure.status).to.equal(400);
+      expect(failure.message).to.not.include("detail");
+    });
+
+    it("fails when the socket is not there", async () => {
+      let failure;
+      try {
+        await generateKey("id", "secp256k1", "/invalid/socket/path");
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure.message).to.include("ENOENT");
+    });
+
+    it("gives up on a socket that accepts the request and never answers", async () => {
+      server.removeAllListeners("request");
+      server.on("request", () => {});
+
+      let failure;
+      try {
+        await generateKey("id", "secp256k1", socketPath, { timeoutMs: 50 });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure?.message).to.equal("The ROFL key service did not answer within 50 ms");
+    });
+
+    it("refuses an answer that is not a success, or is far larger than a key", async () => {
+      mockStatusCode = 302;
+      mockResponse = { key: KEY };
+      let failure;
+      try {
+        await generateKey("id", "secp256k1", socketPath);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure?.message).to.match(/^The ROFL key service answered 302/);
+
+      mockStatusCode = 200;
+      mockResponse = { key: KEY, padding: "x".repeat(100 * 1024) };
+      failure = undefined;
+      try {
+        await generateKey("id", "secp256k1", socketPath);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure?.message).to.equal("The ROFL key service's answer is too large");
+    });
+
+    it("prints nothing", async () => {
+      mockResponse = { key: KEY };
+      const spy = sinon.spy(console, "log");
+      try {
+        await generateKey("id", "secp256k1", socketPath);
+        expect(spy.callCount).to.equal(0);
+      } finally {
+        spy.restore();
       }
     });
+  });
+
+  describe("getAppId", function () {
+    it("reads the app id the machine runs under", async () => {
+      server.removeAllListeners("request");
+      let seen;
+      server.on("request", (req, res) => {
+        seen = { method: req.method, url: req.url };
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("rofl1qqn9xndja7e2pnxhttktmecvwzz0yqwxsquqyxdf\n");
+      });
+
+      const appId = await getAppId(socketPath);
+
+      expect(appId).to.equal("rofl1qqn9xndja7e2pnxhttktmecvwzz0yqwxsquqyxdf");
+      expect(seen).to.deep.equal({ method: "GET", url: "/rofl/v1/app/id" });
+    });
+  });
+
+  it("no longer offers the old key fetch, which printed what it sent", () => {
+    expect(roflUtility).to.not.have.property("fetchKey");
   });
 
   describe("submitTx", function () {

@@ -1,4 +1,5 @@
 const { ethers } = require("ethers");
+const { withTestKeys } = require("./helpers/oracleTestKeys");
 
 const { expect } = require("chai");
 const proxyquire = require("proxyquire").noCallThru();
@@ -128,7 +129,7 @@ function loadOracle(elizaStub, extraStubs = {}) {
   // placeholder key that ethers rejects. Same approach as aiAgentOracle.test.js — give it a
   // real throwaway key so the failure under test is the behaviour, not the setup.
   process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
-  return proxyquire("../src/aiAgentOracle", {
+  return withTestKeys(proxyquire("../src/aiAgentOracle", {
     "@elizaos/core": {
       ElizaOS: elizaStub.ElizaOS,
       elizaLogger: { info() {}, log() {}, error() {}, warn() {}, debug() {} },
@@ -140,7 +141,7 @@ function loadOracle(elizaStub, extraStubs = {}) {
     "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
     "./elizaos/character.js": {},
     ...extraStubs,
-  });
+  }));
 }
 
 
@@ -151,7 +152,7 @@ function loadOracle(elizaStub, extraStubs = {}) {
  */
 function loadOracleWithBrainConfigured(elizaStub, configured) {
   process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
-  return proxyquire("../src/aiAgentOracle", {
+  return withTestKeys(proxyquire("../src/aiAgentOracle", {
     "@elizaos/core": {
       ElizaOS: elizaStub.ElizaOS,
       elizaLogger: { info() {}, log() {}, error() {}, warn() {}, debug() {} },
@@ -167,7 +168,7 @@ function loadOracleWithBrainConfigured(elizaStub, configured) {
       getHandles: async () => null,
       isConfigured: () => configured,
     },
-  });
+  }));
 }
 
 describe("queryElizaOS — provider-composed context", () => {

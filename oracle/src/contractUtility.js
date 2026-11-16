@@ -53,7 +53,7 @@ function loadContractArtifact(contractName) {
  * the logic for handling different blockchain environments.
  *
  * @param {string} networkName - The name of the target network (e.g., 'sapphire-testnet', 'baseSepolia').
- * @param {string} privateKey - The private key of the oracle's wallet.
+ * @param {string} privateKey - The key the oracle signs with (from oracleKeys.js).
  * @param {string} contractAddress - The address of the deployed AIAgent contract.
  * @returns {{
  *   provider: ethers.Provider,
@@ -64,7 +64,7 @@ function loadContractArtifact(contractName) {
  */
 function initializeOracle(networkName, privateKey, contractAddress) {
   if (!privateKey) {
-    throw new Error("Missing required env variable: PRIVATE_KEY");
+    throw new Error("The oracle has no signing key");
   }
 
   if (!contractAddress) {

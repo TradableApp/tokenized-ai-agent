@@ -1,4 +1,5 @@
 const { expect } = require("chai");
+const { withTestKeys } = require("./helpers/oracleTestKeys");
 const proxyquire = require("proxyquire").noCallThru();
 const { ethers } = require("ethers");
 
@@ -27,11 +28,11 @@ function loadWithBootstrapStub(stub) {
   // in the Dockerfile builder stage and gitignored — so it exists locally but NOT in
   // CI. Without these keys, proxyquire (noCallThru) resolves the real path and the
   // require fails with `Cannot find module …/plugin-senseai/dist/index.js` on CI only.
-  const mod = proxyquire("../src/aiAgentOracle", {
+  const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
     "./postgresBootstrap": stub,
     "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
     "./elizaos/character.js": {},
-  });
+  }));
   // Requiring the module runs dotenv.config() against the real ../.env.oracle, which
   // re-populates POSTGRES_* (dotenv fills only unset vars, and beforeEach cleared
   // them). Clear again AFTER load so each test controls the env it exercises.
