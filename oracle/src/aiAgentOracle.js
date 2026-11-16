@@ -1,6 +1,6 @@
 const Sentry = require("@sentry/node");
 const dotenv = require("dotenv");
-const { eciesEncrypt, eciesDecrypt, publicKeyFromPrivateKey } = require("./ecies");
+const { eciesEncrypt } = require("./ecies");
 const { ethers } = require("ethers");
 const path = require("path");
 const { v5: uuidv5 } = require("uuid");
@@ -21,6 +21,7 @@ const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index
 const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
+const { CHAIN_IDS } = require("./oracleKeys");
 const {
   initializeStorage,
   uploadData,
@@ -277,7 +278,6 @@ const RETRY_LEASE_MS = 15 * 60 * 1000;
 const MAX_RETRIES = 10;
 const BASE_RETRY_DELAY_MS = 30 * 1000; // Start with a 30-second delay
 const NETWORK_NAME = process.env.NETWORK_NAME;
-const AI_AGENT_PRIVATE_KEY = process.env.PRIVATE_KEY;
 const AI_AGENT_CONTRACT_ADDRESS = process.env.AI_AGENT_CONTRACT_ADDRESS;
 
 // --- Mock Flags (for local E2E testing without external dependencies) ---
@@ -334,12 +334,46 @@ const MOCK_E2E_SOURCES = [
 ];
 const MOCK_E2E_REASONING_DURATION = 3; // seconds — the dApp renders "Thought for {n} seconds"
 
-// This single function from our utility handles all environment-specific setup.
-let { provider, signer, contract, isSapphire } = initializeOracle(
-  NETWORK_NAME,
-  AI_AGENT_PRIVATE_KEY,
-  AI_AGENT_CONTRACT_ADDRESS,
-);
+// Nothing is built while this module loads. The keys arrive later (see oracleKeys.js), and
+// `configure` builds the provider, the signer and the contract from them.
+let provider;
+let signer;
+let contract;
+let isSapphire;
+// The key that opens each prompt's session key. Used through this, never read.
+let decryptor;
+let expectedChainId;
+
+/**
+ * Gives the oracle its keys and builds what it talks to the chain with. Called once by
+ * index.js, after the keys have been obtained and before `start`.
+ *
+ * @param {Awaited<ReturnType<typeof import("./oracleKeys").obtainOracleKeys>>} keys
+ */
+function configure(keys) {
+  ({ provider, signer, contract, isSapphire } = initializeOracle(
+    NETWORK_NAME,
+    keys.signingKeyHex(),
+    AI_AGENT_CONTRACT_ADDRESS,
+  ));
+  decryptor = keys.decryptor;
+  // Keys made by the key service were made for one chain; `start` checks the RPC is on it.
+  expectedChainId = keys.mode === "rofl" ? CHAIN_IDS[NETWORK_NAME] : undefined;
+
+  console.log(`--- AI AGENT ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
+  console.log(`Oracle signer address: ${signer.address}`);
+  console.log(`Contract address: ${contract.target}`);
+  console.log(
+    `Operating in ${isSapphire ? "Sapphire (confidential)" : "Public EVM (encrypted)"} mode.`,
+  );
+}
+
+/** The decryptor, or a plain statement of why there is none. */
+function requireDecryptor() {
+  if (!decryptor) throw new Error("The oracle has not been given its keys");
+
+  return decryptor;
+}
 
 // This function allows tests to inject mocked components.
 function initForTest(testComponents) {
@@ -347,6 +381,7 @@ function initForTest(testComponents) {
   signer = testComponents.signer;
   contract = testComponents.contract;
   isSapphire = testComponents.isSapphire;
+  if (testComponents.decryptor) decryptor = testComponents.decryptor;
   if (testComponents.stateStore) {
     stateStore = testComponents.stateStore;
     lastProcessedBlockInMemory = null;
@@ -376,13 +411,6 @@ const rawMessageCache = new LRUCache({
   max: 100000,
   ttl: 1000 * 60 * 60 * 24, // 24 Hours (Renamed from maxAge)
 });
-
-console.log(`--- AI AGENT ORACLE STARTING ON: ${NETWORK_NAME.toUpperCase()} ---`);
-console.log(`Oracle signer address: ${signer.address}`);
-console.log(`Contract address: ${contract.target}`);
-console.log(
-  `Operating in ${isSapphire ? "Sapphire (confidential)" : "Public EVM (encrypted)"} mode.`,
-);
 
 let elizaOS = null;
 
@@ -754,7 +782,7 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     }
   } else if (roflEncryptedKey && roflEncryptedKey !== "0x") {
     const cipherBlob = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
-    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, cipherBlob);
+    return await requireDecryptor().decrypt(cipherBlob);
   }
 
   if (conversationId) {
@@ -770,7 +798,7 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
       throw new Error(`Could not find Key File for conversation ${conversationId}.`);
     }
     const fetchedHex = await fetchData(keyFileCID);
-    return await eciesDecrypt(AI_AGENT_PRIVATE_KEY, Buffer.from(fetchedHex, "hex"));
+    return await requireDecryptor().decrypt(Buffer.from(fetchedHex, "hex"));
   }
 
   throw new Error(
@@ -1735,7 +1763,7 @@ async function handlePrompt(
       // We must now encrypt it for persistent storage.
       let keyToStore;
       if (isSapphire) {
-        const AI_AGENT_PUBLIC_KEY = publicKeyFromPrivateKey(AI_AGENT_PRIVATE_KEY);
+        const AI_AGENT_PUBLIC_KEY = requireDecryptor().publicKey;
         keyToStore = await eciesEncrypt(AI_AGENT_PUBLIC_KEY, Buffer.from(sessionKey));
       } else {
         keyToStore = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
@@ -2189,7 +2217,7 @@ async function handleBranch(
     // We must now encrypt it for persistent storage.
     let keyToStore;
     if (isSapphire) {
-      const AI_AGENT_PUBLIC_KEY = publicKeyFromPrivateKey(AI_AGENT_PRIVATE_KEY);
+      const AI_AGENT_PUBLIC_KEY = requireDecryptor().publicKey;
       keyToStore = await eciesEncrypt(AI_AGENT_PUBLIC_KEY, Buffer.from(sessionKey));
     } else {
       keyToStore = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
@@ -2879,10 +2907,9 @@ async function start() {
   console.log("--- INITIALIZING ORACLE SERVICE ---");
 
   // NO validateConfig() HERE — deliberately. index.js is the enforced entry point and validates
-  // BEFORE requiring this module, which it must: initializeOracle() runs at module scope below,
-  // so a bad key throws during that require, earlier than any guard in this function could reach.
+  // before anything else.
   //
-  // A second call here would also be actively wrong. start() is async, so a ConfigError thrown
+  // A second call here would be actively wrong. start() is async, so a ConfigError thrown
   // in it becomes a rejected promise, lands in index.js's unhandledRejection handler, and files
   // a Sentry incident — exactly what index.js's ConfigError-specific catch exists to prevent.
   // Unreachable in production (index.js has already exited), but reachable from tests and from
@@ -2907,6 +2934,15 @@ async function start() {
   // has one. initializeEliza() above has already run the migration that creates the tables,
   // against this same url.
   const { chainId } = await provider.getNetwork();
+  // The oracle's keys were made for the chain its network name stands for. An RPC address
+  // that points at another chain would have those keys answer, and sign, where they were
+  // never meant to exist.
+  if (expectedChainId !== undefined && BigInt(chainId) !== BigInt(expectedChainId)) {
+    throw new Error(
+      `The RPC for network "${NETWORK_NAME}" is on chain ${chainId}, not ${expectedChainId}; ` +
+        `refusing to start`,
+    );
+  }
   ({ store: stateStore } = createStateStore({
     postgresUrl: agentStateDbUrl,
     chainId,
@@ -3015,6 +3051,7 @@ module.exports = {
   rewindCursor,
   start,
   queryElizaOS,
+  configure,
   initForTest,
   // Expose internal functions for testing purposes
   handlePrompt,

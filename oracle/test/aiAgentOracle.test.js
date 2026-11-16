@@ -1,4 +1,5 @@
 const chai = require("chai");
+const { withTestKeys } = require("./helpers/oracleTestKeys");
 const sinon = require("sinon");
 const { expect } = chai;
 const proxyquire = require("proxyquire").noCallThru();
@@ -207,7 +208,7 @@ describe("aiAgentOracle", function () {
     };
 
     // Use proxyquire to load the module with our mocks.
-    aiAgentOracle = proxyquire("../src/aiAgentOracle", stubs);
+    aiAgentOracle = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
 
     // Initialize the module's internal state with our mocks before running any tests.
     aiAgentOracle.initForTest({ ...mockedOracleComponents, stateStore });
@@ -261,6 +262,52 @@ describe("aiAgentOracle", function () {
       // We verify this by checking the arguments of its dependency, queryFilter.
       expect(queryFilterStub.firstCall.args[1]).to.equal(8200);
       expect(queryFilterStub.firstCall.args[2]).to.equal(10000);
+    });
+
+    describe("with keys made by the ROFL key service", () => {
+      // NETWORK_NAME in this suite is sapphire-testnet, chain 23295.
+      const roflKeys = () => ({
+        mode: "rofl",
+        signingKeyHex: () => process.env.PRIVATE_KEY,
+        decryptor: { publicKey: "0x04", decrypt: async () => Buffer.alloc(0), proveKey: () => "0x" },
+      });
+
+      it("refuses to start when the RPC is on another chain than the keys were made for", async () => {
+        const { provider, contract } = stubs["./contractUtility"].initializeOracle();
+        provider.getNetwork.resolves({ chainId: 84532n });
+        aiAgentOracle.configure(roflKeys());
+
+        let failure;
+        try {
+          await aiAgentOracle.start();
+        } catch (error) {
+          failure = error;
+        }
+
+        expect(failure?.message).to.equal(
+          'The RPC for network "sapphire-testnet" is on chain 84532, not 23295; refusing to start',
+        );
+        expect(contract.queryFilter.called, "nothing was scanned").to.equal(false);
+      });
+
+      it("starts when the RPC is on the chain of the network name", async () => {
+        const { provider, contract } = stubs["./contractUtility"].initializeOracle();
+        provider.getNetwork.resolves({ chainId: 23295n });
+        provider.getBlockNumber.resolves(10000);
+        aiAgentOracle.configure(roflKeys());
+
+        await aiAgentOracle.start();
+
+        expect(contract.queryFilter.called).to.equal(true);
+      });
+    });
+
+    it("does not check the chain for a local network's own key", async () => {
+      const { provider } = stubs["./contractUtility"].initializeOracle();
+      provider.getNetwork.resolves({ chainId: 31337n });
+      provider.getBlockNumber.resolves(10000);
+
+      await aiAgentOracle.start();
     });
 
     it("should start from the last processed block if a cursor is stored", async () => {
@@ -421,7 +468,7 @@ describe("aiAgentOracle", function () {
       // queryAIModel holds the mock response for at least the sentinel delay.
       process.env.MOCK_AI = "true";
       try {
-        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        const mockAi = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
         const history = [{ role: "user", content: "buy BTC __E2E_DELAY_MS__:60" }];
         const start = Date.now();
         const answer = await mockAi.queryAIModel(history, "1", "0xabc");
@@ -439,7 +486,7 @@ describe("aiAgentOracle", function () {
       // only the e2e-sentinel mocks.
       process.env.MOCK_AI = "true";
       try {
-        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        const mockAi = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
         const history = [{ role: "user", content: "what moved BTC today?" }];
         const answer = await mockAi.queryAIModel(history, "1", "0xabc");
         expect(answer).to.be.an("object");
@@ -500,7 +547,7 @@ describe("aiAgentOracle", function () {
       // Mirrors the "queryAIModel actually applies the delay under MOCK_AI (wiring)" test above.
       process.env.MOCK_AI = "true";
       try {
-        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        const mockAi = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
         mockAi.initForTest(stubs["./contractUtility"].initializeOracle());
 
         const clientPayload = {
@@ -538,7 +585,7 @@ describe("aiAgentOracle", function () {
       // AI-extras, so the dApp's disclosure stays hidden (mirrors dApp T-REASON-02).
       process.env.MOCK_AI = "true";
       try {
-        const mockAi = proxyquire("../src/aiAgentOracle", stubs);
+        const mockAi = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
         mockAi.initForTest(stubs["./contractUtility"].initializeOracle());
 
         const clientPayload = {
@@ -580,11 +627,11 @@ describe("aiAgentOracle", function () {
 
     function loadWithSpy(extraStubs = {}) {
       const recordAnswerActivity = sinon.stub().resolves();
-      const mod = proxyquire("../src/aiAgentOracle", {
+      const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
         ...stubs,
         ...extraStubs,
         "./answerActivity": { recordAnswerActivity },
-      });
+      }), stubs["./ecies"]);
       mod.initForTest(
         extraStubs["./contractUtility"]
           ? extraStubs["./contractUtility"].initializeOracle()
@@ -635,11 +682,11 @@ describe("aiAgentOracle", function () {
         },
       };
       const recordAnswerActivity = sinon.stub().resolves();
-      const mod = proxyquire("../src/aiAgentOracle", {
+      const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
         ...stubs,
         "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
         "./answerActivity": { recordAnswerActivity },
-      });
+      }), stubs["./ecies"]);
       mod.initForTest(failing);
       return { mod, recordAnswerActivity };
     }
@@ -698,11 +745,11 @@ describe("aiAgentOracle", function () {
       cancelled.contract = { ...cancelled.contract, isJobFinalized: finalizedStub };
 
       const recordAnswerActivity = sinon.stub().resolves();
-      const mod = proxyquire("../src/aiAgentOracle", {
+      const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
         ...stubs,
         "./contractUtility": { initializeOracle: sinon.stub().returns(cancelled) },
         "./answerActivity": { recordAnswerActivity },
-      });
+      }), stubs["./ecies"]);
       mod.initForTest(cancelled);
 
       await mod.handleRegeneration(
@@ -743,11 +790,11 @@ describe("aiAgentOracle", function () {
         },
       };
       const recordAnswerActivity = sinon.stub().resolves();
-      const mod = proxyquire("../src/aiAgentOracle", {
+      const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
         ...stubs,
         "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
         "./answerActivity": { recordAnswerActivity },
-      });
+      }), stubs["./ecies"]);
       mod.initForTest(failing);
 
       await mod
@@ -815,11 +862,11 @@ describe("aiAgentOracle", function () {
         },
       };
       const recordAnswerActivity = sinon.stub().resolves();
-      const mod = proxyquire("../src/aiAgentOracle", {
+      const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
         ...stubs,
         "./contractUtility": { initializeOracle: sinon.stub().returns(failing) },
         "./answerActivity": { recordAnswerActivity },
-      });
+      }), stubs["./ecies"]);
       mod.initForTest(failing);
 
       await mod
@@ -859,11 +906,11 @@ describe("aiAgentOracle", function () {
         },
       };
       const recordAnswerActivity = sinon.stub().resolves();
-      const mod = proxyquire("../src/aiAgentOracle", {
+      const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
         ...stubs,
         "./contractUtility": { initializeOracle: sinon.stub().returns(dropped) },
         "./answerActivity": { recordAnswerActivity },
-      });
+      }), stubs["./ecies"]);
       mod.initForTest(dropped);
 
       await mod
@@ -923,11 +970,11 @@ describe("aiAgentOracle", function () {
         isJobFinalized: finalizedStub,
       };
       const recordAnswerActivity = sinon.stub().resolves();
-      const mod = proxyquire("../src/aiAgentOracle", {
+      const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
         ...stubs,
         "./contractUtility": { initializeOracle: sinon.stub().returns(cancelled) },
         "./answerActivity": { recordAnswerActivity },
-      });
+      }), stubs["./ecies"]);
       mod.initForTest(cancelled);
 
       await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());

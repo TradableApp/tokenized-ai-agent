@@ -336,7 +336,9 @@ describe("startup config validation", () => {
     // instead of the guard rejecting a network the oracle supports.
     const { SUPPORTED_NETWORKS } = require("../src/contractUtility");
     for (const name of SUPPORTED_NETWORKS) {
-      expect(() => validateConfig(baseEnv({ NETWORK_NAME: name })), name).to.not.throw();
+      // Only a local network takes its key from PRIVATE_KEY.
+      const env = name.endsWith("-localnet") ? localEnv : baseEnv;
+      expect(() => validateConfig(env({ NETWORK_NAME: name })), name).to.not.throw();
     }
   });
 

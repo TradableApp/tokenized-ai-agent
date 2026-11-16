@@ -21,6 +21,7 @@
  */
 
 const { SUPPORTED_NETWORKS } = require("./contractUtility");
+const { keyModeFor } = require("./oracleKeys");
 const { DEFAULT_POLL_BACKOFF_CAP_MS, DEFAULT_POLL_INTERVAL_MS } = require("./pollBackoff");
 const { REQUIRED_BASE_KEYS, CERT_KEY_PAIRS } = require("./postgresBootstrap");
 
@@ -117,7 +118,7 @@ function requiredStorageCredentials(provider) {
 }
 
 /** Required regardless of network, storage provider, or mode. */
-const ALWAYS_REQUIRED = ["NETWORK_NAME", "PRIVATE_KEY", "AI_AGENT_CONTRACT_ADDRESS"];
+const ALWAYS_REQUIRED = ["NETWORK_NAME", "AI_AGENT_CONTRACT_ADDRESS"];
 
 /**
  * Validates the oracle's configuration, or throws naming every problem found.
@@ -154,7 +155,19 @@ function validateConfig(env = process.env) {
   // and hand ethers a value it rejects, producing exactly the opaque error this guard exists to
   // replace. The guard must validate the bytes the consumer actually receives.
   const privateKey = env.PRIVATE_KEY;
-  if (!isBlank(privateKey)) {
+  // Where the oracle's own key comes from depends on the network alone (see oracleKeys.js).
+  // On a local network it is PRIVATE_KEY. Everywhere else it is made inside the TEE, and a
+  // PRIVATE_KEY in the secrets would be a copy of a key held outside it: nothing would read
+  // it, and nothing would say it was there. So it stops the boot until it is removed.
+  const keyIsOperators = !isBlank(network) && keyModeFor(network.trim()) === "env";
+  if (keyIsOperators && isBlank(privateKey)) {
+    problems.push("PRIVATE_KEY is missing or empty");
+  } else if (!keyIsOperators && !isBlank(network) && !isBlank(privateKey)) {
+    problems.push(
+      "PRIVATE_KEY is set, but on this network the oracle takes its keys from the ROFL key " +
+        "service; remove the secret",
+    );
+  } else if (!isBlank(privateKey)) {
     // Placeholder FIRST, same as the address. Both are "you forgot to fill this in", and telling
     // an operator their copied example value "is not a 32-byte hex key" describes the symptom
     // while hiding the cause — they read it as a formatting problem and go looking for the wrong
@@ -250,11 +263,11 @@ function validateConfig(env = process.env) {
     }
   } else if (isMissingOrPlaceholder(legacyUrl)) {
     problems.push(
-      'POSTGRES_AGENT_DATABASE is missing or empty — the oracle needs a dedicated Postgres ' +
+      "POSTGRES_AGENT_DATABASE is missing or empty — the oracle needs a dedicated Postgres " +
         'agent database (e.g. "oracle_agent"), or a POSTGRES_URL naming one directly. There is ' +
-        'no working fallback: plugin-sql would use PGLite, whose schema is never created on ' +
+        "no working fallback: plugin-sql would use PGLite, whose schema is never created on " +
         'this boot path, and the runtime would die on `relation "agents" does not exist` about ' +
-        'thirty seconds in',
+        "thirty seconds in",
     );
   } else {
     // Legacy path: the connection config above is bootstrapped from the url itself, so the

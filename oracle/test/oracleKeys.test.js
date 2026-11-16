@@ -330,12 +330,15 @@ describe("oracle keys", () => {
           env: env(),
           generateKey: async () => {
             asked += 1;
-            if (asked > 40) throw stop;
 
             return bytes(SIGNER_KEY);
           },
           getAppId: async () => "rofl1app",
-          sleep: time.sleep,
+          // Thrown from the wait, which the retry does not catch, to end a loop that has no end.
+          sleep: async (ms) => {
+            if (asked > 40) throw stop;
+            await time.sleep(ms);
+          },
           now: time.now,
           alert: async (title, message) => alerts.push(message),
           log: quiet,
@@ -443,5 +446,68 @@ describe("oracle keys", () => {
     const shown = util.inspect(keys, { depth: 5, showHidden: true }) + JSON.stringify(keys);
     expect(shown).to.not.include(SIGNER_KEY);
     expect(shown).to.not.include(DECRYPTION_KEY);
+  });
+
+  // The whole path a deployed oracle takes to its keys, against a socket that answers as the
+  // key service does, with everything printed on the way captured.
+  describe("against a key service socket", function () {
+    const fs = require("fs");
+    const http = require("http");
+    const os = require("os");
+    const path = require("path");
+
+    const { generateKey, getAppId } = require("../src/roflUtility");
+    const { wrapConsole } = require("../src/secretValues");
+
+    let server;
+    let socketPath;
+
+    beforeEach((done) => {
+      socketPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "appd-")), "appd.sock");
+      server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          if (req.url === "/rofl/v1/app/id") return res.end("rofl1app");
+          const { key_id: keyId } = JSON.parse(body);
+          res.end(
+            JSON.stringify({ key: keyId.endsWith("evm-signer") ? SIGNER_KEY : DECRYPTION_KEY }),
+          );
+        });
+      });
+      server.listen(socketPath, done);
+    });
+
+    afterEach((done) => {
+      server.close(() => {
+        fs.rmSync(path.dirname(socketPath), { recursive: true, force: true });
+        done();
+      });
+    });
+
+    it("prints neither key, whatever is logged afterwards", async () => {
+      const printed = [];
+      const log = {};
+      for (const method of ["log", "info", "warn", "error", "debug"]) {
+        log[method] = (...args) => printed.push(util.format(...args));
+      }
+      wrapConsole(log);
+
+      const keys = await obtainOracleKeys({
+        env: envWithoutKeyAccess({ NETWORK_NAME: "baseSepolia", AI_AGENT_CONTRACT_ADDRESS: AGENT }),
+        generateKey: (keyId, kind) => generateKey(keyId, kind, socketPath),
+        getAppId: () => getAppId(socketPath),
+        log,
+      });
+      // What a careless line elsewhere could do with the keys in hand.
+      log.log("keys:", keys);
+      log.error(new Error(`wallet rejected ${keys.signingKeyHex()}`));
+      log.warn({ leaked: DECRYPTION_KEY.toUpperCase() });
+
+      const output = printed.join("\n").toLowerCase();
+      expect(output).to.include("[oraclekeys] mode=rofl app=rofl1app");
+      expect(output).to.not.include(SIGNER_KEY);
+      expect(output).to.not.include(DECRYPTION_KEY);
+    });
   });
 });

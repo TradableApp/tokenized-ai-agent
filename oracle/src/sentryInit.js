@@ -10,6 +10,8 @@ const TRACE_RATES = {
   'base-mainnet': 0.05,
 };
 
+const { redactSecrets } = require("./secretValues");
+
 /**
  * Substrings that mark a field as secret, matched against a NORMALISED key.
  *
@@ -39,6 +41,8 @@ const SENSITIVE_KEYS = [
   "sessionkey",
   "signingkey",
   "encryptionkey",
+  "decryptionkey",
+  "keymaterial",
   // "seedphrase", not a bare "seed": this codebase carries contentSeed, numericSeed and
   // initialRandomSeed, none of which are credentials. Same trap as the bare "token" entry.
   "seedphrase",
@@ -150,7 +154,8 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
       } else if (typeof value === "string") {
         // An error's message, a breadcrumb's request: wherever an address ends up in an event,
         // it goes. A provider's address carries the account's access key.
-        result[key] = withoutAddresses(value);
+        // The oracle's own keys go too, by value: in a message they have no field name.
+        result[key] = redactSecrets(withoutAddresses(value));
       } else {
         result[key] = value;
       }

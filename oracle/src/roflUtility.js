@@ -55,21 +55,90 @@ function appdPost(path, payload, socketPath = "/run/rofl-appd.sock") {
   });
 }
 
+const DEFAULT_SOCKET_PATH = "/run/rofl-appd.sock";
+const KEY_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
+
 /**
- * Fetches a key from the ROFL appd.
- * @param {string} id
+ * One request to the ROFL appd socket whose answer is never repeated: not in a log line and
+ * not in an error. What the key service returns is a key, and an error that quoted it would
+ * carry it to the machine's logs.
+ *
+ * @returns {Promise<string>} The response body.
+ */
+function appdQuiet(method, path, payload, socketPath) {
+  return new Promise((resolve, reject) => {
+    const body = payload === undefined ? null : JSON.stringify(payload);
+    const headers =
+      body === null
+        ? {}
+        : {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
+          };
+    const req = http.request({ socketPath, path, method, headers }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("error", reject);
+      res.on("end", () => {
+        const answer = Buffer.concat(chunks);
+        if (res.statusCode >= 400) {
+          const error = new Error(
+            `The ROFL key service answered ${res.statusCode} (${answer.length} bytes)`,
+          );
+          error.status = res.statusCode;
+
+          return reject(error);
+        }
+        resolve(answer.toString("utf8"));
+      });
+    });
+    req.on("error", reject);
+    if (body !== null) req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Asks the ROFL key service for a key. The same app and the same id always give the same key,
+ * on any machine of the app, and the key never exists outside the TEE.
+ *
+ * @param {string} keyId
+ * @param {string} [kind]
+ * @param {string} [socketPath]
+ * @returns {Promise<Uint8Array>} The 32 bytes of the key.
+ */
+async function generateKey(keyId, kind = "secp256k1", socketPath = DEFAULT_SOCKET_PATH) {
+  const answer = await appdQuiet(
+    "POST",
+    "/rofl/v1/keys/generate",
+    { key_id: keyId, kind },
+    socketPath,
+  );
+  let key;
+  try {
+    ({ key } = JSON.parse(answer));
+  } catch {
+    key = undefined;
+  }
+  if (typeof key !== "string" || !KEY_HEX.test(key)) {
+    throw new Error(
+      `The ROFL key service's answer is not a 32-byte key (${answer.length} bytes received)`,
+    );
+  }
+
+  return new Uint8Array(Buffer.from(key.replace(/^0x/i, ""), "hex"));
+}
+
+/**
+ * The id of the ROFL app this machine runs under. Public.
  * @param {string} [socketPath]
  * @returns {Promise<string>}
  */
-async function fetchKey(id, socketPath = "/run/rofl-appd.sock") {
-  console.log(`Using unix domain socket: ${socketPath}`);
-  const payload = {
-    key_id: id,
-    kind: "secp256k1",
-  };
-  console.log(`  Posting ${JSON.stringify(payload)} to /rofl/v1/keys/generate`);
-  const response = await appdPost("/rofl/v1/keys/generate", payload, socketPath);
-  return response.key;
+async function getAppId(socketPath = DEFAULT_SOCKET_PATH) {
+  const answer = (await appdQuiet("GET", "/rofl/v1/app/id", undefined, socketPath)).trim();
+
+  // Plain text today; a quoted string would be the same id.
+  return answer.replace(/^"|"$/g, "");
 }
 
 /**
@@ -115,6 +184,7 @@ async function submitTx(tx, socketPath = "/run/rofl-appd.sock") {
 }
 
 module.exports = {
-  fetchKey,
+  generateKey,
+  getAppId,
   submitTx,
 };

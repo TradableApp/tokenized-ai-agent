@@ -1,4 +1,5 @@
 const sinon = require("sinon");
+const { withTestKeys } = require("../helpers/oracleTestKeys");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 const proxyquire = require("proxyquire").noCallThru();
@@ -184,7 +185,7 @@ function setupOracleTestEnv(sessionKey, { now } = {}) {
 
   sinon.stub(global, "setInterval");
 
-  const aiAgentOracle = proxyquire("../../src/aiAgentOracle", stubs);
+  const aiAgentOracle = withTestKeys(proxyquire("../../src/aiAgentOracle", stubs), stubs["./ecies"]);
   aiAgentOracle.initForTest({ ...mockedOracleComponents, stateStore: tempStore });
   sinon.stub(global, "fetch").callsFake((...args) => stubs["node-fetch"](...args));
   delete process.env.CHAIN_GPT_API_KEY;
