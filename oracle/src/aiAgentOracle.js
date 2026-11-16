@@ -2942,9 +2942,10 @@ async function start() {
   // Initialize the AI model interface.
   await initializeEliza();
 
-  // Before the first read that acts on what the chain says. If the RPC cannot say which chain
-  // it is on right now, start-up goes on as it would in any outage, and the check is made
-  // again below, where the chain id is needed and must be had.
+  // If the RPC can say which chain it is on right now, a wrong one stops the start here,
+  // before the role is read on it. If it cannot, start-up goes on as in any outage: the role
+  // read below only reads, and the check that must pass is made after it, where the chain id
+  // is needed and must be had.
   if (expectedChainId !== undefined) {
     const network = await provider.getNetwork().catch(() => null);
     if (network) assertChainOfKeys(network.chainId);

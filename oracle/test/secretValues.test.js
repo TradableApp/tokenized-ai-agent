@@ -137,6 +137,7 @@ describe("secret values", () => {
       target.dir({ key: KEY }, { depth: null });
 
       expect(JSON.stringify(lines)).to.not.include(KEY);
+      expect(lines[0][1], "the caller's options are passed on").to.deep.equal({ depth: null });
     });
 
     it("wraps a console once, however often it is asked", () => {

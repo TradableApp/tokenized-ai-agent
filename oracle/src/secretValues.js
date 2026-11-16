@@ -121,7 +121,7 @@ function wrapConsole(target = console) {
 
       return cleaned === object
         ? originalDir.call(target, object, options)
-        : originalDir.call(target, cleaned);
+        : originalDir.call(target, cleaned, options);
     };
   }
   Object.defineProperty(target, WRAPPED, { value: true });

@@ -129,6 +129,21 @@ describe("oracle keys", () => {
       );
     });
 
+    it("says so when PRIVATE_KEY is not there at all", async () => {
+      let failure;
+      try {
+        await obtainOracleKeys({
+          env: { NETWORK_NAME: "base-localnet" },
+          keyServicePresent: () => false,
+          log: quiet,
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure?.message).to.match(/^PRIVATE_KEY is missing/);
+    });
+
     it("says what is wrong with a PRIVATE_KEY that is no key, without repeating it", async () => {
       let failure;
       try {

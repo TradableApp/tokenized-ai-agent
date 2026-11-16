@@ -148,6 +148,9 @@ function keysFromEnv(env, log, keyServicePresent) {
     );
   }
   const privateKey = env.PRIVATE_KEY;
+  if (typeof privateKey !== "string" || !privateKey.trim()) {
+    throw new Error("PRIVATE_KEY is missing; a local network takes the oracle's key from it");
+  }
   let bytes;
   try {
     bytes = ethers.getBytes(privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`);
