@@ -115,6 +115,16 @@ describe("request secrets", () => {
       expect(withoutRequestSecrets("token=ab%2Bcd%2Fef%3D%3Dgh")).to.equal("token=[REDACTED]");
     });
 
+    // The host of an address is read in lower case, whatever case it was written in.
+    it("takes a secret out whatever case it is written in", () => {
+      refreshRequestSecrets({ RPC: `https://${PATH_KEY}.rpc.example/` });
+
+      expect(withoutRequestSecrets(`host ${PATH_KEY} refused`)).to.equal("host [REDACTED] refused");
+      expect(withoutRequestSecrets(`host ${PATH_KEY.toUpperCase()} refused`)).to.equal(
+        "host [REDACTED] refused",
+      );
+    });
+
     it("leaves text alone when nothing is configured, and returns non-text as it is", () => {
       refreshRequestSecrets({});
 

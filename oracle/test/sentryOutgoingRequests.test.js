@@ -15,12 +15,15 @@ describe("what Sentry is sent about the oracle's outgoing requests", function ()
   const PATH_KEY = "pathKeyaB3dE6gH9jK2mN5pQ8sT";
   const QUERY_KEY = "queryKeyq7Wx2Zr9";
   let sent;
+  let headers;
 
   before(async () => {
     const output = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sentry-probe-")), "sent.json");
     const requests = [];
+    headers = [];
     const server = http.createServer((req, res) => {
       requests.push(req.url);
+      headers.push(Object.keys(req.headers));
       res.end("{}");
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -68,6 +71,16 @@ describe("what Sentry is sent about the oracle's outgoing requests", function ()
     expect(everything).to.include("probe: handling an event");
     expect(everything).to.not.include("http.client");
     expect(everything).to.include('"spans":[]');
+  });
+
+  // A trace header would tie the request, at the provider, to the oracle's error reporting.
+  it("adds no trace header to the requests themselves, by http or by fetch", () => {
+    expect(headers).to.have.length(2);
+    for (const names of headers) {
+      expect(names).to.not.include("sentry-trace");
+      expect(names).to.not.include("baggage");
+      expect(names).to.not.include("traceparent");
+    }
   });
 
   it("records no breadcrumb for a request, while other breadcrumbs still arrive", () => {
