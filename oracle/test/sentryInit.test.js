@@ -186,4 +186,39 @@ describe('sentryInit', () => {
       expect(JSON.stringify(scrubbed)).to.not.include('rpc.example');
     });
   });
+
+  describe('fields that hold the path or the query of a request', () => {
+    const { refreshRequestSecrets } = require('../src/requestSecrets');
+    const KEY = 'aB3dE6gH9jK2mN5pQ8sT';
+
+    afterEach(() => refreshRequestSecrets(process.env));
+
+    it('are redacted by name, since a path has no scheme for the address scrubber to find', () => {
+      const result = scrubSensitiveData({
+        data: {
+          'http.target': `/v2/${KEY}`,
+          'http.query': `?dkey=${KEY}`,
+          'url.path': `/v2/${KEY}`,
+          'url.query': `dkey=${KEY}`,
+          query_string: `dkey=${KEY}`,
+          'http.method': 'POST',
+        },
+      });
+
+      expect(JSON.stringify(result)).to.not.include(KEY);
+      expect(result.data['http.method']).to.equal('POST');
+    });
+
+    it('lose a configured access key wherever else it is written', () => {
+      refreshRequestSecrets({ BASE_SEPOLIA_TESTNET_RPC: `https://base.example/v2/${KEY}` });
+
+      const result = scrubSensitiveData({
+        transaction: `POST /v2/${KEY}`,
+        spans: [{ description: `POST /v2/${KEY}` }],
+      });
+
+      expect(result.transaction).to.equal('POST /v2/[REDACTED]');
+      expect(JSON.stringify(result)).to.not.include(KEY);
+    });
+  });
 });
