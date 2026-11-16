@@ -368,6 +368,20 @@ function configure(keys) {
   );
 }
 
+/**
+ * The oracle's keys were made for the chain its network name stands for. An RPC address that
+ * points at another chain would have those keys answer, and sign, where they were never meant
+ * to exist.
+ */
+function assertChainOfKeys(chainId) {
+  if (expectedChainId !== undefined && BigInt(chainId) !== BigInt(expectedChainId)) {
+    throw new Error(
+      `The RPC for network "${NETWORK_NAME}" is on chain ${chainId}, not ${expectedChainId}; ` +
+        `refusing to start`,
+    );
+  }
+}
+
 /** The decryptor, or a plain statement of why there is none. */
 function requireDecryptor() {
   if (!decryptor) throw new Error("The oracle has not been given its keys");
@@ -382,6 +396,7 @@ function initForTest(testComponents) {
   contract = testComponents.contract;
   isSapphire = testComponents.isSapphire;
   if (testComponents.decryptor) decryptor = testComponents.decryptor;
+  expectedChainId = testComponents.expectedChainId;
   if (testComponents.stateStore) {
     stateStore = testComponents.stateStore;
     lastProcessedBlockInMemory = null;
@@ -2927,6 +2942,14 @@ async function start() {
   // Initialize the AI model interface.
   await initializeEliza();
 
+  // Before the first read that acts on what the chain says. If the RPC cannot say which chain
+  // it is on right now, start-up goes on as it would in any outage, and the check is made
+  // again below, where the chain id is needed and must be had.
+  if (expectedChainId !== undefined) {
+    const network = await provider.getNetwork().catch(() => null);
+    if (network) assertChainOfKeys(network.chainId);
+  }
+
   // Ensure the on-chain oracle address is correctly set to this wallet.
   await ensureOracleAuthorized();
 
@@ -2934,15 +2957,7 @@ async function start() {
   // has one. initializeEliza() above has already run the migration that creates the tables,
   // against this same url.
   const { chainId } = await provider.getNetwork();
-  // The oracle's keys were made for the chain its network name stands for. An RPC address
-  // that points at another chain would have those keys answer, and sign, where they were
-  // never meant to exist.
-  if (expectedChainId !== undefined && BigInt(chainId) !== BigInt(expectedChainId)) {
-    throw new Error(
-      `The RPC for network "${NETWORK_NAME}" is on chain ${chainId}, not ${expectedChainId}; ` +
-        `refusing to start`,
-    );
-  }
+  assertChainOfKeys(chainId);
   ({ store: stateStore } = createStateStore({
     postgresUrl: agentStateDbUrl,
     chainId,

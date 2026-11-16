@@ -27,22 +27,44 @@ function toHex(value) {
   throw new TypeError("A secret value is registered as hex text or as bytes");
 }
 
+function escapeForPattern(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Every way the bytes of one value get written down: as hex (run together, or spaced as a
+ * Buffer prints), as a list of numbers (as a Uint8Array prints, whatever the padding), and in
+ * base64 of either alphabet.
+ */
+function formsOf(hex) {
+  const pairs = hex.match(/../g);
+  const bytes = Buffer.from(hex, "hex");
+  const base64 = bytes.toString("base64").replace(/=+$/, "");
+
+  return [
+    pairs.join("\\s*"),
+    pairs.map((pair) => parseInt(pair, 16)).join("\\s*,\\s*"),
+    `${escapeForPattern(base64)}=*`,
+    `${escapeForPattern(bytes.toString("base64url"))}=*`,
+  ];
+}
+
 /**
  * Registers a value so that it is removed from everything printed or reported from now on.
  * @param {string | Uint8Array} value Hex (with or without 0x) or the bytes themselves.
  */
 function registerSecretValue(value) {
   const hex = toHex(value);
-  if (!/^[0-9a-f]+$/.test(hex) || hex.length < MIN_HEX_LENGTH) {
+  if (!/^(?:[0-9a-f]{2})+$/.test(hex) || hex.length < MIN_HEX_LENGTH) {
     throw new RangeError(`A secret value must be at least ${MIN_HEX_LENGTH} hex characters`);
   }
   registered.add(hex);
-  pattern = new RegExp([...registered].join("|"), "gi");
+  pattern = new RegExp([...registered].flatMap(formsOf).join("|"), "gi");
 }
 
 /**
- * The text with every registered value replaced. Anything that is not a string is returned as
- * it is.
+ * The text with every registered value replaced, in any of the forms it can be written in.
+ * Anything that is not a string is returned as it is.
  */
 function redactSecrets(text) {
   if (pattern === null || typeof text !== "string") return text;
@@ -50,23 +72,31 @@ function redactSecrets(text) {
   return text.replace(pattern, REPLACEMENT);
 }
 
-function redactArgument(argument) {
-  if (typeof argument === "string") return redactSecrets(argument);
-  if (argument === null || (typeof argument !== "object" && typeof argument !== "function")) {
-    return argument;
-  }
-  // An object is printed by the console the way `inspect` shows it. Only when that text holds
-  // a registered value is the object replaced by its cleaned text; otherwise it is passed on
-  // untouched, so ordinary logging looks as it always did.
+/** Whether these bytes are a registered value. For reports that carry bytes as bytes. */
+function isSecretBytes(view) {
+  if (registered.size === 0 || !ArrayBuffer.isView(view)) return false;
+
+  return registered.has(Buffer.from(view.buffer, view.byteOffset, view.byteLength).toString("hex"));
+}
+
+const SHOWN = { depth: 6, breakLength: Infinity };
+
+/**
+ * What a console call would print, cleaned. The arguments are put together first, as the
+ * console itself would, because a value can be assembled by the format string or sit inside an
+ * object. Only when that text holds a registered value is it printed in place of the
+ * arguments; otherwise they are passed on untouched, so ordinary logging looks as it did.
+ */
+function cleanedArguments(args) {
   let shown;
   try {
-    shown = util.inspect(argument, { depth: 6, breakLength: Infinity });
+    shown = util.formatWithOptions(SHOWN, ...args);
   } catch {
-    return "[UNPRINTABLE]";
+    return ["[UNPRINTABLE]"];
   }
   const cleaned = redactSecrets(shown);
 
-  return cleaned === shown ? argument : cleaned;
+  return cleaned === shown ? args : [cleaned];
 }
 
 /**
@@ -80,7 +110,19 @@ function wrapConsole(target = console) {
     const original = target[method];
     if (typeof original !== "function") continue;
     target[method] = (...args) =>
-      original.apply(target, pattern === null ? args : args.map(redactArgument));
+      original.apply(target, pattern === null ? args : cleanedArguments(args));
+  }
+  // `dir` shows one object with its own options, and does not go through the methods above.
+  const originalDir = target.dir;
+  if (typeof originalDir === "function") {
+    target.dir = (object, options) => {
+      if (pattern === null) return originalDir.call(target, object, options);
+      const [cleaned] = cleanedArguments([object]);
+
+      return cleaned === object
+        ? originalDir.call(target, object, options)
+        : originalDir.call(target, cleaned);
+    };
   }
   Object.defineProperty(target, WRAPPED, { value: true });
 
@@ -93,4 +135,10 @@ function forgetSecretValuesForTest() {
   pattern = null;
 }
 
-module.exports = { registerSecretValue, redactSecrets, wrapConsole, forgetSecretValuesForTest };
+module.exports = {
+  registerSecretValue,
+  redactSecrets,
+  isSecretBytes,
+  wrapConsole,
+  forgetSecretValuesForTest,
+};

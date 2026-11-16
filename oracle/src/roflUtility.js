@@ -57,6 +57,9 @@ function appdPost(path, payload, socketPath = "/run/rofl-appd.sock") {
 
 const DEFAULT_SOCKET_PATH = "/run/rofl-appd.sock";
 const KEY_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
+const APPD_TIMEOUT_MS = 10 * 1000;
+// A key or an app id is a few dozen bytes.
+const APPD_LONGEST_ANSWER = 64 * 1024;
 
 /**
  * One request to the ROFL appd socket whose answer is never repeated: not in a log line and
@@ -65,23 +68,29 @@ const KEY_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
  *
  * @returns {Promise<string>} The response body.
  */
-function appdQuiet(method, path, payload, socketPath) {
+function appdQuiet(method, path, payload, socketPath, timeoutMs = APPD_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const body = payload === undefined ? null : JSON.stringify(payload);
     const headers =
       body === null
         ? {}
-        : {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body),
-          };
+        : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) };
     const req = http.request({ socketPath, path, method, headers }, (res) => {
       const chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
+      let received = 0;
+      res.on("data", (chunk) => {
+        received += chunk.length;
+        if (received > APPD_LONGEST_ANSWER) {
+          req.destroy(new Error("The ROFL key service's answer is too large"));
+
+          return;
+        }
+        chunks.push(chunk);
+      });
       res.on("error", reject);
       res.on("end", () => {
         const answer = Buffer.concat(chunks);
-        if (res.statusCode >= 400) {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
           const error = new Error(
             `The ROFL key service answered ${res.statusCode} (${answer.length} bytes)`,
           );
@@ -92,6 +101,11 @@ function appdQuiet(method, path, payload, socketPath) {
         resolve(answer.toString("utf8"));
       });
     });
+    // A socket that takes the request and says nothing would otherwise be waited on for ever,
+    // with nothing failing and so nothing to retry or alert on.
+    req.setTimeout(timeoutMs, () =>
+      req.destroy(new Error(`The ROFL key service did not answer within ${timeoutMs} ms`)),
+    );
     req.on("error", reject);
     if (body !== null) req.write(body);
     req.end();
@@ -105,14 +119,21 @@ function appdQuiet(method, path, payload, socketPath) {
  * @param {string} keyId
  * @param {string} [kind]
  * @param {string} [socketPath]
+ * @param {{ timeoutMs?: number }} [options]
  * @returns {Promise<Uint8Array>} The 32 bytes of the key.
  */
-async function generateKey(keyId, kind = "secp256k1", socketPath = DEFAULT_SOCKET_PATH) {
+async function generateKey(
+  keyId,
+  kind = "secp256k1",
+  socketPath = DEFAULT_SOCKET_PATH,
+  { timeoutMs } = {},
+) {
   const answer = await appdQuiet(
     "POST",
     "/rofl/v1/keys/generate",
     { key_id: keyId, kind },
     socketPath,
+    timeoutMs,
   );
   let key;
   try {
@@ -184,6 +205,7 @@ async function submitTx(tx, socketPath = "/run/rofl-appd.sock") {
 }
 
 module.exports = {
+  DEFAULT_SOCKET_PATH,
   generateKey,
   getAppId,
   submitTx,

@@ -10,7 +10,7 @@ const TRACE_RATES = {
   'base-mainnet': 0.05,
 };
 
-const { redactSecrets } = require("./secretValues");
+const { isSecretBytes, redactSecrets } = require("./secretValues");
 
 /**
  * Substrings that mark a field as secret, matched against a NORMALISED key.
@@ -149,7 +149,10 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
         continue;
       }
 
-      if (value && typeof value === "object") {
+      if (isSecretBytes(value)) {
+        // A key carried as bytes has no text for the string scrub below to find.
+        result[key] = "[REDACTED]";
+      } else if (value && typeof value === "object") {
         result[key] = scrubSensitiveData(value, path, depth + 1);
       } else if (typeof value === "string") {
         // An error's message, a breadcrumb's request: wherever an address ends up in an event,

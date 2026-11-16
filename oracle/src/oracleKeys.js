@@ -13,6 +13,7 @@
  */
 
 const { ethers } = require("ethers");
+const fs = require("fs");
 
 const { sendAlert } = require("./alerting");
 const { eciesDecrypt } = require("./ecies");
@@ -137,9 +138,24 @@ function keysFrom(mode, signingKey, decryptionKey) {
   });
 }
 
-function keysFromEnv(env, log) {
+function keysFromEnv(env, log, keyServicePresent) {
+  // The key service's socket exists only inside a ROFL machine. A machine whose settings name
+  // a local network would otherwise run on whatever key those settings hold.
+  if (keyServicePresent()) {
+    throw new Error(
+      `NETWORK_NAME "${env.NETWORK_NAME}" is a local network, but this is a ROFL machine; ` +
+        "a local network's key is not used here",
+    );
+  }
   const privateKey = env.PRIVATE_KEY;
-  const bytes = ethers.getBytes(privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`);
+  let bytes;
+  try {
+    bytes = ethers.getBytes(privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`);
+    if (bytes.length !== 32) throw new Error("wrong length");
+  } catch {
+    // ethers' own message repeats the value it was given.
+    throw new Error("PRIVATE_KEY is not a 32-byte hex key");
+  }
   const keys = keysFrom("env", bytes, bytes);
   // The wallet is built from what the operator wrote, in the form they wrote it.
   const withOperatorForm = Object.freeze({ ...keys, signingKeyHex: () => privateKey });
@@ -162,7 +178,28 @@ async function requestBothKeys(generateKey, ids) {
   return { signingKey, decryptionKey };
 }
 
-async function keysFromRofl({ env, generateKey, getAppId, sleep, now, alert, log }) {
+/**
+ * Sends an alert without waiting for it. An alert that is slow to send (a paging service that
+ * is itself down retries for a long time) must not hold back the next attempt at the keys.
+ */
+function page(alert, title, message) {
+  try {
+    Promise.resolve(alert(title, message)).catch(() => {});
+  } catch {
+    // An alert that cannot even be started changes nothing here.
+  }
+}
+
+async function keysFromRofl({
+  env,
+  generateKey,
+  getAppId,
+  appIdTimeoutMs,
+  sleep,
+  now,
+  alert,
+  log,
+}) {
   const ids = keyIdsFor(env.NETWORK_NAME, env.AI_AGENT_CONTRACT_ADDRESS);
   const startedAt = now();
   let attempts = 0;
@@ -175,19 +212,28 @@ async function keysFromRofl({ env, generateKey, getAppId, sleep, now, alert, log
       // eslint-disable-next-line no-await-in-loop -- one attempt at a time is the point
       const { signingKey, decryptionKey } = await requestBothKeys(generateKey, ids);
       const keys = keysFrom("rofl", signingKey, decryptionKey);
+      // Only for the line below. The keys are in hand; nothing waits on this.
       // eslint-disable-next-line no-await-in-loop
-      const app = await getAppId().catch(() => "unknown");
+      const app = await Promise.race([
+        Promise.resolve()
+          .then(getAppId)
+          .catch(() => "unknown"),
+        new Promise((resolve) => {
+          const timer = setTimeout(() => resolve("unknown"), appIdTimeoutMs);
+          timer.unref?.();
+        }),
+      ]);
       log.log(
         `[OracleKeys] mode=rofl app=${app} signer=${keys.signerAddress} ` +
           `encryptionKey=${keys.decryptor.publicKey} keyIds=${KEY_ID_VERSION} ` +
           `attempts=${attempts} acquiredInMs=${now() - startedAt}`,
       );
       if (alertedAt !== null) {
-        // eslint-disable-next-line no-await-in-loop
-        await alert(
+        page(
+          alert,
           "RESOLVED: Oracle obtained its keys from ROFL",
           `After ${attempts} attempts over ${Math.round((now() - startedAt) / 60000)} minutes.`,
-        ).catch(() => {});
+        );
       }
 
       return keys;
@@ -205,13 +251,13 @@ async function keysFromRofl({ env, generateKey, getAppId, sleep, now, alert, log
         alertedAt === null ? waited >= ALERT_AFTER_MS : now() - alertedAt >= REMIND_EVERY_MS;
       if (due) {
         alertedAt = now();
-        // eslint-disable-next-line no-await-in-loop
-        await alert(
+        page(
+          alert,
           "CRITICAL: Oracle cannot obtain its keys from ROFL",
           `No keys after ${attempts} attempts over ${Math.round(waited / 60000)} minutes; ` +
             `the oracle answers nothing until it has them and uses no other key. ` +
             `Last failure: ${described}`,
-        ).catch(() => {});
+        );
       }
       // eslint-disable-next-line no-await-in-loop
       await sleep(waitMs);
@@ -241,10 +287,12 @@ async function obtainOracleKeys({
   now = Date.now,
   alert = sendAlert,
   log = console,
+  appIdTimeoutMs = 2000,
+  keyServicePresent = () => fs.existsSync(rofl.DEFAULT_SOCKET_PATH),
 } = {}) {
-  if (keyModeFor(env.NETWORK_NAME) === "env") return keysFromEnv(env, log);
+  if (keyModeFor(env.NETWORK_NAME) === "env") return keysFromEnv(env, log, keyServicePresent);
 
-  return keysFromRofl({ env, generateKey, getAppId, sleep, now, alert, log });
+  return keysFromRofl({ env, generateKey, getAppId, appIdTimeoutMs, sleep, now, alert, log });
 }
 
 module.exports = { CHAIN_IDS, createDecryptor, keyIdsFor, keyModeFor, obtainOracleKeys };

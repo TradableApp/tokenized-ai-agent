@@ -138,7 +138,11 @@ function validateConfig(env = process.env) {
   // but one at a time and at module load — so it costs a restart per typo instead of joining the
   // single report. The list is IMPORTED rather than restated so the two cannot drift.
   const network = env.NETWORK_NAME;
-  if (!isBlank(network) && !SUPPORTED_NETWORKS.includes(network.trim())) {
+  // Raw, like the key and the address: everything after this reads the name as written, so a
+  // padded name accepted here would be a different network there.
+  if (!isBlank(network) && network !== network.trim()) {
+    problems.push(`NETWORK_NAME "${network}" has spaces around it`);
+  } else if (!isBlank(network) && !SUPPORTED_NETWORKS.includes(network.trim())) {
     problems.push(
       `NETWORK_NAME "${network.trim()}" is not a supported network — expected one of: ` +
         SUPPORTED_NETWORKS.join(", "),
