@@ -190,7 +190,9 @@ function normalise(entry) {
     return {
       text: entry.text,
       actions: Array.isArray(entry.actions) ? entry.actions : [],
-      toolFailed: entry.toolFailed === true,
+      // `true`, or why: one of the kinds below.
+      toolFailed: Boolean(entry.toolFailed),
+      failureKind: typeof entry.toolFailed === "string" ? entry.toolFailed : "toolError",
     };
   }
   return { text: "", actions: [] };
@@ -199,14 +201,29 @@ function normalise(entry) {
 // How the MCP plugin words the thought it sends with a reply that is not an answer. Each such
 // reply is tagged REPLY, like any other prose, so the thought is the only thing that tells it
 // apart. The plugin is at an exact version, and a test reads its build for this wording.
+//
+// Only the first kind says the tools are at fault. The other two are the model's doing, and are
+// counted apart so that they do not read as an outage.
 const TOOL_FAILURE_THOUGHTS = [
   // A tool or resource call failed (its handleMcpError). The reply is an apology.
-  /^Error calling MCP (tool|resource)\b/,
-  // It found no tool for the request (its handleNoToolAvailable). The reply says it has none.
-  /^No appropriate MCP tool available for this request\./,
-  // It could not read the model's choice of tool. The reply asks the user to say it again.
-  /^Failed to parse response after multiple retries\./,
+  { kind: "toolError", form: /^Error calling MCP (tool|resource)\b/ },
+  // The model chose no tool or resource for the request. The reply says there is none.
+  { kind: "noTool", form: /^No appropriate MCP (tool|resource) available for this request\./ },
+  // The model's choice could not be read. The reply asks the user to say it again.
+  { kind: "unreadable", form: /^Failed to parse response after multiple retries\./ },
 ];
+
+/**
+ * Which of the MCP plugin's failure thoughts this is, or null when it is none of them.
+ *
+ * @param {unknown} thought
+ * @returns {"toolError" | "noTool" | "unreadable" | null}
+ */
+function toolFailureKind(thought) {
+  if (typeof thought !== "string") return null;
+
+  return TOOL_FAILURE_THOUGHTS.find(({ form }) => form.test(thought))?.kind ?? null;
+}
 
 /**
  * Whether a thought is one the MCP plugin sends when a tool step failed.
@@ -215,20 +232,27 @@ const TOOL_FAILURE_THOUGHTS = [
  * @returns {boolean}
  */
 function isToolFailureThought(thought) {
-  return typeof thought === "string" && TOOL_FAILURE_THOUGHTS.some((form) => form.test(thought));
+  return toolFailureKind(thought) !== null;
 }
 
-/** A run in which a tool step failed and nothing answered without it. See the function below. */
+/** A run in which a tool step failed and nothing answered without it. See the functions below. */
 class UnansweredToolFailureError extends Error {
-  constructor() {
+  /** @param {"toolError" | "noTool" | "unreadable"} [kind] */
+  constructor(kind = "toolError") {
     // Worded here, with nothing of the plugin's thought, which carries the error's text.
     super("An MCP tool step failed and nothing answered without it.");
     this.name = "UnansweredToolFailureError";
+    this.kind = kind;
   }
 }
 
+// The plugin's own actions. An emission tagged with one of these that is not a failure reply is
+// what the plugin wrote from a tool's result.
+const TOOL_ACTIONS = new Set(["CALL_MCP_TOOL", "READ_MCP_RESOURCE"]);
+
 /**
- * Whether a tool step failed in this run and nothing answered regardless.
+ * Why a run has no answer, when a tool step failed in it and nothing answered regardless; or
+ * null when the run has an answer, or no tool step failed.
  *
  * Such a run has no answer worth storing: what is left is the plugin's apology and the
  * acknowledgement that came before the call. The caller treats it as a failed run, so another
@@ -236,26 +260,43 @@ class UnansweredToolFailureError extends Error {
  *
  * - a synthesis of ours, wherever it comes in the run. It is built from the Brain's data, not
  *   from the tool, so it stands even when a tool call beside it failed.
- * - prose that came after the last failure and is not itself a failure reply: a later step that
- *   worked. Prose from before the failure does not count; the acknowledgement always is.
+ * - what the plugin wrote from a tool's result after the last failure: a later call that worked.
  *
- * @param {Array<string | {text: string, actions?: string[], toolFailed?: boolean}>} [emitted]
- * @returns {boolean}
+ * A plain reply after the failure does not count. The framework closes a chain of actions with
+ * a reply written from what the actions did, and after a failed tool step that is the apology
+ * again in other words, or figures from the model's memory. Its thought is an ordinary one, so
+ * it cannot be told apart from an answer by anything but where it stands.
+ *
+ * @param {Array<string | {text: string, actions?: string[], toolFailed?: boolean | string}>} [emitted]
+ * @returns {"toolError" | "noTool" | "unreadable" | null} What went wrong last, or null.
  */
-function hasUnansweredToolFailure(emitted) {
-  if (!Array.isArray(emitted)) return false;
+function unansweredToolFailure(emitted) {
+  if (!Array.isArray(emitted)) return null;
 
   const entries = emitted.map(normalise);
-  const lastFailure = entries.map((entry) => entry.toolFailed === true).lastIndexOf(true);
-  if (lastFailure === -1) return false;
+  const lastFailure = entries.map((entry) => entry.toolFailed).lastIndexOf(true);
+  if (lastFailure === -1) return null;
 
   const isAnswer = (entry) =>
     !entry.toolFailed && Boolean(entry.text.trim()) && !looksLikeToolPayload(entry.text);
   const isSynthesis = (entry) => entry.actions.some((action) => SYNTHESIS_ACTIONS.has(action));
-
-  return !entries.some(
-    (entry, index) => isAnswer(entry) && (isSynthesis(entry) || index > lastFailure),
+  const isFromATool = (entry) => entry.actions.some((action) => TOOL_ACTIONS.has(action));
+  const isAnswered = entries.some(
+    (entry, index) =>
+      isAnswer(entry) && (isSynthesis(entry) || (index > lastFailure && isFromATool(entry))),
   );
+
+  return isAnswered ? null : entries[lastFailure].failureKind;
+}
+
+/**
+ * Whether a tool step failed in this run and nothing answered regardless.
+ *
+ * @param {Array<string | {text: string, actions?: string[], toolFailed?: boolean | string}>} [emitted]
+ * @returns {boolean}
+ */
+function hasUnansweredToolFailure(emitted) {
+  return unansweredToolFailure(emitted) !== null;
 }
 
 /**
@@ -330,7 +371,9 @@ module.exports = {
   selectAnswer,
   looksLikeToolPayload,
   isToolFailureThought,
+  toolFailureKind,
   hasUnansweredToolFailure,
+  unansweredToolFailure,
   UnansweredToolFailureError,
   SYNTHESIS_ACTION_NAMES,
 };

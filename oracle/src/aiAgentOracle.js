@@ -290,8 +290,8 @@ const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
 const {
   selectAnswer,
-  isToolFailureThought,
-  hasUnansweredToolFailure,
+  toolFailureKind,
+  unansweredToolFailure,
   UnansweredToolFailureError,
 } = require("./answerSelection");
 const { createToolServerWatch } = require("./elizaos/toolServerWatch");
@@ -584,17 +584,14 @@ async function initializeEliza() {
   // Create the orchestrator
   elizaOS = new ElizaOS();
 
-  const originalInfo = elizaLogger.info;
-  const originalLog = elizaLogger.log;
-
   // Some of the framework's lines are not printed. See mutedFrameworkLogs for which and why.
-  elizaLogger.info = (...args) => {
-    if (!isMutedFrameworkLog(args)) originalInfo.apply(elizaLogger, args);
-  };
-
-  elizaLogger.log = (...args) => {
-    if (!isMutedFrameworkLog(args)) originalLog.apply(elizaLogger, args);
-  };
+  for (const level of ["info", "log", "warn", "error"]) {
+    const original = elizaLogger[level];
+    if (typeof original !== "function") continue;
+    elizaLogger[level] = (...args) => {
+      if (!isMutedFrameworkLog(args, level)) original.apply(elizaLogger, args);
+    };
+  }
 
   // Add the SenseAI Agent
   try {
@@ -1251,8 +1248,11 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             // onComplete. On a prompt already paid for on-chain that either drops the emission
             // or strands the promise entirely, depending on how ElizaOS handles a throwing
             // onResponse. The guard on the push made this inconsistency visible.
+            //
+            // Its length and not its opening: this log is read outside the TEE, and the first
+            // words of an emission are the first words of an answer.
             console.log(
-              `[ElizaOS] Intermediate response received: "${content.text?.substring(0, 30) ?? "(no text)"}..."`,
+              `[ElizaOS] Intermediate response received: ${content.text?.length ?? 0} characters`,
             );
 
             // If the agent provides 'thought' metadata, add it to reasoning
@@ -1263,8 +1263,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             // thought is what marks it. That thought is the plugin's account of its own fault,
             // with the error's text in it, and is not a step of the answer: it stays out of the
             // reasoning, which is stored with the answer for good.
-            const isToolFailure = isToolFailureThought(content.thought);
-            if (content.thought && !isToolFailure) {
+            const failureKind = toolFailureKind(content.thought);
+            if (content.thought && !failureKind) {
               runProvenance.recordThought(runId, content.thought);
             }
 
@@ -1276,8 +1276,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               emittedTexts.push({
                 text: content.text,
                 actions: Array.isArray(content.actions) ? content.actions : [],
-                // See hasUnansweredToolFailure.
-                toolFailed: isToolFailure,
+                // See unansweredToolFailure.
+                toolFailed: failureKind ?? false,
               });
             }
           },
@@ -1305,10 +1305,11 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               // A tool step failed and nothing answered without it: what is left is an apology
               // and an acknowledgement, and storing either would charge the user for it.
               // Rejecting hands the prompt to another provider. See queryAIModel for which.
-              if (hasUnansweredToolFailure(emittedTexts)) {
+              const unanswered = unansweredToolFailure(emittedTexts);
+              if (unanswered) {
                 runProvenance.finish(runId);
-                toolServerWatch.countRejectedRun();
-                reject(new UnansweredToolFailureError());
+                toolServerWatch.countRejectedRun(unanswered);
+                reject(new UnansweredToolFailureError(unanswered));
                 return;
               }
 
@@ -1538,10 +1539,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     return answer;
   } catch (err) {
-    // A run thrown away for a failed tool step is not a fault of the agent or its model: the
-    // market-data tools are down. ChainGPT is not asked then. It keeps its own record of the
+    // A run thrown away for a failed tool step is most often a fault of the market-data tools,
+    // not of the agent. ChainGPT is not asked then. It keeps its own record of the
     // conversation, outside the TEE, and a tool outage would send it every market question.
-    // The heartbeat counts these runs (`rejectedRuns`), so an outage shows there.
+    // The heartbeat counts these runs by what went wrong (`rejectedRuns`).
     if (err instanceof UnansweredToolFailureError) {
       console.warn(
         "[Failover] A tool step failed in the ElizaOS run and nothing answered without it. " +
