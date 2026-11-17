@@ -639,6 +639,20 @@ describe("startup config validation", () => {
       );
     });
 
+    it("counts the example file's placeholder as missing, and does not print it", () => {
+      const placeholder = "your_coingecko_api_key_here";
+      let thrown = null;
+      try {
+        validateConfig(baseEnv({ COINGECKO_API_KEY: placeholder }));
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).to.be.instanceOf(ConfigError);
+      expect(thrown.message).to.match(/COINGECKO_API_KEY is still the example-file placeholder/);
+      expect(thrown.message).to.not.include(placeholder);
+    });
+
     it("starts on a network that is not local when the key is set", () => {
       expect(() => validateConfig(baseEnv())).to.not.throw();
     });

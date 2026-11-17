@@ -279,7 +279,193 @@ describe("queryElizaOS — provider-composed context", () => {
     });
 
     expect(thrown).to.be.an("error");
-    expect(thrown.message).to.match(/tool call failed/i);
+    expect(thrown.name).to.equal("UnansweredToolFailureError");
+    expect(thrown.message).to.match(/tool step failed/i);
+    // The message is the oracle's own: nothing of the plugin's thought, which carries the error.
+    expect(thrown.message).to.not.include("429");
+  });
+
+  it("answers with what a later step wrote when an earlier tool call failed", async () => {
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        { text: "Let me check the live price for you.", actions: ["REPLY"] },
+        {
+          text: "I'm sorry, I wasn't able to get the information you requested.",
+          thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+          actions: ["REPLY"],
+        },
+        { text: "Bitcoin is trading near $61,000.", actions: ["REPLY"] },
+      ],
+    });
+    const oracle = loadOracle(stub);
+
+    const answer = await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1");
+
+    expect(answer.text).to.equal("Bitcoin is trading near $61,000.");
+  });
+
+  // The reasoning is stored with the answer, for good. The plugin's failure thought carries the
+  // text of the error, and is the plugin's account of its own fault, not a step of the answer.
+  it("keeps the plugin's failure thought out of the stored reasoning", async () => {
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        {
+          text: "I'm sorry, I wasn't able to get the information you requested.",
+          thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+          actions: ["REPLY"],
+        },
+        {
+          text: "Bitcoin news today: ETF inflows accelerated.",
+          thought: "Reading today's headlines",
+          actions: ["GET_NEWS_DETAILS"],
+        },
+      ],
+    });
+    const oracle = loadOracle(stub);
+
+    const answer = await oracle.queryElizaOS(history("BTC news?"), ROOM_ID, "entity-1");
+
+    expect(answer.reasoning.map(step => step.description)).to.deep.equal(["Reading today's headlines"]);
+  });
+
+  describe("the tool server watch", () => {
+    const FAILED_RUN = [
+      { text: "Let me check the live price for you.", actions: ["REPLY"] },
+      {
+        text: "I'm sorry, I wasn't able to get the information you requested.",
+        thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+        actions: ["REPLY"],
+      },
+    ];
+
+    function fakeWatch() {
+      const watch = {
+        // Never settles: the framework's tool service can take minutes to start.
+        follow: sinon.stub().returns(new Promise(() => {})),
+        observe: sinon.stub().returns(null),
+        countRejectedRun: sinon.spy(),
+      };
+
+      return { watch, module: { createToolServerWatch: () => watch } };
+    }
+
+    const WITH_A_TOOL_SERVER = { settings: { mcp: { servers: { market_data: {} } } } };
+
+    it("is pointed at the agent, and start-up does not wait for it", async () => {
+      const { watch, module } = fakeWatch();
+      const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
+      const oracle = loadOracle(stub, {
+        "./elizaos/toolServerWatch": module,
+        "./elizaos/character.js": WITH_A_TOOL_SERVER,
+      });
+
+      const answer = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+
+      expect(answer.text).to.equal("An answer.");
+      expect(watch.follow.calledOnce).to.equal(true);
+      expect(watch.follow.firstCall.args[0]).to.equal(stub.captured.runtimes[0]);
+    });
+
+    it("is not pointed at an agent that has no tool servers", async () => {
+      const { watch, module } = fakeWatch();
+      const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
+      const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
+
+      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+
+      expect(watch.follow.called).to.equal(false);
+    });
+
+    it("counts a run thrown away for a failed tool step", async () => {
+      const { watch, module } = fakeWatch();
+      const stub = makeElizaStub({ providerData, thoughts: FAILED_RUN });
+      const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
+
+      await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1").catch(() => {});
+
+      expect(watch.countRejectedRun.calledOnce).to.equal(true);
+    });
+
+    it("counts nothing for a run that answered", async () => {
+      const { watch, module } = fakeWatch();
+      const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
+      const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
+
+      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+
+      expect(watch.countRejectedRun.called).to.equal(false);
+    });
+  });
+
+  // The provider after the agent keeps its own record of the conversation, outside the TEE.
+  // A run thrown away for a failed tool step is not a fault of the agent or its model, so the
+  // prompt goes to the direct model call and never there.
+  describe("after a run thrown away for a failed tool step", () => {
+    const CHAINGPT = "https://api.chaingpt.org/chat/stream";
+    const saved = {};
+
+    beforeEach(() => {
+      for (const name of ["AI_PROVIDER", "CHAIN_GPT_API_KEY"]) saved[name] = process.env[name];
+      delete process.env.AI_PROVIDER;
+      process.env.CHAIN_GPT_API_KEY = "not-a-real-key";
+    });
+
+    afterEach(() => {
+      sinon.restore();
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    });
+
+    function loadDispatcher(stub) {
+      // The oracle uses the global fetch. Stubbed so that no test reaches a real provider.
+      const fetch = sinon.stub(global, "fetch").rejects(new Error("unreachable in a test"));
+      const queryGeminiDirect = sinon.stub().resolves("A direct answer.");
+      const oracle = loadOracle(stub, {
+        "./geminiDirect": { classifyIntent: async () => "MARKET", queryGeminiDirect },
+      });
+
+      return { oracle, fetch, queryGeminiDirect };
+    }
+
+    const calledChainGPT = fetch => fetch.getCalls().some(call => String(call.args[0]) === CHAINGPT);
+
+    it("answers with the direct model call, and does not ask the provider between", async () => {
+      const stub = makeElizaStub({
+        providerData,
+        thoughts: [
+          {
+            text: "I'm sorry, I wasn't able to get the information you requested.",
+            thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+            actions: ["REPLY"],
+          },
+        ],
+      });
+      const { oracle, fetch, queryGeminiDirect } = loadDispatcher(stub);
+
+      const answer = await oracle.queryAIModel(history("BTC price?"), ROOM_ID, "entity-1");
+
+      expect(answer.text).to.equal("A direct answer.");
+      expect(queryGeminiDirect.calledOnce).to.equal(true);
+      expect(calledChainGPT(fetch)).to.equal(false);
+    });
+
+    it("still asks the provider between when the agent failed for another reason", async () => {
+      const stub = makeElizaStub({ providerData, thoughts: [] });
+      stub.ElizaOS.prototype.handleMessage = async () => {
+        throw new Error("the model is unavailable");
+      };
+      const { oracle, fetch, queryGeminiDirect } = loadDispatcher(stub);
+
+      const answer = await oracle.queryAIModel(history("BTC price?"), ROOM_ID, "entity-1");
+
+      expect(calledChainGPT(fetch)).to.equal(true);
+      expect(answer.text).to.equal("A direct answer.");
+      expect(queryGeminiDirect.calledOnce).to.equal(true);
+    });
   });
 
   it("answers with our own synthesis even when a tool call failed beside it", async () => {
