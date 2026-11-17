@@ -87,7 +87,7 @@ function makeElizaStub({ providerData, thoughts }) {
         if (t.action && captured.eventHandlers.ACTION_STARTED) {
           await captured.eventHandlers.ACTION_STARTED({ roomId: ROOM_ID, content: {} , actionName: t.action });
         }
-        await options.onResponse({ text: t.text ?? "partial", thought: t.thought });
+        await options.onResponse({ text: t.text ?? "partial", thought: t.thought, actions: t.actions });
         if (t.action && captured.eventHandlers.ACTION_COMPLETED) {
           await captured.eventHandlers.ACTION_COMPLETED({ roomId: ROOM_ID, content: {}, actionName: t.action });
         }
@@ -255,6 +255,50 @@ describe("queryElizaOS — provider-composed context", () => {
       title: "Step 2",
       description: "Weighing the macro backdrop",
     });
+  });
+
+  // The MCP plugin answers a failed tool call with an apology tagged REPLY. Stored, it would be
+  // the answer the user paid for. A run like that has to fail, so the next provider answers.
+  it("rejects when a tool call failed and nothing of ours was synthesised", async () => {
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        { text: "Let me check the live price for you.", actions: ["REPLY"] },
+        {
+          text: "I'm sorry, I wasn't able to get the information you requested.",
+          thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+          actions: ["REPLY"],
+        },
+      ],
+    });
+    const oracle = loadOracle(stub);
+
+    let thrown = null;
+    await oracle.queryElizaOS(history("What is the BTC price?"), ROOM_ID, "entity-1").catch(e => {
+      thrown = e;
+    });
+
+    expect(thrown).to.be.an("error");
+    expect(thrown.message).to.match(/tool call failed/i);
+  });
+
+  it("answers with our own synthesis even when a tool call failed beside it", async () => {
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        {
+          text: "I'm sorry, I wasn't able to get the information you requested.",
+          thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+          actions: ["REPLY"],
+        },
+        { text: "Bitcoin news today: ETF inflows accelerated.", actions: ["GET_NEWS_DETAILS"] },
+      ],
+    });
+    const oracle = loadOracle(stub);
+
+    const answer = await oracle.queryElizaOS(history("BTC news?"), ROOM_ID, "entity-1");
+
+    expect(answer.text).to.equal("Bitcoin news today: ETF inflows accelerated.");
   });
 
   it("releases the run when handleMessage throws synchronously", async () => {
