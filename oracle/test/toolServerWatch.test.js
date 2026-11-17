@@ -437,7 +437,7 @@ describe("the tool server watch", function () {
     });
 
     // The server's own words for not reaching its provider. They carry no status.
-    for (const text of ["Connection error.", "Request timed out."]) {
+    for (const text of ["Connection error.", "Request timed out.", "Request was aborted."]) {
       it(`throws when the server says "${text}"`, async function () {
         const { watch } = makeWatch();
         const service = makeService({ callTool: flaggedError(text) });
