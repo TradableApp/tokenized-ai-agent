@@ -164,6 +164,8 @@ Sequential transaction submission is enforced by `txMutex` (async-mutex) to prev
 3. **ChainGPT fallback** — `queryChainGPT()` if primary paths fail
 4. **Direct Gemini final fallback** — `queryGeminiDirect()` calls Gemini without the agent runtime if ChainGPT also fails (a different failure domain from the ElizaOS path, which fronts Gemini through plugin-google-genai)
 
+**Market-data tool server (`oracle/src/elizaos/coingeckoToolServer.js`).** The ElizaOS path gets CoinGecko data through an MCP server the oracle starts as a child process. It is the dependency `@coingecko/coingecko-mcp` at one exact version, so it is in `bun.lock` and in the image, and it is started with node's own executable from `node_modules`: nothing is downloaded or resolved when the oracle runs, and no code under `oracle/src` may start anything through a package runner (`oracle/test/coingeckoToolServer.test.js` holds both). The version is 2.5.0 on purpose. It offers fixed tools (`get_simple_price`, `get_coins_markets`, …); releases from 3.0.0 replace them with one tool that runs code written by the model in a Deno runtime the image does not have. To move the pin, change the version, run that test file (it starts the server and checks the fixed tools are still offered), and read what the new release changed. The child is given its CoinGecko key, the environment name and `PATH`, and nothing else from the oracle's environment.
+
 ### Decentralized Storage Layer (`oracle/src/formatters.js`)
 
 Conversation data is stored on Autonomys (`@autonomys/auto-drive`) with Irys as fallback. File types:

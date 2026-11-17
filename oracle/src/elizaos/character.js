@@ -2,6 +2,8 @@ const dotenv = require("dotenv");
 const path = require("path");
 const { ModelProviderName, stringToUuid } = require("@elizaos/core");
 
+const { coingeckoToolServer } = require("./coingeckoToolServer");
+
 // Load the specific environment file first for precedence.
 if (process.env.ENV_FILE) {
   dotenv.config({ path: process.env.ENV_FILE });
@@ -48,18 +50,8 @@ const character = {
 
     mcp: {
       servers: {
-        coingecko_mcp_local: {
-          type: "stdio",
-          // Use the locally installed executable if possible, or npx as fallback
-          command: "npx",
-          args: ["-y", "@coingecko/coingecko-mcp"],
-          env: {
-            // Map your env vars to what their server expects
-            COINGECKO_PRO_API_KEY: process.env.COINGECKO_API_KEY || "",
-            // Important: Set environment based on key presence
-            COINGECKO_ENVIRONMENT: process.env.COINGECKO_API_KEY ? "pro" : "demo",
-          },
-        },
+        // Read here, after the env files above have loaded, so the key is the configured one.
+        coingecko_mcp_local: coingeckoToolServer(process.env),
       },
     },
   },
