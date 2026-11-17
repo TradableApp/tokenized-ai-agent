@@ -147,8 +147,8 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
   // For each server an alert is out for, what the alert said was wrong. One alert per problem:
   // the heartbeat shows the rest.
   const reportedDown = new Map();
-  // The servers being looked at again before an alert.
-  const confirming = new Set();
+  // The servers being looked at again before an alert, each with the timer for its second look.
+  const confirming = new Map();
   const wrapped = new WeakSet();
   let service = null;
   // Until the start-up report has run, an unconnected server is "not yet", not "lost".
@@ -270,10 +270,10 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
       } else if (reportedDown.has(name)) {
         if (reportedDown.get(name) !== problem) alertLost(name, problem);
       } else if (!confirming.has(name)) {
-        confirming.add(name);
         const timer = setTimeout(() => confirmLoss(name), confirmLossAfterMs);
         // A pending second look must not keep the process alive.
         timer.unref?.();
+        confirming.set(name, timer);
       }
     }
   }
@@ -398,6 +398,9 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
         countRefusal(label, outcome);
       } else {
         calls.unclear += 1;
+        // The server answered, so a run of failures has ended, whatever the answer was worth.
+        failuresInARow = 0;
+        remember(false);
         log.log(`[ToolServer] ${label} returned ${outcome}`);
       }
 
@@ -408,9 +411,15 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
       mcpService.callTool = watchedCallTool;
       wrapped.add(mcpService);
     } catch (error) {
-      // Not a reason to stop the oracle. Said loudly, because without the wrap a tool's error
-      // reaches the model as data and nothing is counted.
+      // Not a reason to stop the oracle. Alerted, because without the wrap a tool's error
+      // reaches the model as data and nothing is counted: the fault this watch exists for.
       log.error(`[ToolServer] could not watch tool calls: ${describeError(error)}`);
+      void sendAlert(
+        "CRITICAL: Market-data tool calls are not being watched",
+        "The oracle could not put its watch on the tool service, so tool calls are not being " +
+          "watched: a failed call reaches the model as if it were data, and nothing is counted. " +
+          "Restart the oracle; if this repeats, the framework's tool service has changed.",
+      );
     }
   }
 
@@ -458,10 +467,12 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
     checkTimer.unref?.();
   }
 
-  /** Stops the watch's own looking. Counts and state are kept. */
+  /** Stops the watch's own looking, and any second look it had pending. Counts are kept. */
   function stop() {
     clearInterval(checkTimer);
     checkTimer = null;
+    for (const timer of confirming.values()) clearTimeout(timer);
+    confirming.clear();
   }
 
   /**

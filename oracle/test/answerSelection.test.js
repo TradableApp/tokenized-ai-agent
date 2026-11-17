@@ -385,6 +385,10 @@ describe("answer selection", () => {
     it("is not read into an ordinary thought", () => {
       expect(isToolFailureThought("The user wants the price of bitcoin.")).to.equal(false);
       expect(isToolFailureThought("There was an error calling MCP tool earlier.")).to.equal(false);
+      expect(isToolFailureThought("Error rate is falling for BTC.")).to.equal(false);
+      expect(isToolFailureThought("Error calling MCP toolbox.")).to.equal(false);
+      expect(isToolFailureThought("Note: Error calling MCP tool earlier.")).to.equal(false);
+      expect(isToolFailureThought("Error calling MCP.")).to.equal(false);
       expect(isToolFailureThought(undefined)).to.equal(false);
       expect(isToolFailureThought(null)).to.equal(false);
     });
@@ -403,6 +407,12 @@ describe("answer selection", () => {
     // One failed call does not spoil a run in which a later call worked.
     it("does not, when a later tool step answered", () => {
       const later = { text: "Bitcoin is trading near $61,000.", actions: ["CALL_MCP_TOOL"] };
+
+      expect(hasUnansweredToolFailure([ACKNOWLEDGEMENT, APOLOGY, later])).to.equal(false);
+    });
+
+    it("does not, when a later resource read answered", () => {
+      const later = { text: "The report says inflows rose.", actions: ["READ_MCP_RESOURCE"] };
 
       expect(hasUnansweredToolFailure([ACKNOWLEDGEMENT, APOLOGY, later])).to.equal(false);
     });

@@ -292,6 +292,32 @@ describe("the tool server watch", function () {
       expect(printed(log.warn)).to.match(/market_data.*connected.*3 tools/);
     });
 
+    it("looks no more, and drops a second look it had pending, once stopped", async function () {
+      const { watch, alert } = makeWatch();
+      const service = makeService();
+      await watch.follow({ getService: () => service });
+
+      service.servers = [connectedServer({ status: "disconnected" })];
+      watch.observe();
+      watch.stop();
+      await pastConfirmation();
+
+      expect(alert.called).to.equal(false);
+    });
+
+    // The timer for a late service must not go off for one that started in time.
+    it("reports a service that started in time, with a problem, once only", async function () {
+      const { watch, alert } = makeWatch();
+      const service = makeService({ servers: [] });
+
+      await watch.follow({ getServiceLoadPromise: async () => service });
+      watch.stop();
+      service.servers = [connectedServer({ status: "disconnected" })];
+      await wait(LATE_MS * 2);
+
+      expect(alert.callCount).to.equal(1);
+    });
+
     it("does not send the same alert twice when a late service then fails", async function () {
       const { watch, alert } = makeWatch();
       const runtime = {
@@ -575,11 +601,18 @@ describe("the tool server watch", function () {
       expect(watch.observe().servers.market_data.status).to.equal("connected");
     });
 
-    it("says so, and does not throw, when the service cannot be wrapped", function () {
-      const { watch, log } = makeWatch();
+    // Unwrapped, a tool's error reaches the model as data and nothing is counted: the fault
+    // this watch exists for, so it is alerted and not only printed.
+    it("alerts, and does not throw, when the service cannot be wrapped", async function () {
+      const { watch, alert, log } = makeWatch();
 
       expect(() => watch.attach(Object.freeze(makeService()))).to.not.throw();
+      await wait(1);
+
       expect(printed(log.error)).to.include("could not watch tool calls");
+      expect(alert.calledOnce).to.equal(true);
+      expect(alert.firstCall.args[0]).to.match(/^CRITICAL: /);
+      expect(alert.firstCall.args[1]).to.include("not being watched");
     });
   });
 
@@ -652,6 +685,29 @@ describe("the tool server watch", function () {
 
       expect(alert.callCount).to.equal(1);
       expect(alert.firstCall.args[1]).to.include("10 of the last");
+    });
+
+    // An error with no status is still the server answering. Counted into the run of failures,
+    // the alert would say the last five calls failed when one of the last six did not.
+    it("takes an error with no status as the end of a run of failures", async function () {
+      const { watch, alert } = makeWatch();
+      const service = switchableService();
+      const callTool = service.callTool;
+      service.callTool = async function callToolOrUnclear() {
+        if (this.mode === "unclear") return { isError: true, content: [{ text: "jq: error" }] };
+
+        return callTool.call(this);
+      };
+      watch.attach(service);
+      await watch.reportAtStartup();
+
+      await failTimes(service, 4);
+      service.mode = "unclear";
+      await service.callTool("market_data", "get_simple_price", {});
+      service.mode = "failing";
+      await failTimes(service, 1);
+
+      expect(alert.called).to.equal(false);
     });
 
     // A refusal is an answer: the server reached its provider and the key was accepted.

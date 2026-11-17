@@ -285,6 +285,55 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(thrown.message).to.not.include("429");
   });
 
+  // A run left open makes the next run in the same room ambiguous, and its reasoning then loses
+  // the names of its steps. The same instance and room are used for both runs on purpose.
+  it("releases a run it throws away for a failed tool step", async () => {
+    const stub = makeElizaStub({
+      providerData,
+      thoughts: [
+        {
+          text: "I'm sorry, I wasn't able to get the information you requested.",
+          thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+          actions: ["REPLY"],
+        },
+      ],
+    });
+    const oracle = loadOracle(stub);
+    await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1").catch(() => {});
+
+    stub.setThoughts([{ thought: "after", action: "GET_ASSET_SENTIMENT" }]);
+    const result = await oracle.queryElizaOS(history("again"), ROOM_ID, "entity-1");
+
+    expect(result.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
+  });
+
+  // One of the framework's lines that quotes the model's output is printed as an error.
+  it("filters the framework's warnings and errors as well as its information", async () => {
+    const printedByFramework = [];
+    const elizaLogger = {};
+    for (const level of ["info", "log", "warn", "error", "debug"]) {
+      elizaLogger[level] = (...args) => printedByFramework.push(`${level}: ${args.join(" ")}`);
+    }
+    const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
+    const oracle = loadOracle(stub, {
+      "@elizaos/core": {
+        ElizaOS: stub.ElizaOS,
+        elizaLogger,
+        stringToUuid: s => s,
+        createUniqueUuid: (_ns, s) => s,
+        ChannelType: { DM: "DM", WORLD: "WORLD" },
+        EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
+      },
+    });
+    await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+
+    elizaLogger.error("[WITH-MODEL-RETRY] Failed to parse response: a-users-question");
+    elizaLogger.warn("[WITH-MODEL-RETRY] a-users-question");
+    elizaLogger.warn("Transport closed: coingecko_mcp_local");
+
+    expect(printedByFramework).to.deep.equal(["warn: Transport closed: coingecko_mcp_local"]);
+  });
+
   it("answers with what a later tool step wrote when an earlier one failed", async () => {
     const stub = makeElizaStub({
       providerData,
