@@ -7,7 +7,9 @@ const {
   selectAnswer,
   looksLikeToolPayload,
   isToolFailureThought,
+  toolFailureKind,
   hasUnansweredToolFailure,
+  unansweredToolFailure,
 } = require("../src/answerSelection");
 
 // Answer selection — CU-86d3z0r81, harness port Phase 1.
@@ -349,6 +351,37 @@ describe("answer selection", () => {
       ).to.equal(true);
     });
 
+    it("is recognised for a resource as for a tool", () => {
+      expect(
+        isToolFailureThought(
+          "No appropriate MCP resource available for this request. Falling back to direct assistance.",
+        ),
+      ).to.equal(true);
+    });
+
+    // Only the first kind says the tools are at fault.
+    it("is told apart by what went wrong", () => {
+      expect(toolFailureKind("Error calling MCP tool: status 429.")).to.equal("toolError");
+      expect(toolFailureKind("No appropriate MCP tool available for this request.")).to.equal(
+        "noTool",
+      );
+      expect(toolFailureKind("Failed to parse response after multiple retries.")).to.equal(
+        "unreadable",
+      );
+      expect(toolFailureKind("The user wants the price of bitcoin.")).to.equal(null);
+      expect(toolFailureKind(undefined)).to.equal(null);
+    });
+
+    it("says what went wrong last in a run with nothing else to say", () => {
+      const noTool = { text: "I have no tool for that.", actions: ["REPLY"], toolFailed: "noTool" };
+      const failed = { ...APOLOGY, toolFailed: "toolError" };
+
+      expect(unansweredToolFailure([ACKNOWLEDGEMENT, failed, noTool])).to.equal("noTool");
+      expect(unansweredToolFailure([ACKNOWLEDGEMENT, noTool, failed])).to.equal("toolError");
+      expect(unansweredToolFailure([ACKNOWLEDGEMENT, APOLOGY])).to.equal("toolError");
+      expect(unansweredToolFailure([ACKNOWLEDGEMENT, "Bitcoin is near $61k."])).to.equal(null);
+    });
+
     it("is not read into an ordinary thought", () => {
       expect(isToolFailureThought("The user wants the price of bitcoin.")).to.equal(false);
       expect(isToolFailureThought("There was an error calling MCP tool earlier.")).to.equal(false);
@@ -367,15 +400,23 @@ describe("answer selection", () => {
       expect(hasUnansweredToolFailure([synthesis, APOLOGY])).to.equal(false);
     });
 
-    // One failed call does not spoil a run that went on to answer.
-    it("does not, when prose that is not a failure came after it", () => {
-      const later = { text: "Bitcoin is trading near $61,000.", actions: ["REPLY"] };
+    // One failed call does not spoil a run in which a later call worked.
+    it("does not, when a later tool step answered", () => {
+      const later = { text: "Bitcoin is trading near $61,000.", actions: ["CALL_MCP_TOOL"] };
 
       expect(hasUnansweredToolFailure([ACKNOWLEDGEMENT, APOLOGY, later])).to.equal(false);
     });
 
-    it("does, when the only prose came before the failure", () => {
-      const earlier = { text: "Bitcoin is trading near $61,000.", actions: ["REPLY"] };
+    // The framework closes a chain of actions with a reply written from what the actions did.
+    // After a failed tool step that is the apology again in other words, or figures from memory.
+    it("does, when all that came after it is a closing reply", () => {
+      const closing = { text: "Bitcoin is probably around $60,000.", actions: ["REPLY"] };
+
+      expect(hasUnansweredToolFailure([ACKNOWLEDGEMENT, APOLOGY, closing])).to.equal(true);
+    });
+
+    it("does, when the only tool step that answered came before the failure", () => {
+      const earlier = { text: "Bitcoin is trading near $61,000.", actions: ["CALL_MCP_TOOL"] };
 
       expect(hasUnansweredToolFailure([earlier, APOLOGY])).to.equal(true);
       expect(hasUnansweredToolFailure([ACKNOWLEDGEMENT, APOLOGY, earlier, APOLOGY])).to.equal(true);
@@ -409,6 +450,7 @@ describe("answer selection", () => {
       expect(plugin).to.include("`Error calling MCP ${type}: ${errorMessage}.");
       expect(plugin).to.include('"No appropriate MCP tool available for this request.');
       expect(plugin).to.include('"Failed to parse response after multiple retries.');
+      expect(plugin).to.include('"No appropriate MCP resource available for this request.');
     });
   });
 });

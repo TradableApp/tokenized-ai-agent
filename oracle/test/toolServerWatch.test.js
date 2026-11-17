@@ -8,6 +8,8 @@ const EXPECTED = { market_data: ["get_simple_price", "get_coins_markets"] };
 // Short enough to wait out in a test, long enough to tell "before" from "after".
 const CONFIRM_MS = 15;
 const LATE_MS = 25;
+const ALERT_EVERY_MS = 40;
+const CHECK_EVERY_MS = 10;
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const pastConfirmation = () => wait(CONFIRM_MS * 4);
@@ -62,7 +64,12 @@ function makeWatch() {
     expectedTools: EXPECTED,
     alert,
     log,
-    timing: { lateAfterMs: LATE_MS, confirmLossAfterMs: CONFIRM_MS },
+    timing: {
+      lateAfterMs: LATE_MS,
+      confirmLossAfterMs: CONFIRM_MS,
+      alertEveryMs: ALERT_EVERY_MS,
+      checkEveryMs: CHECK_EVERY_MS,
+    },
   });
 
   return { watch, alert, log };
@@ -165,6 +172,17 @@ describe("the tool server watch", function () {
       expect(alert.firstCall.args[1]).to.include("market_data").and.to.include("restart");
     });
 
+    // The framework leaves a server out of what it shows the agent only when the server was
+    // not there when its service started.
+    it("asks for a restart when the agent was shown nothing of the server at all", async function () {
+      const { watch, alert } = makeWatch();
+      watch.attach(makeService({ shown: { data: { mcp: {} } } }));
+
+      await watch.reportAtStartup();
+
+      expect(alert.firstCall.args[1]).to.include("restart");
+    });
+
     it("asks for no restart when it cannot tell what the agent was shown", async function () {
       const { watch, alert } = makeWatch();
       const service = makeService();
@@ -229,7 +247,50 @@ describe("the tool server watch", function () {
       expect(watch.observe().calls.ok).to.equal(1);
       expect(alert.callCount).to.equal(1);
       expect(printed(log.warn)).to.match(/late/);
-      expect(printed(log.log)).to.match(/market_data.*connected.*3 tools/);
+    });
+
+    // With a server down the framework stops offering its tool, so no call fails, and the
+    // heartbeat can be off or a quarter of an hour away.
+    it("goes on looking at the servers by itself once it is following", async function () {
+      const { watch, alert } = makeWatch();
+      const service = makeService();
+      await watch.follow({ getService: () => service });
+
+      service.servers = [connectedServer({ status: "disconnected" })];
+      await wait(CHECK_EVERY_MS * 2 + CONFIRM_MS * 4);
+      watch.stop();
+
+      expect(alert.callCount).to.equal(1);
+      expect(alert.firstCall.args[0]).to.include("lost");
+    });
+
+    // The alert for a late service was seen where warnings are; so must its arrival be.
+    it("says at warning level what a late service connected to", async function () {
+      const { watch, log } = makeWatch();
+      const service = makeService();
+      const runtime = {
+        getServiceLoadPromise: () =>
+          new Promise((resolve) => setTimeout(() => resolve(service), LATE_MS * 3)),
+      };
+
+      await watch.follow(runtime);
+      watch.stop();
+
+      expect(printed(log.warn)).to.match(/market_data.*connected.*3 tools/);
+    });
+
+    it("does not send the same alert twice when a late service then fails", async function () {
+      const { watch, alert } = makeWatch();
+      const runtime = {
+        getServiceLoadPromise: () =>
+          new Promise((resolve, reject) =>
+            setTimeout(() => reject(new Error("gone")), LATE_MS * 3),
+          ),
+      };
+
+      await watch.follow(runtime);
+
+      expect(alert.callCount).to.equal(1);
     });
 
     it("alerts, and does not reject, when the service fails to start", async function () {
@@ -286,7 +347,7 @@ describe("the tool server watch", function () {
       const result = await service.callTool("market_data", "get_simple_price", { ids: "bitcoin" });
 
       expect(result.content[0].text).to.equal('{"usd":1}');
-      expect(watch.observe().calls).to.deep.equal({ ok: 1, failed: 0, refused: 0 });
+      expect(watch.observe().calls).to.deep.equal({ ok: 1, failed: 0, refused: 0, unclear: 0 });
     });
 
     it("calls the service's own method with the same arguments", async function () {
@@ -320,7 +381,7 @@ describe("the tool server watch", function () {
       expect(thrown.name).to.equal("ToolCallFailedError");
       expect(thrown.message).to.include("market_data/get_simple_price");
       expect(thrown.message).to.include("status 429");
-      expect(watch.observe().calls).to.deep.equal({ ok: 0, failed: 1, refused: 0 });
+      expect(watch.observe().calls).to.deep.equal({ ok: 0, failed: 1, refused: 0, unclear: 0 });
     });
 
     // A tool's error text can repeat the arguments it was called with, and the model writes
@@ -341,14 +402,55 @@ describe("the tool server watch", function () {
       expect(everythingSaid(said)).to.not.include("upstream said");
     });
 
-    it("says only that the tool erred when the error carries no status", async function () {
+    // An error with no status is most often the model's own doing: a filter the server could
+    // not run. Nothing says the server is at fault, so the model is given it, as before.
+    it("hands an error with no status to the model, counted apart and not as a failure", async function () {
       const said = makeWatch();
-      const service = makeService({ callTool: flaggedError("something a-users-private-question") });
+      const service = makeService({
+        callTool: flaggedError("jq: error: a-users-private-question is not defined"),
+      });
       said.watch.attach(service);
 
-      const thrown = await service.callTool("market_data", "get_simple_price", {}).catch((e) => e);
+      const result = await service.callTool("market_data", "get_simple_price", {});
 
-      expect(thrown.message).to.equal("market_data/get_simple_price failed: tool error");
+      expect(result.isError).to.equal(true);
+      expect(said.watch.observe().calls).to.deep.equal({
+        ok: 0,
+        failed: 0,
+        refused: 0,
+        unclear: 1,
+      });
+      expect(everythingSaid(said)).to.not.include("a-users-private-question");
+    });
+
+    // The server's own words for not reaching its provider. They carry no status.
+    for (const text of ["Connection error.", "Request timed out."]) {
+      it(`throws when the server says "${text}"`, async function () {
+        const { watch } = makeWatch();
+        const service = makeService({ callTool: flaggedError(text) });
+        watch.attach(service);
+
+        const thrown = await service
+          .callTool("market_data", "get_simple_price", {})
+          .catch((e) => e);
+
+        expect(thrown.message).to.equal("market_data/get_simple_price failed: no connection");
+        expect(watch.observe().calls.failed).to.equal(1);
+      });
+    }
+
+    // The framework lets the model name any property of its tool table, and a server names its
+    // own tools. Only a name the server offers is printed.
+    it("prints a tool the server does not offer as other", async function () {
+      const said = makeWatch();
+      const service = makeService({ callTool: flaggedError("503") });
+      said.watch.attach(service);
+
+      const thrown = await service
+        .callTool("market_data", "a-users-private-question", {})
+        .catch((e) => e);
+
+      expect(thrown.message).to.equal("market_data/other failed: status 503");
       expect(everythingSaid(said)).to.not.include("a-users-private-question");
     });
 
@@ -366,7 +468,50 @@ describe("the tool server watch", function () {
       expect(thrown.name).to.equal("ToolCallFailedError");
       expect(thrown.message).to.equal("market_data/get_simple_price failed: no answer");
       expect(everythingSaid(said)).to.not.include("a-users-private-question");
-      expect(said.watch.observe().calls).to.deep.equal({ ok: 0, failed: 1, refused: 0 });
+      expect(said.watch.observe().calls).to.deep.equal({
+        ok: 0,
+        failed: 1,
+        refused: 0,
+        unclear: 0,
+      });
+    });
+
+    // What the framework's own client throws, told apart by its code and never by its text.
+    for (const [code, outcome] of [
+      [-32001, "timed out"],
+      [-32000, "connection closed"],
+    ]) {
+      it(`says "${outcome}" for a call thrown with code ${code}`, async function () {
+        const { watch } = makeWatch();
+        const service = makeService({
+          callTool: async () => {
+            throw Object.assign(new Error("MCP error: a-users-private-question"), { code });
+          },
+        });
+        watch.attach(service);
+
+        const thrown = await service
+          .callTool("market_data", "get_simple_price", {})
+          .catch((e) => e);
+
+        expect(thrown.message).to.equal(`market_data/get_simple_price failed: ${outcome}`);
+        expect(watch.observe().calls.failed).to.equal(1);
+      });
+    }
+
+    it("counts a call the server threw back as invalid as refused, not failed", async function () {
+      const { watch } = makeWatch();
+      const service = makeService({
+        callTool: async () => {
+          throw Object.assign(new Error("MCP error -32602: bad arguments"), { code: -32602 });
+        },
+      });
+      watch.attach(service);
+
+      const thrown = await service.callTool("market_data", "get_simple_price", {}).catch((e) => e);
+
+      expect(thrown.message).to.equal("market_data/get_simple_price failed: invalid request");
+      expect(watch.observe().calls).to.deep.equal({ ok: 0, failed: 0, refused: 1, unclear: 0 });
     });
 
     // "No such coin" is the server working. The model is given the result, as before, and can
@@ -380,7 +525,7 @@ describe("the tool server watch", function () {
         const result = await service.callTool("market_data", "get_simple_price", {});
 
         expect(result.isError).to.equal(true);
-        expect(watch.observe().calls).to.deep.equal({ ok: 0, failed: 0, refused: 1 });
+        expect(watch.observe().calls).to.deep.equal({ ok: 0, failed: 0, refused: 1, unclear: 0 });
         expect(printed(log.log)).to.include(`status ${status}`);
         expect(printed(log.log)).to.not.include("coin not found");
       });
@@ -406,7 +551,7 @@ describe("the tool server watch", function () {
 
       await service.callTool("market_data", "get_simple_price", {});
 
-      expect(watch.observe().calls).to.deep.equal({ ok: 1, failed: 0, refused: 0 });
+      expect(watch.observe().calls).to.deep.equal({ ok: 1, failed: 0, refused: 0, unclear: 0 });
     });
 
     it("keeps watching the service it has when handed nothing", function () {
@@ -478,6 +623,24 @@ describe("the tool server watch", function () {
       expect(alert.called).to.equal(false);
     });
 
+    // A rate limit that lets one call in three through never fails five times in a row.
+    it("alerts when half of the last twenty calls failed, though never five in a row", async function () {
+      const { watch, alert } = makeWatch();
+      const service = switchableService();
+      watch.attach(service);
+      await watch.reportAtStartup();
+
+      for (let round = 0; round < 5; round += 1) {
+        service.mode = "failing";
+        await failTimes(service, 2);
+        service.mode = "working";
+        await service.callTool("market_data", "get_simple_price", {});
+      }
+
+      expect(alert.callCount).to.equal(1);
+      expect(alert.firstCall.args[1]).to.include("10 of the last");
+    });
+
     // A refusal is an answer: the server reached its provider and the key was accepted.
     it("takes a refused request as a sign the server is working", async function () {
       const { watch, alert } = makeWatch();
@@ -494,7 +657,8 @@ describe("the tool server watch", function () {
       expect(alert.called).to.equal(false);
     });
 
-    it("says when calls work again, and alerts again for the next run of failures", async function () {
+    // A provider that fails, answers once and fails again would otherwise alert every few calls.
+    it("says when calls work again, and does not alert again straight away", async function () {
       const { watch, alert, log } = makeWatch();
       const service = switchableService();
       watch.attach(service);
@@ -507,7 +671,56 @@ describe("the tool server watch", function () {
       await failTimes(service, 5);
 
       expect(printed(log.warn)).to.match(/working again/);
+      expect(alert.callCount).to.equal(1);
+    });
+
+    it("alerts again for a new run of failures once some time has passed", async function () {
+      const { watch, alert } = makeWatch();
+      const service = switchableService();
+      watch.attach(service);
+      await watch.reportAtStartup();
+
+      await failTimes(service, 5);
+      service.mode = "working";
+      await service.callTool("market_data", "get_simple_price", {});
+      await wait(ALERT_EVERY_MS * 2);
+      service.mode = "failing";
+      await failTimes(service, 5);
+
       expect(alert.callCount).to.equal(2);
+    });
+
+    // A key of the wrong kind, or an endpoint that has gone, is refused every time. One refusal
+    // is the model's mistake; nothing but refusals is not.
+    it("alerts when ten calls in a row are refused and none answered", async function () {
+      const { watch, alert } = makeWatch();
+      const service = switchableService();
+      service.mode = "refusing";
+      watch.attach(service);
+      await watch.reportAtStartup();
+
+      for (let i = 0; i < 9; i += 1) await service.callTool("market_data", "get_simple_price", {});
+      expect(alert.called).to.equal(false);
+      await service.callTool("market_data", "get_simple_price", {});
+
+      expect(alert.callCount).to.equal(1);
+      expect(alert.firstCall.args[1]).to.include("refused").and.to.include("status 404");
+    });
+
+    it("does not, when a call was answered among the refusals", async function () {
+      const { watch, alert } = makeWatch();
+      const service = switchableService();
+      watch.attach(service);
+      await watch.reportAtStartup();
+
+      service.mode = "refusing";
+      for (let i = 0; i < 9; i += 1) await service.callTool("market_data", "get_simple_price", {});
+      service.mode = "working";
+      await service.callTool("market_data", "get_simple_price", {});
+      service.mode = "refusing";
+      for (let i = 0; i < 9; i += 1) await service.callTool("market_data", "get_simple_price", {});
+
+      expect(alert.called).to.equal(false);
     });
   });
 
@@ -517,18 +730,26 @@ describe("the tool server watch", function () {
       watch.attach(makeService());
 
       expect(watch.observe()).to.deep.equal({
-        servers: { market_data: { status: "connected", tools: 3 } },
-        calls: { ok: 0, failed: 0, refused: 0 },
-        rejectedRuns: 0,
+        servers: { market_data: { status: "connected", tools: 3, usable: true } },
+        calls: { ok: 0, failed: 0, refused: 0, unclear: 0 },
+        rejectedRuns: { toolError: 0, noTool: 0, unreadable: 0 },
       });
     });
 
-    it("counts the runs thrown away for a failed tool step", function () {
+    // Only the first of these says the tools are at fault. The other two are the model's.
+    it("counts the runs thrown away, by what went wrong", function () {
       const { watch } = makeWatch();
-      watch.countRejectedRun();
-      watch.countRejectedRun();
+      watch.countRejectedRun("toolError");
+      watch.countRejectedRun("toolError");
+      watch.countRejectedRun("noTool");
+      watch.countRejectedRun("unreadable");
+      watch.countRejectedRun("something-else");
 
-      expect(watch.observe().rejectedRuns).to.equal(2);
+      expect(watch.observe().rejectedRuns).to.deep.equal({
+        toolError: 3,
+        noTool: 1,
+        unreadable: 1,
+      });
     });
 
     it("says a server is absent when the service does not list it", function () {
@@ -536,7 +757,7 @@ describe("the tool server watch", function () {
       watch.attach(makeService({ servers: [] }));
 
       expect(watch.observe().servers).to.deep.equal({
-        market_data: { status: "absent", tools: 0 },
+        market_data: { status: "absent", tools: 0, usable: false },
       });
     });
 
@@ -550,7 +771,7 @@ describe("the tool server watch", function () {
       });
 
       expect(watch.observe().servers).to.deep.equal({
-        market_data: { status: "unknown", tools: 0 },
+        market_data: { status: "unknown", tools: 0, usable: false },
       });
     });
 
@@ -562,7 +783,9 @@ describe("the tool server watch", function () {
       const observed = watch.observe();
       await pastConfirmation();
 
-      expect(observed.servers).to.deep.equal({ market_data: { status: "unknown", tools: 0 } });
+      expect(observed.servers).to.deep.equal({
+        market_data: { status: "unknown", tools: 0, usable: false },
+      });
       expect(alert.called).to.equal(false);
     });
 
@@ -637,6 +860,29 @@ describe("the tool server watch", function () {
 
       expect(printed(log.warn)).to.match(/market_data.*connected again/);
       expect(alert.callCount).to.equal(2);
+    });
+
+    // A server that connects just after the framework's service started is connected, and the
+    // agent was shown none of its tools. The first alert said "not connected"; this is different
+    // news, and the fix is different.
+    it("alerts again when a server reported at start-up turns out to need a restart", async function () {
+      const { watch, alert } = makeWatch();
+      const late = connectedServer({ status: "connecting", tools: [] });
+      const service = makeService({ servers: [late], shown: shownToAgent([late]) });
+      watch.attach(service);
+      await watch.reportAtStartup();
+
+      service.servers = [connectedServer()];
+      const observed = watch.observe();
+      watch.observe();
+
+      expect(alert.callCount).to.equal(2);
+      expect(alert.secondCall.args[1]).to.include("restart");
+      expect(observed.servers.market_data).to.deep.equal({
+        status: "connected",
+        tools: 3,
+        usable: false,
+      });
     });
 
     it("does not alert a second time for a server that was already reported at start-up", async function () {

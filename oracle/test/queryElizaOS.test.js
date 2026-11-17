@@ -285,7 +285,7 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(thrown.message).to.not.include("429");
   });
 
-  it("answers with what a later step wrote when an earlier tool call failed", async () => {
+  it("answers with what a later tool step wrote when an earlier one failed", async () => {
     const stub = makeElizaStub({
       providerData,
       thoughts: [
@@ -295,7 +295,7 @@ describe("queryElizaOS — provider-composed context", () => {
           thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
           actions: ["REPLY"],
         },
-        { text: "Bitcoin is trading near $61,000.", actions: ["REPLY"] },
+        { text: "Bitcoin is trading near $61,000.", actions: ["CALL_MCP_TOOL"] },
       ],
     });
     const oracle = loadOracle(stub);
@@ -385,7 +385,48 @@ describe("queryElizaOS — provider-composed context", () => {
 
       await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1").catch(() => {});
 
-      expect(watch.countRejectedRun.calledOnce).to.equal(true);
+      expect(watch.countRejectedRun.calledOnceWithExactly("toolError")).to.equal(true);
+    });
+
+    it("counts a run in which the model found no tool as that, not as a tool failure", async () => {
+      const { watch, module } = fakeWatch();
+      const stub = makeElizaStub({
+        providerData,
+        thoughts: [
+          {
+            text: "I don't have a specific tool that can help with that request.",
+            thought: "No appropriate MCP tool available for this request. Falling back to direct assistance.",
+            actions: ["REPLY"],
+          },
+        ],
+      });
+      const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
+
+      const thrown = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1").catch(e => e);
+
+      expect(thrown.kind).to.equal("noTool");
+      expect(watch.countRejectedRun.calledOnceWithExactly("noTool")).to.equal(true);
+    });
+
+    // The log is read outside the TEE. Thirty characters of an answer is the answer's opening.
+    it("prints nothing of what the agent wrote", async () => {
+      const { module } = fakeWatch();
+      const stub = makeElizaStub({
+        providerData,
+        thoughts: [{ text: "A-private-answer about the user's holdings.", actions: ["REPLY"] }],
+      });
+      const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
+      const printedLines = [];
+      const log = sinon.stub(console, "log").callsFake((...args) => printedLines.push(args.join(" ")));
+
+      try {
+        await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+      } finally {
+        log.restore();
+      }
+
+      expect(printedLines.join("\n")).to.not.include("A-private-answer");
+      expect(printedLines.join("\n")).to.match(/Intermediate response received: \d+ characters/);
     });
 
     it("counts nothing for a run that answered", async () => {
