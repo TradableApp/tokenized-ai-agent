@@ -187,9 +187,10 @@ async function collectVitals(deps = {}) {
     // hundredth one stays visible without a hundred alerts.
     payloadMirror: readSnapshot(mirrorSnapshot),
 
-    // Each tool server's state and tool count, and cumulative call counts ({ ok, failed }). A
-    // server that is not `connected`, or `failed` climbing while `ok` stands still, means answers
-    // are being written without live market data.
+    // Each tool server's state and tool count, cumulative call counts ({ ok, failed, refused })
+    // and `rejectedRuns`, the runs thrown away because a tool step failed and nothing answered
+    // without it. A server that is not `connected`, or `failed` or `rejectedRuns` climbing while
+    // `ok` stands still, means answers are being written without live market data.
     toolServers: readSnapshot(observeToolServers),
   };
 }

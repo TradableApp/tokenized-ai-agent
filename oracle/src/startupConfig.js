@@ -306,9 +306,13 @@ function validateConfig(env = process.env) {
   // The agent's market data comes through a tool server that needs this key. Without it the
   // server still starts and lists its tools, and then fails every call, so the gap shows only in
   // the answers. A local network runs without market data and is not asked for it.
-  const isLocalNetwork = !isBlank(network) && keyModeFor(network.trim()) === "env";
-  if (!isBlank(network) && !isLocalNetwork && isBlank(env.COINGECKO_API_KEY)) {
-    problems.push("COINGECKO_API_KEY is missing or empty");
+  // A network whose key is the operator's own is a local one.
+  if (!isBlank(network) && !keyIsOperators && isMissingOrPlaceholder(env.COINGECKO_API_KEY)) {
+    // The value is not printed: a real key pasted with a placeholder's prefix would be in the log.
+    const state = isBlank(env.COINGECKO_API_KEY)
+      ? "is missing or empty"
+      : "is still the example-file placeholder";
+    problems.push(`COINGECKO_API_KEY ${state}`);
   }
 
   if (problems.length) throw new ConfigError(problems);

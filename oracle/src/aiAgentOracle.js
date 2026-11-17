@@ -292,13 +292,14 @@ const {
   selectAnswer,
   isToolFailureThought,
   hasUnansweredToolFailure,
+  UnansweredToolFailureError,
 } = require("./answerSelection");
-const { createToolServerWatch, startedToolService } = require("./elizaos/toolServerWatch");
+const { createToolServerWatch } = require("./elizaos/toolServerWatch");
+const { MARKET_DATA_TOOLS } = require("./elizaos/marketDataTools");
+const { isMutedFrameworkLog } = require("./elizaos/mutedFrameworkLogs");
 
-// The tool servers in the agent's character, and the tools its market answers rely on. A server
-// can be connected and still not offer them: a different release of it offers other tools.
 const toolServerWatch = createToolServerWatch({
-  expectedTools: { coingecko_mcp_local: ["get_simple_price", "get_coins_markets"] },
+  expectedTools: MARKET_DATA_TOOLS,
   alert: sendAlert,
 });
 const { sanitizeAnswer } = require("./outboundSanitizer");
@@ -586,30 +587,13 @@ async function initializeEliza() {
   const originalInfo = elizaLogger.info;
   const originalLog = elizaLogger.log;
 
-  // List of strings that indicate "Noisy" MCP logs we want to hide
-  const MUTED_LOGS = [
-    "# Response Schema",
-    "$defs:",
-    "When using this tool, always use the",
-    "This endpoint allows you to query",
-    "ref:",
-    "jq_filter",
-    "coingecko_mcp_local",
-  ];
-
-  const shouldMute = (args) => {
-    // Combine all arguments into a string to check content
-    const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
-    return MUTED_LOGS.some((term) => msg.includes(term));
-  };
-
-  // Override the logger methods
+  // Some of the framework's lines are not printed. See mutedFrameworkLogs for which and why.
   elizaLogger.info = (...args) => {
-    if (!shouldMute(args)) originalInfo.apply(elizaLogger, args);
+    if (!isMutedFrameworkLog(args)) originalInfo.apply(elizaLogger, args);
   };
 
   elizaLogger.log = (...args) => {
-    if (!shouldMute(args)) originalLog.apply(elizaLogger, args);
+    if (!isMutedFrameworkLog(args)) originalLog.apply(elizaLogger, args);
   };
 
   // Add the SenseAI Agent
@@ -685,11 +669,11 @@ async function initializeEliza() {
     await elizaOS.startAgents();
     console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
 
-    // Say what the framework's tool service connected to, and alert if the market-data tools are
-    // not there. Not a reason to stop: only some answers need them.
+    // Watch the framework's tool service: say what it connected to, and alert if the market-data
+    // tools are not there. Not waited for, and not a reason to stop. The service can take
+    // minutes to start, and only some answers need its tools. `follow` never rejects.
     if (Object.keys(senseAiCharacter?.settings?.mcp?.servers ?? {}).length > 0) {
-      toolServerWatch.attach(await startedToolService(elizaOS.getAgent(senseAiAgentId)));
-      await toolServerWatch.reportAtStartup();
+      void toolServerWatch.follow(elizaOS.getAgent(senseAiAgentId));
     }
   } catch (error) {
     console.error("[ElizaOS] FAILED to start SenseAI Agent:", error);
@@ -1275,7 +1259,12 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             // Correlated by this run's HANDLE, not by roomId: roomId is stable per
             // conversation, so two prompts in one conversation would collide under it. The
             // action in flight (from ACTION_STARTED) titles the step; see runProvenance.
-            if (content.thought) {
+            // The MCP plugin's reply to a failed tool step is an apology tagged REPLY; its
+            // thought is what marks it. That thought is the plugin's account of its own fault,
+            // with the error's text in it, and is not a step of the answer: it stays out of the
+            // reasoning, which is stored with the answer for good.
+            const isToolFailure = isToolFailureThought(content.thought);
+            if (content.thought && !isToolFailure) {
               runProvenance.recordThought(runId, content.thought);
             }
 
@@ -1287,9 +1276,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               emittedTexts.push({
                 text: content.text,
                 actions: Array.isArray(content.actions) ? content.actions : [],
-                // The MCP plugin's reply to a failed tool call is an apology tagged REPLY; its
-                // thought is what marks it. See hasUnansweredToolFailure.
-                toolFailed: isToolFailureThought(content.thought),
+                // See hasUnansweredToolFailure.
+                toolFailed: isToolFailure,
               });
             }
           },
@@ -1314,24 +1302,21 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             // change, which is what made the hazard reachable at all: `onError` and the outer
             // catch already release the run, and this exit was the only one that could not.
             try {
+              // A tool step failed and nothing answered without it: what is left is an apology
+              // and an acknowledgement, and storing either would charge the user for it.
+              // Rejecting hands the prompt to another provider. See queryAIModel for which.
+              if (hasUnansweredToolFailure(emittedTexts)) {
+                runProvenance.finish(runId);
+                toolServerWatch.countRejectedRun();
+                reject(new UnansweredToolFailureError());
+                return;
+              }
+
               // Two passes, deliberately separate. selectAnswer decides WHICH emission is the
               // answer; sanitizeAnswer decides what that text may contain. Only our own synthesis
               // reaches `generateSanitized` inside handleChainSynthesis — a third-party emission or
               // the acknowledgement never does, and this is the last point before the text is
               // encrypted into an immutable MessageFile. See outboundSanitizer.js.
-              // A tool call failed and nothing of ours answered without it: what is left is an
-              // apology and an acknowledgement, and storing either would charge the user for it.
-              // Rejecting hands the prompt to the next provider.
-              if (hasUnansweredToolFailure(emittedTexts)) {
-                runProvenance.finish(runId);
-                reject(
-                  new Error(
-                    "A market-data tool call failed and nothing was synthesised without it.",
-                  ),
-                );
-                return;
-              }
-
               const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
               if (finalResponseText) {
                 // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
@@ -1553,44 +1538,55 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     return answer;
   } catch (err) {
-    /* A retired or misspelled GOOGLE_* model id surfaces here, not at startup: Gemini
-       404s the generateContent call, queryElizaOS throws, and we fall through to ChainGPT
-       with no reasoning or sources. The answer degrades silently rather than erroring, so
-       check this warning first when quality drops after a config change. Model ids are
-       guarded by test/modelLifecycle.test.js and retirement dates are published at
-       https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions */
-    console.warn("[Failover] ElizaOS path failed. Falling back to ChainGPT.", err);
-
-    // 4. Failover 1: ChainGPT
-    try {
-      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
-      // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
-      // success AND as whatever the inner catch then records (gemini or none).
-      providerTally.recordServed("chaingpt");
-
-      return answer;
-    } catch (err2) {
-      console.error(
-        "[Failover] ElizaOS and ChainGPT failed. Executing final direct-Gemini fallback.",
+    // A run thrown away for a failed tool step is not a fault of the agent or its model: the
+    // market-data tools are down. ChainGPT is not asked then. It keeps its own record of the
+    // conversation, outside the TEE, and a tool outage would send it every market question.
+    // The heartbeat counts these runs (`rejectedRuns`), so an outage shows there.
+    if (err instanceof UnansweredToolFailureError) {
+      console.warn(
+        "[Failover] A tool step failed in the ElizaOS run and nothing answered without it. " +
+          "Answering with the direct Gemini call.",
       );
+    } else {
+      /* A retired or misspelled GOOGLE_* model id surfaces here, not at startup: Gemini
+         404s the generateContent call, queryElizaOS throws, and we fall through to ChainGPT
+         with no reasoning or sources. The answer degrades silently rather than erroring, so
+         check this warning first when quality drops after a config change. Model ids are
+         guarded by test/modelLifecycle.test.js and retirement dates are published at
+         https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions */
+      console.warn("[Failover] ElizaOS path failed. Falling back to ChainGPT.", err);
 
-      // 5. Failover 2: direct Gemini call, no agent runtime (see geminiDirect.js for why
-      //    this is a different failure domain from the ElizaOS path above)
+      // 4. Failover 1: ChainGPT
       try {
-        const answer = asAnswer(await queryGeminiDirect(conversationHistory));
-        providerTally.recordServed("gemini");
+        const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+        // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
+        // success AND as whatever the next catch then records (gemini or none).
+        providerTally.recordServed("chaingpt");
 
         return answer;
-      } catch (err3) {
-        Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
-        // Counted, not skipped: zeros across every tier would be indistinguishable from
-        // "nobody asked anything". A total outage must not look like a quiet hour.
-        providerTally.recordServed("none");
-
-        return asAnswer(
-          "Error: Could not generate a response. All AI providers are currently unavailable.",
+      } catch (err2) {
+        console.error(
+          "[Failover] ElizaOS and ChainGPT failed. Executing final direct-Gemini fallback.",
         );
       }
+    }
+
+    // 5. Failover 2: direct Gemini call, no agent runtime (see geminiDirect.js for why
+    //    this is a different failure domain from the ElizaOS path above)
+    try {
+      const answer = asAnswer(await queryGeminiDirect(conversationHistory));
+      providerTally.recordServed("gemini");
+
+      return answer;
+    } catch (err3) {
+      Sentry.captureException(err3, { tags: { site: "ai_all_tiers_failed" } });
+      // Counted, not skipped: zeros across every tier would be indistinguishable from
+      // "nobody asked anything". A total outage must not look like a quiet hour.
+      providerTally.recordServed("none");
+
+      return asAnswer(
+        "Error: Could not generate a response. All AI providers are currently unavailable.",
+      );
     }
   }
 }

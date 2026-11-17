@@ -196,29 +196,48 @@ function normalise(entry) {
   return { text: "", actions: [] };
 }
 
-// How the MCP plugin words the thought it sends with its reply to a failed tool or resource call
-// (its handleMcpError). The reply itself is an apology tagged REPLY, like any other prose, so the
-// thought is the only thing that tells it apart. The plugin is at an exact version, and a test
-// reads its build for this wording.
-const TOOL_FAILURE_THOUGHT = /^Error calling MCP (tool|resource)\b/;
+// How the MCP plugin words the thought it sends with a reply that is not an answer. Each such
+// reply is tagged REPLY, like any other prose, so the thought is the only thing that tells it
+// apart. The plugin is at an exact version, and a test reads its build for this wording.
+const TOOL_FAILURE_THOUGHTS = [
+  // A tool or resource call failed (its handleMcpError). The reply is an apology.
+  /^Error calling MCP (tool|resource)\b/,
+  // It found no tool for the request (its handleNoToolAvailable). The reply says it has none.
+  /^No appropriate MCP tool available for this request\./,
+  // It could not read the model's choice of tool. The reply asks the user to say it again.
+  /^Failed to parse response after multiple retries\./,
+];
 
 /**
- * Whether a thought is the one the MCP plugin sends when a tool call failed.
+ * Whether a thought is one the MCP plugin sends when a tool step failed.
  *
  * @param {unknown} thought
  * @returns {boolean}
  */
 function isToolFailureThought(thought) {
-  return typeof thought === "string" && TOOL_FAILURE_THOUGHT.test(thought);
+  return typeof thought === "string" && TOOL_FAILURE_THOUGHTS.some((form) => form.test(thought));
+}
+
+/** A run in which a tool step failed and nothing answered without it. See the function below. */
+class UnansweredToolFailureError extends Error {
+  constructor() {
+    // Worded here, with nothing of the plugin's thought, which carries the error's text.
+    super("An MCP tool step failed and nothing answered without it.");
+    this.name = "UnansweredToolFailureError";
+  }
 }
 
 /**
- * Whether a tool call failed in this run and nothing of ours answered regardless.
+ * Whether a tool step failed in this run and nothing answered regardless.
  *
  * Such a run has no answer worth storing: what is left is the plugin's apology and the
- * acknowledgement that came before the call. The caller treats it as a failed run, so the next
- * provider answers. A synthesis of ours is built from the Brain's data, not from the tool, so it
- * stands even when a tool call beside it failed.
+ * acknowledgement that came before the call. The caller treats it as a failed run, so another
+ * provider answers. Two things answer regardless:
+ *
+ * - a synthesis of ours, wherever it comes in the run. It is built from the Brain's data, not
+ *   from the tool, so it stands even when a tool call beside it failed.
+ * - prose that came after the last failure and is not itself a failure reply: a later step that
+ *   worked. Prose from before the failure does not count; the acknowledgement always is.
  *
  * @param {Array<string | {text: string, actions?: string[], toolFailed?: boolean}>} [emitted]
  * @returns {boolean}
@@ -227,13 +246,15 @@ function hasUnansweredToolFailure(emitted) {
   if (!Array.isArray(emitted)) return false;
 
   const entries = emitted.map(normalise);
-  if (!entries.some((entry) => entry.toolFailed)) return false;
+  const lastFailure = entries.map((entry) => entry.toolFailed === true).lastIndexOf(true);
+  if (lastFailure === -1) return false;
+
+  const isAnswer = (entry) =>
+    !entry.toolFailed && Boolean(entry.text.trim()) && !looksLikeToolPayload(entry.text);
+  const isSynthesis = (entry) => entry.actions.some((action) => SYNTHESIS_ACTIONS.has(action));
 
   return !entries.some(
-    (entry) =>
-      entry.text.trim() &&
-      entry.actions.some((action) => SYNTHESIS_ACTIONS.has(action)) &&
-      !looksLikeToolPayload(entry.text),
+    (entry, index) => isAnswer(entry) && (isSynthesis(entry) || index > lastFailure),
   );
 }
 
@@ -256,7 +277,8 @@ function hasUnansweredToolFailure(emitted) {
 function selectAnswer(emitted) {
   if (!Array.isArray(emitted)) return null;
 
-  const entries = emitted.map(normalise).filter((e) => e.text.trim());
+  // The plugin's reply to a failed tool step is never the answer, whatever else was emitted.
+  const entries = emitted.map(normalise).filter((e) => e.text.trim() && !e.toolFailed);
   if (entries.length === 0) return null;
 
   // Attribution outranks recency, but never substance: a payload is not an answer whoever
@@ -309,5 +331,6 @@ module.exports = {
   looksLikeToolPayload,
   isToolFailureThought,
   hasUnansweredToolFailure,
+  UnansweredToolFailureError,
   SYNTHESIS_ACTION_NAMES,
 };

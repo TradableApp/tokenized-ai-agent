@@ -403,10 +403,7 @@ describe("answer selection", () => {
     // The matcher reads the plugin's own wording. The plugin is at an exact version; this fails
     // when a new version words its failure differently, before an apology can be stored again.
     it("is still worded by the plugin the way the matcher expects", () => {
-      const plugin = fs.readFileSync(
-        require.resolve("@elizaos/plugin-mcp"),
-        "utf8",
-      );
+      const plugin = fs.readFileSync(require.resolve("@elizaos/plugin-mcp"), "utf8");
 
       expect(plugin).to.include("`Error calling MCP ${type} and failed to generate");
       expect(plugin).to.include("`Error calling MCP ${type}: ${errorMessage}.");
