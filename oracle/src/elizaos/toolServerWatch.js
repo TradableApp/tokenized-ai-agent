@@ -57,9 +57,10 @@ const FAILURE_STREAK_TO_ALERT = 5;
 const RECENT_CALLS = 20;
 const RECENT_FAILURES_TO_ALERT = 10;
 
-// One refusal is the model's mistake. This many in a row, with no call answered between, is a
-// key of the wrong kind or an endpoint that has gone.
-const REFUSAL_STREAK_TO_ALERT = 10;
+// One refusal is the model's mistake. This many since a call was last answered is a key of the
+// wrong kind or an endpoint that has gone. Failed calls between them do not start the count
+// again: only an answer does.
+const REFUSALS_TO_ALERT = 10;
 
 // Statuses that say the request was wrong, not the server. The model is given these results, as
 // it always was, and can tell the user the coin was not found.
@@ -137,7 +138,7 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
   const calls = { ok: 0, failed: 0, refused: 0, unclear: 0 };
   const rejectedRuns = Object.fromEntries(REJECTED_RUN_KINDS.map((kind) => [kind, 0]));
   let failuresInARow = 0;
-  let refusalsInARow = 0;
+  let refusalsSinceAnAnswer = 0;
   // Whether each of the last few calls failed, oldest first.
   const recentCalls = [];
   let isSaidToBeFailing = false;
@@ -317,15 +318,16 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
     calls.refused += 1;
     // The server answered: it is reachable. Whether its key is right is another matter.
     failuresInARow = 0;
-    refusalsInARow += 1;
+    refusalsSinceAnAnswer += 1;
     remember(false);
     log.log(`[ToolServer] ${label} refused the request: ${outcome}`);
 
-    if (refusalsInARow >= REFUSAL_STREAK_TO_ALERT) {
+    if (refusalsSinceAnAnswer >= REFUSALS_TO_ALERT) {
       alertAboutCalls(
-        "CRITICAL: Market-data tool calls are all being refused",
-        `The last ${refusalsInARow} market-data tool calls were refused and none was answered ` +
-          `(latest: ${label}, ${outcome}). Look at the kind of API key and at the server's version.`,
+        "CRITICAL: Market-data tool calls are being refused",
+        `${refusalsSinceAnAnswer} market-data tool calls have been refused since one was last ` +
+          `answered (latest: ${label}, ${outcome}). Look at the kind of API key and at the ` +
+          "server's version.",
       );
     }
   }
@@ -333,7 +335,7 @@ function createToolServerWatch({ expectedTools, alert, log = console, timing = {
   function countSuccess(label) {
     calls.ok += 1;
     failuresInARow = 0;
-    refusalsInARow = 0;
+    refusalsSinceAnAnswer = 0;
     remember(false);
     if (isSaidToBeFailing) {
       isSaidToBeFailing = false;

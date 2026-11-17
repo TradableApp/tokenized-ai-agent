@@ -150,6 +150,19 @@ describe("the tool server watch", function () {
       expect(alert.firstCall.args[1]).to.not.include("get_simple_price,");
     });
 
+    // The framework lists a server as connected, with no tools, when asking it for them failed.
+    it("alerts, naming every tool it relies on, when a connected server lists none", async function () {
+      const { watch, alert, log } = makeWatch();
+      watch.attach(makeService({ servers: [connectedServer({ tools: [] })] }));
+
+      const problems = await watch.reportAtStartup();
+
+      expect(problems).to.have.lengthOf(1);
+      expect(alert.firstCall.args[0]).to.match(/^CRITICAL: /);
+      expect(alert.firstCall.args[1]).to.include("get_simple_price, get_coins_markets");
+      expect(printed(log.log)).to.not.match(/connected, \d+ tools/);
+    });
+
     it("alerts when the framework's tool service did not start", async function () {
       const { watch, alert } = makeWatch();
       watch.attach(null);
@@ -692,7 +705,7 @@ describe("the tool server watch", function () {
 
     // A key of the wrong kind, or an endpoint that has gone, is refused every time. One refusal
     // is the model's mistake; nothing but refusals is not.
-    it("alerts when ten calls in a row are refused and none answered", async function () {
+    it("alerts when ten calls are refused and none answered", async function () {
       const { watch, alert } = makeWatch();
       const service = switchableService();
       service.mode = "refusing";
@@ -705,6 +718,27 @@ describe("the tool server watch", function () {
 
       expect(alert.callCount).to.equal(1);
       expect(alert.firstCall.args[1]).to.include("refused").and.to.include("status 404");
+    });
+
+    // Failures between the refusals do not start the count again: still none was answered.
+    // The alert must not then say that the last ten calls were all refusals.
+    it("counts refusals since a call was last answered, across failures between them", async function () {
+      const { watch, alert } = makeWatch();
+      const service = switchableService();
+      watch.attach(service);
+      await watch.reportAtStartup();
+
+      service.mode = "refusing";
+      for (let i = 0; i < 5; i += 1) await service.callTool("market_data", "get_simple_price", {});
+      service.mode = "failing";
+      await failTimes(service, 4);
+      service.mode = "refusing";
+      for (let i = 0; i < 5; i += 1) await service.callTool("market_data", "get_simple_price", {});
+
+      expect(alert.callCount).to.equal(1);
+      expect(alert.firstCall.args[1]).to.include("10 market-data tool calls have been refused");
+      expect(alert.firstCall.args[1]).to.include("since one was last answered");
+      expect(alert.firstCall.args[1]).to.not.include("The last 10");
     });
 
     it("does not, when a call was answered among the refusals", async function () {
