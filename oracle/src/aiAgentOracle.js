@@ -288,7 +288,19 @@ const { classifyIntent, queryGeminiDirect } = require("./geminiDirect");
 const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState } = require("./answerProvenance");
 const { createRunProvenance } = require("./runProvenance");
-const { selectAnswer } = require("./answerSelection");
+const {
+  selectAnswer,
+  isToolFailureThought,
+  hasUnansweredToolFailure,
+} = require("./answerSelection");
+const { createToolServerWatch, startedToolService } = require("./elizaos/toolServerWatch");
+
+// The tool servers in the agent's character, and the tools its market answers rely on. A server
+// can be connected and still not offer them: a different release of it offers other tools.
+const toolServerWatch = createToolServerWatch({
+  expectedTools: { coingecko_mcp_local: ["get_simple_price", "get_coins_markets"] },
+  alert: sendAlert,
+});
 const { sanitizeAnswer } = require("./outboundSanitizer");
 const { runServerLevelMigrations } = require("./agentSchemaMigrator");
 
@@ -672,6 +684,13 @@ async function initializeEliza() {
 
     await elizaOS.startAgents();
     console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
+
+    // Say what the framework's tool service connected to, and alert if the market-data tools are
+    // not there. Not a reason to stop: only some answers need them.
+    if (Object.keys(senseAiCharacter?.settings?.mcp?.servers ?? {}).length > 0) {
+      toolServerWatch.attach(await startedToolService(elizaOS.getAgent(senseAiAgentId)));
+      await toolServerWatch.reportAtStartup();
+    }
   } catch (error) {
     console.error("[ElizaOS] FAILED to start SenseAI Agent:", error);
     throw error;
@@ -1268,6 +1287,9 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               emittedTexts.push({
                 text: content.text,
                 actions: Array.isArray(content.actions) ? content.actions : [],
+                // The MCP plugin's reply to a failed tool call is an apology tagged REPLY; its
+                // thought is what marks it. See hasUnansweredToolFailure.
+                toolFailed: isToolFailureThought(content.thought),
               });
             }
           },
@@ -1297,6 +1319,19 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               // reaches `generateSanitized` inside handleChainSynthesis — a third-party emission or
               // the acknowledgement never does, and this is the last point before the text is
               // encrypted into an immutable MessageFile. See outboundSanitizer.js.
+              // A tool call failed and nothing of ours answered without it: what is left is an
+              // apology and an acknowledgement, and storing either would charge the user for it.
+              // Rejecting hands the prompt to the next provider.
+              if (hasUnansweredToolFailure(emittedTexts)) {
+                runProvenance.finish(runId);
+                reject(
+                  new Error(
+                    "A market-data tool call failed and nothing was synthesised without it.",
+                  ),
+                );
+                return;
+              }
+
               const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
               if (finalResponseText) {
                 // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
@@ -2987,6 +3022,7 @@ async function start() {
     countFailedJobs,
     fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
     mirrorSnapshot: () => require("./storage/mirror").snapshot(),
+    observeToolServers: () => toolServerWatch.observe(),
     diskPath: path.dirname(STATE_FILE_PATH),
   });
 

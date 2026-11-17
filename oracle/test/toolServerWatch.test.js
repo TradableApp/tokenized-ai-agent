@@ -265,6 +265,17 @@ describe("the tool server watch", function () {
       });
     });
 
+    // The heartbeat starts before the agent does. A server that has not been started yet is not
+    // a server that was lost.
+    it("raises nothing before the start-up report has run", function () {
+      const { watch, alert } = makeWatch();
+
+      const observed = watch.observe();
+
+      expect(observed.servers).to.deep.equal({ market_data: { status: "unknown", tools: 0 } });
+      expect(alert.called).to.equal(false);
+    });
+
     it("alerts once when a connected server stops being connected, and not again", async function () {
       const { watch, alert } = makeWatch();
       const service = makeService();
@@ -306,6 +317,43 @@ describe("the tool server watch", function () {
       watch.observe();
 
       expect(alert.callCount).to.equal(1);
+    });
+  });
+
+  describe("finding the framework's tool service", function () {
+    const { startedToolService } = require("../src/elizaos/toolServerWatch");
+
+    it("waits for the service the framework is still starting", async function () {
+      const service = makeService();
+      const runtime = {
+        getServiceLoadPromise: sinon
+          .stub()
+          .returns(new Promise((resolve) => setTimeout(() => resolve(service), 5))),
+        getService: () => null,
+      };
+
+      expect(await startedToolService(runtime)).to.equal(service);
+      expect(runtime.getServiceLoadPromise.calledOnceWithExactly("mcp")).to.equal(true);
+    });
+
+    it("gives up, with nothing, on a service that never starts", async function () {
+      const runtime = { getServiceLoadPromise: () => new Promise(() => {}) };
+
+      expect(await startedToolService(runtime, { timeoutMs: 10 })).to.equal(null);
+    });
+
+    it("gives nothing when the service failed to start", async function () {
+      const runtime = { getServiceLoadPromise: () => Promise.reject(new Error("no such service")) };
+
+      expect(await startedToolService(runtime)).to.equal(null);
+    });
+
+    it("asks a runtime that cannot be waited on for the service it has", async function () {
+      const service = makeService();
+
+      expect(await startedToolService({ getService: () => service })).to.equal(service);
+      expect(await startedToolService({ getService: () => null })).to.equal(null);
+      expect(await startedToolService(null)).to.equal(null);
     });
   });
 });

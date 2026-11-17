@@ -303,6 +303,14 @@ function validateConfig(env = process.env) {
   validatePayloadMirror(env, problems);
   validatePollSettings(env, problems);
 
+  // The agent's market data comes through a tool server that needs this key. Without it the
+  // server still starts and lists its tools, and then fails every call, so the gap shows only in
+  // the answers. A local network runs without market data and is not asked for it.
+  const isLocalNetwork = !isBlank(network) && keyModeFor(network.trim()) === "env";
+  if (!isBlank(network) && !isLocalNetwork && isBlank(env.COINGECKO_API_KEY)) {
+    problems.push("COINGECKO_API_KEY is missing or empty");
+  }
+
   if (problems.length) throw new ConfigError(problems);
 }
 

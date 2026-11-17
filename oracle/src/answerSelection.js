@@ -187,9 +187,54 @@ const SYNTHESIS_ACTION_NAMES = Object.freeze([...SYNTHESIS_ACTIONS]);
 function normalise(entry) {
   if (typeof entry === "string") return { text: entry, actions: [] };
   if (entry && typeof entry.text === "string") {
-    return { text: entry.text, actions: Array.isArray(entry.actions) ? entry.actions : [] };
+    return {
+      text: entry.text,
+      actions: Array.isArray(entry.actions) ? entry.actions : [],
+      toolFailed: entry.toolFailed === true,
+    };
   }
   return { text: "", actions: [] };
+}
+
+// How the MCP plugin words the thought it sends with its reply to a failed tool or resource call
+// (its handleMcpError). The reply itself is an apology tagged REPLY, like any other prose, so the
+// thought is the only thing that tells it apart. The plugin is at an exact version, and a test
+// reads its build for this wording.
+const TOOL_FAILURE_THOUGHT = /^Error calling MCP (tool|resource)\b/;
+
+/**
+ * Whether a thought is the one the MCP plugin sends when a tool call failed.
+ *
+ * @param {unknown} thought
+ * @returns {boolean}
+ */
+function isToolFailureThought(thought) {
+  return typeof thought === "string" && TOOL_FAILURE_THOUGHT.test(thought);
+}
+
+/**
+ * Whether a tool call failed in this run and nothing of ours answered regardless.
+ *
+ * Such a run has no answer worth storing: what is left is the plugin's apology and the
+ * acknowledgement that came before the call. The caller treats it as a failed run, so the next
+ * provider answers. A synthesis of ours is built from the Brain's data, not from the tool, so it
+ * stands even when a tool call beside it failed.
+ *
+ * @param {Array<string | {text: string, actions?: string[], toolFailed?: boolean}>} [emitted]
+ * @returns {boolean}
+ */
+function hasUnansweredToolFailure(emitted) {
+  if (!Array.isArray(emitted)) return false;
+
+  const entries = emitted.map(normalise);
+  if (!entries.some((entry) => entry.toolFailed)) return false;
+
+  return !entries.some(
+    (entry) =>
+      entry.text.trim() &&
+      entry.actions.some((action) => SYNTHESIS_ACTIONS.has(action)) &&
+      !looksLikeToolPayload(entry.text),
+  );
 }
 
 /**
@@ -259,4 +304,10 @@ function selectAnswer(emitted) {
   return candidates[candidates.length - 1];
 }
 
-module.exports = { selectAnswer, looksLikeToolPayload, SYNTHESIS_ACTION_NAMES };
+module.exports = {
+  selectAnswer,
+  looksLikeToolPayload,
+  isToolFailureThought,
+  hasUnansweredToolFailure,
+  SYNTHESIS_ACTION_NAMES,
+};
