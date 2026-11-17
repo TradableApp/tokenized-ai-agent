@@ -72,6 +72,17 @@ describe("the market-data tool server", function () {
       expect(isInsideInstalledPackage(entry)).to.equal(true);
     });
 
+    // The entry is found through the package's main field. It has to be the file the package
+    // itself names as its server, or a release that splits the two would start the wrong one.
+    it("runs the file the package names as its server", function () {
+      const [entry] = loadLaunchSettings()({}).args;
+      const named = require(path.join(INSTALLED_PACKAGE, "package.json")).bin["mcp-server"];
+
+      expect(fs.realpathSync(entry)).to.equal(
+        fs.realpathSync(path.resolve(INSTALLED_PACKAGE, named)),
+      );
+    });
+
     it("passes one option only, the one that turns the documentation search off", function () {
       const [, ...options] = loadLaunchSettings()({}).args;
 
