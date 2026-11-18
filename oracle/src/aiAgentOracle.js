@@ -474,7 +474,11 @@ async function cleanStoredAgentSettings() {
   if (!agentStateDbUrl) return;
   const postgresUrl = agentStateDbUrl;
   await cleanStoredSettings({
-    scrub: () => scrubAgentSettingsInPostgres({ postgresUrl }),
+    scrub: () =>
+      scrubAgentSettingsInPostgres({
+        postgresUrl,
+        keepSettings: Object.keys(senseAiCharacter.settings),
+      }),
     alert: sendAlert,
   });
 }

@@ -58,23 +58,33 @@ function isPlainObject(value) {
  *
  * @param {object|null|undefined} settings the agent row's settings
  * @param {readonly string[]} allowList names that may stay under `secrets`
- * @returns {{ settings: object, removedSecrets: number, removedToolServers: number }}
+ * @param {readonly string[]} [keepSettings] the setting names the character defines itself.
+ *   When given, a stored setting under any other name is removed: the framework reads a stored
+ *   setting ahead of the one the oracle hands the runtime.
+ * @returns {{ settings: object, removedSecrets: number, removedToolServers: number, removedSettings: number }}
  */
-function withoutSecrets(settings, allowList) {
+function withoutSecrets(settings, allowList, keepSettings) {
   const source = isPlainObject(settings) ? settings : {};
   const allowed = new Set(allowList);
   let removedSecrets = 0;
   let removedToolServers = 0;
-  const { mcp, ...cleaned } = source;
+  let removedSettings = 0;
+  const { mcp, ...others } = source;
+  const kept = keepSettings ? new Set(keepSettings) : null;
+  const cleaned = {};
+  for (const [name, value] of Object.entries(others)) {
+    if (!kept || kept.has(name)) cleaned[name] = value;
+    else removedSettings += 1;
+  }
 
   if ("secrets" in source) {
     const stored = isPlainObject(source.secrets) ? source.secrets : {};
-    const kept = {};
+    const keptSecrets = {};
     for (const [name, value] of Object.entries(stored)) {
-      if (allowed.has(name)) kept[name] = value;
+      if (allowed.has(name)) keptSecrets[name] = value;
       else removedSecrets += 1;
     }
-    cleaned.secrets = kept;
+    cleaned.secrets = keptSecrets;
   }
 
   // The empty block this build stores is harmless and is put back as it was.
@@ -85,7 +95,7 @@ function withoutSecrets(settings, allowList) {
     removedToolServers = Math.max(servers, 1);
   }
 
-  return { settings: cleaned, removedSecrets, removedToolServers };
+  return { settings: cleaned, removedSecrets, removedToolServers, removedSettings };
 }
 
 // What the database plugin reads through the runtime.
@@ -122,25 +132,33 @@ function agentForFramework({ character, env = {} }) {
  * @param {{
  *   query: (text: string, values?: unknown[]) => Promise<{ rows: object[] }>,
  *   allowList?: readonly string[],
+ *   keepSettings?: readonly string[],
  * }} options
- * @returns {Promise<{ agents: number, removedSecrets: number, removedToolServers: number }>}
+ * @returns {Promise<{ agents: number, removedSecrets: number, removedToolServers: number, removedSettings: number }>}
  */
-async function scrubStoredAgentSettings({ query, allowList = AGENT_ENV_ALLOW_LIST }) {
+async function scrubStoredAgentSettings({ query, allowList = AGENT_ENV_ALLOW_LIST, keepSettings }) {
   const read = await query("SELECT id, settings FROM agents");
-  const total = { agents: read.rows.length, removedSecrets: 0, removedToolServers: 0 };
+  const total = {
+    agents: read.rows.length,
+    removedSecrets: 0,
+    removedToolServers: 0,
+    removedSettings: 0,
+  };
 
   for (const row of read.rows) {
-    const { settings, removedSecrets, removedToolServers } = withoutSecrets(
+    const { settings, removedSecrets, removedToolServers, removedSettings } = withoutSecrets(
       row.settings,
       allowList,
+      keepSettings,
     );
-    if (removedSecrets === 0 && removedToolServers === 0) continue;
+    if (removedSecrets + removedToolServers + removedSettings === 0) continue;
     await query("UPDATE agents SET settings = $2::jsonb WHERE id = $1", [
       row.id,
       JSON.stringify(settings),
     ]);
     total.removedSecrets += removedSecrets;
     total.removedToolServers += removedToolServers;
+    total.removedSettings += removedSettings;
   }
   return total;
 }
@@ -151,9 +169,9 @@ const SCRUB_QUERY_TIMEOUT_MS = 10 * 1000;
 /**
  * Cleans the stored settings in the agent's Postgres database, over a connection of its own.
  *
- * @param {{ postgresUrl: string }} options
+ * @param {{ postgresUrl: string, keepSettings?: readonly string[] }} options
  */
-async function scrubAgentSettingsInPostgres({ postgresUrl }) {
+async function scrubAgentSettingsInPostgres({ postgresUrl, keepSettings }) {
   // Lazy, as in oracleState/runtime: a run with no database never loads pg.
   const { Client } = require("pg");
   const client = new Client({
@@ -169,6 +187,7 @@ async function scrubAgentSettingsInPostgres({ postgresUrl }) {
   try {
     return await scrubStoredAgentSettings({
       query: (text, values) => client.query(text, values),
+      keepSettings,
     });
   } finally {
     await client.end().catch(() => {});
@@ -191,17 +210,17 @@ async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
   let subject;
   let message;
   try {
-    const { agents, removedSecrets, removedToolServers } = await scrub();
-    log(
-      `[ElizaOS] Stored agent settings cleaned: ${agents} agent(s), ${removedSecrets} stored ` +
-        `value(s) and ${removedToolServers} stored tool server(s) removed.`,
-    );
-    if (removedSecrets === 0 && removedToolServers === 0) return;
+    const { agents, removedSecrets, removedToolServers, removedSettings = 0 } = await scrub();
+    const removed =
+      `${removedSecrets} stored value(s), ${removedToolServers} stored tool server(s) and ` +
+      `${removedSettings} other stored setting(s)`;
+    log(`[ElizaOS] Stored agent settings cleaned: ${agents} agent(s), ${removed} removed.`);
+    if (removedSecrets + removedToolServers + removedSettings === 0) return;
     subject = "CRITICAL: Stored agent settings held values that were removed";
     message =
-      `${removedSecrets} stored value(s) and ${removedToolServers} stored tool server(s) were ` +
-      "removed from the agent database at start-up. They were written by an earlier build. " +
-      "Treat every secret that build was given as exposed to the agent database and rotate it.";
+      `${removed} were removed from the agent database at start-up. An earlier build stores ` +
+      "values there, and nothing else should write to it. Treat every secret an earlier build " +
+      "was given as exposed to the agent database and rotate it.";
   } catch (error) {
     const kind = String(error?.code ?? error?.name ?? "Error");
     log(`[ElizaOS] Could not clean the stored agent settings (${kind}).`);
