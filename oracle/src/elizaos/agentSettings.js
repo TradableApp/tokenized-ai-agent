@@ -73,6 +73,8 @@ function withoutSecrets(settings, allowList, keepSettings) {
   const kept = keepSettings ? new Set(keepSettings) : null;
   const cleaned = {};
   for (const [name, value] of Object.entries(others)) {
+    // The secrets are filtered by the allow-list below, whatever the character defines.
+    if (name === "secrets") continue;
     if (!kept || kept.has(name)) cleaned[name] = value;
     else removedSettings += 1;
   }
@@ -207,7 +209,12 @@ async function scrubAgentSettingsInPostgres({ postgresUrl, keepSettings }) {
  * carry the address it was connecting to.
  *
  * @param {{
- *   scrub: () => Promise<{ agents: number, removedSecrets: number, removedToolServers: number }>,
+ *   scrub: () => Promise<{
+ *     agents: number,
+ *     removedSecrets: number,
+ *     removedToolServers: number,
+ *     removedSettings: number,
+ *   }>,
  *   alert: (subject: string, message: string) => Promise<unknown>,
  *   log?: (line: string) => void,
  * }} options
@@ -218,7 +225,7 @@ async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
   try {
     const { agents, removedSecrets, removedToolServers, removedSettings = 0 } = await scrub();
     const removed =
-      `${removedSecrets} stored value(s), ${removedToolServers} stored tool server(s) and ` +
+      `${removedSecrets} stored value(s), ${removedToolServers} stored tool-server setting(s) and ` +
       `${removedSettings} other stored setting(s)`;
     log(`[ElizaOS] Stored agent settings cleaned: ${agents} agent(s), ${removed} removed.`);
     if (removedSecrets + removedToolServers + removedSettings === 0) return;
