@@ -548,6 +548,24 @@ describe("the clean at start-up", function () {
     expect(sent).to.be.true;
   });
 
+  it("waits for the alert about a clean that failed, too", async function () {
+    const out = recorder();
+    let sent = false;
+
+    await cleanStoredAgentSettings({
+      scrub: async () => {
+        throw Object.assign(new Error("no route"), { code: "ECONNREFUSED" });
+      },
+      alert: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        sent = true;
+      },
+      log: out.log,
+    });
+
+    expect(sent).to.be.true;
+  });
+
   // The clean runs before the oracle starts on its events. An alert that takes minutes to send,
   // or never comes back, must not hold that up for longer than the wait it is given.
   it("stops waiting for an alert that does not come back, and says so", async function () {
@@ -773,7 +791,12 @@ describe("the agent's start, with its stored settings cleaned", function () {
     const source = oracleSource();
     const at = source.indexOf("await startAgentWithCleanSettings({");
     expect(at, "the oracle calls it").to.be.greaterThan(-1);
-    const call = source.slice(at);
+    // Only what the oracle hands over: from the call to its first callback. Read to the end of
+    // the file, the same words are found in other calls, and a value changed here would pass.
+    const call = source.slice(at, source.indexOf("addAgent:", at));
+    expect(call, "nothing is spread in over a value").to.not.include("...");
+    expect(call).to.match(/POSTGRES_URL: agentStateDbUrl \?\? undefined,/);
+    expect(call).to.match(/PGLITE_DATA_DIR: process\.env\.PGLITE_DATA_DIR,/);
 
     expect(call).to.match(/postgresUrl: agentStateDbUrl,/);
     expect(call).to.match(/character: senseAiCharacter,/);
