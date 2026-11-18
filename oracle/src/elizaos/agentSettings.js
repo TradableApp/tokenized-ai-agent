@@ -267,7 +267,7 @@ async function cleanStoredAgentSettings({
       `The agent's stored settings were not cleaned at start-up (${kind}). The oracle is ` +
       "answering. A stored row may still hold values from an earlier build.";
   }
-  // Waited for, for a bounded time. Only the first clean of an old row has anything to report,
+  // Waited for, for a bounded time. Of an old row only the first clean has anything to report,
   // so a start that stops soon after must not have left before the alert went out. But the clean
   // runs before the oracle starts on its events, and an alert can take minutes to send or to
   // give up, so past the wait it is left to finish on its own.

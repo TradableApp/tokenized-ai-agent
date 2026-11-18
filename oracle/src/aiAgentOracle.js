@@ -600,7 +600,7 @@ async function initializeEliza() {
   // startAgentWithCleanSettings', which also keeps the database address and the tool servers
   // out of the character the framework stores.
   try {
-    console.log("[ElizaOS] Adding SenseAI Agent...");
+    console.log("[ElizaOS] Cleaning stored agent settings, then adding the SenseAI Agent...");
     await startAgentWithCleanSettings({
       postgresUrl: agentStateDbUrl,
       character: senseAiCharacter,

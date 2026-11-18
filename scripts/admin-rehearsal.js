@@ -122,6 +122,15 @@ function assertMainnetConfirmed({ networkName, dryRun, confirmed }) {
   }
 }
 
+/** The confirm phase sends the acceptance, so there is nothing a dry run of it could simulate. */
+function assertPhaseCanDryRun({ phase, dryRun }) {
+  if (dryRun && phase !== "forward") {
+    throw new Error(
+      `The ${phase} phase has no dry run: it sends a transaction. Unset DRY_RUN to run it.`,
+    );
+  }
+}
+
 function step(id, contract, method, args, event, verify) {
   return { id, contract, method, args, event, verify };
 }
@@ -387,26 +396,34 @@ async function pairOf({ aiAgent, escrow }) {
  * The snapshot holds the pre-rehearsal values and the pair they were read from. The file is
  * named after the network only, so one left by a rehearsal of another pair would otherwise be
  * taken as this pair's baseline, and its treasury and fee written here as a "restore".
- * `confirmed` marks a rehearsal the confirm phase has passed: its values are no longer a baseline.
+ * `safe` is the Safe the rehearsal was run with: it is authorised as an oracle on the way, and the
+ * confirm phase checks it no longer is. `confirmed` marks a rehearsal the confirm phase has
+ * passed: its values are no longer a baseline.
  */
-function writeSnapshot(state, file, pair, { confirmed = false } = {}) {
+function writeSnapshot(state, file, pair, { safe, confirmed = false } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const serialisable = Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]));
-  fs.writeFileSync(
-    file,
-    JSON.stringify({ ...serialisable, pair, ...(confirmed ? { confirmed: true } : {}) }, null, 2),
-  );
+  const record = {
+    ...serialisable,
+    pair,
+    ...(safe ? { safe } : {}),
+    ...(confirmed ? { confirmed: true } : {}),
+  };
+  fs.writeFileSync(file, JSON.stringify(record, null, 2));
   return file;
 }
 
-/** Reads the snapshot for `pair`: `{ state, confirmed }`. Refuses one that is not this pair's. */
+/**
+ * Reads the snapshot for `pair`: `{ state, safe, confirmed }`. Refuses one that is not this
+ * pair's.
+ */
 function readSnapshot(file, pair) {
   if (!fs.existsSync(file)) {
     throw new Error(
       `No snapshot at ${file}; run the forward phase first (for example bun run rehearse:base-testnet)`,
     );
   }
-  const { pair: recorded, confirmed, ...raw } = JSON.parse(fs.readFileSync(file, "utf8"));
+  const { pair: recorded, safe, confirmed, ...raw } = JSON.parse(fs.readFileSync(file, "utf8"));
   if (!recorded?.agent || !recorded?.escrow) {
     throw new Error(
       `The snapshot at ${file} does not say which pair it was taken for, so it cannot be used as a baseline. Move it aside if it belongs to a rehearsal still to be returned by hand, or delete it, then run the forward phase again.`,
@@ -417,7 +434,11 @@ function readSnapshot(file, pair) {
       `The snapshot at ${file} was taken for another pair (agent ${recorded.agent}, escrow ${recorded.escrow}), not agent ${pair.agent}, escrow ${pair.escrow}. Nothing was sent. Move it aside or delete it, then run the forward phase again.`,
     );
   }
-  return { state: { ...raw, promptFee: BigInt(raw.promptFee) }, confirmed: confirmed === true };
+  return {
+    state: { ...raw, promptFee: BigInt(raw.promptFee) },
+    safe,
+    confirmed: confirmed === true,
+  };
 }
 
 /**
@@ -506,9 +527,10 @@ async function forwardPhase({
   // live state may already carry rehearsal values (e.g. the fee). It stays the restore baseline
   // and is never overwritten. To start over deliberately, delete the file first. A snapshot the
   // confirm phase has passed is a finished rehearsal, not a baseline: the next one starts from
-  // the live state.
-  const left = !dryRun && fs.existsSync(snapshotFile) ? readSnapshot(snapshotFile, pair) : null;
-  const resuming = left !== null && !left.confirmed;
+  // the live state. A dry run reads the file too, so that it refuses what the live run would,
+  // and then leaves it alone.
+  const left = fs.existsSync(snapshotFile) ? readSnapshot(snapshotFile, pair) : null;
+  const resuming = !dryRun && left !== null && !left.confirmed;
   const state = resuming ? left.state : live;
   if (resuming) {
     log(`Resuming: ${snapshotFile} exists and stays the restore baseline: ${show(state)}`);
@@ -517,7 +539,7 @@ async function forwardPhase({
   await assertSafeHasCode(ethers.getAddress(safeAddress));
 
   if (!dryRun && !resuming) {
-    writeSnapshot(state, snapshotFile, pair);
+    writeSnapshot(state, snapshotFile, pair, { safe: ethers.getAddress(safeAddress) });
     log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
 
@@ -546,7 +568,7 @@ async function confirmPhase({
   sleep = defaultSleep,
 }) {
   const pair = await pairOf(contracts);
-  const { state } = readSnapshot(snapshotFile, pair);
+  const { state, safe } = readSnapshot(snapshotFile, pair);
   const accepted = signer ? await accept({ contracts, signer, log }) : [];
   if (!("encryptionKey" in state)) {
     log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
@@ -559,13 +581,21 @@ async function confirmPhase({
     await sleep(VERIFY_RETRY_MS);
     ({ ok, mismatches } = await verify({ contracts, state }));
   }
+  // A forward run stopped between authorising the Safe as an oracle and removing it has changed
+  // nothing the snapshot holds. Without this, the phase would call such a run complete.
+  if (safe && (await contracts.aiAgent.isOracle(safe))) {
+    ok = false;
+    mismatches = [...mismatches, { field: "safeIsOracle", expected: "false", actual: "true" }];
+  }
   if (!ok) {
     for (const m of mismatches) {
       log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
     }
     throw new Error("Rehearsal state has not been fully returned");
   }
-  writeSnapshot(state, snapshotFile, pair, { confirmed: true });
+  // Only now: marked any earlier, a failed confirm would let the next forward run start from
+  // the live state and overwrite the one record of the pre-rehearsal values.
+  writeSnapshot(state, snapshotFile, pair, { safe, confirmed: true });
   log(
     chalk.green(
       "Confirm phase complete: everything in the pre-rehearsal snapshot matches the chain again.",
@@ -580,6 +610,7 @@ async function main() {
     throw new Error(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
   }
   const dryRun = process.env.DRY_RUN === "1";
+  assertPhaseCanDryRun({ phase, dryRun });
   assertMainnetConfirmed({
     networkName: hre.network.name,
     dryRun,
@@ -620,6 +651,7 @@ module.exports = {
   forwardPhase,
   confirmPhase,
   assertMainnetConfirmed,
+  assertPhaseCanDryRun,
   findEvent,
   verifyGetter,
   main,
