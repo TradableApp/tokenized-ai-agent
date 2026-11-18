@@ -533,6 +533,13 @@ async function forwardPhase({
   const resuming = !dryRun && left !== null && !left.confirmed;
   const state = resuming ? left.state : live;
   if (resuming) {
+    // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
+    // Safe's oracle role would go unchecked.
+    if (left.safe && !sameValue(left.safe, safeAddress)) {
+      throw new Error(
+        `The rehearsal in ${snapshotFile} was started with the Safe ${left.safe}, not ${safeAddress}. Nothing was sent. Resume it with the Safe it was started with.`,
+      );
+    }
     log(`Resuming: ${snapshotFile} exists and stays the restore baseline: ${show(state)}`);
   }
   const plan = buildPlan({ state, safeAddress, rehearsalPromptFee });
@@ -568,7 +575,10 @@ async function confirmPhase({
   sleep = defaultSleep,
 }) {
   const pair = await pairOf(contracts);
-  const { state, safe } = readSnapshot(snapshotFile, pair);
+  const { state, safe, confirmed } = readSnapshot(snapshotFile, pair);
+  if (confirmed) {
+    log(chalk.yellow("This snapshot was already confirmed. Checking it against the chain again."));
+  }
   const accepted = signer ? await accept({ contracts, signer, log }) : [];
   if (!("encryptionKey" in state)) {
     log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));

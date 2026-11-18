@@ -738,6 +738,27 @@ describe("scripts/admin-rehearsal", function () {
       expect(written.confirmed).to.equal(undefined);
     });
 
+    it("refuses to resume with another Safe than the one the rehearsal was started with", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, { safe: fixture.stranger.address }),
+      );
+      let executed = false;
+
+      await expect(
+        run(fixture, {
+          snapshotFile,
+          execute: async () => {
+            executed = true;
+            return [];
+          },
+        }),
+      ).to.be.rejectedWith(/was started with the Safe/);
+      expect(executed).to.equal(false);
+    });
+
     it("records the Safe in the snapshot it writes", async function () {
       const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratch();
