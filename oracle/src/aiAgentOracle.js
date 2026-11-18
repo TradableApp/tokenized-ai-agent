@@ -20,10 +20,9 @@ const {
 
 const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
 const {
-  AGENT_ENV_ALLOW_LIST,
   agentForFramework,
-  scrubAgentSettingsInPostgres,
-  cleanStoredAgentSettings: cleanStoredSettings,
+  allowOnlyListedEnv,
+  cleanAgentDatabase,
 } = require("./elizaos/agentSettings");
 const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
@@ -468,17 +467,11 @@ let senseAiAgentId = null;
 // null where the oracle runs without Postgres. Set by initializeEliza, read by start().
 let agentStateDbUrl = null;
 
-// Cleans what the agent database stores of every agent's settings. Nothing to do where the
-// oracle runs without Postgres: the framework's own store is then a local one.
-async function cleanStoredAgentSettings() {
-  if (!agentStateDbUrl) return;
-  const postgresUrl = agentStateDbUrl;
-  await cleanStoredSettings({
-    scrub: () =>
-      scrubAgentSettingsInPostgres({
-        postgresUrl,
-        keepSettings: Object.keys(senseAiCharacter.settings),
-      }),
+// Cleans what the agent database stores of every agent's settings.
+function cleanStoredAgentSettings() {
+  return cleanAgentDatabase({
+    postgresUrl: agentStateDbUrl,
+    character: senseAiCharacter,
     alert: sendAlert,
   });
 }
@@ -622,7 +615,7 @@ async function initializeEliza() {
 
   // The framework copies environment variables into the character it stores in the agent
   // database, and with no list it copies all of them. Set before the agent is added.
-  setAllowedEnvVars([...AGENT_ENV_ALLOW_LIST]);
+  allowOnlyListedEnv(setAllowedEnvVars);
 
   // Add the SenseAI Agent
   try {
