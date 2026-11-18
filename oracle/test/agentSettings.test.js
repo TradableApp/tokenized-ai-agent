@@ -7,9 +7,12 @@ const path = require("path");
 const {
   AGENT_ENV_ALLOW_LIST,
   agentForFramework,
+  allowOnlyListedEnv,
   withoutSecrets,
   scrubStoredAgentSettings,
+  scrubAgentSettingsInPostgres,
   cleanStoredAgentSettings,
+  cleanAgentDatabase,
 } = require("../src/elizaos/agentSettings");
 
 // The oracle's source with its comment lines taken out, so a call that is only mentioned in a
@@ -115,14 +118,29 @@ describe("what the agent framework may copy from the environment", function () {
     expect(character.settings.secrets).to.have.property("PROBE_ONLY_SIGNING_KEY");
   });
 
-  it("is set in the oracle before the agent is added", function () {
+  it("is what the framework is told, name for name", function () {
+    const core = require("@elizaos/core");
+    const before = core.getAllowedEnvVars();
+    try {
+      allowOnlyListedEnv(core.setAllowedEnvVars);
+
+      expect(core.getAllowedEnvVars()).to.deep.equal([...AGENT_ENV_ALLOW_LIST]);
+    } finally {
+      core.setAllowedEnvVars(before);
+    }
+  });
+
+  // The oracle tells the framework through the function above and in no other way, so the list
+  // cannot be set to something else, or to nothing, beside it.
+  it("is set in the oracle before the agent is added, and only through the list", function () {
     const source = oracleSource();
-    const set = source.indexOf("setAllowedEnvVars(");
+    const set = source.indexOf("allowOnlyListedEnv(setAllowedEnvVars)");
     const added = source.indexOf("elizaOS.addAgents(");
 
-    expect(set, "setAllowedEnvVars is called").to.be.greaterThan(-1);
+    expect(set, "the list is set").to.be.greaterThan(-1);
     expect(added, "addAgents is called").to.be.greaterThan(-1);
     expect(set).to.be.lessThan(added);
+    expect(source.match(/setAllowedEnvVars\(/g) ?? [], "no call of its own").to.have.lengthOf(0);
   });
 });
 
@@ -475,12 +493,6 @@ describe("the clean at start-up", function () {
     expect(out.alerts[0].message).to.include("2 other stored setting(s)");
   });
 
-  it("tells the clean which settings the character defines", function () {
-    const source = oracleSource();
-
-    expect(source).to.match(/keepSettings: Object\.keys\(senseAiCharacter\.settings\)/);
-  });
-
   it("does not alert when nothing an earlier build stored was found", async function () {
     const out = recorder();
 
@@ -528,7 +540,125 @@ describe("the clean at start-up", function () {
       },
       log: out.log,
     });
+    await new Promise((resolve) => setImmediate(resolve));
 
-    expect(out.lines.length).to.be.greaterThan(0);
+    expect(out.lines.join(" ")).to.include("could not be sent");
+  });
+
+  // The clean runs before the oracle starts on its events. An alert that takes minutes to send,
+  // or never comes back, must not hold that up.
+  it("does not wait for the alert to be sent", async function () {
+    const out = recorder();
+    let alerted = false;
+
+    await cleanStoredAgentSettings({
+      scrub: async () => ({ agents: 1, removedSecrets: 1, removedToolServers: 0 }),
+      alert: () => {
+        alerted = true;
+        return new Promise(() => {});
+      },
+      log: out.log,
+    });
+
+    expect(alerted).to.be.true;
+  });
+});
+
+describe("the clean of the agent database", function () {
+  it("does nothing, and says so, where there is no agent database", async function () {
+    const lines = [];
+    let scrubbed = false;
+
+    await cleanAgentDatabase({
+      postgresUrl: null,
+      character: { settings: { model: "m" } },
+      alert: async () => {},
+      log: (line) => lines.push(line),
+      scrubInPostgres: async () => {
+        scrubbed = true;
+      },
+    });
+
+    expect(scrubbed).to.be.false;
+    expect(lines.join(" ")).to.include("no agent database");
+  });
+
+  it("cleans the database it is given, keeping the settings it is told the character defines", async function () {
+    const seen = [];
+
+    await cleanAgentDatabase({
+      postgresUrl: "postgres://user:pw@host/db",
+      character: { settings: { model: "m", secrets: {} } },
+      alert: async () => {},
+      log: () => {},
+      scrubInPostgres: async (options) => {
+        seen.push(options);
+        return { agents: 0, removedSecrets: 0, removedToolServers: 0, removedSettings: 0 };
+      },
+    });
+
+    expect(seen).to.deep.equal([
+      { postgresUrl: "postgres://user:pw@host/db", keepSettings: ["model", "secrets"] },
+    ]);
+  });
+
+  it("is what the oracle runs, with the character the agent is added with", function () {
+    const source = oracleSource();
+
+    expect(source).to.match(/cleanAgentDatabase\(\{\s*postgresUrl: agentStateDbUrl,/);
+    expect(source).to.match(/character: senseAiCharacter,/);
+  });
+
+  // The connection itself, with a stand-in for the database client.
+  function fakeClient(rows, { endFails = false } = {}) {
+    const record = { options: null, connected: false, ended: false, listeners: [], writes: [] };
+    class Client {
+      constructor(options) {
+        record.options = options;
+      }
+      on(event) {
+        record.listeners.push(event);
+      }
+      async connect() {
+        record.connected = true;
+      }
+      async query(text, values) {
+        if (/^\s*SELECT/i.test(text)) return { rows };
+        record.writes.push(JSON.parse(values[1]));
+        return { rows: [] };
+      }
+      async end() {
+        record.ended = true;
+        if (endFails) throw new Error("already closed");
+      }
+    }
+    return { Client, record };
+  }
+
+  it("removes a stored setting the character does not define, over a connection it closes", async function () {
+    const { Client, record } = fakeClient([
+      { id: "a", settings: { model: "m", POSTGRES_URL: "would-be-a-url" } },
+    ]);
+
+    const result = await scrubAgentSettingsInPostgres({
+      postgresUrl: "postgres://user:pw@host/db",
+      keepSettings: ["model"],
+      Client,
+    });
+
+    expect(result.removedSettings).to.equal(1);
+    expect(record.writes).to.deep.equal([{ model: "m" }]);
+    expect(record.options.connectionString).to.equal("postgres://user:pw@host/db");
+    expect(record.options.query_timeout).to.be.a("number");
+    expect(record.listeners).to.include("error");
+    expect(record.ended).to.be.true;
+  });
+
+  it("returns what it cleaned even when closing the connection fails", async function () {
+    const { Client } = fakeClient([], { endFails: true });
+
+    const result = await scrubAgentSettingsInPostgres({ postgresUrl: "postgres://h/db", Client });
+
+    expect(result.agents).to.equal(0);
   });
 });
