@@ -53,7 +53,7 @@ Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-sc
 | `bun run deploy:base-mainnet` | Deploy to Base mainnet |
 | `bun run rehearse:base-testnet:dry` | Admin rehearsal dry run on Base testnet: simulates every owner call, sends nothing (needs `REHEARSAL_SAFE_ADDRESS`; optional `REHEARSAL_PROMPT_FEE` in whole tokens, default 2) |
 | `bun run rehearse:base-testnet` | Admin rehearsal forward phase: fee/treasury/oracle set-and-restore, then ownership of both proxies offered to the Safe; prints the four Safe transactions (accept both, then offer both back) |
-| `bun run rehearse:base-testnet:confirm` | Accepts the ownership the Safe offered back, then verifies ownership, fees, treasury and oracle match the pre-rehearsal snapshot and that no offer is left open. The snapshot records the pair it was read from: one from another pair is refused, and one this phase has passed is not reused as a baseline |
+| `bun run rehearse:base-testnet:confirm` | Accepts the ownership the Safe offered back, then verifies ownership, fees, treasury and oracle match the pre-rehearsal snapshot and that no offer is left open. The snapshot records the pair it was read from and the Safe: one from another pair is refused (in a dry run too), one this phase has passed is not reused as a baseline, and the phase does not pass while the Safe still holds the oracle role the rehearsal gave it. It has no dry run: `DRY_RUN=1` with it is refused |
 | `bun run rehearse:base-mainnet[:dry|:confirm]` | Same three phases against Base mainnet; the forward and confirm phases both send transactions and refuse unless `REHEARSAL_MAINNET_CONFIRMED=1` is set explicitly (the dry run needs no flag) |
 
 ### Oracle (run from `oracle/`)
