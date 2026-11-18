@@ -8,6 +8,8 @@ const proxyquire = require("proxyquire").noCallThru();
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
 
+const { MARKET_DATA_TOOLS } = require("../src/elizaos/marketDataTools");
+
 const ORACLE_ROOT = path.join(__dirname, "..");
 const PACKAGE_NAME = "@coingecko/coingecko-mcp";
 // Written out, not read from package.json: moving the version is then a deliberate edit here too,
@@ -169,6 +171,12 @@ describe("the market-data tool server", function () {
 
     it("offers the fixed market-data tools", function () {
       expect(names).to.include.members(["get_simple_price", "get_coins_markets"]);
+    });
+
+    // The watch alerts when a server does not offer these. This is the same check made here, on
+    // the installed package, so a move of the pin that drops one fails a test and not a run day.
+    it("offers every tool the watch expects of it", function () {
+      expect(names).to.include.members([...MARKET_DATA_TOOLS.coingecko_mcp_local]);
     });
 
     // The package has one, off unless asked for. It would send code written by the model, and the

@@ -1117,6 +1117,11 @@ describe("aiAgentOracle", function () {
       const heartbeat = stubs["./oracleHeartbeat"].startOracleHeartbeat;
       sinon.assert.calledOnce(heartbeat);
       expect(heartbeat.firstCall.calledBefore(mockedContract.isOracle.getCall(2))).to.be.true;
+      // The beat carries the tool servers' state, and taking it is one of the times the watch
+      // looks for a lost server.
+      const observed = heartbeat.firstCall.args[0].observeToolServers();
+      expect(observed).to.have.all.keys("servers", "calls", "rejectedRuns");
+      expect(observed.servers).to.have.property("coingecko_mcp_local");
     });
 
     it("start() with no stored cursor fixes its starting block before it waits for the role", async () => {

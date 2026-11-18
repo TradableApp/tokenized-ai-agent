@@ -41,6 +41,7 @@ function baseEnv(overrides = {}) {
     POSTGRES_CLIENT_CERT_PATH: "/certs/client.crt",
     POSTGRES_CLIENT_KEY_PATH: "/certs/client.key",
     POSTGRES_SERVER_CA_CERT_PATH: "/certs/ca.crt",
+    COINGECKO_API_KEY: "not-a-real-key",
     ...overrides,
   };
 }
@@ -618,6 +619,46 @@ describe("startup config validation", () => {
 
     it("counts a blank PRIVATE_KEY as not set", () => {
       expect(() => validateConfig(baseEnv({ PRIVATE_KEY: "  " }))).to.not.throw();
+    });
+  });
+
+  // The ElizaOS path gets its market data through a tool server that needs this key. Without it
+  // the server starts, lists its tools, and fails every call, so the gap shows only in answers.
+  describe("the market-data key", () => {
+    it("refuses a network that is not local without COINGECKO_API_KEY, and names it", () => {
+      expect(() => validateConfig(baseEnv({ COINGECKO_API_KEY: undefined }))).to.throw(
+        ConfigError,
+        /COINGECKO_API_KEY is missing or empty/,
+      );
+    });
+
+    it("counts a blank key as missing", () => {
+      expect(() => validateConfig(baseEnv({ COINGECKO_API_KEY: "   " }))).to.throw(
+        ConfigError,
+        /COINGECKO_API_KEY is missing or empty/,
+      );
+    });
+
+    it("counts the example file's placeholder as missing, and does not print it", () => {
+      const placeholder = "your_coingecko_api_key_here";
+      let thrown = null;
+      try {
+        validateConfig(baseEnv({ COINGECKO_API_KEY: placeholder }));
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).to.be.instanceOf(ConfigError);
+      expect(thrown.message).to.match(/COINGECKO_API_KEY is still the example-file placeholder/);
+      expect(thrown.message).to.not.include(placeholder);
+    });
+
+    it("starts on a network that is not local when the key is set", () => {
+      expect(() => validateConfig(baseEnv())).to.not.throw();
+    });
+
+    it("does not ask a local network for it", () => {
+      expect(() => validateConfig(localEnv({ COINGECKO_API_KEY: undefined }))).to.not.throw();
     });
   });
 });

@@ -85,6 +85,8 @@ async function probeDisk(diskPath) {
  * @param {Function} [deps.fetchAccountInfo] - Auto-Drive account info (upload/download credits)
  * @param {object} [deps.providerTally] - AI tier counters (`snapshot()`); see providerTally.js
  * @param {Function} [deps.mirrorSnapshot] - payload-mirror counters; see storage/mirror.js
+ * @param {Function} [deps.observeToolServers] - tool servers' state and call counts; see
+ *   elizaos/toolServerWatch.js
  * @param {string} [deps.diskPath] - a real path to measure
  * @returns {Promise<object>} vitals, every field either a value or null
  */
@@ -98,6 +100,7 @@ async function collectVitals(deps = {}) {
     fetchAccountInfo,
     providerTally,
     mirrorSnapshot,
+    observeToolServers,
     diskPath,
   } = deps;
 
@@ -182,15 +185,22 @@ async function collectVitals(deps = {}) {
     // Cumulative write-through mirror counters ({ mirrored, failed, skipped }). The mirror
     // alerts only on its FIRST failure per process; a climbing `failed` here is how the
     // hundredth one stays visible without a hundred alerts.
-    payloadMirror: readMirrorSnapshot(mirrorSnapshot),
+    payloadMirror: readSnapshot(mirrorSnapshot),
+
+    // Each tool server's status, tool count and whether the agent can use it; cumulative call
+    // counts ({ ok, failed, refused, unclear }); and `rejectedRuns`, the runs thrown away because
+    // a tool step failed and nothing answered without it, by what went wrong. A server that is
+    // not `usable`, or `failed` or `rejectedRuns.toolError` climbing while `ok` stands still,
+    // means answers are being written without live market data.
+    toolServers: readSnapshot(observeToolServers),
   };
 }
 
 /** Synchronous caller-supplied getter, guarded like the chain cursor: this collector never throws. */
-function readMirrorSnapshot(mirrorSnapshot) {
-  if (typeof mirrorSnapshot !== "function") return null;
+function readSnapshot(takeSnapshot) {
+  if (typeof takeSnapshot !== "function") return null;
   try {
-    const value = mirrorSnapshot();
+    const value = takeSnapshot();
 
     return value && typeof value === "object" ? value : null;
   } catch {

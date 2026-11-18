@@ -77,6 +77,28 @@ describe("collectVitals", () => {
     expect(withoutMirror.payloadMirror).to.equal(null);
   });
 
+  it("carries the tool servers' state, and null when none is observed or the observer throws", async () => {
+    const { collectVitals } = load();
+    const observed = {
+      servers: { coingecko_mcp_local: { status: "connected", tools: 49 } },
+      calls: { ok: 7, failed: 1 },
+    };
+
+    const withWatch = await collectVitals({ ...OK_DEPS(), observeToolServers: () => observed });
+    expect(withWatch.toolServers).to.deep.equal(observed);
+
+    const withoutWatch = await collectVitals(OK_DEPS());
+    expect(withoutWatch.toolServers).to.equal(null);
+
+    const broken = await collectVitals({
+      ...OK_DEPS(),
+      observeToolServers: () => {
+        throw new Error("watch is gone");
+      },
+    });
+    expect(broken.toolServers).to.equal(null);
+  });
+
   it("carries the cumulative AI tier mix, and null when no tally is injected", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();
