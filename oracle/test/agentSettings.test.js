@@ -166,6 +166,17 @@ describe("cleaning stored agent settings", function () {
     expect(cleaned.removedSettings).to.equal(1);
   });
 
+  it("filters the stored secrets by the list whether or not the character is said to define them", function () {
+    const cleaned = withoutSecrets(stored(), ["LARGE_MODEL"], ["model"]);
+
+    expect(cleaned.settings).to.deep.equal({
+      model: "some-model",
+      secrets: { LARGE_MODEL: "kept" },
+    });
+    expect(cleaned.removedSettings).to.equal(0);
+    expect(cleaned.removedSecrets).to.equal(2);
+  });
+
   it("leaves every other setting as it was and does not change what it was given", function () {
     const input = stored();
     const copy = JSON.parse(JSON.stringify(input));
