@@ -97,6 +97,7 @@ function createStubs(sessionKey) {
       publicKeyFromPrivateKey: sinon.stub().returns("04" + "0f".repeat(64)),
     },
     "@elizaos/core": {
+      setAllowedEnvVars() {},
       ElizaOS: class {
         async addAgents() {
           return ["fake-agent-id"];

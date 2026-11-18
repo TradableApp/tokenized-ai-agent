@@ -15,9 +15,16 @@ const {
   elizaLogger,
   ChannelType,
   EventType,
+  setAllowedEnvVars,
 } = require("@elizaos/core");
 
 const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
+const {
+  AGENT_ENV_ALLOW_LIST,
+  agentForFramework,
+  scrubAgentSettingsInPostgres,
+  cleanStoredAgentSettings: cleanStoredSettings,
+} = require("./elizaos/agentSettings");
 const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
@@ -461,6 +468,21 @@ let senseAiAgentId = null;
 // null where the oracle runs without Postgres. Set by initializeEliza, read by start().
 let agentStateDbUrl = null;
 
+// Cleans what the agent database stores of every agent's settings. Nothing to do where the
+// oracle runs without Postgres: the framework's own store is then a local one.
+async function cleanStoredAgentSettings() {
+  if (!agentStateDbUrl) return;
+  const postgresUrl = agentStateDbUrl;
+  await cleanStoredSettings({
+    scrub: () =>
+      scrubAgentSettingsInPostgres({
+        postgresUrl,
+        keepSettings: Object.keys(senseAiCharacter.settings),
+      }),
+    alert: sendAlert,
+  });
+}
+
 /**
  * Point ElizaOS `plugin-sql` at the oracle's OWN isolated Postgres database
  * (POSTGRES_AGENT_DATABASE, e.g. `oracle_agent`) — NOT PGLite (flaky) and NOT the
@@ -593,12 +615,29 @@ async function initializeEliza() {
     };
   }
 
+  // What an earlier start stored is put back into the running agent when it starts. Clean it
+  // first, so nothing stored reaches the agent, and again after the start for what the start
+  // itself wrote.
+  await cleanStoredAgentSettings();
+
+  // The framework copies environment variables into the character it stores in the agent
+  // database, and with no list it copies all of them. Set before the agent is added.
+  setAllowedEnvVars([...AGENT_ENV_ALLOW_LIST]);
+
   // Add the SenseAI Agent
   try {
     console.log("[ElizaOS] Adding SenseAI Agent...");
     const agentIds = await elizaOS.addAgents([
       {
-        character: senseAiCharacter,
+        // The database address and the tool servers go to the runtime, not into the character,
+        // which is what the framework stores.
+        ...agentForFramework({
+          character: senseAiCharacter,
+          env: {
+            POSTGRES_URL: agentStateDbUrl ?? undefined,
+            PGLITE_DATA_DIR: process.env.PGLITE_DATA_DIR,
+          },
+        }),
         plugins: [
           "@elizaos/plugin-sql", // Connect to multiple MCP servers and use their resources, prompts, and tools.
           "@elizaos/plugin-mcp",
@@ -665,6 +704,10 @@ async function initializeEliza() {
 
     await elizaOS.startAgents();
     console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
+
+    // Starting the agent merged back what an earlier build stored in the agent database. Take
+    // it out again, for every agent stored there.
+    await cleanStoredAgentSettings();
 
     // Watch the framework's tool service: say what it connected to, and alert if the market-data
     // tools are not there. Not waited for, and not a reason to stop. The service can take

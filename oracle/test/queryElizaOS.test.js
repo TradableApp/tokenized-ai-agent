@@ -131,6 +131,7 @@ function loadOracle(elizaStub, extraStubs = {}) {
   process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
   return withTestKeys(proxyquire("../src/aiAgentOracle", {
     "@elizaos/core": {
+      setAllowedEnvVars() {},
       ElizaOS: elizaStub.ElizaOS,
       elizaLogger: { info() {}, log() {}, error() {}, warn() {}, debug() {} },
       stringToUuid: s => s,
@@ -154,6 +155,7 @@ function loadOracleWithBrainConfigured(elizaStub, configured) {
   process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
   return withTestKeys(proxyquire("../src/aiAgentOracle", {
     "@elizaos/core": {
+      setAllowedEnvVars() {},
       ElizaOS: elizaStub.ElizaOS,
       elizaLogger: { info() {}, log() {}, error() {}, warn() {}, debug() {} },
       stringToUuid: s => s,
@@ -317,6 +319,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
     const oracle = loadOracle(stub, {
       "@elizaos/core": {
+        setAllowedEnvVars() {},
         ElizaOS: stub.ElizaOS,
         elizaLogger,
         stringToUuid: s => s,
