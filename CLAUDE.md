@@ -52,8 +52,8 @@ Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-sc
 | `bun run deploy:base-testnet` | Deploy to Base testnet |
 | `bun run deploy:base-mainnet` | Deploy to Base mainnet |
 | `bun run rehearse:base-testnet:dry` | Admin rehearsal dry run on Base testnet: simulates every owner call, sends nothing (needs `REHEARSAL_SAFE_ADDRESS`; optional `REHEARSAL_PROMPT_FEE` in whole tokens, default 2) |
-| `bun run rehearse:base-testnet` | Admin rehearsal forward phase: fee/treasury/oracle set-and-restore, then ownership of both proxies to the Safe; prints the Safe return txs |
-| `bun run rehearse:base-testnet:confirm` | Verifies ownership, fees, treasury and oracle match the pre-rehearsal snapshot after the Safe returns ownership |
+| `bun run rehearse:base-testnet` | Admin rehearsal forward phase: fee/treasury/oracle set-and-restore, then ownership of both proxies offered to the Safe; prints the four Safe transactions (accept both, then offer both back) |
+| `bun run rehearse:base-testnet:confirm` | Accepts the ownership the Safe offered back, then verifies ownership, fees, treasury and oracle match the pre-rehearsal snapshot and that no offer is left open |
 | `bun run rehearse:base-mainnet[:dry|:confirm]` | Same three phases against Base mainnet; the live phase refuses unless `REHEARSAL_MAINNET_CONFIRMED=1` is set explicitly |
 
 ### Oracle (run from `oracle/`)
@@ -276,6 +276,10 @@ Phase 2 tests (153 passing) cover the full prompt lifecycle, spending limits, ca
 - CidBundle field-order guard — verifies struct field order matches oracle's assembly
 - ABI diff check — import ABI JSON and verify `PromptSubmitted` has correct param count, types, and index positions
 - SENSE as the fee token (`test/SenseToken.escrowLifecycle.test.js`) — the escrow and agent run against the SENSE token itself, a dev dependency pinned to a commit of `sense-contracts` and compiled through `contracts/test/SenseTokenImport.sol`. It is compiled against this repository's OpenZeppelin version, so it proves the transfer rule against the escrow's movements, not the deployed bytecode. Covers prompt, answer, cancel, refund, metadata update and branch, and what each unlisted address or a paused token stops. When the token changes, move the pin in `package.json` to the new commit and run the suite
+
+### Ownership
+
+All four contracts hold ownership in two steps (`Ownable2StepUpgradeable` on the EVM pair, `Ownable2Step` on the Sapphire pair): `transferOwnership(next)` only offers it and emits `OwnershipTransferStarted`; the owner changes when `next` calls `acceptOwnership()`. Until then the old owner keeps every owner power, and `pendingOwner()` names who was offered. An address that cannot send a transaction therefore never becomes the owner. `renounceOwnership()` reverts with `OwnershipCannotBeRenounced`. A handover to a Safe is two transactions from two parties: the transfer from the current owner, then `acceptOwnership` from the Safe; it is done only when `owner()` is the Safe and `pendingOwner()` is zero. The owner and the pending owner live in OpenZeppelin's own storage namespaces, so an existing proxy takes this version with every numbered slot where it was (`test/TwoStepOwnership.test.js` holds the layout from before the change).
 
 ## Key Notes
 

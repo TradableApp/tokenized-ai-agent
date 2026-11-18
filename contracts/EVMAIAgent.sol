@@ -3,7 +3,8 @@ pragma solidity ^0.8.21;
 
 import { IEVMAIAgentEscrow } from "./interfaces/IEVMAIAgentEscrow.sol";
 import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import { OwnableUpgradeable } from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+// solhint-disable-next-line max-line-length
+import { Ownable2StepUpgradeable } from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
@@ -20,7 +21,7 @@ import { Structs } from "./libraries/Structs.sol";
  */
 contract EVMAIAgent is
   Initializable,
-  OwnableUpgradeable,
+  Ownable2StepUpgradeable,
   AccessControlUpgradeable,
   UUPSUpgradeable
 {
@@ -287,6 +288,8 @@ contract EVMAIAgent is
   // --- Errors ---
 
   // Admin and Setup Errors
+  /// @notice Thrown by {renounceOwnership}: ownership of this contract cannot be given up.
+  error OwnershipCannotBeRenounced();
   /// @notice Reverts if an address parameter is the zero address.
   error ZeroAddress();
   /// @notice Reverts if an attempt is made to set the escrow address more than once.
@@ -960,6 +963,22 @@ contract EVMAIAgent is
   }
 
   // --- Upgradability ---
+
+  /**
+   * @notice Ownership cannot be given up: the owner authorises oracles, sets the fees and the
+   *         treasury, and upgrades this contract. With no owner none of that can be done again.
+   * @dev Ownership moves in two steps ({transferOwnership}, then {acceptOwnership} by the new
+   *      owner), so an address that cannot act never becomes the owner.
+   *
+   *      `onlyOwner` is kept so a non-owner gets {OwnableUnauthorizedAccount} and the owner gets
+   *      {OwnershipCannotBeRenounced}.
+   *
+   *      solc suggests `view` here; do not apply it. That changes the ABI's `stateMutability`,
+   *      and callers dispatch on it: a `view` function is sent as a read, not a transaction.
+   */
+  function renounceOwnership() public override onlyOwner {
+    revert OwnershipCannotBeRenounced();
+  }
 
   /**
    * @notice This internal function is part of the UUPS upgrade mechanism and is restricted to the owner.

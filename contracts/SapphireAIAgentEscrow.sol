@@ -4,6 +4,7 @@ pragma solidity ^0.8.21;
 import { ISapphireAIAgent } from "./interfaces/ISapphireAIAgent.sol";
 import { Address } from "@openzeppelin/contracts/utils/Address.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /**
  * @title Sapphire AI Agent Escrow Contract
@@ -12,7 +13,7 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
  * @dev This contract manages native token (e.g., ROSE) deposits, payments, and refunds for the Sapphire AI Agent.
  *      It holds funds in escrow while a prompt is being processed by the off-chain oracle.
  */
-contract SapphireAIAgentEscrow is Ownable {
+contract SapphireAIAgentEscrow is Ownable2Step {
   // `payable(x).transfer(v)` forwards a fixed 2300 gas stipend. That is enough for an EOA and
   // not enough for a contract recipient with any receive() logic — a Safe multisig treasury being
   // the obvious case, and one this project plans for. It is also a hard-coded assumption about
@@ -145,6 +146,8 @@ contract SapphireAIAgentEscrow is Ownable {
   // --- Errors ---
 
   // Admin and Setup Errors
+  /// @notice Thrown by {renounceOwnership}: ownership of this contract cannot be given up.
+  error OwnershipCannotBeRenounced();
   /// @notice Reverts if an address parameter is the zero address.
   error ZeroAddress();
 
@@ -672,5 +675,21 @@ contract SapphireAIAgentEscrow is Ownable {
     deposits[_user] -= _fee;
     emit DirectPaymentProcessed(_user, _fee);
     payable(treasury).sendValue(_fee);
+  }
+
+  /**
+   * @notice Ownership cannot be given up: the owner authorises oracles, sets the fees and the
+   *         treasury, and a contract with no owner can do none of that again.
+   * @dev Ownership moves in two steps ({transferOwnership}, then {acceptOwnership} by the new
+   *      owner), so an address that cannot act never becomes the owner.
+   *
+   *      `onlyOwner` is kept so a non-owner gets {OwnableUnauthorizedAccount} and the owner gets
+   *      {OwnershipCannotBeRenounced}.
+   *
+   *      solc suggests `view` here; do not apply it. That changes the ABI's `stateMutability`,
+   *      and callers dispatch on it: a `view` function is sent as a read, not a transaction.
+   */
+  function renounceOwnership() public override onlyOwner {
+    revert OwnershipCannotBeRenounced();
   }
 }

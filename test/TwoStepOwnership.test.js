@@ -1,6 +1,8 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const hre = require("hardhat");
+const layoutBefore = require("./fixtures/storage-layout-before-two-step-ownership.json");
 
 // Ownership of the agent and the escrow decides who may authorise an oracle, set the fees and the
 // treasury, and upgrade. It moves only when the new owner accepts it, so an address that cannot
@@ -171,6 +173,41 @@ describe("ownership moves in two steps and cannot be renounced", function () {
         );
         expect(await contract.owner()).to.equal(next.address);
       }
+    });
+  });
+
+  // An existing proxy can take this version. The owner and the pending owner are kept by
+  // OpenZeppelin in storage namespaces of their own (ERC-7201), outside the contract's numbered
+  // slots, and the owner's namespace is the one the previous version used. So what has to hold
+  // is that every numbered slot is where it was: the fixture is the layout of both contracts
+  // from the commit before this change.
+  describe("an existing proxy", function () {
+    for (const name of ["EVMAIAgent", "EVMAIAgentEscrow"]) {
+      it(`keeps every numbered storage slot of ${name} where it was`, async function () {
+        const buildInfo = await hre.artifacts.getBuildInfo(`contracts/${name}.sol:${name}`);
+        const { storage, types } =
+          buildInfo.output.contracts[`contracts/${name}.sol`][name].storageLayout;
+
+        const now = storage.map((entry) => ({
+          label: entry.label,
+          slot: entry.slot,
+          offset: entry.offset,
+          type: types[entry.type].label,
+        }));
+
+        expect(now).to.deep.equal(layoutBefore[name]);
+        expect(now.map((entry) => entry.label)).to.not.include.members(["_owner", "_pendingOwner"]);
+      });
+    }
+
+    it("keeps its owner in the namespace the one-step version used", async function () {
+      const { agent, owner } = await loadFixture(evmPair);
+      // keccak256(abi.encode(uint256(keccak256("openzeppelin.storage.Ownable")) - 1)) & ~0xff
+      const ownableSlot = "0x9016d09d72d40fdae2fd8ceac6b6234c7706214fd39c1cd1e609a0528c199300";
+
+      const stored = await ethers.provider.getStorage(await agent.getAddress(), ownableSlot);
+
+      expect(ethers.getAddress(ethers.dataSlice(stored, 12))).to.equal(owner.address);
     });
   });
 });
