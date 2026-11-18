@@ -335,6 +335,9 @@ async function cleanAgentDatabase({
  *
  * A failure to add or start is thrown as it is; the second clean is not run then.
  *
+ * Each clean waits for its own alert, for `alertWaitMs` at most. Both wait only when both have
+ * something to report: a clean that fails does each time, an old row only on the first.
+ *
  * @param {{
  *   postgresUrl: string|null,
  *   character: { settings: object },

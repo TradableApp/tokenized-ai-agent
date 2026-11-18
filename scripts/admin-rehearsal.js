@@ -124,9 +124,9 @@ function assertMainnetConfirmed({ networkName, dryRun, confirmed }) {
 
 /** The confirm phase sends the acceptance, so there is nothing a dry run of it could simulate. */
 function assertPhaseCanDryRun({ phase, dryRun }) {
-  if (dryRun && phase !== "forward") {
+  if (dryRun && phase === "confirm") {
     throw new Error(
-      `The ${phase} phase has no dry run: it sends a transaction. Unset DRY_RUN to run it.`,
+      "The confirm phase has no dry run: it sends a transaction. Unset DRY_RUN to run it.",
     );
   }
 }
@@ -576,16 +576,24 @@ async function confirmPhase({
   // An acceptance that has just landed can be read from a node still behind its block, which
   // reports the Safe as owner. Read again then. With nothing accepted, the first answer stands.
   const attempts = accepted.length > 0 ? VERIFY_ATTEMPTS : 1;
-  let { ok, mismatches } = await verify({ contracts, state });
+  // A forward run stopped between authorising the Safe as an oracle and removing it has changed
+  // nothing the snapshot holds. Without the second read, the phase would call such a run
+  // complete. It is read with the rest, so it is read again with the rest.
+  const read = async () => {
+    const returned = await verify({ contracts, state });
+    if (!safe || !(await contracts.aiAgent.isOracle(safe))) return returned;
+    return {
+      ok: false,
+      mismatches: [
+        ...returned.mismatches,
+        { field: "safeIsOracle", expected: "false", actual: "true" },
+      ],
+    };
+  };
+  let { ok, mismatches } = await read();
   for (let attempt = 2; !ok && attempt <= attempts; attempt += 1) {
     await sleep(VERIFY_RETRY_MS);
-    ({ ok, mismatches } = await verify({ contracts, state }));
-  }
-  // A forward run stopped between authorising the Safe as an oracle and removing it has changed
-  // nothing the snapshot holds. Without this, the phase would call such a run complete.
-  if (safe && (await contracts.aiAgent.isOracle(safe))) {
-    ok = false;
-    mismatches = [...mismatches, { field: "safeIsOracle", expected: "false", actual: "true" }];
+    ({ ok, mismatches } = await read());
   }
   if (!ok) {
     for (const m of mismatches) {

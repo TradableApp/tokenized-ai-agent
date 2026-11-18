@@ -966,6 +966,37 @@ describe("scripts/admin-rehearsal", function () {
       expect(written.safe).to.equal(safe.address);
     });
 
+    // The removal of the Safe's role can be as fresh as the acceptance, and as late to a node.
+    it("reads the Safe's oracle role again with the rest, past a node that has not caught up", async function () {
+      const { contracts, state, deployer, safe, log } = await loadFixture(deployFixture);
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { safe: safe.address }));
+      const answers = [true, false];
+      let reads = 0;
+      const behind = new Proxy(contracts.aiAgent, {
+        get(target, property) {
+          if (property === "isOracle") return async () => answers[reads++];
+          return Reflect.get(target, property, target);
+        },
+      });
+
+      await confirmPhase({
+        contracts: { ...contracts, aiAgent: behind },
+        signer: deployer,
+        log,
+        snapshotFile,
+        accept: async () => ["agent"],
+        verify: async () => ({ ok: true, mismatches: [] }),
+        sleep: async () => {},
+      });
+
+      expect(reads).to.equal(2);
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(true);
+    });
+
     it("gives up after its attempts and reports what still differs", async function () {
       const { contracts, state, deployer, log } = await loadFixture(deployFixture);
       const snapshotFile = path.join(

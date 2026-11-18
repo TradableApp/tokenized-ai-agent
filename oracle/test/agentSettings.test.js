@@ -785,6 +785,25 @@ describe("the agent's start, with its stored settings cleaned", function () {
     expect(record.calls).to.deep.equal(["clean", "allow", "add"]);
   });
 
+  it("does not start, or clean again, when the agent cannot be added", async function () {
+    const { record, options } = standIns();
+
+    let thrown;
+    try {
+      await startAgentWithCleanSettings({
+        ...options,
+        addAgent: async () => {
+          throw new Error("no add");
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown?.message).to.equal("no add");
+    expect(record.calls).to.deep.equal(["clean", "allow"]);
+  });
+
   // What is left in the oracle is the hand-over of its own values. The framework is reached
   // only through this start, so nothing can add or start an agent beside it.
   it("is how the oracle starts its agent, with its own database, character and alert", function () {
