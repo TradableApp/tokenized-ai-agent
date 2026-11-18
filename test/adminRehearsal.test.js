@@ -10,6 +10,7 @@ const {
   buildPlan,
   runPlan,
   buildSafeReturnTxs,
+  acceptReturned,
   verifyReturned,
   parseRehearsalFee,
   forwardPhase,
@@ -193,15 +194,14 @@ describe("scripts/admin-rehearsal", function () {
         args: [safe.address],
         expected: false,
       });
+      // The deploy wallet's transfer is an offer: the Safe is the pending owner until it accepts.
       expect(plan[6].event).to.deep.equal({
-        name: "OwnershipTransferred",
+        name: "OwnershipTransferStarted",
         args: [deployer.address, safe.address],
       });
-      expect(plan[6].verify).to.deep.equal({ getter: "owner", expected: safe.address });
-      expect(plan[7].event).to.deep.equal({
-        name: "OwnershipTransferred",
-        args: [deployer.address, safe.address],
-      });
+      expect(plan[6].verify).to.deep.equal({ getter: "pendingOwner", expected: safe.address });
+      expect(plan[7].event).to.deep.equal(plan[6].event);
+      expect(plan[7].verify).to.deep.equal(plan[6].verify);
     });
 
     it("rejects a Safe address that is zero, malformed or already the owner", async function () {
@@ -285,7 +285,7 @@ describe("scripts/admin-rehearsal", function () {
       ).to.be.rejectedWith(/\[fee-set\][\s\S]*REHEARSAL_PHASE=confirm/);
     });
 
-    it("executes, proves each event and getter, and leaves fees restored and ownership with the Safe", async function () {
+    it("executes, proves each event and getter, and leaves fees restored and ownership offered to the Safe", async function () {
       const { contracts, state, log, deployer, oracle, treasury, safe } =
         await loadFixture(deployFixture);
       const plan = buildPlan({
@@ -302,8 +302,10 @@ describe("scripts/admin-rehearsal", function () {
       expect(await contracts.escrow.treasury()).to.equal(treasury.address);
       expect(await contracts.aiAgent.isOracle(oracle.address)).to.equal(true);
       expect(await contracts.aiAgent.isOracle(safe.address)).to.equal(false);
-      expect(await contracts.aiAgent.owner()).to.equal(safe.address);
-      expect(await contracts.escrow.owner()).to.equal(safe.address);
+      expect(await contracts.aiAgent.owner()).to.equal(deployer.address);
+      expect(await contracts.escrow.owner()).to.equal(deployer.address);
+      expect(await contracts.aiAgent.pendingOwner()).to.equal(safe.address);
+      expect(await contracts.escrow.pendingOwner()).to.equal(safe.address);
     });
 
     it("rejects when the emitted event does not match the plan", async function () {
@@ -346,8 +348,10 @@ describe("scripts/admin-rehearsal", function () {
       expect(lines.some((l) => l.includes("[fee-set]") || l.includes("already"))).to.equal(true);
       expect(results.filter((r) => r.skipped)).to.have.length(1);
       expect(await contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
-      expect(await contracts.aiAgent.owner()).to.equal(safe.address);
-      expect(await contracts.escrow.owner()).to.equal(safe.address);
+      expect(await contracts.aiAgent.owner()).to.equal(deployer.address);
+      expect(await contracts.escrow.owner()).to.equal(deployer.address);
+      expect(await contracts.aiAgent.pendingOwner()).to.equal(safe.address);
+      expect(await contracts.escrow.pendingOwner()).to.equal(safe.address);
     });
   });
 
@@ -394,26 +398,26 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("buildSafeReturnTxs", function () {
-    it("encodes transferOwnership back to the deploy wallet for both proxies", async function () {
+    it("has the Safe accept both proxies and then offer them back to the deploy wallet", async function () {
       const { contracts, deployer } = await loadFixture(deployFixture);
 
       const txs = await buildSafeReturnTxs({ contracts, returnTo: deployer.address });
 
-      const agentData = contracts.aiAgent.interface.encodeFunctionData("transferOwnership", [
-        deployer.address,
-      ]);
-      const escrowData = contracts.escrow.interface.encodeFunctionData("transferOwnership", [
+      const agent = await contracts.aiAgent.getAddress();
+      const escrow = await contracts.escrow.getAddress();
+      const accept = contracts.aiAgent.interface.encodeFunctionData("acceptOwnership", []);
+      const giveBack = contracts.aiAgent.interface.encodeFunctionData("transferOwnership", [
         deployer.address,
       ]);
       expect(txs).to.deep.equal([
-        { to: await contracts.aiAgent.getAddress(), value: "0", data: agentData },
-        { to: await contracts.escrow.getAddress(), value: "0", data: escrowData },
+        { to: agent, value: "0", data: accept },
+        { to: escrow, value: "0", data: accept },
+        { to: agent, value: "0", data: giveBack },
+        { to: escrow, value: "0", data: giveBack },
       ]);
     });
-  });
 
-  describe("verifyReturned", function () {
-    it("reports the mismatches while the Safe still owns the proxies, then passes once returned", async function () {
+    it("is a sequence the Safe can send as written, after which the deploy wallet accepts", async function () {
       const { contracts, state, log, deployer, safe } = await loadFixture(deployFixture);
       const plan = buildPlan({
         state,
@@ -422,16 +426,53 @@ describe("scripts/admin-rehearsal", function () {
       });
       await runPlan({ plan, contracts, signer: deployer, dryRun: false, log });
 
-      const before = await verifyReturned({ contracts, state });
-      expect(before.ok).to.equal(false);
-      expect(before.mismatches.map((m) => m.field).sort()).to.deep.equal([
-        "agentOwner",
-        "escrowOwner",
-      ]);
+      for (const tx of await buildSafeReturnTxs({ contracts, returnTo: deployer.address })) {
+        await safe.sendTransaction({ to: tx.to, data: tx.data });
+      }
+      expect(await contracts.aiAgent.owner()).to.equal(safe.address);
+
+      const accepted = await acceptReturned({ contracts, signer: deployer, log });
+
+      expect(accepted).to.deep.equal(["agent", "escrow"]);
+      expect(await verifyReturned({ contracts, state })).to.deep.equal({
+        ok: true,
+        mismatches: [],
+      });
+      expect(await acceptReturned({ contracts, signer: deployer, log })).to.deep.equal([]);
+    });
+  });
+
+  describe("verifyReturned", function () {
+    it("reports an offer still open, then the Safe as owner, then passes once returned", async function () {
+      const { contracts, state, log, deployer, safe } = await loadFixture(deployFixture);
+      const plan = buildPlan({
+        state,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+      await runPlan({ plan, contracts, signer: deployer, dryRun: false, log });
+      const fields = (result) => result.mismatches.map((m) => m.field).sort();
+
+      const offered = await verifyReturned({ contracts, state });
+      expect(offered.ok).to.equal(false);
+      expect(fields(offered)).to.deep.equal(["agentPendingOwner", "escrowPendingOwner"]);
+
+      await contracts.aiAgent.connect(safe).acceptOwnership();
+      await contracts.escrow.connect(safe).acceptOwnership();
+      const held = await verifyReturned({ contracts, state });
+      expect(fields(held)).to.deep.equal(["agentOwner", "escrowOwner"]);
 
       await contracts.aiAgent.connect(safe).transferOwnership(deployer.address);
       await contracts.escrow.connect(safe).transferOwnership(deployer.address);
+      const offeredBack = await verifyReturned({ contracts, state });
+      expect(fields(offeredBack)).to.deep.equal([
+        "agentOwner",
+        "agentPendingOwner",
+        "escrowOwner",
+        "escrowPendingOwner",
+      ]);
 
+      await acceptReturned({ contracts, signer: deployer, log });
       const after = await verifyReturned({ contracts, state });
       expect(after).to.deep.equal({ ok: true, mismatches: [] });
     });
@@ -523,7 +564,7 @@ describe("scripts/admin-rehearsal", function () {
         encryptionKey: "0x",
         encryptionKeyPublisher: ethers.ZeroAddress,
       });
-      expect(await fixture.contracts.aiAgent.owner()).to.equal(fixture.safeContractAddress);
+      expect(await fixture.contracts.aiAgent.pendingOwner()).to.equal(fixture.safeContractAddress);
     });
 
     it("writes no snapshot on a dry run", async function () {
@@ -540,6 +581,7 @@ describe("scripts/admin-rehearsal", function () {
       await fixture.contracts.escrow
         .connect(fixture.deployer)
         .transferOwnership(fixture.stranger.address);
+      await fixture.contracts.escrow.connect(fixture.stranger).acceptOwnership();
       const snapshotFile = scratchSnapshot();
 
       await expect(run(fixture, { snapshotFile })).to.be.rejectedWith(/does not own both/);
@@ -576,8 +618,8 @@ describe("scripts/admin-rehearsal", function () {
       expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(true);
       expect(fixture.lines.some((l) => l.includes("Pre-rehearsal state saved"))).to.equal(false);
       expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
-      expect(await fixture.contracts.aiAgent.owner()).to.equal(fixture.safeContractAddress);
-      expect(await fixture.contracts.escrow.owner()).to.equal(fixture.safeContractAddress);
+      expect(await fixture.contracts.aiAgent.pendingOwner()).to.equal(fixture.safeContractAddress);
+      expect(await fixture.contracts.escrow.pendingOwner()).to.equal(fixture.safeContractAddress);
     });
   });
 
@@ -638,6 +680,59 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("confirmPhase", function () {
+    it("accepts the ownership the Safe offered back, then confirms the snapshot", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { contracts, state, deployer, safe } = fixture;
+      const lines = [];
+      const log = (line) => lines.push(String(line));
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]))),
+      );
+      const plan = buildPlan({
+        state,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+      await runPlan({ plan, contracts, signer: deployer, dryRun: false, log });
+      for (const tx of await buildSafeReturnTxs({ contracts, returnTo: deployer.address })) {
+        await safe.sendTransaction({ to: tx.to, data: tx.data });
+      }
+
+      await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
+
+      expect(await contracts.aiAgent.owner()).to.equal(deployer.address);
+      expect(await contracts.escrow.owner()).to.equal(deployer.address);
+      expect(lines.join("\n")).to.match(/Confirm phase complete/);
+    });
+
+    it("does not confirm while the Safe has still to send its transactions", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { contracts, state, deployer, safe, log } = fixture;
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]))),
+      );
+      const plan = buildPlan({
+        state,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+      await runPlan({ plan, contracts, signer: deployer, dryRun: false, log });
+
+      await expect(
+        confirmPhase({ contracts, signer: deployer, log, snapshotFile }),
+      ).to.be.rejectedWith(/not been fully returned/);
+    });
+
     it("explains how to produce a missing snapshot", async function () {
       const { contracts, log } = await loadFixture(deployFixture);
       const missing = path.join(os.tmpdir(), "rehearsal-missing", "snapshot.json");

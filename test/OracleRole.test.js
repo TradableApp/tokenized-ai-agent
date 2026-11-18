@@ -192,6 +192,7 @@ describe("Oracle role — several oracles can be authorized at once", function (
           await loadFixture(deployFixture);
 
         await aiAgent.connect(deployer).transferOwnership(stranger.address);
+        await aiAgent.connect(stranger).acceptOwnership();
 
         expect(await aiAgent.isOracle(oracle.address)).to.equal(true);
         await expect(

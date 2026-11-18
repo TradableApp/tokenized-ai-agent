@@ -10,7 +10,7 @@ const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
 const PHASES = new Set(["forward", "confirm"]);
 const MAINNET_NETWORK = "base";
 const RECOVERY_HINT =
-  "Re-run the forward phase to resume: the existing snapshot stays the restore baseline and steps whose getter already holds the target are skipped. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; any proxy already owned by the Safe is returned with transferOwnership(<deploy wallet>) queued from the Safe.";
+  "Re-run the forward phase to resume: the existing snapshot stays the restore baseline and steps whose getter already holds the target are skipped. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
 // Public RPC endpoints are load-balanced; the node that answers the read-back may not have the
 // block the receipt came from yet. Read at that block and retry rather than fail a landed tx.
 const VERIFY_ATTEMPTS = 5;
@@ -136,7 +136,10 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
   const feeEvent = (value) => ({ name: "PromptFeeUpdated", args: [value] });
   const feeVerify = (value) => ({ getter: "promptFee", expected: value });
   const addrEvent = (name, value) => ({ name, args: [value] });
-  const ownerEvent = (from) => ({ name: "OwnershipTransferred", args: [from, safe] });
+  // Ownership moves in two steps. The deploy wallet's transfer only offers it: the Safe becomes
+  // the pending owner, and the owner changes when the Safe itself accepts.
+  const offerEvent = (from) => ({ name: "OwnershipTransferStarted", args: [from, safe] });
+  const offered = { getter: "pendingOwner", expected: safe };
   const roleEvent = (name) => ({ name, args: [ORACLE_ROLE, safe] });
 
   return [
@@ -178,16 +181,16 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
       "agent",
       "transferOwnership",
       [safe],
-      ownerEvent(state.agentOwner),
-      { getter: "owner", expected: safe },
+      offerEvent(state.agentOwner),
+      offered,
     ),
     step(
       "escrow-owner-to-safe",
       "escrow",
       "transferOwnership",
       [safe],
-      ownerEvent(state.escrowOwner),
-      { getter: "owner", expected: safe },
+      offerEvent(state.escrowOwner),
+      offered,
     ),
   ];
 }
@@ -310,20 +313,60 @@ async function runPlan({ plan, contracts, signer, dryRun, log }) {
   return results;
 }
 
+/**
+ * What the Safe sends, in this order: it accepts ownership of both proxies, which is what proves
+ * it can act as their owner, and then offers ownership back. The deploy wallet accepts that offer
+ * in the confirm phase.
+ */
 async function buildSafeReturnTxs({ contracts, returnTo }) {
-  const encode = async (contract) => ({
+  const proxies = [contracts.aiAgent, contracts.escrow];
+  const encode = async (contract, method, args) => ({
     to: await contract.getAddress(),
     value: "0",
-    data: contract.interface.encodeFunctionData("transferOwnership", [returnTo]),
+    data: contract.interface.encodeFunctionData(method, args),
   });
-  return [await encode(contracts.aiAgent), await encode(contracts.escrow)];
+  return [
+    ...(await Promise.all(proxies.map((proxy) => encode(proxy, "acceptOwnership", [])))),
+    ...(await Promise.all(proxies.map((proxy) => encode(proxy, "transferOwnership", [returnTo])))),
+  ];
+}
+
+/**
+ * Accepts the ownership the Safe offered back, on each proxy where the signer is the pending
+ * owner. A proxy whose owner is already the signer is left alone, so the phase can be run again.
+ * Returns the names of the proxies it accepted on.
+ */
+async function acceptReturned({ contracts, signer, log }) {
+  const accepted = [];
+  for (const [name, proxy] of [
+    ["agent", contracts.aiAgent],
+    ["escrow", contracts.escrow],
+  ]) {
+    const pending = await proxy.pendingOwner();
+    if (!sameValue(pending, signer.address)) continue;
+    const receipt = await (await proxy.connect(signer).acceptOwnership()).wait();
+    log(`  ${name}.acceptOwnership tx: ${receipt.hash} (block ${receipt.blockNumber})`);
+    accepted.push(name);
+  }
+  return accepted;
 }
 
 async function verifyReturned({ contracts, state }) {
   const live = await readState({ ...contracts, oracleAddress: state.oracle });
-  const mismatches = Object.keys(state)
-    .filter((field) => !sameValue(live[field], state[field]))
-    .map((field) => ({ field, expected: String(state[field]), actual: String(live[field]) }));
+  // An offer nobody accepted would leave the snapshot's owner in place and still be open.
+  const [agentPendingOwner, escrowPendingOwner] = await Promise.all([
+    contracts.aiAgent.pendingOwner(),
+    contracts.escrow.pendingOwner(),
+  ]);
+  const pending = Object.entries({ agentPendingOwner, escrowPendingOwner })
+    .filter(([, actual]) => !sameValue(actual, ethers.ZeroAddress))
+    .map(([field, actual]) => ({ field, expected: ethers.ZeroAddress, actual: String(actual) }));
+  const mismatches = [
+    ...Object.keys(state)
+      .filter((field) => !sameValue(live[field], state[field]))
+      .map((field) => ({ field, expected: String(state[field]), actual: String(live[field]) })),
+    ...pending,
+  ];
   return { ok: mismatches.length === 0, mismatches };
 }
 
@@ -431,13 +474,16 @@ async function forwardPhase({
   log(chalk.green("\nForward phase complete."));
   const returnTxs = await buildSafeReturnTxs({ contracts, returnTo: signer.address });
   log(
-    "\nQueue these two transactions from the Safe (Transaction Builder → custom data), then run REHEARSAL_PHASE=confirm:",
+    "\nQueue these four transactions from the Safe, in this order (Transaction Builder → custom data): it accepts ownership of both proxies, then offers it back. Then run REHEARSAL_PHASE=confirm, which accepts the offer from this wallet:",
   );
   log(JSON.stringify(returnTxs, null, 2));
 }
 
-async function confirmPhase({ contracts, log, snapshotFile }) {
+async function confirmPhase({ contracts, signer, log, snapshotFile }) {
   const state = readSnapshot(snapshotFile);
+  if (signer) {
+    await acceptReturned({ contracts, signer, log });
+  }
   if (!("encryptionKey" in state)) {
     log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
   }
@@ -487,7 +533,7 @@ async function main() {
       snapshotFile,
     });
   } else {
-    await confirmPhase({ contracts, log, snapshotFile });
+    await confirmPhase({ contracts, signer, log, snapshotFile });
   }
 }
 
@@ -496,6 +542,7 @@ module.exports = {
   buildPlan,
   runPlan,
   buildSafeReturnTxs,
+  acceptReturned,
   verifyReturned,
   parseRehearsalFee,
   forwardPhase,
