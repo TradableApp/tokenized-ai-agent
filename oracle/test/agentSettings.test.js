@@ -257,6 +257,7 @@ describe("what the oracle hands the framework for one agent", function () {
 
     expect(runtime.getSetting("POSTGRES_URL")).to.equal(env.POSTGRES_URL);
     expect(runtime.getSetting("PGLITE_DATA_DIR")).to.equal(env.PGLITE_DATA_DIR);
+    // The tool plugin looks for its servers here when the character does not carry them.
     expect(runtime.settings.mcp.servers.market.env.A_KEY).to.equal("tool-key");
     const storedCharacter = JSON.stringify(runtime.character);
     expect(storedCharacter).to.not.include("postgres://");

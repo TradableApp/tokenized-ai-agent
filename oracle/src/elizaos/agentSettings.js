@@ -11,9 +11,14 @@
  * only: model names and the framework's own tuning values. Nothing the oracle must keep to itself
  * belongs in it. The plugins that need a credential read it from the environment themselves.
  *
- * Two things still reach the stored row and are removed after the agent has started: values
- * written by an earlier build, which the framework merges back in on every start, and what each
- * tool server is started with, which the character has to carry in memory for the tool plugin.
+ * The framework's plugins read their settings through the runtime and never from the
+ * environment, so two things the list keeps out still have to reach them: the address of the
+ * agent database, and the tool servers with what each is started with. Both are handed to the
+ * runtime as its own settings, which it keeps in memory and does not store. See
+ * agentForFramework.
+ *
+ * What an earlier build stored is still in the database, and the framework merges it back in on
+ * every start, so every stored agent is cleaned after the agent has started.
  */
 
 // Read by the framework or the model plugin through the agent's settings. A test refuses any
@@ -88,33 +93,52 @@ function withoutSecrets(settings, allowList) {
   return { settings: cleaned, removedSecrets, removedToolEnv };
 }
 
+// What the database plugin reads through the runtime.
+const DATABASE_SETTINGS = Object.freeze(["POSTGRES_URL", "PGLITE_DATA_DIR"]);
+
 /**
- * Cleans the stored settings of one agent. Writes only when something was removed.
+ * One agent as the framework is given it: the character without its tool servers, and the
+ * settings the runtime keeps in memory only. The character is what the framework stores.
+ *
+ * @param {{ character: object, env?: Record<string, string|undefined> }} options
+ * @returns {{ character: object, settings: object }}
+ */
+function agentForFramework({ character, env = {} }) {
+  const { mcp, ...storedSettings } = isPlainObject(character.settings) ? character.settings : {};
+  const settings = {};
+  if (mcp !== undefined) settings.mcp = mcp;
+  for (const name of DATABASE_SETTINGS) {
+    const value = env[name];
+    if (typeof value === "string" && value.trim() !== "") settings[name] = value;
+  }
+  return { character: { ...character, settings: storedSettings }, settings };
+}
+
+/**
+ * Cleans the stored settings of every agent in the database. Writes only the rows something was
+ * removed from.
  *
  * @param {{
- *   query: (text: string, values: unknown[]) => Promise<{ rows: object[] }>,
- *   agentId: string,
+ *   query: (text: string, values?: unknown[]) => Promise<{ rows: object[] }>,
  *   allowList?: readonly string[],
  * }} options
- * @returns {Promise<{ found: boolean, removedSecrets: number, removedToolEnv: number }>}
+ * @returns {Promise<{ agents: number, removedSecrets: number, removedToolEnv: number }>}
  */
-async function scrubStoredAgentSettings({ query, agentId, allowList = AGENT_ENV_ALLOW_LIST }) {
-  const read = await query("SELECT settings FROM agents WHERE id = $1", [agentId]);
-  if (read.rows.length === 0) {
-    return { found: false, removedSecrets: 0, removedToolEnv: 0 };
-  }
+async function scrubStoredAgentSettings({ query, allowList = AGENT_ENV_ALLOW_LIST }) {
+  const read = await query("SELECT id, settings FROM agents");
+  const total = { agents: read.rows.length, removedSecrets: 0, removedToolEnv: 0 };
 
-  const { settings, removedSecrets, removedToolEnv } = withoutSecrets(
-    read.rows[0].settings,
-    allowList,
-  );
-  if (removedSecrets > 0 || removedToolEnv > 0) {
+  for (const row of read.rows) {
+    const { settings, removedSecrets, removedToolEnv } = withoutSecrets(row.settings, allowList);
+    if (removedSecrets === 0 && removedToolEnv === 0) continue;
     await query("UPDATE agents SET settings = $2::jsonb WHERE id = $1", [
-      agentId,
+      row.id,
       JSON.stringify(settings),
     ]);
+    total.removedSecrets += removedSecrets;
+    total.removedToolEnv += removedToolEnv;
   }
-  return { found: true, removedSecrets, removedToolEnv };
+  return total;
 }
 
 // One short-lived connection: this runs once, after the agent has started.
@@ -123,9 +147,9 @@ const SCRUB_QUERY_TIMEOUT_MS = 10 * 1000;
 /**
  * Cleans the stored settings in the agent's Postgres database, over a connection of its own.
  *
- * @param {{ postgresUrl: string, agentId: string }} options
+ * @param {{ postgresUrl: string }} options
  */
-async function scrubAgentSettingsInPostgres({ postgresUrl, agentId }) {
+async function scrubAgentSettingsInPostgres({ postgresUrl }) {
   // Lazy, as in oracleState/runtime: a run with no database never loads pg.
   const { Client } = require("pg");
   const client = new Client({
@@ -138,16 +162,59 @@ async function scrubAgentSettingsInPostgres({ postgresUrl, agentId }) {
   try {
     return await scrubStoredAgentSettings({
       query: (text, values) => client.query(text, values),
-      agentId,
     });
   } finally {
     await client.end();
   }
 }
 
+/**
+ * The clean at start-up, with what it reports. A failure does not stop the oracle: answers do
+ * not depend on it. It is alerted, because until it succeeds a stored row may hold values that
+ * belong only inside the enclave. Of a failure only its kind is reported: a database error can
+ * carry the address it was connecting to.
+ *
+ * @param {{
+ *   scrub: () => Promise<{ agents: number, removedSecrets: number, removedToolEnv: number }>,
+ *   alert: (subject: string, message: string) => Promise<unknown>,
+ *   log?: (line: string) => void,
+ * }} options
+ */
+async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
+  let subject;
+  let message;
+  try {
+    const { agents, removedSecrets, removedToolEnv } = await scrub();
+    log(
+      `[ElizaOS] Stored agent settings cleaned: ${agents} agent(s), ${removedSecrets} stored ` +
+        `value(s) and ${removedToolEnv} tool-server environment(s) removed.`,
+    );
+    if (removedSecrets === 0 && removedToolEnv === 0) return;
+    subject = "CRITICAL: Stored agent settings held values that were removed";
+    message =
+      `${removedSecrets} stored value(s) and ${removedToolEnv} tool-server environment(s) were ` +
+      "removed from the agent database at start-up. They were written by an earlier build. " +
+      "Treat every secret that build was given as exposed to the agent database and rotate it.";
+  } catch (error) {
+    const kind = String(error?.code ?? error?.name ?? "Error");
+    log(`[ElizaOS] Could not clean the stored agent settings (${kind}).`);
+    subject = "CRITICAL: Stored agent settings could not be cleaned";
+    message =
+      `The agent's stored settings were not cleaned at start-up (${kind}). The oracle is ` +
+      "answering. A stored row may still hold values from an earlier build.";
+  }
+  try {
+    await alert(subject, message);
+  } catch {
+    log("[ElizaOS] The alert about the stored agent settings could not be sent.");
+  }
+}
+
 module.exports = {
   AGENT_ENV_ALLOW_LIST,
+  agentForFramework,
   withoutSecrets,
   scrubStoredAgentSettings,
   scrubAgentSettingsInPostgres,
+  cleanStoredAgentSettings,
 };

@@ -19,7 +19,12 @@ const {
 } = require("@elizaos/core");
 
 const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
-const { AGENT_ENV_ALLOW_LIST, scrubAgentSettingsInPostgres } = require("./elizaos/agentSettings");
+const {
+  AGENT_ENV_ALLOW_LIST,
+  agentForFramework,
+  scrubAgentSettingsInPostgres,
+  cleanStoredAgentSettings: cleanStoredSettings,
+} = require("./elizaos/agentSettings");
 const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
@@ -463,38 +468,15 @@ let senseAiAgentId = null;
 // null where the oracle runs without Postgres. Set by initializeEliza, read by start().
 let agentStateDbUrl = null;
 
-/**
- * Cleans the agent's stored settings. A failure here does not stop the oracle: answers do not
- * depend on it. It is alerted, because until it succeeds the stored row may hold values that
- * belong only inside the enclave.
- */
-async function cleanStoredAgentSettings(agentId) {
+// Cleans what the agent database stores of every agent's settings. Nothing to do where the
+// oracle runs without Postgres: the framework's own store is then a local one.
+async function cleanStoredAgentSettings() {
   if (!agentStateDbUrl) return;
-  try {
-    const { found, removedSecrets, removedToolEnv } = await scrubAgentSettingsInPostgres({
-      postgresUrl: agentStateDbUrl,
-      agentId,
-    });
-    console.log(
-      `[ElizaOS] Stored agent settings cleaned: ${found ? "row found" : "no row"}, ` +
-        `${removedSecrets} stored value(s) and ${removedToolEnv} tool-server environment(s) removed.`,
-    );
-    if (removedSecrets > 0) {
-      await sendAlert(
-        "CRITICAL: Stored agent settings held values that were removed",
-        `${removedSecrets} value(s) were removed from the agent's stored settings at start-up. ` +
-          "They were written by an earlier build. Treat every secret that build was given as " +
-          "exposed to the agent database and rotate it.",
-      );
-    }
-  } catch (error) {
-    console.error("[ElizaOS] Could not clean the stored agent settings:", describeError(error));
-    await sendAlert(
-      "CRITICAL: Stored agent settings could not be cleaned",
-      `The agent's stored settings were not cleaned at start-up: ${describeError(error)}. ` +
-        "The oracle is answering. The stored row may still hold values from an earlier build.",
-    );
-  }
+  const postgresUrl = agentStateDbUrl;
+  await cleanStoredSettings({
+    scrub: () => scrubAgentSettingsInPostgres({ postgresUrl }),
+    alert: sendAlert,
+  });
 }
 
 /**
@@ -638,7 +620,15 @@ async function initializeEliza() {
     console.log("[ElizaOS] Adding SenseAI Agent...");
     const agentIds = await elizaOS.addAgents([
       {
-        character: senseAiCharacter,
+        // The database address and the tool servers go to the runtime, not into the character,
+        // which is what the framework stores.
+        ...agentForFramework({
+          character: senseAiCharacter,
+          env: {
+            POSTGRES_URL: agentStateDbUrl ?? undefined,
+            PGLITE_DATA_DIR: process.env.PGLITE_DATA_DIR,
+          },
+        }),
         plugins: [
           "@elizaos/plugin-sql", // Connect to multiple MCP servers and use their resources, prompts, and tools.
           "@elizaos/plugin-mcp",
@@ -706,9 +696,9 @@ async function initializeEliza() {
     await elizaOS.startAgents();
     console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
 
-    // Starting the agent wrote its settings to the agent database. Take out what must not stay
-    // there: values an earlier build stored, and what the tool servers are started with.
-    await cleanStoredAgentSettings(senseAiAgentId);
+    // Starting the agent merged back what an earlier build stored in the agent database. Take
+    // it out again, for every agent stored there.
+    await cleanStoredAgentSettings();
 
     // Watch the framework's tool service: say what it connected to, and alert if the market-data
     // tools are not there. Not waited for, and not a reason to stop. The service can take
