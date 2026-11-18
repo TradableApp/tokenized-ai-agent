@@ -12,6 +12,16 @@ const {
   cleanStoredAgentSettings,
 } = require("../src/elizaos/agentSettings");
 
+// The oracle's source with its comment lines taken out, so a call that is only mentioned in a
+// comment is not taken for the call.
+function oracleSource() {
+  return fs
+    .readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+}
+
 const AGENT_ID = "11111111-2222-3333-4444-555555555555";
 
 function stored() {
@@ -106,7 +116,7 @@ describe("what the agent framework may copy from the environment", function () {
   });
 
   it("is set in the oracle before the agent is added", function () {
-    const source = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8");
+    const source = oracleSource();
     const set = source.indexOf("setAllowedEnvVars(");
     const added = source.indexOf("elizaOS.addAgents(");
 
@@ -245,6 +255,15 @@ describe("cleaning stored agent settings", function () {
     expect(JSON.parse(db.calls[1].values[1])).to.deep.equal({ model: "m" });
   });
 
+  it("writes nothing, and counts nothing, for a stored tool-server name with no value", async function () {
+    const db = fakeDb([{ model: "m", mcp: null }]);
+
+    const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
+
+    expect(result.removedToolServers).to.equal(0);
+    expect(db.calls).to.have.lengthOf(1);
+  });
+
   it("writes nothing when there is nothing to remove", async function () {
     const db = fakeDb([{ model: "m", secrets: { LARGE_MODEL: "kept" } }]);
 
@@ -322,6 +341,14 @@ describe("what the oracle hands the framework for one agent", function () {
     });
   });
 
+  it("hands the runtime its own copy of the tool servers, not the character's", function () {
+    const agent = agentForFramework({ character, env });
+
+    agent.settings.mcp.servers.market.command = "changed";
+
+    expect(character.settings.mcp.servers.market.command).to.equal("node");
+  });
+
   it("leaves out a database setting that is not set, and does not change the character", function () {
     const copy = JSON.parse(JSON.stringify(character));
 
@@ -373,11 +400,7 @@ describe("what the oracle hands the framework for one agent", function () {
   });
 
   it("is what the oracle adds the agent with, with a clean before the agent is added and after it starts", function () {
-    const source = fs
-      .readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8")
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("//"))
-      .join("\n");
+    const source = oracleSource();
     const added = source.indexOf("elizaOS.addAgents(");
     const started = source.indexOf("await elizaOS.startAgents()");
     const cleans = [...source.matchAll(/await cleanStoredAgentSettings\(/g)].map((m) => m.index);
@@ -442,7 +465,7 @@ describe("the clean at start-up", function () {
   });
 
   it("tells the clean which settings the character defines", function () {
-    const source = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8");
+    const source = oracleSource();
 
     expect(source).to.match(/keepSettings: Object\.keys\(senseAiCharacter\.settings\)/);
   });
