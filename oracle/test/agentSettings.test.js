@@ -187,6 +187,15 @@ describe("cleaning stored agent settings", function () {
     expect(JSON.parse(db.calls[1].values[1])).to.deep.equal({ model: "m" });
   });
 
+  it("leaves the empty tool-server block this build stores, and writes nothing for it", async function () {
+    const db = fakeDb([{ model: "m", mcp: {} }]);
+
+    const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
+
+    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolServers: 0 });
+    expect(db.calls).to.have.lengthOf(1);
+  });
+
   it("writes nothing when there is nothing to remove", async function () {
     const db = fakeDb([{ model: "m", secrets: { LARGE_MODEL: "kept" } }]);
 
@@ -235,9 +244,11 @@ describe("what the oracle hands the framework for one agent", function () {
   it("keeps the tool servers out of the character, which is what gets stored", function () {
     const agent = agentForFramework({ character, env });
 
-    // Null and not absent: an absent name lets a stored block through, a null one replaces it
-    // in the running character and removes it from the stored row.
-    expect(agent.character.settings.mcp).to.equal(null);
+    // Empty and not absent: an absent name lets a stored block through, an empty one replaces
+    // it in the running character. The framework refuses a null setting.
+    expect(agent.character.settings.mcp).to.deep.equal({});
+    expect(require("@elizaos/core").validateCharacter({ bio: "b", ...agent.character }).success).to
+      .be.true;
     expect(agent.character.settings.model).to.equal("some-model");
     expect(JSON.stringify(agent.character)).to.not.include("tool-key");
   });

@@ -51,19 +51,21 @@ function isPlainObject(value) {
 }
 
 /**
- * The settings with every stored secret that is not allowed removed, and with each tool
- * server's start-up environment removed. Returns new objects; what it is given is not changed.
+ * The settings with every stored secret that is not allowed removed, and with the stored tool
+ * servers removed whole. A stored tool-server block is put back into the running character on the
+ * next start and used ahead of the one the oracle built, so what is stored would choose the
+ * command the oracle runs. Returns new objects; what it is given is not changed.
  *
  * @param {object|null|undefined} settings the agent row's settings
  * @param {readonly string[]} allowList names that may stay under `secrets`
- * @returns {{ settings: object, removedSecrets: number, removedToolEnv: number }}
+ * @returns {{ settings: object, removedSecrets: number, removedToolServers: number }}
  */
 function withoutSecrets(settings, allowList) {
   const source = isPlainObject(settings) ? settings : {};
   const allowed = new Set(allowList);
   let removedSecrets = 0;
-  let removedToolEnv = 0;
-  const cleaned = { ...source };
+  let removedToolServers = 0;
+  const { mcp, ...cleaned } = source;
 
   if ("secrets" in source) {
     const stored = isPlainObject(source.secrets) ? source.secrets : {};
@@ -75,22 +77,15 @@ function withoutSecrets(settings, allowList) {
     cleaned.secrets = kept;
   }
 
-  const servers = source.mcp?.servers;
-  if (isPlainObject(servers)) {
-    const cleanedServers = {};
-    for (const [name, server] of Object.entries(servers)) {
-      if (isPlainObject(server) && "env" in server) {
-        const { env: _env, ...rest } = server;
-        cleanedServers[name] = rest;
-        removedToolEnv += 1;
-      } else {
-        cleanedServers[name] = server;
-      }
-    }
-    cleaned.mcp = { ...source.mcp, servers: cleanedServers };
+  // The empty block this build stores is harmless and is put back as it was.
+  if (isPlainObject(mcp) && Object.keys(mcp).length === 0) {
+    cleaned.mcp = {};
+  } else if ("mcp" in source) {
+    const servers = isPlainObject(mcp?.servers) ? Object.keys(mcp.servers).length : 0;
+    removedToolServers = Math.max(servers, 1);
   }
 
-  return { settings: cleaned, removedSecrets, removedToolEnv };
+  return { settings: cleaned, removedSecrets, removedToolServers };
 }
 
 // What the database plugin reads through the runtime.
@@ -104,9 +99,15 @@ const DATABASE_SETTINGS = Object.freeze(["POSTGRES_URL", "PGLITE_DATA_DIR"]);
  * @returns {{ character: object, settings: object }}
  */
 function agentForFramework({ character, env = {} }) {
-  const { mcp, ...storedSettings } = isPlainObject(character.settings) ? character.settings : {};
+  const { mcp, ...ownSettings } = isPlainObject(character.settings) ? character.settings : {};
+  // An empty block and not a name left out. On a start the framework puts the stored settings
+  // under the character's own, and the tool plugin looks in the character before the runtime's
+  // settings: a name left out would let a stored block through. An empty block replaces it in
+  // the running character, and the tool plugin passes over a block that names no servers. It
+  // cannot be null: the framework refuses a character with a null setting.
+  const storedSettings = { ...ownSettings, mcp: {} };
   const settings = {};
-  if (mcp !== undefined) settings.mcp = mcp;
+  if (mcp !== undefined && mcp !== null) settings.mcp = mcp;
   for (const name of DATABASE_SETTINGS) {
     const value = env[name];
     if (typeof value === "string" && value.trim() !== "") settings[name] = value;
@@ -122,21 +123,24 @@ function agentForFramework({ character, env = {} }) {
  *   query: (text: string, values?: unknown[]) => Promise<{ rows: object[] }>,
  *   allowList?: readonly string[],
  * }} options
- * @returns {Promise<{ agents: number, removedSecrets: number, removedToolEnv: number }>}
+ * @returns {Promise<{ agents: number, removedSecrets: number, removedToolServers: number }>}
  */
 async function scrubStoredAgentSettings({ query, allowList = AGENT_ENV_ALLOW_LIST }) {
   const read = await query("SELECT id, settings FROM agents");
-  const total = { agents: read.rows.length, removedSecrets: 0, removedToolEnv: 0 };
+  const total = { agents: read.rows.length, removedSecrets: 0, removedToolServers: 0 };
 
   for (const row of read.rows) {
-    const { settings, removedSecrets, removedToolEnv } = withoutSecrets(row.settings, allowList);
-    if (removedSecrets === 0 && removedToolEnv === 0) continue;
+    const { settings, removedSecrets, removedToolServers } = withoutSecrets(
+      row.settings,
+      allowList,
+    );
+    if (removedSecrets === 0 && removedToolServers === 0) continue;
     await query("UPDATE agents SET settings = $2::jsonb WHERE id = $1", [
       row.id,
       JSON.stringify(settings),
     ]);
     total.removedSecrets += removedSecrets;
-    total.removedToolEnv += removedToolEnv;
+    total.removedToolServers += removedToolServers;
   }
   return total;
 }
@@ -158,13 +162,16 @@ async function scrubAgentSettingsInPostgres({ postgresUrl }) {
     query_timeout: SCRUB_QUERY_TIMEOUT_MS,
     statement_timeout: SCRUB_QUERY_TIMEOUT_MS,
   });
+  // A connection that drops while idle raises an event, and an event nobody listens for stops
+  // the process. The query in flight still fails and is reported by the caller.
+  client.on("error", () => {});
   await client.connect();
   try {
     return await scrubStoredAgentSettings({
       query: (text, values) => client.query(text, values),
     });
   } finally {
-    await client.end();
+    await client.end().catch(() => {});
   }
 }
 
@@ -175,7 +182,7 @@ async function scrubAgentSettingsInPostgres({ postgresUrl }) {
  * carry the address it was connecting to.
  *
  * @param {{
- *   scrub: () => Promise<{ agents: number, removedSecrets: number, removedToolEnv: number }>,
+ *   scrub: () => Promise<{ agents: number, removedSecrets: number, removedToolServers: number }>,
  *   alert: (subject: string, message: string) => Promise<unknown>,
  *   log?: (line: string) => void,
  * }} options
@@ -184,15 +191,15 @@ async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
   let subject;
   let message;
   try {
-    const { agents, removedSecrets, removedToolEnv } = await scrub();
+    const { agents, removedSecrets, removedToolServers } = await scrub();
     log(
       `[ElizaOS] Stored agent settings cleaned: ${agents} agent(s), ${removedSecrets} stored ` +
-        `value(s) and ${removedToolEnv} tool-server environment(s) removed.`,
+        `value(s) and ${removedToolServers} stored tool server(s) removed.`,
     );
-    if (removedSecrets === 0 && removedToolEnv === 0) return;
+    if (removedSecrets === 0 && removedToolServers === 0) return;
     subject = "CRITICAL: Stored agent settings held values that were removed";
     message =
-      `${removedSecrets} stored value(s) and ${removedToolEnv} tool-server environment(s) were ` +
+      `${removedSecrets} stored value(s) and ${removedToolServers} stored tool server(s) were ` +
       "removed from the agent database at start-up. They were written by an earlier build. " +
       "Treat every secret that build was given as exposed to the agent database and rotate it.";
   } catch (error) {

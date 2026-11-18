@@ -611,6 +611,11 @@ async function initializeEliza() {
     };
   }
 
+  // What an earlier start stored is put back into the running agent when it starts. Clean it
+  // first, so nothing stored reaches the agent, and again after the start for what the start
+  // itself wrote.
+  await cleanStoredAgentSettings();
+
   // The framework copies environment variables into the character it stores in the agent
   // database, and with no list it copies all of them. Set before the agent is added.
   setAllowedEnvVars([...AGENT_ENV_ALLOW_LIST]);
