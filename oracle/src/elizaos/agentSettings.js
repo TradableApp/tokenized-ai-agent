@@ -87,10 +87,15 @@ function withoutSecrets(settings, allowList, keepSettings) {
     cleaned.secrets = keptSecrets;
   }
 
-  // The empty block this build stores is harmless and is put back as it was.
-  if (isPlainObject(mcp) && Object.keys(mcp).length === 0) {
+  // The empty block this build stores is harmless and is put back as it was, and so is a name
+  // with no value: neither holds a server.
+  if (!("mcp" in source)) {
+    // Nothing stored.
+  } else if (mcp === null || mcp === undefined) {
+    cleaned.mcp = mcp;
+  } else if (isPlainObject(mcp) && Object.keys(mcp).length === 0) {
     cleaned.mcp = {};
-  } else if ("mcp" in source) {
+  } else {
     const servers = isPlainObject(mcp?.servers) ? Object.keys(mcp.servers).length : 0;
     removedToolServers = Math.max(servers, 1);
   }
@@ -117,7 +122,8 @@ function agentForFramework({ character, env = {} }) {
   // cannot be null: the framework refuses a character with a null setting.
   const storedSettings = { ...ownSettings, mcp: {} };
   const settings = {};
-  if (mcp !== undefined && mcp !== null) settings.mcp = mcp;
+  // A copy: the character is shared by the whole process, and the runtime owns its settings.
+  if (mcp !== undefined && mcp !== null) settings.mcp = structuredClone(mcp);
   for (const name of DATABASE_SETTINGS) {
     const value = env[name];
     if (typeof value === "string" && value.trim() !== "") settings[name] = value;
