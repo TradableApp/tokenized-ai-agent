@@ -85,7 +85,8 @@ describe("the escrow with SENSE as the fee token", function () {
     };
     const submitted = find(agent, "PromptSubmitted");
     return {
-      answerMessageId: find(escrow, "PaymentEscrowed").args[0],
+      // The key both contracts know the prompt by; the escrow's own event carries the same id.
+      answerMessageId: submitted.args[3],
       conversationId: submitted.args[1],
       promptMessageId: submitted.args[2],
     };
@@ -230,7 +231,7 @@ describe("the escrow with SENSE as the fee token", function () {
       }
     });
 
-    it("refuses prompts, answers and refunds alike while the token is paused", async function () {
+    it("refuses prompts, answers, refunds and cancels alike while the token is paused", async function () {
       const { token, agent, escrow, user, oracle, stranger } = await loadFixture(everythingListed);
       const { answerMessageId, promptMessageId } = await prompt(escrow, agent, user);
       await time.increase(await escrow.REFUND_TIMEOUT());
@@ -244,6 +245,9 @@ describe("the escrow with SENSE as the fee token", function () {
       ).to.be.revertedWithCustomError(token, "EnforcedPause");
       await expect(
         escrow.connect(stranger).processRefund(answerMessageId),
+      ).to.be.revertedWithCustomError(token, "EnforcedPause");
+      await expect(
+        escrow.connect(user).cancelPrompt(answerMessageId),
       ).to.be.revertedWithCustomError(token, "EnforcedPause");
     });
   });
