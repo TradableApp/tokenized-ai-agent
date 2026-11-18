@@ -141,6 +141,21 @@ describe("cleaning stored agent settings", function () {
     expect(cleaned.removedToolServers).to.equal(1);
   });
 
+  // The framework reads a stored setting ahead of the one the oracle hands the runtime, so a
+  // name the character does not define itself has no business in the stored row.
+  it("drops a stored setting the character does not define, when told which it defines", function () {
+    const input = { ...stored(), POSTGRES_URL: "would-be-a-url", voice: { model: "v" } };
+
+    const cleaned = withoutSecrets(input, ["LARGE_MODEL"], ["model", "voice", "secrets", "mcp"]);
+
+    expect(cleaned.settings).to.deep.equal({
+      model: "some-model",
+      voice: { model: "v" },
+      secrets: { LARGE_MODEL: "kept" },
+    });
+    expect(cleaned.removedSettings).to.equal(1);
+  });
+
   it("leaves every other setting as it was and does not change what it was given", function () {
     const input = stored();
     const copy = JSON.parse(JSON.stringify(input));
@@ -156,6 +171,7 @@ describe("cleaning stored agent settings", function () {
       settings: { model: "m" },
       removedSecrets: 0,
       removedToolServers: 0,
+      removedSettings: 0,
     });
     expect(withoutSecrets(null, []).settings).to.deep.equal({});
     expect(withoutSecrets({ secrets: "not-an-object" }, []).settings).to.deep.equal({
@@ -168,7 +184,12 @@ describe("cleaning stored agent settings", function () {
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: ["LARGE_MODEL"] });
 
-    expect(result).to.deep.equal({ agents: 3, removedSecrets: 4, removedToolServers: 4 });
+    expect(result).to.deep.equal({
+      agents: 3,
+      removedSecrets: 4,
+      removedToolServers: 4,
+      removedSettings: 0,
+    });
     const writes = db.calls.filter((call) => /^\s*UPDATE/i.test(call.text));
     expect(writes.map((call) => call.values[0])).to.deep.equal(["agent-0", "agent-2"]);
     for (const write of writes) {
@@ -183,7 +204,12 @@ describe("cleaning stored agent settings", function () {
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
 
-    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolServers: 1 });
+    expect(result).to.deep.equal({
+      agents: 1,
+      removedSecrets: 0,
+      removedToolServers: 1,
+      removedSettings: 0,
+    });
     expect(JSON.parse(db.calls[1].values[1])).to.deep.equal({ model: "m" });
   });
 
@@ -192,8 +218,31 @@ describe("cleaning stored agent settings", function () {
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
 
-    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolServers: 0 });
+    expect(result).to.deep.equal({
+      agents: 1,
+      removedSecrets: 0,
+      removedToolServers: 0,
+      removedSettings: 0,
+    });
     expect(db.calls).to.have.lengthOf(1);
+  });
+
+  it("writes a row whose only fault is a setting the character does not define", async function () {
+    const db = fakeDb([{ model: "m", POSTGRES_URL: "would-be-a-url" }]);
+
+    const result = await scrubStoredAgentSettings({
+      query: db.query,
+      allowList: [],
+      keepSettings: ["model"],
+    });
+
+    expect(result).to.deep.equal({
+      agents: 1,
+      removedSecrets: 0,
+      removedToolServers: 0,
+      removedSettings: 1,
+    });
+    expect(JSON.parse(db.calls[1].values[1])).to.deep.equal({ model: "m" });
   });
 
   it("writes nothing when there is nothing to remove", async function () {
@@ -201,7 +250,12 @@ describe("cleaning stored agent settings", function () {
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: ["LARGE_MODEL"] });
 
-    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolServers: 0 });
+    expect(result).to.deep.equal({
+      agents: 1,
+      removedSecrets: 0,
+      removedToolServers: 0,
+      removedSettings: 0,
+    });
     expect(db.calls).to.have.lengthOf(1);
   });
 
@@ -210,7 +264,12 @@ describe("cleaning stored agent settings", function () {
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
 
-    expect(result).to.deep.equal({ agents: 0, removedSecrets: 0, removedToolServers: 0 });
+    expect(result).to.deep.equal({
+      agents: 0,
+      removedSecrets: 0,
+      removedToolServers: 0,
+      removedSettings: 0,
+    });
     expect(db.calls).to.have.lengthOf(1);
   });
 
@@ -346,7 +405,12 @@ describe("the clean at start-up", function () {
     const out = recorder();
 
     await cleanStoredAgentSettings({
-      scrub: async () => ({ agents: 1, removedSecrets: 3, removedToolServers: 1 }),
+      scrub: async () => ({
+        agents: 1,
+        removedSecrets: 3,
+        removedToolServers: 1,
+        removedSettings: 0,
+      }),
       alert: out.alert,
       log: out.log,
     });
@@ -359,11 +423,40 @@ describe("the clean at start-up", function () {
     expect(out.alerts[0].message).to.include("3");
   });
 
+  it("alerts for a stored setting the character does not define", async function () {
+    const out = recorder();
+
+    await cleanStoredAgentSettings({
+      scrub: async () => ({
+        agents: 1,
+        removedSecrets: 0,
+        removedToolServers: 0,
+        removedSettings: 2,
+      }),
+      alert: out.alert,
+      log: out.log,
+    });
+
+    expect(out.alerts).to.have.lengthOf(1);
+    expect(out.alerts[0].message).to.include("2 other stored setting(s)");
+  });
+
+  it("tells the clean which settings the character defines", function () {
+    const source = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8");
+
+    expect(source).to.match(/keepSettings: Object\.keys\(senseAiCharacter\.settings\)/);
+  });
+
   it("does not alert when nothing an earlier build stored was found", async function () {
     const out = recorder();
 
     await cleanStoredAgentSettings({
-      scrub: async () => ({ agents: 1, removedSecrets: 0, removedToolServers: 0 }),
+      scrub: async () => ({
+        agents: 1,
+        removedSecrets: 0,
+        removedToolServers: 0,
+        removedSettings: 0,
+      }),
       alert: out.alert,
       log: out.log,
     });
