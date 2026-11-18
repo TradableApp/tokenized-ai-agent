@@ -19,11 +19,7 @@ const {
 } = require("@elizaos/core");
 
 const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
-const {
-  agentForFramework,
-  allowOnlyListedEnv,
-  cleanAgentDatabase,
-} = require("./elizaos/agentSettings");
+const { startAgentWithCleanSettings } = require("./elizaos/agentSettings");
 const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
@@ -467,15 +463,6 @@ let senseAiAgentId = null;
 // null where the oracle runs without Postgres. Set by initializeEliza, read by start().
 let agentStateDbUrl = null;
 
-// Cleans what the agent database stores of every agent's settings.
-function cleanStoredAgentSettings() {
-  return cleanAgentDatabase({
-    postgresUrl: agentStateDbUrl,
-    character: senseAiCharacter,
-    alert: sendAlert,
-  });
-}
-
 /**
  * Point ElizaOS `plugin-sql` at the oracle's OWN isolated Postgres database
  * (POSTGRES_AGENT_DATABASE, e.g. `oracle_agent`) — NOT PGLite (flaky) and NOT the
@@ -608,99 +595,93 @@ async function initializeEliza() {
     };
   }
 
-  // What an earlier start stored is put back into the running agent when it starts. Clean it
-  // first, so nothing stored reaches the agent, and again after the start for what the start
-  // itself wrote.
-  await cleanStoredAgentSettings();
-
-  // The framework copies environment variables into the character it stores in the agent
-  // database, and with no list it copies all of them. Set before the agent is added.
-  allowOnlyListedEnv(setAllowedEnvVars);
-
-  // Add the SenseAI Agent
+  // Add and start the SenseAI Agent. The order around it (clean what is stored, name the
+  // environment variables the framework may copy, add, start, clean again) is
+  // startAgentWithCleanSettings', which also keeps the database address and the tool servers
+  // out of the character the framework stores.
   try {
     console.log("[ElizaOS] Adding SenseAI Agent...");
-    const agentIds = await elizaOS.addAgents([
-      {
-        // The database address and the tool servers go to the runtime, not into the character,
-        // which is what the framework stores.
-        ...agentForFramework({
-          character: senseAiCharacter,
-          env: {
-            POSTGRES_URL: agentStateDbUrl ?? undefined,
-            PGLITE_DATA_DIR: process.env.PGLITE_DATA_DIR,
-          },
-        }),
-        plugins: [
-          "@elizaos/plugin-sql", // Connect to multiple MCP servers and use their resources, prompts, and tools.
-          "@elizaos/plugin-mcp",
-
-          // Text-only plugins (no embedding support)
-          ...(process.env.ANTHROPIC_API_KEY?.trim() ? ["@elizaos/plugin-anthropic"] : []),
-          ...(process.env.OPENROUTER_API_KEY?.trim() ? ["@elizaos/plugin-openrouter"] : []),
-
-          // Embedding-capable plugins (optional, based on available credentials)
-          ...(process.env.OPENAI_API_KEY?.trim() ? ["@elizaos/plugin-openai"] : []),
-          ...(process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim()
-            ? ["@elizaos/plugin-google-genai"]
-            : []),
-
-          // We use the @elizaos/plugin-mcp to connect to Coingecko MCP server instead
-          // ...(process.env.COINGECKO_API_KEY?.trim() &&
-          // process.env.COINGECKO_PRO_API_KEY?.trim()
-          //   ? ["@elizaos/plugin-coingecko"]
-          //   : []),
-
-          // Bootstrap plugin
-          ...(!process.env.IGNORE_BOOTSTRAP ? ["@elizaos/plugin-bootstrap"] : []),
-
-          senseaiPlugin,
-        ],
+    await startAgentWithCleanSettings({
+      postgresUrl: agentStateDbUrl,
+      character: senseAiCharacter,
+      env: {
+        POSTGRES_URL: agentStateDbUrl ?? undefined,
+        PGLITE_DATA_DIR: process.env.PGLITE_DATA_DIR,
       },
-    ]);
+      alert: sendAlert,
+      setAllowedEnvVars,
+      addAgent: (agent) =>
+        elizaOS.addAgents([
+          {
+            ...agent,
+            plugins: [
+              "@elizaos/plugin-sql", // Connect to multiple MCP servers and use their resources, prompts, and tools.
+              "@elizaos/plugin-mcp",
 
-    senseAiAgentId = agentIds[0];
-    console.log("senseAiAgentId", senseAiAgentId);
+              // Text-only plugins (no embedding support)
+              ...(process.env.ANTHROPIC_API_KEY?.trim() ? ["@elizaos/plugin-anthropic"] : []),
+              ...(process.env.OPENROUTER_API_KEY?.trim() ? ["@elizaos/plugin-openrouter"] : []),
 
-    // Start the agent lifecycle
-    // The Brain's connection stays HERE, in the host: brainContext builds it with the mTLS
-    // cert params Cloud SQL requires, wraps it in drizzle (the Brain's ctx.db is a
-    // NodePgDatabase, not a raw Pool) and sets query timeouts. The plugin's BrainService is a
-    // thin adapter over these handles — it cannot reuse bootstrapPostgresFromEnv without
-    // dragging oracle/src into its bundle, and duplicating it silently dropped all three.
-    if (typeof senseaiPluginModule.setBrainAccessor === "function") {
-      senseaiPluginModule.setBrainAccessor(getBrainHandles);
-    } else if (isBrainConfigured()) {
-      // FATAL WHEN THE BRAIN IS CONFIGURED. A missing export is a broken/stale plugin build, not
-      // a runtime blip — and because providers degrade so gracefully, the result is
-      // indistinguishable from a Cloud SQL outage: mainnet answering without market context,
-      // indefinitely, with one log line as the only signal. An operator who configured Cloud SQL
-      // has stated the intent; failing to honour it must stop the process, not whisper.
-      //
-      // Thrown at STARTUP rather than per prompt on purpose. This runs inside initializeEliza,
-      // so a broken build never serves traffic and the supervisor restarts with a clear cause,
-      // instead of each prompt paying for a degraded answer. Per-prompt failure would be worse
-      // than useless: queryElizaOS would fail over to another model, hiding the build error
-      // behind a plausible answer.
-      throw new Error(
-        "setBrainAccessor missing from the plugin build, but the Brain IS configured — the " +
-          "market-context path is inoperative. Rebuild plugin-senseai (bun run build) before starting.",
-      );
-    } else {
-      // No Brain configured (localnet e2e has no Cloud SQL): absence is expected, so this is
-      // information, not a fault. Gating on isBrainConfigured is what keeps the check precise —
-      // refusing to boot here would break the environments the graceful degradation exists for.
-      console.warn(
-        "[ElizaOS] setBrainAccessor absent and no Brain configured — answering without market context.",
-      );
-    }
+              // Embedding-capable plugins (optional, based on available credentials)
+              ...(process.env.OPENAI_API_KEY?.trim() ? ["@elizaos/plugin-openai"] : []),
+              ...(process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim()
+                ? ["@elizaos/plugin-google-genai"]
+                : []),
 
-    await elizaOS.startAgents();
-    console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
+              // We use the @elizaos/plugin-mcp to connect to Coingecko MCP server instead
+              // ...(process.env.COINGECKO_API_KEY?.trim() &&
+              // process.env.COINGECKO_PRO_API_KEY?.trim()
+              //   ? ["@elizaos/plugin-coingecko"]
+              //   : []),
 
-    // Starting the agent merged back what an earlier build stored in the agent database. Take
-    // it out again, for every agent stored there.
-    await cleanStoredAgentSettings();
+              // Bootstrap plugin
+              ...(!process.env.IGNORE_BOOTSTRAP ? ["@elizaos/plugin-bootstrap"] : []),
+
+              senseaiPlugin,
+            ],
+          },
+        ]),
+      startAgents: async (agentIds) => {
+        senseAiAgentId = agentIds[0];
+        console.log("senseAiAgentId", senseAiAgentId);
+
+        // Start the agent lifecycle
+        // The Brain's connection stays HERE, in the host: brainContext builds it with the mTLS
+        // cert params Cloud SQL requires, wraps it in drizzle (the Brain's ctx.db is a
+        // NodePgDatabase, not a raw Pool) and sets query timeouts. The plugin's BrainService is a
+        // thin adapter over these handles — it cannot reuse bootstrapPostgresFromEnv without
+        // dragging oracle/src into its bundle, and duplicating it silently dropped all three.
+        if (typeof senseaiPluginModule.setBrainAccessor === "function") {
+          senseaiPluginModule.setBrainAccessor(getBrainHandles);
+        } else if (isBrainConfigured()) {
+          // FATAL WHEN THE BRAIN IS CONFIGURED. A missing export is a broken/stale plugin build, not
+          // a runtime blip — and because providers degrade so gracefully, the result is
+          // indistinguishable from a Cloud SQL outage: mainnet answering without market context,
+          // indefinitely, with one log line as the only signal. An operator who configured Cloud SQL
+          // has stated the intent; failing to honour it must stop the process, not whisper.
+          //
+          // Thrown at STARTUP rather than per prompt on purpose. This runs inside initializeEliza,
+          // so a broken build never serves traffic and the supervisor restarts with a clear cause,
+          // instead of each prompt paying for a degraded answer. Per-prompt failure would be worse
+          // than useless: queryElizaOS would fail over to another model, hiding the build error
+          // behind a plausible answer.
+          throw new Error(
+            "setBrainAccessor missing from the plugin build, but the Brain IS configured — the " +
+              "market-context path is inoperative. Rebuild plugin-senseai (bun run build) before starting.",
+          );
+        } else {
+          // No Brain configured (localnet e2e has no Cloud SQL): absence is expected, so this is
+          // information, not a fault. Gating on isBrainConfigured is what keeps the check precise —
+          // refusing to boot here would break the environments the graceful degradation exists for.
+          console.warn(
+            "[ElizaOS] setBrainAccessor absent and no Brain configured — answering without market context.",
+          );
+        }
+
+        await elizaOS.startAgents();
+        console.log(`[ElizaOS] SenseAI Agent started with ID: ${senseAiAgentId}`);
+      },
+    });
 
     // Watch the framework's tool service: say what it connected to, and alert if the market-data
     // tools are not there. Not waited for, and not a reason to stop. The service can take

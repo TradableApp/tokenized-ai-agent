@@ -678,8 +678,8 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   }
 
   /**
-   * @notice Ownership cannot be given up: the owner authorises oracles, sets the fees and the
-   *         treasury, and a contract with no owner can do none of that again.
+   * @notice Ownership cannot be given up: the owner sets the fees and the treasury, and a contract
+   *         with no owner can do neither again.
    * @dev Ownership moves in two steps ({transferOwnership}, then {acceptOwnership} by the new
    *      owner), so an address that cannot act never becomes the owner.
    *

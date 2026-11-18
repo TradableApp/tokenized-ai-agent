@@ -567,7 +567,8 @@ describe("scripts/admin-rehearsal", function () {
       const firstStepAt = fixture.lines.findIndex((l) => l.includes("[fee-set]"));
       expect(savedAt).to.be.greaterThan(-1);
       expect(savedAt).to.be.lessThan(firstStepAt);
-      const saved = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      const { pair, ...saved } = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(pair.escrow).to.equal(await fixture.contracts.escrow.getAddress());
       expect(saved).to.deep.equal({
         agentOwner: fixture.state.agentOwner,
         escrowOwner: fixture.state.escrowOwner,

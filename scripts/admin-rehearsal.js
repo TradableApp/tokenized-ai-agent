@@ -374,21 +374,73 @@ function snapshotPath() {
   return path.resolve(__dirname, `../cache/admin-rehearsal.${hre.network.name}.json`);
 }
 
-function writeSnapshot(state, file) {
+/** The two proxies a rehearsal runs against, as the snapshot records them. */
+async function pairOf({ aiAgent, escrow }) {
+  const [agentAddress, escrowAddress] = await Promise.all([
+    aiAgent.getAddress(),
+    escrow.getAddress(),
+  ]);
+  return { agent: agentAddress, escrow: escrowAddress };
+}
+
+/**
+ * The snapshot holds the pre-rehearsal values and the pair they were read from. The file is
+ * named after the network only, so one left by a rehearsal of another pair would otherwise be
+ * taken as this pair's baseline, and its treasury and fee written here as a "restore".
+ * `confirmed` marks a rehearsal the confirm phase has passed: its values are no longer a baseline.
+ */
+function writeSnapshot(state, file, pair, { confirmed = false } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const serialisable = Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]));
-  fs.writeFileSync(file, JSON.stringify(serialisable, null, 2));
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ ...serialisable, pair, ...(confirmed ? { confirmed: true } : {}) }, null, 2),
+  );
   return file;
 }
 
-function readSnapshot(file) {
+/** Reads the snapshot for `pair`: `{ state, confirmed }`. Refuses one that is not this pair's. */
+function readSnapshot(file, pair) {
   if (!fs.existsSync(file)) {
     throw new Error(
       `No snapshot at ${file}; run the forward phase first (for example bun run rehearse:base-testnet)`,
     );
   }
-  const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-  return { ...raw, promptFee: BigInt(raw.promptFee) };
+  const { pair: recorded, confirmed, ...raw } = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (!recorded?.agent || !recorded?.escrow) {
+    throw new Error(
+      `The snapshot at ${file} does not say which pair it was taken for, so it cannot be used as a baseline. Move it aside if it belongs to a rehearsal still to be returned by hand, or delete it, then run the forward phase again.`,
+    );
+  }
+  if (!sameValue(recorded.agent, pair.agent) || !sameValue(recorded.escrow, pair.escrow)) {
+    throw new Error(
+      `The snapshot at ${file} was taken for another pair (agent ${recorded.agent}, escrow ${recorded.escrow}), not agent ${pair.agent}, escrow ${pair.escrow}. Nothing was sent. Move it aside or delete it, then run the forward phase again.`,
+    );
+  }
+  return { state: { ...raw, promptFee: BigInt(raw.promptFee) }, confirmed: confirmed === true };
+}
+
+/**
+ * The rehearsal offers ownership and reads the offer back, which needs `pendingOwner()`. A pair
+ * from before ownership moved in two steps has none: a dry run would pass against it, and a
+ * live run would stop after the fee, treasury and oracle steps had been sent.
+ */
+async function assertOwnershipMovesInTwoSteps({ aiAgent, escrow }) {
+  for (const [name, proxy] of [
+    ["agent", aiAgent],
+    ["escrow", escrow],
+  ]) {
+    try {
+      await proxy.pendingOwner();
+    } catch (error) {
+      if (!isRevert(error)) {
+        throw error;
+      }
+      throw new Error(
+        `The ${name} has no pendingOwner(): this pair moves ownership in one step, and the rehearsal is written for a pair that moves it in two steps. Nothing was sent.`,
+      );
+    }
+  }
 }
 
 function loadEnv() {
@@ -435,6 +487,8 @@ async function forwardPhase({
     throw new Error("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
   }
 
+  await assertOwnershipMovesInTwoSteps(contracts);
+  const pair = await pairOf(contracts);
   const live = await readState(contracts);
   const show = (st) =>
     JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
@@ -450,9 +504,12 @@ async function forwardPhase({
 
   // A snapshot left by an aborted live run is the ONLY record of the pre-rehearsal values; the
   // live state may already carry rehearsal values (e.g. the fee). It stays the restore baseline
-  // and is never overwritten. To start over deliberately, delete the file first.
-  const resuming = !dryRun && fs.existsSync(snapshotFile);
-  const state = resuming ? readSnapshot(snapshotFile) : live;
+  // and is never overwritten. To start over deliberately, delete the file first. A snapshot the
+  // confirm phase has passed is a finished rehearsal, not a baseline: the next one starts from
+  // the live state.
+  const left = !dryRun && fs.existsSync(snapshotFile) ? readSnapshot(snapshotFile, pair) : null;
+  const resuming = left !== null && !left.confirmed;
+  const state = resuming ? left.state : live;
   if (resuming) {
     log(`Resuming: ${snapshotFile} exists and stays the restore baseline: ${show(state)}`);
   }
@@ -460,7 +517,7 @@ async function forwardPhase({
   await assertSafeHasCode(ethers.getAddress(safeAddress));
 
   if (!dryRun && !resuming) {
-    writeSnapshot(state, snapshotFile);
+    writeSnapshot(state, snapshotFile, pair);
     log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
 
@@ -479,21 +536,36 @@ async function forwardPhase({
   log(JSON.stringify(returnTxs, null, 2));
 }
 
-async function confirmPhase({ contracts, signer, log, snapshotFile }) {
-  const state = readSnapshot(snapshotFile);
-  if (signer) {
-    await acceptReturned({ contracts, signer, log });
-  }
+async function confirmPhase({
+  contracts,
+  signer,
+  log,
+  snapshotFile,
+  accept = acceptReturned,
+  verify = verifyReturned,
+  sleep = defaultSleep,
+}) {
+  const pair = await pairOf(contracts);
+  const { state } = readSnapshot(snapshotFile, pair);
+  const accepted = signer ? await accept({ contracts, signer, log }) : [];
   if (!("encryptionKey" in state)) {
     log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
   }
-  const { ok, mismatches } = await verifyReturned({ contracts, state });
+  // An acceptance that has just landed can be read from a node still behind its block, which
+  // reports the Safe as owner. Read again then. With nothing accepted, the first answer stands.
+  const attempts = accepted.length > 0 ? VERIFY_ATTEMPTS : 1;
+  let { ok, mismatches } = await verify({ contracts, state });
+  for (let attempt = 2; !ok && attempt <= attempts; attempt += 1) {
+    await sleep(VERIFY_RETRY_MS);
+    ({ ok, mismatches } = await verify({ contracts, state }));
+  }
   if (!ok) {
     for (const m of mismatches) {
       log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
     }
     throw new Error("Rehearsal state has not been fully returned");
   }
+  writeSnapshot(state, snapshotFile, pair, { confirmed: true });
   log(
     chalk.green(
       "Confirm phase complete: everything in the pre-rehearsal snapshot matches the chain again.",
