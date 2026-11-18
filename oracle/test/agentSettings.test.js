@@ -140,7 +140,7 @@ describe("what the agent framework may copy from the environment", function () {
     expect(set, "the list is set").to.be.greaterThan(-1);
     expect(added, "addAgents is called").to.be.greaterThan(-1);
     expect(set).to.be.lessThan(added);
-    expect(source.match(/setAllowedEnvVars\(/g) ?? []).to.have.lengthOf(1);
+    expect(source.match(/setAllowedEnvVars\(/g) ?? [], "no call of its own").to.have.lengthOf(0);
   });
 });
 
@@ -571,7 +571,7 @@ describe("the clean of the agent database", function () {
 
     await cleanAgentDatabase({
       postgresUrl: null,
-      keepSettings: ["model"],
+      character: { settings: { model: "m" } },
       alert: async () => {},
       log: (line) => lines.push(line),
       scrubInPostgres: async () => {
@@ -588,7 +588,7 @@ describe("the clean of the agent database", function () {
 
     await cleanAgentDatabase({
       postgresUrl: "postgres://user:pw@host/db",
-      keepSettings: ["model"],
+      character: { settings: { model: "m", secrets: {} } },
       alert: async () => {},
       log: () => {},
       scrubInPostgres: async (options) => {
@@ -598,15 +598,15 @@ describe("the clean of the agent database", function () {
     });
 
     expect(seen).to.deep.equal([
-      { postgresUrl: "postgres://user:pw@host/db", keepSettings: ["model"] },
+      { postgresUrl: "postgres://user:pw@host/db", keepSettings: ["model", "secrets"] },
     ]);
   });
 
-  it("is what the oracle runs, with the character's own setting names", function () {
+  it("is what the oracle runs, with the character the agent is added with", function () {
     const source = oracleSource();
 
     expect(source).to.match(/cleanAgentDatabase\(\{\s*postgresUrl: agentStateDbUrl,/);
-    expect(source).to.match(/keepSettings: Object\.keys\(senseAiCharacter\.settings\)/);
+    expect(source).to.match(/character: senseAiCharacter,/);
   });
 
   // The connection itself, with a stand-in for the database client.

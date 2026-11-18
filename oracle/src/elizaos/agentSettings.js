@@ -18,7 +18,8 @@
  * agentForFramework.
  *
  * What an earlier build stored is still in the database, and the framework merges it back in on
- * every start, so every stored agent is cleaned after the agent has started.
+ * every start, so every stored agent is cleaned before the agent is added and again after it has
+ * started.
  */
 
 // Read by the framework or the model plugin through the agent's settings. A test refuses any
@@ -45,6 +46,16 @@ const AGENT_ENV_ALLOW_LIST = Object.freeze([
   "SHOULD_RESPOND_BYPASS_SOURCES",
   "SHOULD_RESPOND_BYPASS_TYPES",
 ]);
+
+/**
+ * Tells the framework the list. The oracle sets it through here and nowhere else, so what the
+ * framework is told is the list above and cannot be something set beside it.
+ *
+ * @param {(names: string[]) => void} setAllowedEnvVars the framework's own function
+ */
+function allowOnlyListedEnv(setAllowedEnvVars) {
+  setAllowedEnvVars([...AGENT_ENV_ALLOW_LIST]);
+}
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -177,12 +188,16 @@ const SCRUB_QUERY_TIMEOUT_MS = 10 * 1000;
 /**
  * Cleans the stored settings in the agent's Postgres database, over a connection of its own.
  *
- * @param {{ postgresUrl: string, keepSettings?: readonly string[] }} options
+ * @param {{
+ *   postgresUrl: string,
+ *   keepSettings?: readonly string[],
+ *   Client?: new (options: object) => object,
+ * }} options `Client` is the database client's class; the tests pass a stand-in.
  */
-async function scrubAgentSettingsInPostgres({ postgresUrl, keepSettings }) {
+async function scrubAgentSettingsInPostgres({ postgresUrl, keepSettings, Client }) {
   // Lazy, as in oracleState/runtime: a run with no database never loads pg.
-  const { Client } = require("pg");
-  const client = new Client({
+  const PgClient = Client ?? require("pg").Client;
+  const client = new PgClient({
     connectionString: postgresUrl,
     connectionTimeoutMillis: SCRUB_QUERY_TIMEOUT_MS,
     query_timeout: SCRUB_QUERY_TIMEOUT_MS,
@@ -242,18 +257,51 @@ async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
       `The agent's stored settings were not cleaned at start-up (${kind}). The oracle is ` +
       "answering. A stored row may still hold values from an earlier build.";
   }
-  try {
-    await alert(subject, message);
-  } catch {
-    log("[ElizaOS] The alert about the stored agent settings could not be sent.");
+  // Not waited for. The clean runs before the oracle starts on its events, and an alert can take
+  // minutes to send or to give up.
+  Promise.resolve()
+    .then(() => alert(subject, message))
+    .catch(() => log("[ElizaOS] The alert about the stored agent settings could not be sent."));
+}
+
+/**
+ * The clean as the oracle runs it: against the agent database when there is one.
+ *
+ * @param {{
+ *   postgresUrl: string|null,
+ *   character: { settings: object },
+ *   alert: (subject: string, message: string) => Promise<unknown>,
+ *   log?: (line: string) => void,
+ *   scrubInPostgres?: typeof scrubAgentSettingsInPostgres,
+ * }} options `character` is the one the agent is added with: the setting names it defines are
+ *   the only ones a stored row may keep.
+ */
+async function cleanAgentDatabase({
+  postgresUrl,
+  character,
+  alert,
+  log = console.log,
+  scrubInPostgres = scrubAgentSettingsInPostgres,
+}) {
+  if (!postgresUrl) {
+    // The framework's own store is then a local one, inside the enclave.
+    log("[ElizaOS] Stored agent settings not cleaned: no agent database is configured.");
+    return;
   }
+  await cleanStoredAgentSettings({
+    scrub: () => scrubInPostgres({ postgresUrl, keepSettings: Object.keys(character.settings) }),
+    alert,
+    log,
+  });
 }
 
 module.exports = {
   AGENT_ENV_ALLOW_LIST,
   agentForFramework,
+  allowOnlyListedEnv,
   withoutSecrets,
   scrubStoredAgentSettings,
   scrubAgentSettingsInPostgres,
   cleanStoredAgentSettings,
+  cleanAgentDatabase,
 };
