@@ -199,11 +199,7 @@ describe("scripts/admin-rehearsal", function () {
         name: "OwnershipTransferStarted",
         args: [deployer.address, safe.address],
       });
-      expect(plan[6].verify).to.deep.equal({
-        getter: "pendingOwner",
-        expected: safe.address,
-        alsoDoneWhen: { getter: "owner" },
-      });
+      expect(plan[6].verify).to.deep.equal({ getter: "pendingOwner", expected: safe.address });
       expect(plan[7].event).to.deep.equal(plan[6].event);
       expect(plan[7].verify).to.deep.equal(plan[6].verify);
     });
@@ -356,29 +352,6 @@ describe("scripts/admin-rehearsal", function () {
       expect(await contracts.escrow.owner()).to.equal(deployer.address);
       expect(await contracts.aiAgent.pendingOwner()).to.equal(safe.address);
       expect(await contracts.escrow.pendingOwner()).to.equal(safe.address);
-    });
-
-    it("counts an offer the Safe has already accepted as done, so a run can be resumed after it", async function () {
-      const { contracts, state, log, deployer, safe } = await loadFixture(deployFixture);
-      const plan = buildPlan({
-        state,
-        safeAddress: safe.address,
-        rehearsalPromptFee: REHEARSAL_FEE,
-      });
-      await runPlan({ plan, contracts, signer: deployer, dryRun: false, log });
-      await contracts.aiAgent.connect(safe).acceptOwnership();
-      await contracts.escrow.connect(safe).acceptOwnership();
-
-      const offers = plan.filter((s) => s.method === "transferOwnership");
-      const results = await runPlan({
-        plan: offers,
-        contracts,
-        signer: deployer,
-        dryRun: false,
-        log,
-      });
-
-      expect(results.every((r) => r.skipped)).to.equal(true);
     });
   });
 
@@ -707,6 +680,59 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("confirmPhase", function () {
+    it("accepts the ownership the Safe offered back, then confirms the snapshot", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { contracts, state, deployer, safe } = fixture;
+      const lines = [];
+      const log = (line) => lines.push(String(line));
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]))),
+      );
+      const plan = buildPlan({
+        state,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+      await runPlan({ plan, contracts, signer: deployer, dryRun: false, log });
+      for (const tx of await buildSafeReturnTxs({ contracts, returnTo: deployer.address })) {
+        await safe.sendTransaction({ to: tx.to, data: tx.data });
+      }
+
+      await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
+
+      expect(await contracts.aiAgent.owner()).to.equal(deployer.address);
+      expect(await contracts.escrow.owner()).to.equal(deployer.address);
+      expect(lines.join("\n")).to.match(/Confirm phase complete/);
+    });
+
+    it("does not confirm while the Safe has still to send its transactions", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { contracts, state, deployer, safe, log } = fixture;
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]))),
+      );
+      const plan = buildPlan({
+        state,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+      await runPlan({ plan, contracts, signer: deployer, dryRun: false, log });
+
+      await expect(
+        confirmPhase({ contracts, signer: deployer, log, snapshotFile }),
+      ).to.be.rejectedWith(/not been fully returned/);
+    });
+
     it("explains how to produce a missing snapshot", async function () {
       const { contracts, log } = await loadFixture(deployFixture);
       const missing = path.join(os.tmpdir(), "rehearsal-missing", "snapshot.json");

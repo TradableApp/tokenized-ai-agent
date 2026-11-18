@@ -1,8 +1,11 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
-const hre = require("hardhat");
-const layoutBefore = require("./fixtures/storage-layout-before-two-step-ownership.json");
+const oneStep = require("./fixtures/one-step-ownership-implementations.json");
+const {
+  abi: proxyAbi,
+  bytecode: proxyBytecode,
+} = require("@openzeppelin/upgrades-core/artifacts/@openzeppelin/contracts-v5/proxy/ERC1967/ERC1967Proxy.sol/ERC1967Proxy.json");
 
 // Ownership of the agent and the escrow decides who may authorise an oracle, set the fees and the
 // treasury, and upgrade. It moves only when the new owner accepts it, so an address that cannot
@@ -111,7 +114,9 @@ describe("ownership moves in two steps and cannot be renounced", function () {
           contract,
           "OwnershipCannotBeRenounced",
         );
-        await expect(contract.connect(f.stranger).renounceOwnership()).to.be.reverted;
+        await expect(contract.connect(f.stranger).renounceOwnership())
+          .to.be.revertedWithCustomError(contract, "OwnableUnauthorizedAccount")
+          .withArgs(f.stranger.address);
         expect(await contract.owner()).to.equal(f.owner.address);
       });
     });
@@ -176,38 +181,97 @@ describe("ownership moves in two steps and cannot be renounced", function () {
     });
   });
 
-  // An existing proxy can take this version. The owner and the pending owner are kept by
-  // OpenZeppelin in storage namespaces of their own (ERC-7201), outside the contract's numbered
-  // slots, and the owner's namespace is the one the previous version used. So what has to hold
-  // is that every numbered slot is where it was: the fixture is the layout of both contracts
-  // from the commit before this change.
-  describe("an existing proxy", function () {
-    for (const name of ["EVMAIAgent", "EVMAIAgentEscrow"]) {
-      it(`keeps every numbered storage slot of ${name} where it was`, async function () {
-        const buildInfo = await hre.artifacts.getBuildInfo(`contracts/${name}.sol:${name}`);
-        const { storage, types } =
-          buildInfo.output.contracts[`contracts/${name}.sol`][name].storageLayout;
+  // A proxy deployed with the one-step version is upgraded to this one. The one-step
+  // implementations are the compiled contracts from the commit before this change, kept as a
+  // fixture, so this runs the code a live proxy holds and not a copy written for the test.
+  describe("a proxy upgraded from the one-step version", function () {
+    async function oneStepPair() {
+      const [owner, next, stranger, oracle, treasury] = await ethers.getSigners();
+      const token = await (await ethers.getContractFactory("MockAbleToken")).deploy();
+      const Proxy = new ethers.ContractFactory(proxyAbi, proxyBytecode, owner);
 
-        const now = storage.map((entry) => ({
-          label: entry.label,
-          slot: entry.slot,
-          offset: entry.offset,
-          type: types[entry.type].label,
-        }));
+      async function behindProxy(name, initArgs) {
+        const { abi, bytecode } = oneStep[name];
+        const implementation = await new ethers.ContractFactory(abi, bytecode, owner).deploy();
+        const init = new ethers.Interface(abi).encodeFunctionData("initialize", initArgs);
+        const proxy = await Proxy.deploy(await implementation.getAddress(), init);
+        return new ethers.Contract(await proxy.getAddress(), abi, owner);
+      }
 
-        expect(now).to.deep.equal(layoutBefore[name]);
-        expect(now.map((entry) => entry.label)).to.not.include.members(["_owner", "_pendingOwner"]);
-      });
+      const agent = await behindProxy("EVMAIAgent", [DOMAIN, oracle.address, owner.address]);
+      const escrow = await behindProxy("EVMAIAgentEscrow", [
+        await token.getAddress(),
+        await agent.getAddress(),
+        treasury.address,
+        owner.address,
+        FEE,
+        2n * FEE,
+        3n * FEE,
+        4n * FEE,
+      ]);
+      await agent.setAgentEscrow(await escrow.getAddress());
+      return { agent, escrow, token, owner, next, stranger, oracle, treasury };
     }
 
-    it("keeps its owner in the namespace the one-step version used", async function () {
-      const { agent, owner } = await loadFixture(evmPair);
-      // keccak256(abi.encode(uint256(keccak256("openzeppelin.storage.Ownable")) - 1)) & ~0xff
-      const ownableSlot = "0x9016d09d72d40fdae2fd8ceac6b6234c7706214fd39c1cd1e609a0528c199300";
+    async function upgraded(proxy, name, owner) {
+      const implementation = await (await ethers.getContractFactory(name)).deploy();
+      await proxy.connect(owner).upgradeToAndCall(await implementation.getAddress(), "0x");
+      return ethers.getContractAt(name, await proxy.getAddress());
+    }
 
-      const stored = await ethers.provider.getStorage(await agent.getAddress(), ownableSlot);
+    it("starts from a version with no second step", async function () {
+      const { agent, escrow } = await loadFixture(oneStepPair);
 
-      expect(ethers.getAddress(ethers.dataSlice(stored, 12))).to.equal(owner.address);
+      for (const contract of [agent, escrow]) {
+        expect(contract.interface.getFunction("acceptOwnership")).to.equal(null);
+      }
+    });
+
+    it("keeps the agent's owner, oracle and escrow, with no offer open", async function () {
+      const { agent: before, escrow, owner, oracle } = await loadFixture(oneStepPair);
+
+      const agent = await upgraded(before, "EVMAIAgent", owner);
+
+      expect(await agent.owner()).to.equal(owner.address);
+      expect(await agent.pendingOwner()).to.equal(ethers.ZeroAddress);
+      expect(await agent.isOracle(oracle.address)).to.equal(true);
+      expect(await agent.aiAgentEscrow()).to.equal(await escrow.getAddress());
+      expect(await agent.domain()).to.equal(DOMAIN);
+    });
+
+    it("keeps the escrow's owner, token, treasury and fees, with no offer open", async function () {
+      const { escrow: before, token, owner, treasury } = await loadFixture(oneStepPair);
+
+      const escrow = await upgraded(before, "EVMAIAgentEscrow", owner);
+
+      expect(await escrow.owner()).to.equal(owner.address);
+      expect(await escrow.pendingOwner()).to.equal(ethers.ZeroAddress);
+      expect(await escrow.ableToken()).to.equal(await token.getAddress());
+      expect(await escrow.treasury()).to.equal(treasury.address);
+      expect(await escrow.promptFee()).to.equal(FEE);
+      expect(await escrow.cancellationFee()).to.equal(2n * FEE);
+      expect(await escrow.metadataUpdateFee()).to.equal(3n * FEE);
+      expect(await escrow.branchFee()).to.equal(4n * FEE);
+    });
+
+    it("moves ownership in two steps from then on, and refuses to give it up", async function () {
+      const fixture = await loadFixture(oneStepPair);
+      const { owner, next } = fixture;
+      for (const [before, name] of [
+        [fixture.agent, "EVMAIAgent"],
+        [fixture.escrow, "EVMAIAgentEscrow"],
+      ]) {
+        const contract = await upgraded(before, name, owner);
+
+        await contract.connect(owner).transferOwnership(next.address);
+        expect(await contract.owner()).to.equal(owner.address);
+        await contract.connect(next).acceptOwnership();
+        expect(await contract.owner()).to.equal(next.address);
+        await expect(contract.connect(next).renounceOwnership()).to.be.revertedWithCustomError(
+          contract,
+          "OwnershipCannotBeRenounced",
+        );
+      }
     });
   });
 });

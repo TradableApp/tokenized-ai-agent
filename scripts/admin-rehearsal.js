@@ -10,7 +10,7 @@ const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
 const PHASES = new Set(["forward", "confirm"]);
 const MAINNET_NETWORK = "base";
 const RECOVERY_HINT =
-  "Re-run the forward phase to resume: the existing snapshot stays the restore baseline and steps whose getter already holds the target are skipped. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; any proxy already owned by the Safe is returned with transferOwnership(<deploy wallet>) queued from the Safe.";
+  "Re-run the forward phase to resume: the existing snapshot stays the restore baseline and steps whose getter already holds the target are skipped. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
 // Public RPC endpoints are load-balanced; the node that answers the read-back may not have the
 // block the receipt came from yet. Read at that block and retry rather than fail a landed tx.
 const VERIFY_ATTEMPTS = 5;
@@ -139,7 +139,7 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
   // Ownership moves in two steps. The deploy wallet's transfer only offers it: the Safe becomes
   // the pending owner, and the owner changes when the Safe itself accepts.
   const offerEvent = (from) => ({ name: "OwnershipTransferStarted", args: [from, safe] });
-  const offered = { getter: "pendingOwner", expected: safe, alsoDoneWhen: { getter: "owner" } };
+  const offered = { getter: "pendingOwner", expected: safe };
   const roleEvent = (name) => ({ name, args: [ORACLE_ROLE, safe] });
 
   return [
@@ -263,16 +263,10 @@ async function verifyGetter(
   );
 }
 
-/**
- * True when the chain already holds the step's target value (a step an earlier run completed).
- * An offer of ownership is also done once it has been accepted: the pending owner is then empty
- * and the owner is the address it was offered to.
- */
+/** True when the chain already holds the step's target value (a step an earlier run completed). */
 async function alreadyApplied(target, stepDef) {
-  const { getter, args = [], expected, alsoDoneWhen } = stepDef.verify;
-  if (sameValue(await target[getter](...args), expected)) return true;
-  if (!alsoDoneWhen) return false;
-  return sameValue(await target[alsoDoneWhen.getter](), expected);
+  const actual = await target[stepDef.verify.getter](...(stepDef.verify.args ?? []));
+  return sameValue(actual, stepDef.verify.expected);
 }
 
 async function runPlan({ plan, contracts, signer, dryRun, log }) {
