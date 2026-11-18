@@ -6,8 +6,10 @@ const path = require("path");
 
 const {
   AGENT_ENV_ALLOW_LIST,
+  agentForFramework,
   withoutSecrets,
   scrubStoredAgentSettings,
+  cleanStoredAgentSettings,
 } = require("../src/elizaos/agentSettings");
 
 const AGENT_ID = "11111111-2222-3333-4444-555555555555";
@@ -29,13 +31,15 @@ function stored() {
   };
 }
 
-function fakeDb(row) {
+function fakeDb(rows) {
   const calls = [];
   return {
     calls,
     query: async (text, values) => {
       calls.push({ text, values });
-      if (/^\s*SELECT/i.test(text)) return { rows: row ? [{ settings: row }] : [] };
+      if (/^\s*SELECT/i.test(text)) {
+        return { rows: rows.map((settings, index) => ({ id: `agent-${index}`, settings })) };
+      }
       return { rowCount: 1, rows: [] };
     },
   };
@@ -154,48 +158,36 @@ describe("cleaning stored agent settings", function () {
     });
   });
 
-  it("writes the cleaned settings back for the one agent, and says how much it removed", async function () {
-    const db = fakeDb(stored());
+  it("cleans every stored agent, and says how much it removed", async function () {
+    const db = fakeDb([stored(), { model: "m", secrets: { LARGE_MODEL: "kept" } }, stored()]);
 
-    const result = await scrubStoredAgentSettings({
-      query: db.query,
-      agentId: AGENT_ID,
-      allowList: ["LARGE_MODEL"],
-    });
+    const result = await scrubStoredAgentSettings({ query: db.query, allowList: ["LARGE_MODEL"] });
 
-    expect(result).to.deep.equal({ found: true, removedSecrets: 2, removedToolEnv: 1 });
-    expect(db.calls).to.have.lengthOf(2);
-    expect(db.calls[0].values).to.deep.equal([AGENT_ID]);
-    expect(db.calls[1].text).to.match(/^\s*UPDATE/i);
-    expect(db.calls[1].values[0]).to.equal(AGENT_ID);
-    const written = JSON.parse(db.calls[1].values[1]);
-    expect(written.secrets).to.deep.equal({ LARGE_MODEL: "kept" });
-    expect(JSON.stringify(written)).to.not.include("would-be");
+    expect(result).to.deep.equal({ agents: 3, removedSecrets: 4, removedToolEnv: 2 });
+    const writes = db.calls.filter((call) => /^\s*UPDATE/i.test(call.text));
+    expect(writes.map((call) => call.values[0])).to.deep.equal(["agent-0", "agent-2"]);
+    for (const write of writes) {
+      const written = JSON.parse(write.values[1]);
+      expect(written.secrets).to.deep.equal({ LARGE_MODEL: "kept" });
+      expect(JSON.stringify(written)).to.not.include("would-be");
+    }
   });
 
   it("writes nothing when there is nothing to remove", async function () {
-    const db = fakeDb({ model: "m", secrets: { LARGE_MODEL: "kept" } });
+    const db = fakeDb([{ model: "m", secrets: { LARGE_MODEL: "kept" } }]);
 
-    const result = await scrubStoredAgentSettings({
-      query: db.query,
-      agentId: AGENT_ID,
-      allowList: ["LARGE_MODEL"],
-    });
+    const result = await scrubStoredAgentSettings({ query: db.query, allowList: ["LARGE_MODEL"] });
 
-    expect(result).to.deep.equal({ found: true, removedSecrets: 0, removedToolEnv: 0 });
+    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolEnv: 0 });
     expect(db.calls).to.have.lengthOf(1);
   });
 
-  it("writes nothing when the agent has no stored row", async function () {
-    const db = fakeDb(null);
+  it("writes nothing when no agent is stored", async function () {
+    const db = fakeDb([]);
 
-    const result = await scrubStoredAgentSettings({
-      query: db.query,
-      agentId: AGENT_ID,
-      allowList: [],
-    });
+    const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
 
-    expect(result).to.deep.equal({ found: false, removedSecrets: 0, removedToolEnv: 0 });
+    expect(result).to.deep.equal({ agents: 0, removedSecrets: 0, removedToolEnv: 0 });
     expect(db.calls).to.have.lengthOf(1);
   });
 
@@ -206,11 +198,153 @@ describe("cleaning stored agent settings", function () {
 
     let caught = null;
     try {
-      await scrubStoredAgentSettings({ query: failing, agentId: AGENT_ID, allowList: [] });
+      await scrubStoredAgentSettings({ query: failing, allowList: [] });
     } catch (error) {
       caught = error;
     }
 
     expect(caught).to.be.an("error");
+  });
+});
+
+describe("what the oracle hands the framework for one agent", function () {
+  const character = {
+    name: "probe",
+    settings: {
+      model: "some-model",
+      secrets: {},
+      mcp: { servers: { market: { type: "stdio", command: "node", env: { A_KEY: "tool-key" } } } },
+    },
+  };
+  const env = { POSTGRES_URL: "postgres://user:pw@host/db", PGLITE_DATA_DIR: "./data" };
+
+  it("keeps the tool servers out of the character, which is what gets stored", function () {
+    const agent = agentForFramework({ character, env });
+
+    expect(agent.character.settings).to.not.have.property("mcp");
+    expect(agent.character.settings.model).to.equal("some-model");
+    expect(JSON.stringify(agent.character)).to.not.include("tool-key");
+  });
+
+  it("passes the tool servers and the database settings as runtime settings", function () {
+    const agent = agentForFramework({ character, env });
+
+    expect(agent.settings).to.deep.equal({
+      mcp: character.settings.mcp,
+      POSTGRES_URL: env.POSTGRES_URL,
+      PGLITE_DATA_DIR: env.PGLITE_DATA_DIR,
+    });
+  });
+
+  it("leaves out a database setting that is not set, and does not change the character", function () {
+    const copy = JSON.parse(JSON.stringify(character));
+
+    const agent = agentForFramework({ character, env: { POSTGRES_URL: "  " } });
+
+    expect(agent.settings).to.not.have.property("POSTGRES_URL");
+    expect(agent.settings).to.not.have.property("PGLITE_DATA_DIR");
+    expect(character).to.deep.equal(copy);
+  });
+
+  // The framework's own runtime: its plugins read the database address and the tool servers
+  // through getSetting, which never looks at the environment. This is the check that they can
+  // still find both, and that neither is in the character the runtime stores.
+  it("lets the framework's plugins find the database and the tool servers", function () {
+    const core = require("@elizaos/core");
+    const agent = agentForFramework({ character, env });
+
+    const runtime = new core.AgentRuntime({ character: agent.character, settings: agent.settings });
+
+    expect(runtime.getSetting("POSTGRES_URL")).to.equal(env.POSTGRES_URL);
+    expect(runtime.getSetting("PGLITE_DATA_DIR")).to.equal(env.PGLITE_DATA_DIR);
+    expect(runtime.settings.mcp.servers.market.env.A_KEY).to.equal("tool-key");
+    const storedCharacter = JSON.stringify(runtime.character);
+    expect(storedCharacter).to.not.include("postgres://");
+    expect(storedCharacter).to.not.include("tool-key");
+  });
+
+  it("is what the oracle adds the agent with, and the clean follows the start", function () {
+    const source = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8");
+    const added = source.indexOf("elizaOS.addAgents(");
+    const started = source.indexOf("await elizaOS.startAgents()");
+    const cleaned = source.indexOf("await cleanStoredAgentSettings(");
+
+    expect(source.slice(added, started)).to.include("agentForFramework(");
+    expect(cleaned).to.be.greaterThan(started);
+  });
+});
+
+describe("the clean at start-up", function () {
+  function recorder() {
+    const alerts = [];
+    const lines = [];
+    return {
+      alerts,
+      lines,
+      alert: async (subject, message) => alerts.push({ subject, message }),
+      log: (line) => lines.push(line),
+    };
+  }
+
+  it("says what it removed and alerts, since an earlier build stored it", async function () {
+    const out = recorder();
+
+    await cleanStoredAgentSettings({
+      scrub: async () => ({ agents: 1, removedSecrets: 3, removedToolEnv: 1 }),
+      alert: out.alert,
+      log: out.log,
+    });
+
+    expect(out.lines.join(" ")).to.include("3").and.to.include("1 agent");
+    expect(out.alerts).to.have.lengthOf(1);
+    expect(out.alerts[0].subject).to.equal(
+      "CRITICAL: Stored agent settings held values that were removed",
+    );
+    expect(out.alerts[0].message).to.include("3");
+  });
+
+  it("does not alert when nothing an earlier build stored was found", async function () {
+    const out = recorder();
+
+    await cleanStoredAgentSettings({
+      scrub: async () => ({ agents: 1, removedSecrets: 0, removedToolEnv: 0 }),
+      alert: out.alert,
+      log: out.log,
+    });
+
+    expect(out.alerts).to.have.lengthOf(0);
+    expect(out.lines).to.have.lengthOf(1);
+  });
+
+  it("alerts and carries on when the clean fails, with nothing of the error but its kind", async function () {
+    const out = recorder();
+
+    await cleanStoredAgentSettings({
+      scrub: async () => {
+        throw new Error("password authentication failed for postgres://user:pw@host/db");
+      },
+      alert: out.alert,
+      log: out.log,
+    });
+
+    expect(out.alerts).to.have.lengthOf(1);
+    expect(out.alerts[0].subject).to.equal("CRITICAL: Stored agent settings could not be cleaned");
+    expect(JSON.stringify([out.alerts, out.lines])).to.not.include("pw@host");
+  });
+
+  it("still carries on when the alert itself fails", async function () {
+    const out = recorder();
+
+    await cleanStoredAgentSettings({
+      scrub: async () => {
+        throw new Error("down");
+      },
+      alert: async () => {
+        throw new Error("alerting is down too");
+      },
+      log: out.log,
+    });
+
+    expect(out.lines.length).to.be.greaterThan(0);
   });
 });
