@@ -115,6 +115,7 @@
     "hardhat-storage-layout": "^0.1.7",
     "prettier": "^3.6.2",
     "prettier-plugin-solidity": "^2.0.0",
+    "sense-contracts": "github:TradableApp/sense-contracts#dd2b6962a5d24672d514fb3feaaee449688b33cd",
     "solhint": "^6.2.1",
     "solidity-coverage": "^0.8.16"
   }

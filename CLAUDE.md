@@ -214,6 +214,7 @@ This repo sits at the centre of the SenseAI stack. Three sibling repos depend on
 | `sense-ai-dapp` | Calls `EVMAIAgentEscrow.initiatePrompt()` for all user writes; parses `PromptSubmitted` event to extract `answerMessageId` at param index 3 (0-based, non-indexed) |
 | `sense-ai-subgraph` | Indexes events from both `EVMAIAgent` and `EVMAIAgentEscrow`; ABI files in `sense-ai-subgraph/abis/` must match compiled artifacts |
 | `able-contracts` | `AbleToken` is the ERC20 payment token; `EVMAIAgentEscrow` calls `token.transferFrom(user, escrow, amount)` |
+| `sense-contracts` | `SenseToken` is the fee token the escrow is deployed with where SenseAI is paid in SENSE. It moves only when the sender or the recipient is exempt, so the escrow and the treasury must both be on its exempt list |
 
 ### The Universal Key: `answerMessageId`
 
@@ -262,8 +263,8 @@ PromptSubmitted(
 
 ### Constants
 
-- `CANCELLATION_TIMEOUT = 3 seconds` — window during which user can cancel a prompt
-- `REFUND_TIMEOUT = 1 hour` — window during which user can claim refund for unanswered prompt
+- `CANCELLATION_TIMEOUT = 3 seconds` — how long after a prompt the user must wait before cancelling it; an earlier cancel reverts with `PromptNotCancellableYet`
+- `REFUND_TIMEOUT = 1 hour` — how long a prompt must stay unanswered before anyone can have its fee refunded; an earlier refund reverts with `PromptNotRefundableYet`
 
 ## Contract Test Suite
 
@@ -274,6 +275,7 @@ Phase 2 tests (153 passing) cover the full prompt lifecycle, spending limits, ca
 - SpendingLimit flow — `setSpendingLimit()` → `spendingLimits(user)` returns correct struct → `initiatePrompt()` deducts correctly → `cancelSpendingLimit()` removes it
 - CidBundle field-order guard — verifies struct field order matches oracle's assembly
 - ABI diff check — import ABI JSON and verify `PromptSubmitted` has correct param count, types, and index positions
+- SENSE as the fee token (`test/SenseToken.escrowLifecycle.test.js`) — the escrow and agent run against the SENSE token itself, a dev dependency pinned to a commit of `sense-contracts` and compiled through `contracts/test/SenseTokenImport.sol`. It is compiled against this repository's OpenZeppelin version, so it proves the transfer rule against the escrow's movements, not the deployed bytecode. Covers prompt, answer, cancel, refund, metadata update and branch, and what each unlisted address or a paused token stops. When the token changes, move the pin in `package.json` to the new commit and run the suite
 
 ## Key Notes
 
