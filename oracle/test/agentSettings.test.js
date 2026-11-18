@@ -124,16 +124,21 @@ describe("cleaning stored agent settings", function () {
     expect(cleaned.removedSecrets).to.equal(2);
   });
 
-  it("drops what each tool server is started with, and keeps how it is started", function () {
+  // A stored tool-server block is put back into the running character on the next start and is
+  // then used ahead of the one the oracle built, so none of it may stay: not what a server is
+  // started with, and not the command either.
+  it("drops the stored tool servers whole", function () {
     const cleaned = withoutSecrets(stored(), ["LARGE_MODEL"]);
 
-    expect(cleaned.settings.mcp.servers.market).to.deep.equal({
-      type: "stdio",
-      command: "node",
-      args: ["server.js"],
-    });
-    expect(cleaned.settings.mcp.servers.other).to.deep.equal({ type: "stdio", command: "node" });
-    expect(cleaned.removedToolEnv).to.equal(1);
+    expect(cleaned.settings).to.not.have.property("mcp");
+    expect(cleaned.removedToolServers).to.equal(2);
+  });
+
+  it("drops a stored tool-server block that names no servers", function () {
+    const cleaned = withoutSecrets({ model: "m", mcp: { maxRetries: 2 } }, []);
+
+    expect(cleaned.settings).to.deep.equal({ model: "m" });
+    expect(cleaned.removedToolServers).to.equal(1);
   });
 
   it("leaves every other setting as it was and does not change what it was given", function () {
@@ -150,7 +155,7 @@ describe("cleaning stored agent settings", function () {
     expect(withoutSecrets({ model: "m" }, [])).to.deep.equal({
       settings: { model: "m" },
       removedSecrets: 0,
-      removedToolEnv: 0,
+      removedToolServers: 0,
     });
     expect(withoutSecrets(null, []).settings).to.deep.equal({});
     expect(withoutSecrets({ secrets: "not-an-object" }, []).settings).to.deep.equal({
@@ -163,7 +168,7 @@ describe("cleaning stored agent settings", function () {
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: ["LARGE_MODEL"] });
 
-    expect(result).to.deep.equal({ agents: 3, removedSecrets: 4, removedToolEnv: 2 });
+    expect(result).to.deep.equal({ agents: 3, removedSecrets: 4, removedToolServers: 4 });
     const writes = db.calls.filter((call) => /^\s*UPDATE/i.test(call.text));
     expect(writes.map((call) => call.values[0])).to.deep.equal(["agent-0", "agent-2"]);
     for (const write of writes) {
@@ -173,12 +178,21 @@ describe("cleaning stored agent settings", function () {
     }
   });
 
+  it("writes a row whose only fault is a stored tool server with nothing it is started with", async function () {
+    const db = fakeDb([{ model: "m", mcp: { servers: { other: { command: "node" } } } }]);
+
+    const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
+
+    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolServers: 1 });
+    expect(JSON.parse(db.calls[1].values[1])).to.deep.equal({ model: "m" });
+  });
+
   it("writes nothing when there is nothing to remove", async function () {
     const db = fakeDb([{ model: "m", secrets: { LARGE_MODEL: "kept" } }]);
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: ["LARGE_MODEL"] });
 
-    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolEnv: 0 });
+    expect(result).to.deep.equal({ agents: 1, removedSecrets: 0, removedToolServers: 0 });
     expect(db.calls).to.have.lengthOf(1);
   });
 
@@ -187,7 +201,7 @@ describe("cleaning stored agent settings", function () {
 
     const result = await scrubStoredAgentSettings({ query: db.query, allowList: [] });
 
-    expect(result).to.deep.equal({ agents: 0, removedSecrets: 0, removedToolEnv: 0 });
+    expect(result).to.deep.equal({ agents: 0, removedSecrets: 0, removedToolServers: 0 });
     expect(db.calls).to.have.lengthOf(1);
   });
 
@@ -221,7 +235,9 @@ describe("what the oracle hands the framework for one agent", function () {
   it("keeps the tool servers out of the character, which is what gets stored", function () {
     const agent = agentForFramework({ character, env });
 
-    expect(agent.character.settings).to.not.have.property("mcp");
+    // Null and not absent: an absent name lets a stored block through, a null one replaces it
+    // in the running character and removes it from the stored row.
+    expect(agent.character.settings.mcp).to.equal(null);
     expect(agent.character.settings.model).to.equal("some-model");
     expect(JSON.stringify(agent.character)).to.not.include("tool-key");
   });
@@ -264,14 +280,42 @@ describe("what the oracle hands the framework for one agent", function () {
     expect(storedCharacter).to.not.include("tool-key");
   });
 
-  it("is what the oracle adds the agent with, and the clean follows the start", function () {
-    const source = fs.readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8");
+  // What the framework does on a start when the database already holds a row: it puts the
+  // stored settings under the character's own, and the tool plugin then looks in the character
+  // before the runtime's settings. Followed here with the framework's own merge and the tool
+  // plugin's own order of looking.
+  it("is not overridden by tool servers an earlier start stored", function () {
+    const core = require("@elizaos/core");
+    const agent = agentForFramework({ character, env });
+    const runtime = new core.AgentRuntime({ character: agent.character, settings: agent.settings });
+
+    runtime.mergeAgentSettings({
+      settings: { mcp: { servers: { market: { type: "stdio", command: "stored-command" } } } },
+    });
+
+    const usable = (settings) => (settings && settings.servers ? settings : undefined);
+    const found =
+      usable(runtime.getSetting("mcp")) ??
+      usable(runtime.character.settings.mcp) ??
+      usable(runtime.settings.mcp);
+    expect(found.servers.market.command).to.equal("node");
+    expect(found.servers.market.env.A_KEY).to.equal("tool-key");
+  });
+
+  it("is what the oracle adds the agent with, with a clean before the agent is added and after it starts", function () {
+    const source = fs
+      .readFileSync(path.join(__dirname, "../src/aiAgentOracle.js"), "utf8")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
     const added = source.indexOf("elizaOS.addAgents(");
     const started = source.indexOf("await elizaOS.startAgents()");
-    const cleaned = source.indexOf("await cleanStoredAgentSettings(");
+    const cleans = [...source.matchAll(/await cleanStoredAgentSettings\(/g)].map((m) => m.index);
 
     expect(source.slice(added, started)).to.include("agentForFramework(");
-    expect(cleaned).to.be.greaterThan(started);
+    expect(cleans).to.have.lengthOf(2);
+    expect(cleans[0]).to.be.lessThan(added);
+    expect(cleans[1]).to.be.greaterThan(started);
   });
 });
 
@@ -291,7 +335,7 @@ describe("the clean at start-up", function () {
     const out = recorder();
 
     await cleanStoredAgentSettings({
-      scrub: async () => ({ agents: 1, removedSecrets: 3, removedToolEnv: 1 }),
+      scrub: async () => ({ agents: 1, removedSecrets: 3, removedToolServers: 1 }),
       alert: out.alert,
       log: out.log,
     });
@@ -308,7 +352,7 @@ describe("the clean at start-up", function () {
     const out = recorder();
 
     await cleanStoredAgentSettings({
-      scrub: async () => ({ agents: 1, removedSecrets: 0, removedToolEnv: 0 }),
+      scrub: async () => ({ agents: 1, removedSecrets: 0, removedToolServers: 0 }),
       alert: out.alert,
       log: out.log,
     });
@@ -331,6 +375,7 @@ describe("the clean at start-up", function () {
     expect(out.alerts).to.have.lengthOf(1);
     expect(out.alerts[0].subject).to.equal("CRITICAL: Stored agent settings could not be cleaned");
     expect(JSON.stringify([out.alerts, out.lines])).to.not.include("pw@host");
+    expect(out.alerts[0].message).to.include("(Error)");
   });
 
   it("still carries on when the alert itself fails", async function () {
