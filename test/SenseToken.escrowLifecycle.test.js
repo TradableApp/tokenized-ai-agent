@@ -77,10 +77,12 @@ describe("the escrow with SENSE as the fee token", function () {
     const receipt = await (
       await escrow.connect(user).initiatePrompt(conversationId, "0x", "0x")
     ).wait();
-    const find = (contract, name) =>
-      contract.interface.parseLog(
-        receipt.logs.find((log) => log.topics[0] === contract.interface.getEvent(name).topicHash),
-      );
+    const find = (contract, name) => {
+      const topic = contract.interface.getEvent(name).topicHash;
+      const log = receipt.logs.find((entry) => entry.topics[0] === topic);
+      if (!log) throw new Error(`${name} was not emitted by transaction ${receipt.hash}`);
+      return contract.interface.parseLog(log);
+    };
     const submitted = find(agent, "PromptSubmitted");
     return {
       answerMessageId: find(escrow, "PaymentEscrowed").args[0],
@@ -108,7 +110,7 @@ describe("the escrow with SENSE as the fee token", function () {
     it("returns the fee on a cancel, less the cancellation fee", async function () {
       const { token, agent, escrow, user, treasury } = await loadFixture(everythingListed);
       const { answerMessageId } = await prompt(escrow, agent, user);
-      await time.increase(5);
+      await time.increase(await escrow.CANCELLATION_TIMEOUT());
 
       await escrow.connect(user).cancelPrompt(answerMessageId);
 
@@ -121,7 +123,7 @@ describe("the escrow with SENSE as the fee token", function () {
       const { token, agent, escrow, user, treasury, stranger } =
         await loadFixture(everythingListed);
       const { answerMessageId } = await prompt(escrow, agent, user);
-      await time.increase(3600);
+      await time.increase(await escrow.REFUND_TIMEOUT());
 
       await escrow.connect(stranger).processRefund(answerMessageId);
 
@@ -185,17 +187,17 @@ describe("the escrow with SENSE as the fee token", function () {
     });
 
     it("holds a pending fee when the escrow is taken off the list, and returns it once listed again", async function () {
-      const { token, agent, escrow, user } = await loadFixture(everythingListed);
+      const { token, agent, escrow, user, stranger } = await loadFixture(everythingListed);
       const { answerMessageId } = await prompt(escrow, agent, user);
-      await time.increase(3600);
+      await time.increase(await escrow.REFUND_TIMEOUT());
       await token.setTransferExempt(await escrow.getAddress(), false);
 
-      await expect(escrow.processRefund(answerMessageId))
+      await expect(escrow.connect(stranger).processRefund(answerMessageId))
         .to.be.revertedWithCustomError(token, "TransferNotAllowed")
         .withArgs(await escrow.getAddress(), user.address);
 
       await token.setTransferExempt(await escrow.getAddress(), true);
-      await escrow.processRefund(answerMessageId);
+      await escrow.connect(stranger).processRefund(answerMessageId);
       expect(await token.balanceOf(user.address)).to.equal(GRANT);
     });
 
@@ -215,7 +217,7 @@ describe("the escrow with SENSE as the fee token", function () {
         agent,
         user,
       );
-      await time.increase(5);
+      await time.increase(await escrow.CANCELLATION_TIMEOUT());
 
       for (const call of [
         () => escrow.connect(user).cancelPrompt(answerMessageId),
@@ -229,9 +231,9 @@ describe("the escrow with SENSE as the fee token", function () {
     });
 
     it("refuses prompts, answers and refunds alike while the token is paused", async function () {
-      const { token, agent, escrow, user, oracle } = await loadFixture(everythingListed);
+      const { token, agent, escrow, user, oracle, stranger } = await loadFixture(everythingListed);
       const { answerMessageId, promptMessageId } = await prompt(escrow, agent, user);
-      await time.increase(3600);
+      await time.increase(await escrow.REFUND_TIMEOUT());
       await token.pause();
 
       await expect(
@@ -240,10 +242,9 @@ describe("the escrow with SENSE as the fee token", function () {
       await expect(
         agent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, CID_BUNDLE),
       ).to.be.revertedWithCustomError(token, "EnforcedPause");
-      await expect(escrow.processRefund(answerMessageId)).to.be.revertedWithCustomError(
-        token,
-        "EnforcedPause",
-      );
+      await expect(
+        escrow.connect(stranger).processRefund(answerMessageId),
+      ).to.be.revertedWithCustomError(token, "EnforcedPause");
     });
   });
 });

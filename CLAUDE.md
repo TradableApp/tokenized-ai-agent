@@ -261,8 +261,8 @@ PromptSubmitted(
 
 ### Constants
 
-- `CANCELLATION_TIMEOUT = 3 seconds` — window during which user can cancel a prompt
-- `REFUND_TIMEOUT = 1 hour` — window during which user can claim refund for unanswered prompt
+- `CANCELLATION_TIMEOUT = 3 seconds` — how long after a prompt the user must wait before cancelling it; an earlier cancel reverts with `PromptNotCancellableYet`
+- `REFUND_TIMEOUT = 1 hour` — how long a prompt must stay unanswered before anyone can have its fee refunded; an earlier refund reverts with `PromptNotRefundableYet`
 
 ## Contract Test Suite
 
