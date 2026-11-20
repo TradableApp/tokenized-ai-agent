@@ -173,7 +173,8 @@ function withoutHelperCalls(text) {
 /** True when `args` hands on `name` whole. A bare rethrow, and `cause:` in a throw, pass. */
 function handsOn(name, { throws, text }) {
   if (throws && text.trim() === name) return false;
-  const escaped = name.replace(/\$/g, "\\$");
+  // A caught name is an identifier, but every character a pattern reads specially is escaped.
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let rest = withoutHelperCalls(text);
   if (throws) rest = rest.replace(new RegExp(`\\bcause\\s*:\\s*${escaped}(?![\\w$])`, "g"), " ");
   return new RegExp(`(?<![.\\w$])${escaped}(?![\\w$])`).test(rest);
