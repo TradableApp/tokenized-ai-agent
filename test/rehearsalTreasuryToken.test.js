@@ -148,5 +148,49 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
       expect(isEmptyRevert({ message: "Transaction reverted: custom error" })).to.equal(false);
       expect(isEmptyRevert(null)).to.equal(false);
     });
+
+    // On a live network the read goes through Hardhat's HTTP provider, which throws its own
+    // ProviderError: the node's JSON-RPC code and message, and `data` only when the node sent it.
+    describe("as Hardhat's HTTP provider reports a node's answer", function () {
+      // eslint-disable-next-line global-require
+      const { ProviderError } = require("hardhat/internal/core/providers/errors");
+      // Built the way the provider builds it from a JSON-RPC error object.
+      const fromNode = ({ code, message, data }) => {
+        const error = new ProviderError(message, code);
+        error.data = data;
+        return error;
+      };
+
+      it("is true for the node's bare revert with no data, as geth answers an empty revert", function () {
+        expect(isEmptyRevert(fromNode({ code: -32000, message: "execution reverted" }))).to.equal(
+          true,
+        );
+        expect(isEmptyRevert(fromNode({ code: -32000, message: "Execution Reverted" }))).to.equal(
+          true,
+        );
+        expect(
+          isEmptyRevert(fromNode({ code: 3, message: "execution reverted", data: "0x" })),
+        ).to.equal(true);
+      });
+
+      it("is false for a revert with a reason after it, its data stripped", function () {
+        const reason = fromNode({ code: -32000, message: "execution reverted: not allowed" });
+        expect(isEmptyRevert(reason)).to.equal(false);
+        expect(isEmptyRevert(answered("execution reverted: not allowed"))).to.equal(false);
+      });
+
+      it("is false for a revert with data, and for a node that refused the request", function () {
+        const withData = fromNode({ code: 3, message: "execution reverted", data: "0x82b42900" });
+        const limited = fromNode({
+          code: -32005,
+          message: "Too Many Requests error received from rpc.example",
+        });
+        expect(isEmptyRevert(withData)).to.equal(false);
+        expect(isEmptyRevert(limited)).to.equal(false);
+        expect(isEmptyRevert(fromNode({ code: -32000, message: "header not found" }))).to.equal(
+          false,
+        );
+      });
+    });
   });
 });
