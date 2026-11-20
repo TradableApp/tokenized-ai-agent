@@ -20,7 +20,18 @@ const { withoutRequestSecrets } = require("./requestSecrets");
  * @returns {string}
  */
 function describeError(error) {
-  return withoutAddresses(textOf(error));
+  return `${withoutAddresses(textOf(error))}${causeKind(error)}`;
+}
+
+/**
+ * The kind of `error.cause`, one level down, as " (cause: KIND)", or nothing when it has none.
+ * Node's fetch fails with "fetch failed" and keeps what happened (ECONNREFUSED, a timeout) in the
+ * cause. Only the kind: the cause's message can carry the address it was sent to.
+ */
+function causeKind(error) {
+  const cause = readProperty(error, "cause");
+  if (cause === undefined || cause === null) return "";
+  return ` (cause: ${errorKind(cause)})`;
 }
 
 /**
