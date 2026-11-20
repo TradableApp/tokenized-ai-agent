@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers, upgrades } = require("hardhat");
+const { ethers } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const fs = require("fs");
 const os = require("os");
@@ -22,12 +22,15 @@ const {
   main,
 } = require("../scripts/admin-rehearsal");
 const { publishEncryptionKey: publishKey } = require("./helpers/encryptionKeyProof");
+const {
+  PROMPT_FEE,
+  REHEARSAL_FEE,
+  snapshotText,
+  versionOneText,
+  deployRehearsalFixture,
+} = require("./helpers/rehearsalFixture");
 
 describe("scripts/admin-rehearsal", function () {
-  const DOMAIN = "tradable.app";
-  const PROMPT_FEE = ethers.parseEther("1");
-  const REHEARSAL_FEE = ethers.parseEther("2");
-
   /** Publishes a throwaway encryption key as `oracle` and returns it. */
   async function publishEncryptionKey(aiAgent, oracle) {
     const key = new ethers.SigningKey(ethers.id("admin-rehearsal-encryption-key"));
@@ -35,90 +38,7 @@ describe("scripts/admin-rehearsal", function () {
     return key.publicKey;
   }
 
-  const asText = (state) =>
-    Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]));
-
-  async function pairOf(contracts) {
-    return {
-      agent: await contracts.aiAgent.getAddress(),
-      escrow: await contracts.escrow.getAddress(),
-    };
-  }
-
-  /**
-   * A snapshot file's text as the script writes it (version 2): the baseline values, the pair,
-   * network and chain they were read from, and the steps recorded so far.
-   */
-  async function snapshotText(contracts, state, extra = {}) {
-    return JSON.stringify({
-      version: 2,
-      network: "hardhat",
-      chainId: "31337",
-      pair: await pairOf(contracts),
-      rehearsalPromptFee: String(REHEARSAL_FEE),
-      baseline: asText(state),
-      steps: {},
-      confirmed: false,
-      ...extra,
-    });
-  }
-
-  /** A snapshot as versions before steps were recorded wrote it: the values beside the pair. */
-  async function versionOneText(contracts, state, extra = {}) {
-    return JSON.stringify({ ...asText(state), pair: await pairOf(contracts), ...extra });
-  }
-
-  async function deployFixture() {
-    const [deployer, oracle, treasury, safe, stranger] = await ethers.getSigners();
-
-    const token = await (await ethers.getContractFactory("MockAbleToken")).deploy();
-    await token.waitForDeployment();
-
-    const aiAgent = await upgrades.deployProxy(
-      await ethers.getContractFactory("EVMAIAgent"),
-      [DOMAIN, oracle.address, deployer.address],
-      { initializer: "initialize", kind: "uups" },
-    );
-    await aiAgent.waitForDeployment();
-
-    const escrow = await upgrades.deployProxy(
-      await ethers.getContractFactory("EVMAIAgentEscrow"),
-      [
-        await token.getAddress(),
-        await aiAgent.getAddress(),
-        treasury.address,
-        deployer.address,
-        PROMPT_FEE,
-        ethers.parseEther("0.1"),
-        ethers.parseEther("0.1"),
-        ethers.parseEther("0.5"),
-      ],
-      { initializer: "initialize", kind: "uups" },
-    );
-    await escrow.waitForDeployment();
-    await aiAgent.connect(deployer).setAgentEscrow(await escrow.getAddress());
-
-    const safeContract = await (await ethers.getContractFactory("MockAbleToken")).deploy();
-    await safeContract.waitForDeployment();
-    const safeContractAddress = await safeContract.getAddress();
-
-    const contracts = { aiAgent, escrow };
-    const state = await readState(contracts);
-    const lines = [];
-    const log = (line) => lines.push(String(line));
-    return {
-      contracts,
-      state,
-      lines,
-      log,
-      deployer,
-      oracle,
-      treasury,
-      safe,
-      safeContractAddress,
-      stranger,
-    };
-  }
+  const deployFixture = deployRehearsalFixture;
 
   describe("readState", function () {
     it("captures the live owner, treasury and prompt fee", async function () {
@@ -1056,6 +976,74 @@ describe("scripts/admin-rehearsal", function () {
         confirmPhase({ contracts, signer: deployer, log, snapshotFile, legacySnapshotFile }),
       ).to.be.rejectedWith(/only record/);
       expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(false);
+    });
+  });
+
+  describe("forwardPhase and what a rehearsal leaves behind", function () {
+    function forward(fixture, { snapshotFile, dryRun = false }) {
+      fixture.lines = [];
+      fixture.executed = false;
+      return forwardPhase({
+        contracts: fixture.contracts,
+        signer: fixture.deployer,
+        dryRun,
+        log: (line) => fixture.lines.push(String(line)),
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        snapshotFile,
+        execute: async () => {
+          fixture.executed = true;
+          return [];
+        },
+      });
+    }
+
+    const scratch = () =>
+      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-left-")), "snapshot.json");
+
+    // A lost snapshot after treasury-set would otherwise make the Safe the "original" treasury.
+    for (const dryRun of [false, true]) {
+      it(`refuses to take a baseline from live state that holds the Safe as treasury (dryRun=${dryRun})`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        await fixture.contracts.escrow
+          .connect(fixture.deployer)
+          .setTreasury(fixture.safeContractAddress);
+        const snapshotFile = scratch();
+
+        await expect(forward(fixture, { snapshotFile, dryRun })).to.be.rejectedWith(
+          /treasury\(\) is the Safe[\s\S]*Nothing was sent/,
+        );
+        expect(fixture.executed).to.equal(false);
+        expect(fs.existsSync(snapshotFile)).to.equal(false);
+      });
+    }
+
+    it("refuses after a confirmed rehearsal too, when the live fee is the rehearsal fee", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, { confirmed: true }),
+      );
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+
+      await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(
+        /promptFee\(\) is the rehearsal fee/,
+      );
+      expect(fixture.executed).to.equal(false);
+    });
+
+    it("does not look for leftovers when it resumes from this pair's unconfirmed snapshot", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
+      await fixture.contracts.escrow
+        .connect(fixture.deployer)
+        .setTreasury(fixture.safeContractAddress);
+
+      await forward(fixture, { snapshotFile });
+
+      expect(fixture.executed).to.equal(true);
     });
   });
 
