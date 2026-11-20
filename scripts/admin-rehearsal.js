@@ -1,11 +1,16 @@
 const hre = require("hardhat");
 const dotenv = require("dotenv");
-const fs = require("fs");
 const path = require("path");
 const chalk = require("chalk");
 
 const { sameValue, isRevert } = require("./rehearsal/values");
-const { writeSnapshot, readSnapshot } = require("./rehearsal/snapshot");
+const {
+  snapshotPath,
+  legacySnapshotPath,
+  writeSnapshot,
+  readSnapshot,
+  checkLegacySnapshot,
+} = require("./rehearsal/snapshot");
 
 const { ethers } = hre;
 
@@ -362,10 +367,6 @@ async function verifyReturned({ contracts, state }) {
   return { ok: mismatches.length === 0, mismatches };
 }
 
-function snapshotPath(networkName) {
-  return path.resolve(__dirname, `../cache/admin-rehearsal.${networkName}.json`);
-}
-
 /** The two proxies a rehearsal runs against, as the snapshot records them. */
 async function pairOf({ aiAgent, escrow }) {
   const [agentAddress, escrowAddress] = await Promise.all([
@@ -373,6 +374,27 @@ async function pairOf({ aiAgent, escrow }) {
     escrow.getAddress(),
   ]);
   return { agent: agentAddress, escrow: escrowAddress };
+}
+
+/**
+ * The pair, the chain, and this pair's snapshot (null when there is none), after the file an
+ * earlier version left in the cache has been checked. Whatever cannot be used is refused here,
+ * before anything is read from the contracts or sent.
+ */
+async function loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log }) {
+  const pair = await pairOf(contracts);
+  const { chainId } = await ethers.provider.getNetwork();
+  checkLegacySnapshot({ file: legacySnapshotFile, pair, log, moveTo: snapshotFile });
+  const snapshot = readSnapshot(snapshotFile, { pair, network, chainId });
+  return { pair, chainId, snapshot };
+}
+
+/** A forward run cannot tell which steps a version 1 snapshot's rehearsal sent. */
+function assertForwardCanUse(snapshot, file) {
+  if (snapshot?.version !== 1) return;
+  throw new Error(
+    `The snapshot at ${file} was written by an earlier version of this script and records no steps, so a forward run cannot tell which were sent. Nothing was sent. Run the confirm phase to check it against the chain; once it is confirmed, a forward run starts from the live state. If its rehearsal was returned by hand, move it aside.`,
+  );
 }
 
 /**
@@ -437,6 +459,8 @@ async function forwardPhase({
   safeAddress,
   rehearsalPromptFee,
   snapshotFile,
+  legacySnapshotFile = null,
+  network = hre.network.name,
   execute = runPlan,
 }) {
   if (!safeAddress) {
@@ -444,7 +468,18 @@ async function forwardPhase({
   }
 
   await assertOwnershipMovesInTwoSteps(contracts);
-  const pair = await pairOf(contracts);
+  const {
+    pair,
+    chainId,
+    snapshot: left,
+  } = await loadSnapshot({
+    contracts,
+    snapshotFile,
+    legacySnapshotFile,
+    network,
+    log,
+  });
+  assertForwardCanUse(left, snapshotFile);
   const live = await readState(contracts);
   const show = (st) =>
     JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
@@ -460,13 +495,12 @@ async function forwardPhase({
 
   // A snapshot left by an aborted live run is the ONLY record of the pre-rehearsal values; the
   // live state may already carry rehearsal values (e.g. the fee). It stays the restore baseline
-  // and is never overwritten. To start over deliberately, delete the file first. A snapshot the
-  // confirm phase has passed is a finished rehearsal, not a baseline: the next one starts from
-  // the live state. A dry run reads the file too, so that it refuses what the live run would,
-  // and then leaves it alone.
-  const left = fs.existsSync(snapshotFile) ? readSnapshot(snapshotFile, pair) : null;
+  // and is never overwritten. To start over deliberately, move the file aside first. A snapshot
+  // the confirm phase has passed is a finished rehearsal, not a baseline: the next one starts
+  // from the live state. A dry run reads the file too, so that it refuses what the live run
+  // would, and then leaves it alone.
   const resuming = !dryRun && left !== null && !left.confirmed;
-  const state = resuming ? left.state : live;
+  const state = resuming ? left.baseline : live;
   if (resuming) {
     // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
     // Safe's oracle role would go unchecked.
@@ -481,7 +515,16 @@ async function forwardPhase({
   await assertSafeHasCode(ethers.getAddress(safeAddress));
 
   if (!dryRun && !resuming) {
-    writeSnapshot(state, snapshotFile, pair, { safe: ethers.getAddress(safeAddress) });
+    writeSnapshot(snapshotFile, {
+      network,
+      chainId,
+      pair,
+      safe: ethers.getAddress(safeAddress),
+      rehearsalPromptFee,
+      baseline: state,
+      steps: {},
+      confirmed: false,
+    });
     log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
 
@@ -505,12 +548,25 @@ async function confirmPhase({
   signer,
   log,
   snapshotFile,
+  legacySnapshotFile = null,
+  network = hre.network.name,
   accept = acceptReturned,
   verify = verifyReturned,
   sleep = defaultSleep,
 }) {
-  const pair = await pairOf(contracts);
-  const { state, safe, confirmed } = readSnapshot(snapshotFile, pair);
+  const { pair, chainId, snapshot } = await loadSnapshot({
+    contracts,
+    snapshotFile,
+    legacySnapshotFile,
+    network,
+    log,
+  });
+  if (snapshot === null) {
+    throw new Error(
+      `No snapshot at ${snapshotFile}; run the forward phase first (for example bun run rehearse:base-testnet)`,
+    );
+  }
+  const { baseline: state, safe, confirmed } = snapshot;
   if (confirmed) {
     log(chalk.yellow("This snapshot was already confirmed. Checking it against the chain again."));
   }
@@ -548,7 +604,8 @@ async function confirmPhase({
   }
   // Only now: marked any earlier, a failed confirm would let the next forward run start from
   // the live state and overwrite the one record of the pre-rehearsal values.
-  writeSnapshot(state, snapshotFile, pair, { safe, confirmed: true });
+  // Written as version 2 whatever it was read as, on the network and chain it was checked on.
+  writeSnapshot(snapshotFile, { ...snapshot, network, chainId, pair, confirmed: true });
   log(
     chalk.green(
       "Confirm phase complete: everything in the pre-rehearsal snapshot matches the chain again.",
@@ -585,7 +642,16 @@ async function main({
     `--- Admin rehearsal on ${chalk.bold(networkName)} · phase=${phase} · signer=${signer.address}${dryRun ? " · DRY RUN" : ""} ---`,
   );
 
-  const snapshotFile = snapshotPath(networkName);
+  const root = path.resolve(__dirname, "..");
+  const files = {
+    network: networkName,
+    snapshotFile: snapshotPath({
+      root,
+      network: networkName,
+      agent: await contracts.aiAgent.getAddress(),
+    }),
+    legacySnapshotFile: legacySnapshotPath({ root, network: networkName }),
+  };
   if (phase === "forward") {
     await forward({
       contracts,
@@ -594,10 +660,10 @@ async function main({
       log,
       safeAddress: env.REHEARSAL_SAFE_ADDRESS,
       rehearsalPromptFee: parseRehearsalFee(env.REHEARSAL_PROMPT_FEE),
-      snapshotFile,
+      ...files,
     });
   } else {
-    await confirm({ contracts, signer, log, snapshotFile });
+    await confirm({ contracts, signer, log, ...files });
   }
 }
 
