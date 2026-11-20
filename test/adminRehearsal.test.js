@@ -35,16 +35,37 @@ describe("scripts/admin-rehearsal", function () {
     return key.publicKey;
   }
 
-  /** A snapshot file's text as the script writes it: the values, and the pair they were read from. */
+  const asText = (state) =>
+    Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]));
+
+  async function pairOf(contracts) {
+    return {
+      agent: await contracts.aiAgent.getAddress(),
+      escrow: await contracts.escrow.getAddress(),
+    };
+  }
+
+  /**
+   * A snapshot file's text as the script writes it (version 2): the baseline values, the pair,
+   * network and chain they were read from, and the steps recorded so far.
+   */
   async function snapshotText(contracts, state, extra = {}) {
     return JSON.stringify({
-      ...Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)])),
-      pair: {
-        agent: await contracts.aiAgent.getAddress(),
-        escrow: await contracts.escrow.getAddress(),
-      },
+      version: 2,
+      network: "hardhat",
+      chainId: "31337",
+      pair: await pairOf(contracts),
+      rehearsalPromptFee: String(REHEARSAL_FEE),
+      baseline: asText(state),
+      steps: {},
+      confirmed: false,
       ...extra,
     });
+  }
+
+  /** A snapshot as versions before steps were recorded wrote it: the values beside the pair. */
+  async function versionOneText(contracts, state, extra = {}) {
+    return JSON.stringify({ ...asText(state), pair: await pairOf(contracts), ...extra });
   }
 
   async function deployFixture() {
@@ -569,10 +590,21 @@ describe("scripts/admin-rehearsal", function () {
       const firstStepAt = fixture.lines.findIndex((l) => l.includes("[fee-set]"));
       expect(savedAt).to.be.greaterThan(-1);
       expect(savedAt).to.be.lessThan(firstStepAt);
-      const { pair, safe, ...saved } = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      const { pair, safe, baseline, updatedAt, ...saved } = JSON.parse(
+        fs.readFileSync(snapshotFile, "utf8"),
+      );
       expect(safe).to.equal(fixture.safeContractAddress);
       expect(pair.escrow).to.equal(await fixture.contracts.escrow.getAddress());
+      expect(Date.parse(updatedAt)).to.not.be.NaN;
       expect(saved).to.deep.equal({
+        version: 2,
+        network: "hardhat",
+        chainId: "31337",
+        rehearsalPromptFee: String(REHEARSAL_FEE),
+        steps: {},
+        confirmed: false,
+      });
+      expect(baseline).to.deep.equal({
         agentOwner: fixture.state.agentOwner,
         escrowOwner: fixture.state.escrowOwner,
         treasury: fixture.state.treasury,
@@ -765,8 +797,8 @@ describe("scripts/admin-rehearsal", function () {
       expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(false);
       expect(await contracts.escrow.promptFee()).to.equal(laterFee);
       const written = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
-      expect(written.promptFee).to.equal(String(laterFee));
-      expect(written.confirmed).to.equal(undefined);
+      expect(written.baseline.promptFee).to.equal(String(laterFee));
+      expect(written.confirmed).to.equal(false);
     });
 
     it("refuses to resume with another Safe than the one the rehearsal was started with", async function () {
@@ -888,6 +920,145 @@ describe("scripts/admin-rehearsal", function () {
     }
   });
 
+  describe("the snapshot's own folder, and the file earlier versions left in the cache", function () {
+    function scratchDir() {
+      return fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-folder-"));
+    }
+
+    /** A forward run with a snapshot and a legacy file of its own, recording whether it sent. */
+    function forward(fixture, { snapshotFile, legacySnapshotFile, dryRun = false }) {
+      fixture.lines = [];
+      fixture.executed = false;
+      return forwardPhase({
+        contracts: fixture.contracts,
+        signer: fixture.deployer,
+        dryRun,
+        log: (line) => fixture.lines.push(String(line)),
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        snapshotFile,
+        legacySnapshotFile,
+        execute: async () => {
+          fixture.executed = true;
+          return [];
+        },
+      });
+    }
+
+    for (const dryRun of [false, true]) {
+      it(`refuses an unconfirmed snapshot of this pair in the cache, and leaves it there (dryRun=${dryRun})`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const dir = scratchDir();
+        const legacySnapshotFile = path.join(dir, "cache", "admin-rehearsal.hardhat.json");
+        const snapshotFile = path.join(dir, "rehearsal-state", "snapshot.json");
+        fs.mkdirSync(path.dirname(legacySnapshotFile));
+        fs.writeFileSync(
+          legacySnapshotFile,
+          await versionOneText(fixture.contracts, fixture.state, {
+            safe: fixture.safeContractAddress,
+          }),
+        );
+        const before = fs.readFileSync(legacySnapshotFile, "utf8");
+
+        const refusal = forward(fixture, { snapshotFile, legacySnapshotFile, dryRun });
+
+        await expect(refusal).to.be.rejectedWith(/only record[\s\S]*move it aside/i);
+        await expect(refusal).to.not.be.rejectedWith(/delete/i);
+        expect(fixture.executed).to.equal(false);
+        expect(fs.existsSync(snapshotFile)).to.equal(false);
+        expect(fs.readFileSync(legacySnapshotFile, "utf8")).to.equal(before);
+      });
+    }
+
+    it("warns about a snapshot of another pair in the cache, leaves it there and goes on", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const dir = scratchDir();
+      const legacySnapshotFile = path.join(dir, "admin-rehearsal.hardhat.json");
+      const snapshotFile = path.join(dir, "rehearsal-state", "snapshot.json");
+      fs.writeFileSync(
+        legacySnapshotFile,
+        await versionOneText(fixture.contracts, fixture.state, {
+          pair: { agent: fixture.stranger.address, escrow: fixture.stranger.address },
+        }),
+      );
+      const before = fs.readFileSync(legacySnapshotFile, "utf8");
+
+      await forward(fixture, { snapshotFile, legacySnapshotFile });
+
+      expect(fixture.lines.some((l) => l.includes(legacySnapshotFile))).to.equal(true);
+      expect(fixture.executed).to.equal(true);
+      expect(fs.readFileSync(legacySnapshotFile, "utf8")).to.equal(before);
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).version).to.equal(2);
+    });
+
+    for (const dryRun of [false, true]) {
+      it(`refuses a version 1 snapshot in the new folder for a forward run, which records no steps (dryRun=${dryRun})`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const snapshotFile = path.join(scratchDir(), "snapshot.json");
+        fs.writeFileSync(snapshotFile, await versionOneText(fixture.contracts, fixture.state));
+        const before = fs.readFileSync(snapshotFile, "utf8");
+
+        await expect(forward(fixture, { snapshotFile, dryRun })).to.be.rejectedWith(
+          /earlier version[\s\S]*confirm phase/,
+        );
+        expect(fixture.executed).to.equal(false);
+        expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+      });
+
+      it(`refuses a snapshot that is not JSON, and does not take it for a missing one (dryRun=${dryRun})`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const snapshotFile = path.join(scratchDir(), "snapshot.json");
+        fs.writeFileSync(snapshotFile, '{"version": 2, "baseline": {');
+
+        await expect(forward(fixture, { snapshotFile, dryRun })).to.be.rejectedWith(
+          /not JSON[\s\S]*move it aside/i,
+        );
+        expect(fixture.executed).to.equal(false);
+        expect(fs.readFileSync(snapshotFile, "utf8")).to.equal('{"version": 2, "baseline": {');
+      });
+    }
+
+    for (const [what, extra, refusal] of [
+      ["network", { network: "baseSepolia" }, /network baseSepolia/],
+      ["chain", { chainId: "84532" }, /chain 84532/],
+    ]) {
+      it(`refuses a snapshot of this pair taken on another ${what}`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const snapshotFile = path.join(scratchDir(), "snapshot.json");
+        fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state, extra));
+
+        await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(refusal);
+        expect(fixture.executed).to.equal(false);
+      });
+    }
+
+    it("confirms a version 1 snapshot moved into the new folder, and writes it back as version 2", async function () {
+      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
+      const snapshotFile = path.join(scratchDir(), "snapshot.json");
+      fs.writeFileSync(snapshotFile, await versionOneText(contracts, state));
+
+      await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
+
+      const written = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(written).to.deep.include({ version: 2, confirmed: true, steps: {} });
+      expect(written.baseline.promptFee).to.equal(String(state.promptFee));
+    });
+
+    it("refuses to confirm while an unconfirmed snapshot of this pair is still in the cache", async function () {
+      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
+      const dir = scratchDir();
+      const legacySnapshotFile = path.join(dir, "admin-rehearsal.hardhat.json");
+      const snapshotFile = path.join(dir, "snapshot.json");
+      fs.writeFileSync(legacySnapshotFile, await versionOneText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+
+      await expect(
+        confirmPhase({ contracts, signer: deployer, log, snapshotFile, legacySnapshotFile }),
+      ).to.be.rejectedWith(/only record/);
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(false);
+    });
+  });
+
   describe("forwardPhase failure path", function () {
     it("keeps the snapshot and surfaces the step error when a transaction fails mid-run", async function () {
       const fixture = await loadFixture(deployFixture);
@@ -992,7 +1163,7 @@ describe("scripts/admin-rehearsal", function () {
       ).to.be.rejectedWith(/not been fully returned/);
       // Still the baseline: marked confirmed here, the next forward run would start from the
       // live state, which holds the rehearsal's values, and the record of the old ones is gone.
-      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(undefined);
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(false);
     });
 
     // A forward run stopped between authorising the Safe as an oracle and removing it has moved
@@ -1009,7 +1180,7 @@ describe("scripts/admin-rehearsal", function () {
       await expect(
         confirmPhase({ contracts, signer: deployer, log, snapshotFile }),
       ).to.be.rejectedWith(/not been fully returned/);
-      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(undefined);
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(false);
 
       await contracts.aiAgent.connect(deployer).removeOracle(safe.address);
       await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
@@ -1299,6 +1470,27 @@ describe("scripts/admin-rehearsal", function () {
       expect(calls.forward.rehearsalPromptFee).to.equal(ethers.parseEther("3"));
       expect(calls.confirm).to.equal(null);
     });
+
+    for (const phase of ["forward", "confirm"]) {
+      it(`gives the ${phase} phase the snapshot in its own folder, named by agent, and the cache file to check`, async function () {
+        const { promise, calls } = runMain({
+          env: { REHEARSAL_PHASE: phase, REHEARSAL_SAFE_ADDRESS: SAFE },
+        });
+
+        await promise;
+
+        const root = path.resolve(__dirname, "..");
+        expect(calls[phase]).to.deep.include({
+          network: "baseSepolia",
+          snapshotFile: path.join(
+            root,
+            "rehearsal-state",
+            `admin-rehearsal.baseSepolia.${AGENT.toLowerCase()}.json`,
+          ),
+          legacySnapshotFile: path.join(root, "cache", "admin-rehearsal.baseSepolia.json"),
+        });
+      });
+    }
 
     it("runs the confirm phase with the signer and the contracts", async function () {
       const { promise, calls, contracts } = runMain({ env: { REHEARSAL_PHASE: "confirm" } });
