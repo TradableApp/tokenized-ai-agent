@@ -62,30 +62,79 @@ describe("the rehearsal's way out of a snapshot it cannot finish", function () {
       snapshotFile,
     });
 
-  // Its role is compared before and after, and the signer's own role is one the owner removes:
-  // the same address cannot be watched for both.
+  // Its role is compared before and after, and on a live network the signer's own role is one
+  // the owner removes: the same address cannot be watched for both. On a local network the
+  // deploy wallet is the oracle as well, on purpose.
+  const LIVE = "baseSepolia";
+
   for (const dryRun of [false, true]) {
-    it(`refuses a live oracle that is the signer itself, before anything is sent or written (dryRun=${dryRun})`, async function () {
+    it(`refuses on a live network a live oracle that is the signer itself, before anything is sent or written (dryRun=${dryRun})`, async function () {
       const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const nonce = await ethers.provider.getTransactionCount(fixture.deployer.address);
       const contracts = { ...fixture.contracts, oracleAddress: fixture.deployer.address };
 
-      await expect(forward(fixture, { contracts, snapshotFile, dryRun })).to.be.rejectedWith(
-        /REHEARSAL_ORACLE_ADDRESS is the signer[\s\S]*Nothing was sent/,
-      );
+      await expect(
+        forward(fixture, { contracts, snapshotFile, dryRun, network: LIVE }),
+      ).to.be.rejectedWith(/REHEARSAL_ORACLE_ADDRESS is the signer[\s\S]*Nothing was sent/);
 
       expect(fs.existsSync(snapshotFile)).to.equal(false);
       expect(await ethers.provider.getTransactionCount(fixture.deployer.address)).to.equal(nonce);
     });
   }
 
-  it("refuses to confirm a snapshot whose live oracle is the signer", async function () {
+  it("takes the signer as the live oracle on a local network", async function () {
+    const fixture = await loadRehearsal();
+    await fixture.contracts.aiAgent.connect(fixture.deployer).addOracle(fixture.deployer.address);
+    const contracts = { ...fixture.contracts, oracleAddress: fixture.deployer.address };
+
+    await forward(fixture, { contracts });
+
+    expect(await fixture.contracts.aiAgent.pendingOwner()).to.equal(fixture.safeContractAddress);
+  });
+
+  // A snapshot an earlier version wrote may watch the signer. The ownership the Safe offered
+  // back is accepted first, so it is never left open, and then the snapshot is reported.
+  it("accepts the ownership offered back, then refuses on a live network a snapshot that watches the signer", async function () {
+    const fixture = await loadRehearsal();
+    const { aiAgent } = fixture.contracts;
+    const { deployer, safe } = fixture;
+    const state = { ...fixture.state, oracle: deployer.address, oracleAuthorized: false };
+    const snapshotFile = scratch();
+    fs.writeFileSync(
+      snapshotFile,
+      await snapshotText(fixture.contracts, state, safe.address, {
+        steps: OFFERS_DONE,
+        network: LIVE,
+      }),
+    );
+    await aiAgent.connect(deployer).transferOwnership(safe.address);
+    await aiAgent.connect(safe).acceptOwnership();
+    await aiAgent.connect(safe).transferOwnership(deployer.address);
+
+    await expect(
+      confirmPhase({
+        contracts: fixture.contracts,
+        signer: deployer,
+        log: fixture.log,
+        snapshotFile,
+        network: LIVE,
+      }),
+    ).to.be.rejectedWith(/snapshot at [\s\S]*watches the signer[\s\S]*move the snapshot aside/);
+
+    expect(await aiAgent.owner()).to.equal(deployer.address);
+    expect(await aiAgent.pendingOwner()).to.equal(ethers.ZeroAddress);
+    expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(false);
+  });
+
+  it("confirms on a local network a snapshot that watches the signer", async function () {
     const fixture = await loadRehearsal();
     const state = { ...fixture.state, oracle: fixture.deployer.address, oracleAuthorized: false };
     const snapshotFile = await writeSnapshot(fixture, state, OFFERS_DONE);
 
-    await expect(confirm(fixture, snapshotFile)).to.be.rejectedWith(/is the signer/);
+    await confirm(fixture, snapshotFile);
+
+    expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(true);
   });
 
   it("says to move the snapshot aside when the confirm phase fails on a value changed since", async function () {
