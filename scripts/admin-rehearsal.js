@@ -509,6 +509,8 @@ async function forwardPhase({
     rehearsalPromptFee,
     file: snapshotFile,
   });
+  // Replaced, never changed, by `save` and `record` below. They are called one at a time, in
+  // order, each after the last has returned; a concurrent caller would lose a step record.
   let snapshot = { ...begun, network, chainId, pair };
   if (resuming)
     log(`Resuming: ${snapshotFile} stays the restore baseline: ${show(snapshot.baseline)}`);

@@ -240,6 +240,9 @@ async function settleSentSteps({ plan, steps, getReceipt, getCounts, check, log 
       log(`[${stepDef.id}] sent as ${record.txHash}: reverted, so it is sent again`);
     } else {
       await settleWithoutReceipt(stepDef, record, getCounts);
+      // Forgetting is safe however the unrecorded transaction resolves: the next decision for
+      // this step is derived from the live value, so if it lands after all its value is seen
+      // and the step is recorded as observed or its restore sent, and if not it is sent again.
       log(
         `[${stepDef.id}] sent as ${record.txHash}: no receipt found on this node and its nonce is unused`,
       );
