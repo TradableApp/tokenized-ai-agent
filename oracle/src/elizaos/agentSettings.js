@@ -22,6 +22,8 @@
  * started.
  */
 
+const { errorKind } = require("../errorDescription");
+
 // Read by the framework or the model plugin through the agent's settings. A test refuses any
 // name here that looks like a credential or the address of a service.
 const AGENT_ENV_ALLOW_LIST = Object.freeze([
@@ -260,7 +262,7 @@ async function cleanStoredAgentSettings({
       "values there, and nothing else should write to it. Treat every secret an earlier build " +
       "was given as exposed to the agent database and rotate it.";
   } catch (error) {
-    const kind = String(error?.code ?? error?.name ?? "Error");
+    const kind = errorKind(error);
     log(`[ElizaOS] Could not clean the stored agent settings (${kind}).`);
     subject = "CRITICAL: Stored agent settings could not be cleaned";
     message =

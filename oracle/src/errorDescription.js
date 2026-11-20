@@ -62,6 +62,41 @@ function describedError(error) {
   return described;
 }
 
+/**
+ * The kind of `error` and nothing it says: its code, or its name where it has none, when that is
+ * text or a number of letters, digits, "_", "." and "-", at most 64 characters; "Error" when
+ * neither is, or neither can be read. It never throws. For a log line or an alert about an error
+ * whose message may carry an address, as a database error carries the one it was connecting to.
+ *
+ * @param {unknown} error
+ * @returns {string}
+ */
+function errorKind(error) {
+  for (const property of ["code", "name"]) {
+    const kind = plainKind(readProperty(error, property));
+    if (kind !== null) return kind;
+  }
+  return "Error";
+}
+
+/** `value[property]`, or undefined where reading it throws (a getter that throws). */
+function readProperty(value, property) {
+  try {
+    return value?.[property];
+  } catch {
+    return undefined;
+  }
+}
+
+// A code or name as a log line and an alert can carry it: one short word, never an address.
+const KIND = /^[A-Za-z0-9_.-]{1,64}$/;
+
+function plainKind(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value);
+  return KIND.test(text) ? text : null;
+}
+
 // Any scheme (a database address carries a password as an RPC address carries a key), with the
 // slashes plain or escaped as JSON escapes them. Greedy on purpose: everything up to the next
 // space, quote or closing parenthesis goes, trailing punctuation included. Stopping at a dot or
@@ -104,4 +139,4 @@ function revertDetail(error) {
   return "";
 }
 
-module.exports = { describeError, describedError, withoutAddresses };
+module.exports = { describeError, describedError, errorKind, withoutAddresses };

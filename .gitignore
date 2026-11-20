@@ -157,6 +157,9 @@ node_modules
 # Hardhat files
 /cache
 /artifacts
+# The admin rehearsal's snapshot: the only record of the values before a rehearsal, kept out
+# of the cache that `hardhat clean` empties. Never commit it; `git clean -fdX` and `-fdx` remove it.
+/rehearsal-state/
 # OpenZeppelin upgrades manifests: the public-network files are the record of what is deployed
 # (proxy and implementation addresses, storage layouts) and are committed, so an upgrade can be
 # validated from any checkout. Only the throwaway local-network files are ignored.

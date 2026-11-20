@@ -1,7 +1,12 @@
 const { expect } = require("chai");
 const util = require("node:util");
 const { ethers } = require("ethers");
-const { describeError, describedError, withoutAddresses } = require("../src/errorDescription");
+const {
+  describeError,
+  describedError,
+  errorKind,
+  withoutAddresses,
+} = require("../src/errorDescription");
 const { isTransientProviderError } = require("../src/errors");
 const { refusedByProvider } = require("./helpers/refusedByProvider");
 
@@ -148,6 +153,95 @@ describe("errorDescription — what an error is, without the address it was sent
         "down: [address removed]",
       );
     });
+  });
+});
+
+describe("errorKind — what kind of error it was, and nothing it says", () => {
+  it("is the error's code when it has one", () => {
+    const error = Object.assign(new Error("connect to postgres://user:pw@db/agent failed"), {
+      code: "ECONNREFUSED",
+    });
+
+    expect(errorKind(error)).to.equal("ECONNREFUSED");
+  });
+
+  it("is the error's name when it has no code", () => {
+    expect(errorKind(new TypeError("postgres://user:pw@db/agent is not valid"))).to.equal(
+      "TypeError",
+    );
+  });
+
+  it("is a numeric code as text", () => {
+    expect(errorKind({ code: 503, message: "down" })).to.equal("503");
+  });
+
+  it("is never text that spans lines", () => {
+    const error = Object.assign(new Error("x"), { code: "E1\nforged log line" });
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
+  it("is never an address", () => {
+    const error = { code: "postgres://user:pw@db/agent", name: "https://rpc.example/v2/key" };
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
+  it("is at most 64 characters", () => {
+    expect(errorKind({ code: "E".repeat(65) })).to.equal("Error");
+    expect(errorKind({ code: "E".repeat(64) })).to.equal("E".repeat(64));
+  });
+
+  it("is only a code or name given as text or a number", () => {
+    const code = { toString: () => "ECONNREFUSED" };
+
+    expect(errorKind({ code })).to.equal("Error");
+  });
+
+  it("does not throw for an error whose code cannot be read", () => {
+    const error = {};
+    Object.defineProperty(error, "code", {
+      get() {
+        throw new Error("no");
+      },
+    });
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
+  it("is the error's name when its code cannot be read", () => {
+    const error = new TypeError("x");
+    Object.defineProperty(error, "code", {
+      get() {
+        throw new Error("no");
+      },
+    });
+
+    expect(errorKind(error)).to.equal("TypeError");
+  });
+
+  it("does not throw for an error whose name cannot be read", () => {
+    const error = {};
+    Object.defineProperty(error, "name", {
+      get() {
+        throw new Error("no");
+      },
+    });
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
+  it("reads an object with no prototype", () => {
+    const error = Object.assign(Object.create(null), { code: "ECONNRESET" });
+
+    expect(errorKind(error)).to.equal("ECONNRESET");
+    expect(errorKind(Object.create(null))).to.equal("Error");
+  });
+
+  it("is Error for a value with neither, never its message", () => {
+    expect(errorKind({ message: "postgres://user:pw@db/agent" })).to.equal("Error");
+    expect(errorKind(null)).to.equal("Error");
+    expect(errorKind(undefined)).to.equal("Error");
   });
 });
 

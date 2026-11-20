@@ -1,23 +1,40 @@
 const hre = require("hardhat");
 const dotenv = require("dotenv");
-const fs = require("fs");
 const path = require("path");
 const chalk = require("chalk");
+
+const { sameValue, isRevert, RehearsalError, describeFailure } = require("./rehearsal/values");
+const {
+  snapshotPath,
+  legacySnapshotPath,
+  writeSnapshot,
+  readSnapshot,
+  checkLegacySnapshot,
+} = require("./rehearsal/snapshot");
+const {
+  readLive,
+  findLeftovers,
+  assertNoLeftovers,
+  decideSteps,
+  settleSentSteps,
+  assertNoPendingTransactions,
+  assertConfirmable,
+} = require("./rehearsal/resume");
+const {
+  CONTRACT_KEYS,
+  VERIFY_ATTEMPTS,
+  VERIFY_RETRY_MS,
+  defaultSleep,
+  findEvent,
+  verifyGetter,
+  runPlan,
+} = require("./rehearsal/steps");
 
 const { ethers } = hre;
 
 const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
 const PHASES = new Set(["forward", "confirm"]);
 const MAINNET_NETWORK = "base";
-const RECOVERY_HINT =
-  "Re-run the forward phase to resume: the existing snapshot stays the restore baseline and steps whose getter already holds the target are skipped. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
-// Public RPC endpoints are load-balanced; the node that answers the read-back may not have the
-// block the receipt came from yet. Read at that block and retry rather than fail a landed tx.
-const VERIFY_ATTEMPTS = 5;
-const VERIFY_RETRY_MS = 2000;
-const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const CONTRACT_KEYS = { agent: "aiAgent", escrow: "escrow" };
 const ORACLE_ROLE = ethers.id("ORACLE_ROLE");
 
 /**
@@ -65,32 +82,21 @@ async function readEncryptionKey(aiAgent) {
   }
 }
 
-/**
- * True when a read failed because the contract reverted, as opposed to the node not answering.
- * ethers reports a revert as CALL_EXCEPTION. The in-process Hardhat network throws its own
- * error with no ethers code, recognizable only by its text; an error that carries any other
- * code came from a real node and is never taken for a revert, whatever its text says.
- */
-function isRevert(error) {
-  if (error?.code === "CALL_EXCEPTION") return true;
-  if (typeof error?.code === "string") return false;
-
-  return /revert/i.test(String(error?.message));
-}
-
 const NO_ENCRYPTION_KEY_NOTE =
   "The encryption key is not in the snapshot (the agent did not have one to read when it was taken), so it is not checked.";
 
 function assertSafeAddress(safeAddress, state) {
   if (!ethers.isAddress(safeAddress) || safeAddress === ethers.ZeroAddress) {
-    throw new Error(`Safe address is not a usable address: ${safeAddress}`);
+    throw new RehearsalError(`Safe address is not a usable address: ${safeAddress}`);
   }
   const safe = ethers.getAddress(safeAddress);
   if (
     safe === ethers.getAddress(state.agentOwner) ||
     safe === ethers.getAddress(state.escrowOwner)
   ) {
-    throw new Error(`Safe ${safe} already owns a proxy; the transfer would rehearse nothing`);
+    throw new RehearsalError(
+      `Safe ${safe} already owns a proxy; the transfer would rehearse nothing`,
+    );
   }
   return safe;
 }
@@ -101,7 +107,7 @@ function assertSignerOwnsBoth(signerAddress, state) {
     signer !== ethers.getAddress(state.agentOwner) ||
     signer !== ethers.getAddress(state.escrowOwner)
   ) {
-    throw new Error(
+    throw new RehearsalError(
       `Signer ${signer} does not own both proxies (agentOwner=${state.agentOwner}, escrowOwner=${state.escrowOwner})`,
     );
   }
@@ -110,13 +116,15 @@ function assertSignerOwnsBoth(signerAddress, state) {
 async function assertSafeHasCode(safe) {
   const code = await ethers.provider.getCode(safe);
   if (code === "0x") {
-    throw new Error(`Safe ${safe} has no contract code; an EOA cannot stand in for the Safe`);
+    throw new RehearsalError(
+      `Safe ${safe} has no contract code; an EOA cannot stand in for the Safe`,
+    );
   }
 }
 
 function assertMainnetConfirmed({ networkName, dryRun, confirmed }) {
   if (networkName === MAINNET_NETWORK && !dryRun && confirmed !== "1") {
-    throw new Error(
+    throw new RehearsalError(
       `Live run on ${networkName} refused: set REHEARSAL_MAINNET_CONFIRMED=1 to send owner transactions on Base mainnet`,
     );
   }
@@ -125,7 +133,7 @@ function assertMainnetConfirmed({ networkName, dryRun, confirmed }) {
 /** The confirm phase sends the acceptance, so there is nothing a dry run of it could simulate. */
 function assertPhaseCanDryRun({ phase, dryRun }) {
   if (dryRun && phase === "confirm") {
-    throw new Error(
+    throw new RehearsalError(
       "The confirm phase has no dry run: it sends a transaction. Unset DRY_RUN to run it.",
     );
   }
@@ -139,7 +147,9 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
   const safe = assertSafeAddress(safeAddress, state);
   const fee = BigInt(rehearsalPromptFee);
   if (fee === BigInt(state.promptFee)) {
-    throw new Error("Rehearsal prompt fee equals the live fee; the event would prove nothing");
+    throw new RehearsalError(
+      "Rehearsal prompt fee equals the live fee; the event would prove nothing",
+    );
   }
 
   const feeEvent = (value) => ({ name: "PromptFeeUpdated", args: [value] });
@@ -204,124 +214,6 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
   ];
 }
 
-function sameValue(actual, expected) {
-  if (typeof expected === "bigint" || typeof actual === "bigint") {
-    return BigInt(actual) === BigInt(expected);
-  }
-  return String(actual).toLowerCase() === String(expected).toLowerCase();
-}
-
-/** The getter call as text, e.g. `isOracle(0xSafe)`, for logs and errors. */
-function getterCall(verify) {
-  return `${verify.getter}(${(verify.args ?? []).join(", ")})`;
-}
-
-function describeStep(stepDef, target, log) {
-  const calldata = target.interface.encodeFunctionData(stepDef.method, stepDef.args);
-  log(`\n[${stepDef.id}] ${stepDef.contract}.${stepDef.method}(${stepDef.args.join(", ")})`);
-  log(`  to:       ${target.target}`);
-  log(`  calldata: ${calldata}`);
-  log(`  expects:  ${stepDef.event.name}(${stepDef.event.args.join(", ")})`);
-  log(`  verify:   ${getterCall(stepDef.verify)} == ${stepDef.verify.expected}`);
-}
-
-function findEvent(receipt, target, stepDef) {
-  const topicHash = target.interface.getEvent(stepDef.event.name).topicHash;
-  const emitter = String(target.target).toLowerCase();
-  const raw = receipt.logs.find(
-    (l) => l.topics[0] === topicHash && String(l.address).toLowerCase() === emitter,
-  );
-  if (!raw) {
-    throw new Error(`[${stepDef.id}] ${stepDef.event.name} was not emitted`);
-  }
-  const parsed = target.interface.parseLog(raw);
-  stepDef.event.args.forEach((expected, i) => {
-    if (!sameValue(parsed.args[i], expected)) {
-      throw new Error(
-        `[${stepDef.id}] ${stepDef.event.name} arg ${i} was ${parsed.args[i]}, expected ${expected}`,
-      );
-    }
-  });
-}
-
-/**
- * Read the step's getter back at the block the receipt landed in, retrying a stale or lagging
- * node. The first live run on Base Sepolia failed here with the fee correctly set on-chain:
- * the public RPC answered the read from a node behind the receipt's block.
- */
-async function verifyGetter(
-  target,
-  stepDef,
-  receipt,
-  { attempts = VERIFY_ATTEMPTS, sleep = defaultSleep } = {},
-) {
-  const { getter, args = [], expected } = stepDef.verify;
-  let last = "no response";
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const actual = await target[getter](...args, { blockTag: receipt.blockNumber });
-      if (sameValue(actual, expected)) return;
-      last = String(actual);
-    } catch (error) {
-      last = `error: ${error.message}`;
-    }
-    if (attempt < attempts) await sleep(VERIFY_RETRY_MS);
-  }
-  throw new Error(
-    `[${stepDef.id}] ${getterCall(stepDef.verify)} at block ${receipt.blockNumber} is ${last}, expected ${expected} after ${attempts} attempts`,
-  );
-}
-
-/** True when the chain already holds the step's target value (a step an earlier run completed). */
-async function alreadyApplied(target, stepDef) {
-  const actual = await target[stepDef.verify.getter](...(stepDef.verify.args ?? []));
-  return sameValue(actual, stepDef.verify.expected);
-}
-
-async function runPlan({ plan, contracts, signer, dryRun, log }) {
-  const results = [];
-  for (const stepDef of plan) {
-    const target = contracts[CONTRACT_KEYS[stepDef.contract]].connect(signer);
-    describeStep(stepDef, target, log);
-
-    if (dryRun) {
-      try {
-        await target[stepDef.method].staticCall(...stepDef.args);
-      } catch (error) {
-        throw new Error(
-          `[${stepDef.id}] dry run of ${stepDef.contract}.${stepDef.method} would revert: ${error.message}`,
-        );
-      }
-      log("  dry-run:  call simulated OK");
-      results.push({ id: stepDef.id, txHash: null, blockNumber: null });
-      continue;
-    }
-
-    if (await alreadyApplied(target, stepDef)) {
-      log(
-        `  skip:     ${getterCall(stepDef.verify)} already == ${stepDef.verify.expected} (applied by an earlier run)`,
-      );
-      results.push({ id: stepDef.id, txHash: null, blockNumber: null, skipped: true });
-      continue;
-    }
-
-    let receipt;
-    try {
-      const tx = await target[stepDef.method](...stepDef.args);
-      receipt = await tx.wait();
-    } catch (error) {
-      throw new Error(
-        `[${stepDef.id}] ${stepDef.contract}.${stepDef.method} failed: ${error.message}\n${RECOVERY_HINT}`,
-      );
-    }
-    findEvent(receipt, target, stepDef);
-    await verifyGetter(target, stepDef, receipt);
-    log(`  tx:       ${receipt.hash} (block ${receipt.blockNumber})`);
-    results.push({ id: stepDef.id, txHash: receipt.hash, blockNumber: receipt.blockNumber });
-  }
-  return results;
-}
-
 /**
  * What the Safe sends, in this order: it accepts ownership of both proxies, which is what proves
  * it can act as their owner, and then offers ownership back. The deploy wallet accepts that offer
@@ -379,10 +271,6 @@ async function verifyReturned({ contracts, state }) {
   return { ok: mismatches.length === 0, mismatches };
 }
 
-function snapshotPath() {
-  return path.resolve(__dirname, `../cache/admin-rehearsal.${hre.network.name}.json`);
-}
-
 /** The two proxies a rehearsal runs against, as the snapshot records them. */
 async function pairOf({ aiAgent, escrow }) {
   const [agentAddress, escrowAddress] = await Promise.all([
@@ -393,52 +281,27 @@ async function pairOf({ aiAgent, escrow }) {
 }
 
 /**
- * The snapshot holds the pre-rehearsal values and the pair they were read from. The file is
- * named after the network only, so one left by a rehearsal of another pair would otherwise be
- * taken as this pair's baseline, and its treasury and fee written here as a "restore".
- * `safe` is the Safe the rehearsal was run with: it is authorised as an oracle on the way, and the
- * confirm phase checks it no longer is. `confirmed` marks a rehearsal the confirm phase has
- * passed: its values are no longer a baseline.
+ * The pair, the chain, and this pair's snapshot (null when there is none), after the file an
+ * earlier version left in the cache has been checked. Whatever cannot be used is refused here,
+ * before anything is read from the contracts or sent.
  */
-function writeSnapshot(state, file, pair, { safe, confirmed = false } = {}) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const serialisable = Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]));
-  const record = {
-    ...serialisable,
-    pair,
-    ...(safe ? { safe } : {}),
-    ...(confirmed ? { confirmed: true } : {}),
-  };
-  fs.writeFileSync(file, JSON.stringify(record, null, 2));
-  return file;
+async function loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log }) {
+  const pair = await pairOf(contracts);
+  const { chainId } = await ethers.provider.getNetwork();
+  checkLegacySnapshot({ file: legacySnapshotFile, pair, log, moveTo: snapshotFile });
+  const snapshot = readSnapshot(snapshotFile, { pair, network, chainId });
+  return { pair, chainId, snapshot };
 }
 
 /**
- * Reads the snapshot for `pair`: `{ state, safe, confirmed }`. Refuses one that is not this
- * pair's.
+ * A forward run cannot tell which steps a version 1 snapshot's rehearsal sent. A confirmed one
+ * is a finished rehearsal, as a confirmed version 2 one is, and the run starts from live state.
  */
-function readSnapshot(file, pair) {
-  if (!fs.existsSync(file)) {
-    throw new Error(
-      `No snapshot at ${file}; run the forward phase first (for example bun run rehearse:base-testnet)`,
-    );
-  }
-  const { pair: recorded, safe, confirmed, ...raw } = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (!recorded?.agent || !recorded?.escrow) {
-    throw new Error(
-      `The snapshot at ${file} does not say which pair it was taken for, so it cannot be used as a baseline. Move it aside if it belongs to a rehearsal still to be returned by hand, or delete it, then run the forward phase again.`,
-    );
-  }
-  if (!sameValue(recorded.agent, pair.agent) || !sameValue(recorded.escrow, pair.escrow)) {
-    throw new Error(
-      `The snapshot at ${file} was taken for another pair (agent ${recorded.agent}, escrow ${recorded.escrow}), not agent ${pair.agent}, escrow ${pair.escrow}. Nothing was sent. Move it aside or delete it, then run the forward phase again.`,
-    );
-  }
-  return {
-    state: { ...raw, promptFee: BigInt(raw.promptFee) },
-    safe,
-    confirmed: confirmed === true,
-  };
+function assertForwardCanUse(snapshot, file) {
+  if (snapshot?.version !== 1 || snapshot.confirmed) return;
+  throw new RehearsalError(
+    `The snapshot at ${file} was written by an earlier version of this script and records no steps, so a forward run cannot tell which were sent. Nothing was sent. Run the confirm phase to check it against the chain; once it is confirmed, a forward run starts from the live state. If its rehearsal was returned by hand, move it aside.`,
+  );
 }
 
 /**
@@ -457,30 +320,33 @@ async function assertOwnershipMovesInTwoSteps({ aiAgent, escrow }) {
       if (!isRevert(error)) {
         throw error;
       }
-      throw new Error(
+      throw new RehearsalError(
         `The ${name} has no pendingOwner(): this pair moves ownership in one step, and the rehearsal is written for a pair that moves it in two steps. Nothing was sent.`,
       );
     }
   }
 }
 
-function loadEnv() {
-  if (process.env.ENV_FILE) {
-    dotenv.config({ path: process.env.ENV_FILE });
+/** Loads the network's settings file, then the repository's, into `env`. */
+function loadEnv(env) {
+  if (env.ENV_FILE) {
+    dotenv.config({ path: env.ENV_FILE, processEnv: env });
   }
-  dotenv.config({ path: path.resolve(__dirname, "../.env") });
+  dotenv.config({ path: path.resolve(__dirname, "../.env"), processEnv: env });
 }
 
-async function attachContracts() {
-  const agentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
-  const escrowAddress = process.env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
+async function attachContracts(env) {
+  const agentAddress = env.AI_AGENT_CONTRACT_ADDRESS;
+  const escrowAddress = env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
   if (!agentAddress || !escrowAddress) {
-    throw new Error("AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS are required");
+    throw new RehearsalError(
+      "AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS are required",
+    );
   }
   return {
     aiAgent: await ethers.getContractAt("EVMAIAgent", agentAddress),
     escrow: await ethers.getContractAt("EVMAIAgentEscrow", escrowAddress),
-    oracleAddress: process.env.REHEARSAL_ORACLE_ADDRESS,
+    oracleAddress: env.REHEARSAL_ORACLE_ADDRESS,
   };
 }
 
@@ -488,10 +354,123 @@ function parseRehearsalFee(raw) {
   try {
     return ethers.parseEther(raw || DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS);
   } catch {
-    throw new Error(
+    throw new RehearsalError(
       `REHEARSAL_PROMPT_FEE="${raw}" is not a token amount; give a decimal in whole tokens (for example 2), not wei`,
     );
   }
+}
+
+const show = (values) =>
+  JSON.stringify(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, String(v)])));
+
+/**
+ * The run's snapshot. A snapshot left by an aborted live run is the ONLY record of the
+ * pre-rehearsal values; the live state may already carry rehearsal values (e.g. the fee). It
+ * stays the restore baseline and is never overwritten, and it must be resumed with the Safe and
+ * rehearsal fee it was started with. To start over deliberately, move the file aside first. A
+ * snapshot the confirm phase has passed is a finished rehearsal, not a baseline: the next one
+ * starts from the live state, which must then show nothing a rehearsal leaves behind.
+ */
+async function beginRun({
+  left,
+  resuming,
+  live,
+  contracts,
+  safeAddress,
+  rehearsalPromptFee,
+  file,
+}) {
+  const safe = assertSafeAddress(safeAddress, live);
+  if (!resuming) {
+    assertNoLeftovers(await findLeftovers({ contracts, safe, rehearsalPromptFee, state: live }));
+    return { safe, rehearsalPromptFee, baseline: live, steps: {}, confirmed: false };
+  }
+  // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
+  // Safe's oracle role would go unchecked.
+  if (!sameValue(left.safe, safe)) {
+    throw new RehearsalError(
+      `The rehearsal in ${file} was started with the Safe ${left.safe}, not ${safe}. Nothing was sent. Resume it with the Safe it was started with.`,
+    );
+  }
+  // Another fee would leave a set made with the first one looking like a value from elsewhere.
+  if (!sameValue(left.rehearsalPromptFee, rehearsalPromptFee)) {
+    throw new RehearsalError(
+      `The rehearsal in ${file} was started with the rehearsal fee ${left.rehearsalPromptFee}, not ${rehearsalPromptFee}. Nothing was sent. Resume it with the fee it was started with.`,
+    );
+  }
+  return { ...left, safe };
+}
+
+/** Each step a run with this snapshot sends, skips or records as observed. */
+async function decideRun({ plan, contracts, signer, snapshot, log, save }) {
+  const steps = await settleSentSteps({
+    plan,
+    steps: snapshot.steps,
+    getReceipt: (hash) => ethers.provider.getTransactionReceipt(hash),
+    getCounts: async () => {
+      const [latest, pending] = await Promise.all([
+        ethers.provider.getTransactionCount(signer.address, "latest"),
+        ethers.provider.getTransactionCount(signer.address, "pending"),
+      ]);
+      return { latest, pending };
+    },
+    check: (stepDef, receipt) =>
+      findEvent(receipt, contracts[CONTRACT_KEYS[stepDef.contract]], stepDef),
+    log,
+  });
+  save({ ...snapshot, steps });
+  const live = await readLive({ contracts, safe: snapshot.safe });
+  return {
+    steps,
+    decisions: decideSteps({ ...snapshot, plan, steps, live }),
+  };
+}
+
+/**
+ * What a forward run starts from: the pair, chain, this pair's snapshot and the live state,
+ * after every check that needs no decision: two-step ownership, the cache file, the snapshot,
+ * the signer's ownership and no transaction pending.
+ */
+async function readForwardStart({
+  contracts,
+  signer,
+  snapshotFile,
+  legacySnapshotFile,
+  network,
+  log,
+}) {
+  await assertOwnershipMovesInTwoSteps(contracts);
+  const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
+  assertForwardCanUse(loaded.snapshot, snapshotFile);
+  const live = await readState(contracts);
+  log(`Live state: ${show(live)}`);
+  if (!contracts.oracleAddress) {
+    log(
+      chalk.yellow(
+        "REHEARSAL_ORACLE_ADDRESS is not set: the live oracle's authorization is not in the snapshot and will not be checked by the confirm phase.",
+      ),
+    );
+  }
+  assertSignerOwnsBoth(signer.address, live);
+  await assertNoPendingTransactions({
+    provider: ethers.provider,
+    address: signer.address,
+    ...(loaded.snapshot ?? {}),
+  });
+  return { ...loaded, live };
+}
+
+function reportForward({ dryRun, results, returnTxs, log }) {
+  if (dryRun) {
+    const simulated = results.filter((r) => !r.skipped && !r.observed).length;
+    log(chalk.green(`\nDry run complete: ${simulated} calls simulated, nothing sent or written.`));
+    return;
+  }
+  log(chalk.green("\nForward phase complete."));
+  log(
+    "\nQueue these four transactions from the Safe, in this order (Transaction Builder → custom data): it accepts ownership of both proxies, then offers it back. Then run REHEARSAL_PHASE=confirm, which accepts the offer from this wallet:",
+  );
+  log(JSON.stringify(returnTxs, null, 2));
 }
 
 async function forwardPhase({
@@ -502,67 +481,103 @@ async function forwardPhase({
   safeAddress,
   rehearsalPromptFee,
   snapshotFile,
+  legacySnapshotFile = null,
+  network = hre.network.name,
   execute = runPlan,
 }) {
   if (!safeAddress) {
-    throw new Error("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
+    throw new RehearsalError("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
   }
+  const start = await readForwardStart({
+    contracts,
+    signer,
+    snapshotFile,
+    legacySnapshotFile,
+    network,
+    log,
+  });
+  const { pair, chainId, snapshot: left, live } = start;
+  // A dry run takes the same path, so that it predicts the live run: it resumes, settles,
+  // decides and refuses as the live run would, and only writes nothing.
+  const resuming = left !== null && !left.confirmed;
+  const begun = await beginRun({
+    left,
+    resuming,
+    live,
+    contracts,
+    safeAddress,
+    rehearsalPromptFee,
+    file: snapshotFile,
+  });
+  // Replaced, never changed, by `save` and `record` below. They are called one at a time, in
+  // order, each after the last has returned; a concurrent caller would lose a step record.
+  let snapshot = { ...begun, network, chainId, pair };
+  if (resuming)
+    log(`Resuming: ${snapshotFile} stays the restore baseline: ${show(snapshot.baseline)}`);
+  const plan = buildPlan({ state: snapshot.baseline, safeAddress, rehearsalPromptFee });
+  await assertSafeHasCode(snapshot.safe);
 
-  await assertOwnershipMovesInTwoSteps(contracts);
-  const pair = await pairOf(contracts);
-  const live = await readState(contracts);
-  const show = (st) =>
-    JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
-  log(`Live state: ${show(live)}`);
-  if (!contracts.oracleAddress) {
-    log(
-      chalk.yellow(
-        "REHEARSAL_ORACLE_ADDRESS is not set: the live oracle's authorization is not in the snapshot and will not be checked by the confirm phase.",
-      ),
+  const save = (next) => {
+    snapshot = next;
+    if (!dryRun) writeSnapshot(snapshotFile, snapshot);
+  };
+  if (!resuming) {
+    save(snapshot);
+    if (!dryRun) log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
+  }
+  const { decisions } = await decideRun({ plan, contracts, signer, snapshot, log, save });
+  // A step's record is on disk before the next step is sent, so a restore is sent only after
+  // its set's "done" record is written.
+  const record = async (id, entry) =>
+    save({ ...snapshot, steps: { ...snapshot.steps, [id]: entry } });
+  const results = await execute({ plan, decisions, contracts, signer, dryRun, log, record });
+  const returnTxs = dryRun ? [] : await buildSafeReturnTxs({ contracts, returnTo: signer.address });
+  reportForward({ dryRun, results, returnTxs, log });
+}
+
+/** The snapshot the confirm phase checks, once it is known to be one it may mark confirmed. */
+async function readConfirmable({
+  contracts,
+  signer,
+  snapshotFile,
+  legacySnapshotFile,
+  network,
+  log,
+}) {
+  const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
+  const { snapshot } = loaded;
+  if (snapshot === null) {
+    throw new RehearsalError(
+      `No snapshot at ${snapshotFile}; run the forward phase first (for example bun run rehearse:base-testnet)`,
     );
   }
-  assertSignerOwnsBoth(signer.address, live);
+  assertConfirmable(snapshot, snapshotFile);
+  await assertNoPendingTransactions({
+    provider: ethers.provider,
+    address: signer.address,
+    ...snapshot,
+  });
+  return loaded;
+}
 
-  // A snapshot left by an aborted live run is the ONLY record of the pre-rehearsal values; the
-  // live state may already carry rehearsal values (e.g. the fee). It stays the restore baseline
-  // and is never overwritten. To start over deliberately, delete the file first. A snapshot the
-  // confirm phase has passed is a finished rehearsal, not a baseline: the next one starts from
-  // the live state. A dry run reads the file too, so that it refuses what the live run would,
-  // and then leaves it alone.
-  const left = fs.existsSync(snapshotFile) ? readSnapshot(snapshotFile, pair) : null;
-  const resuming = !dryRun && left !== null && !left.confirmed;
-  const state = resuming ? left.state : live;
-  if (resuming) {
-    // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
-    // Safe's oracle role would go unchecked.
-    if (left.safe && !sameValue(left.safe, safeAddress)) {
-      throw new Error(
-        `The rehearsal in ${snapshotFile} was started with the Safe ${left.safe}, not ${safeAddress}. Nothing was sent. Resume it with the Safe it was started with.`,
-      );
-    }
-    log(`Resuming: ${snapshotFile} exists and stays the restore baseline: ${show(state)}`);
+/**
+ * Compares the chain with the snapshot, `attempts` times at most while it differs. A forward run
+ * stopped between authorising the Safe as an oracle and removing it has changed nothing the
+ * snapshot holds, so the Safe's role is read too, and read again with the rest.
+ */
+async function readReturned({ contracts, state, safe, attempts, verify, sleep }) {
+  const read = async () => {
+    const returned = await verify({ contracts, state });
+    if (!safe || !(await contracts.aiAgent.isOracle(safe))) return returned;
+    const role = { field: "safeIsOracle", expected: "false", actual: "true" };
+    return { ok: false, mismatches: [...returned.mismatches, role] };
+  };
+  let result = await read();
+  for (let attempt = 2; !result.ok && attempt <= attempts; attempt += 1) {
+    await sleep(VERIFY_RETRY_MS);
+    result = await read();
   }
-  const plan = buildPlan({ state, safeAddress, rehearsalPromptFee });
-  await assertSafeHasCode(ethers.getAddress(safeAddress));
-
-  if (!dryRun && !resuming) {
-    writeSnapshot(state, snapshotFile, pair, { safe: ethers.getAddress(safeAddress) });
-    log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
-  }
-
-  const results = await execute({ plan, contracts, signer, dryRun, log });
-
-  if (dryRun) {
-    log(chalk.green(`\nDry run complete: ${results.length} calls simulated, nothing sent.`));
-    return;
-  }
-
-  log(chalk.green("\nForward phase complete."));
-  const returnTxs = await buildSafeReturnTxs({ contracts, returnTo: signer.address });
-  log(
-    "\nQueue these four transactions from the Safe, in this order (Transaction Builder → custom data): it accepts ownership of both proxies, then offers it back. Then run REHEARSAL_PHASE=confirm, which accepts the offer from this wallet:",
-  );
-  log(JSON.stringify(returnTxs, null, 2));
+  return result;
 }
 
 async function confirmPhase({
@@ -570,50 +585,47 @@ async function confirmPhase({
   signer,
   log,
   snapshotFile,
+  legacySnapshotFile = null,
+  network = hre.network.name,
   accept = acceptReturned,
   verify = verifyReturned,
   sleep = defaultSleep,
 }) {
-  const pair = await pairOf(contracts);
-  const { state, safe, confirmed } = readSnapshot(snapshotFile, pair);
+  const { pair, chainId, snapshot } = await readConfirmable({
+    contracts,
+    signer,
+    snapshotFile,
+    legacySnapshotFile,
+    network,
+    log,
+  });
+  const { baseline: state, safe, confirmed } = snapshot;
   if (confirmed) {
     log(chalk.yellow("This snapshot was already confirmed. Checking it against the chain again."));
   }
-  const accepted = signer ? await accept({ contracts, signer, log }) : [];
-  if (!("encryptionKey" in state)) {
-    log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
-  }
+  const accepted = await accept({ contracts, signer, log });
+  if (!("encryptionKey" in state)) log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
   // An acceptance that has just landed can be read from a node still behind its block, which
   // reports the Safe as owner. Read again then. With nothing accepted, the first answer stands.
   const attempts = accepted.length > 0 ? VERIFY_ATTEMPTS : 1;
-  // A forward run stopped between authorising the Safe as an oracle and removing it has changed
-  // nothing the snapshot holds. Without the second read, the phase would call such a run
-  // complete. It is read with the rest, so it is read again with the rest.
-  const read = async () => {
-    const returned = await verify({ contracts, state });
-    if (!safe || !(await contracts.aiAgent.isOracle(safe))) return returned;
-    return {
-      ok: false,
-      mismatches: [
-        ...returned.mismatches,
-        { field: "safeIsOracle", expected: "false", actual: "true" },
-      ],
-    };
-  };
-  let { ok, mismatches } = await read();
-  for (let attempt = 2; !ok && attempt <= attempts; attempt += 1) {
-    await sleep(VERIFY_RETRY_MS);
-    ({ ok, mismatches } = await read());
-  }
+  const { ok, mismatches } = await readReturned({
+    contracts,
+    state,
+    safe,
+    attempts,
+    verify,
+    sleep,
+  });
   if (!ok) {
     for (const m of mismatches) {
       log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
     }
-    throw new Error("Rehearsal state has not been fully returned");
+    throw new RehearsalError("Rehearsal state has not been fully returned");
   }
   // Only now: marked any earlier, a failed confirm would let the next forward run start from
   // the live state and overwrite the one record of the pre-rehearsal values.
-  writeSnapshot(state, snapshotFile, pair, { safe, confirmed: true });
+  // Written as version 2 whatever it was read as, on the network and chain it was checked on.
+  writeSnapshot(snapshotFile, { ...snapshot, network, chainId, pair, confirmed: true });
   log(
     chalk.green(
       "Confirm phase complete: everything in the pre-rehearsal snapshot matches the chain again.",
@@ -621,40 +633,57 @@ async function confirmPhase({
   );
 }
 
-async function main() {
-  loadEnv();
-  const phase = process.env.REHEARSAL_PHASE || "forward";
+/**
+ * Every input is a parameter, so the guards can be tested where the script runs them. Run as a
+ * script, it takes the process environment, Hardhat's network and the real contracts.
+ */
+async function main({
+  env = process.env,
+  networkName = hre.network.name,
+  loadEnvFile = loadEnv,
+  getSigners = () => ethers.getSigners(),
+  attach = attachContracts,
+  forward = forwardPhase,
+  confirm = confirmPhase,
+} = {}) {
+  loadEnvFile(env);
+  const phase = env.REHEARSAL_PHASE || "forward";
   if (!PHASES.has(phase)) {
-    throw new Error(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
+    throw new RehearsalError(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
   }
-  const dryRun = process.env.DRY_RUN === "1";
+  const dryRun = env.DRY_RUN === "1";
   assertPhaseCanDryRun({ phase, dryRun });
-  assertMainnetConfirmed({
-    networkName: hre.network.name,
-    dryRun,
-    confirmed: process.env.REHEARSAL_MAINNET_CONFIRMED,
-  });
+  assertMainnetConfirmed({ networkName, dryRun, confirmed: env.REHEARSAL_MAINNET_CONFIRMED });
   const log = (line) => console.log(line);
 
-  const [signer] = await ethers.getSigners();
-  const contracts = await attachContracts();
+  const [signer] = await getSigners();
+  const contracts = await attach(env);
   log(
-    `--- Admin rehearsal on ${chalk.bold(hre.network.name)} · phase=${phase} · signer=${signer.address}${dryRun ? " · DRY RUN" : ""} ---`,
+    `--- Admin rehearsal on ${chalk.bold(networkName)} · phase=${phase} · signer=${signer.address}${dryRun ? " · DRY RUN" : ""} ---`,
   );
 
-  const snapshotFile = snapshotPath();
+  const root = path.resolve(__dirname, "..");
+  const files = {
+    network: networkName,
+    snapshotFile: snapshotPath({
+      root,
+      network: networkName,
+      agent: await contracts.aiAgent.getAddress(),
+    }),
+    legacySnapshotFile: legacySnapshotPath({ root, network: networkName }),
+  };
   if (phase === "forward") {
-    await forwardPhase({
+    await forward({
       contracts,
       signer,
       dryRun,
       log,
-      safeAddress: process.env.REHEARSAL_SAFE_ADDRESS,
-      rehearsalPromptFee: parseRehearsalFee(process.env.REHEARSAL_PROMPT_FEE),
-      snapshotFile,
+      safeAddress: env.REHEARSAL_SAFE_ADDRESS,
+      rehearsalPromptFee: parseRehearsalFee(env.REHEARSAL_PROMPT_FEE),
+      ...files,
     });
   } else {
-    await confirmPhase({ contracts, signer, log, snapshotFile });
+    await confirm({ contracts, signer, log, ...files });
   }
 }
 
@@ -677,7 +706,7 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(chalk.red(error.message));
+    console.error(chalk.red(describeFailure(error)));
     process.exitCode = 1;
   });
 }
