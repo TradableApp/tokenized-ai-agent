@@ -198,16 +198,77 @@ describe("scripts/rehearsal", function () {
       });
     });
 
-    it("leaves the snapshot that was there as it was when the new one cannot be written", function () {
+    /** Calls to `names` on the fs module while `fn` runs, then the originals put back. */
+    function watchFs(names, fn, replace = {}) {
+      const calls = [];
+      const originals = Object.fromEntries(names.map((name) => [name, fs[name]]));
+      for (const name of names) {
+        fs[name] = (...args) => {
+          calls.push([name, ...args]);
+          return (replace[name] ?? originals[name])(...args);
+        };
+      }
+      try {
+        return { result: fn(), calls };
+      } catch (error) {
+        return { error, calls };
+      } finally {
+        Object.assign(fs, originals);
+      }
+    }
+
+    it("leaves the snapshot that was there, and no temporary file, when the new one cannot be written", function () {
       const file = scratchFile();
       writeSnapshot(file, snapshot());
       const before = fs.readFileSync(file, "utf8");
-      // The temporary file cannot be created where a folder of the same name stands.
-      fs.mkdirSync(`${file}.tmp-${process.pid}`);
 
-      expect(() => writeSnapshot(file, snapshot({ confirmed: true }))).to.throw();
+      const { error } = watchFs(["fsyncSync"], () => writeSnapshot(file, snapshot()), {
+        fsyncSync: () => {
+          throw new Error("EIO: i/o error, fsync");
+        },
+      });
 
+      expect(error?.message).to.match(/EIO/);
       expect(fs.readFileSync(file, "utf8")).to.equal(before);
+      expect(fs.readdirSync(path.dirname(file))).to.deep.equal(["snapshot.json"]);
+    });
+
+    it("syncs the temporary file to disk before it renames it over the snapshot", function () {
+      const file = scratchFile();
+
+      const { calls } = watchFs(["openSync", "fsyncSync", "renameSync"], () =>
+        writeSnapshot(file, snapshot()),
+      );
+
+      expect(calls.map(([name]) => name)).to.deep.equal(["openSync", "fsyncSync", "renameSync"]);
+      const [, temporary, flags, mode] = calls[0];
+      expect(path.dirname(temporary)).to.equal(path.dirname(file));
+      expect(flags).to.equal("wx");
+      expect(mode).to.equal(0o600);
+      expect(calls[2].slice(1)).to.deep.equal([temporary, file]);
+    });
+
+    it("names the temporary file by chance, not only by the process", function () {
+      const file = scratchFile();
+
+      const { calls } = watchFs(["openSync"], () => {
+        writeSnapshot(file, snapshot());
+        writeSnapshot(file, snapshot());
+      });
+
+      const [first, second] = calls.map(([, temporary]) => temporary);
+      expect(first).to.not.equal(second);
+      expect(first).to.not.equal(`${file}.tmp-${process.pid}`);
+    });
+
+    it("keeps the folder and the file to the user who runs it", function () {
+      const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-state-")), "state");
+      const file = path.join(dir, "snapshot.json");
+
+      writeSnapshot(file, snapshot());
+
+      expect(fs.statSync(dir).mode & 0o777).to.equal(0o700);
+      expect(fs.statSync(file).mode & 0o777).to.equal(0o600);
     });
   });
 
@@ -263,6 +324,35 @@ describe("scripts/rehearsal", function () {
 
       expect(expectNoDelete(() => readSnapshot(file, EXPECTED))).to.match(/chain 8453/);
     });
+
+    // A file edited by hand must be refused by name, not fail on a missing field part-way.
+    for (const [field, edit] of [
+      ["chainId", (r) => ({ ...r, chainId: undefined })],
+      ["safe", (r) => ({ ...r, safe: undefined })],
+      ["rehearsalPromptFee", (r) => ({ ...r, rehearsalPromptFee: undefined })],
+      ["baseline", (r) => ({ ...r, baseline: undefined })],
+      ["baseline.promptFee", (r) => ({ ...r, baseline: { treasury: ESCROW } })],
+      ["steps", (r) => ({ ...r, steps: [] })],
+      ["steps.fee-set", (r) => ({ ...r, steps: { "fee-set": null } })],
+      ["steps.fee-set.status", (r) => ({ ...r, steps: { "fee-set": { status: "queued" } } })],
+      ["steps.fee-set.txHash", (r) => ({ ...r, steps: { "fee-set": { status: "sent" } } })],
+      [
+        "steps.fee-done",
+        (r) => ({ ...r, steps: { "fee-done": { status: "done", txHash: "0xab" } } }),
+      ],
+    ]) {
+      it(`refuses a version 2 snapshot whose ${field} is missing or not what the script writes`, function () {
+        const file = scratchFile();
+        writeSnapshot(file, snapshot());
+        const record = JSON.parse(fs.readFileSync(file, "utf8"));
+        fs.writeFileSync(file, JSON.stringify(edit(record)));
+
+        const message = expectNoDelete(() => readSnapshot(file, EXPECTED));
+
+        expect(message).to.include(file);
+        expect(message).to.include(field);
+      });
+    }
 
     it("refuses a snapshot written by a version of the script it does not know", function () {
       const file = scratchFile();
