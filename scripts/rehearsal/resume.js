@@ -145,9 +145,19 @@ function decideOffer(id, { steps, live, safe }) {
   if (sameValue(live[`${name}Owner`], safe)) {
     refuse(`The Safe already owns the ${name}; run the confirm phase once it has offered it back.`);
   }
-  if (isDone(steps[id])) return decision("skip", "offered in an earlier run");
-  if (sameValue(live[`${name}PendingOwner`], safe)) {
-    return decision("observe", `the ${name} is already offered to the Safe`);
+  const pending = live[`${name}PendingOwner`];
+  const toSafe = sameValue(pending, safe);
+  if (isDone(steps[id])) {
+    if (toSafe) return decision("skip", "offered in an earlier run");
+    refuse(
+      `[${id}] is recorded done, but the ${name}'s pending owner is now ${pending}, not the Safe ${safe}.`,
+    );
+  }
+  if (toSafe) return decision("observe", `the ${name} is already offered to the Safe`);
+  if (!sameValue(pending, ethers.ZeroAddress)) {
+    refuse(
+      `[${id}] would replace an ownership offer of the ${name} that is open to ${pending}, which is not the Safe ${safe}.`,
+    );
   }
   return decision("send", `offer the ${name} to the Safe`);
 }
