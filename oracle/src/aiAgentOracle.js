@@ -783,7 +783,9 @@ function decryptSymmetrically(encryptedString, key) {
     // ours to surface. What is left, the bare auth failure and SyntaxError, is the user's.
     if (error instanceof RangeError || error?.code) throw error;
 
-    throw new BadInputError(`Could not decrypt payload: ${error.message}`, { cause: error });
+    // Only the kind, and not the error itself as its cause: a parse error's message quotes the
+    // start of the decrypted text, which is the user's.
+    throw new BadInputError(`Could not decrypt payload (${errorKind(error)}).`);
   }
 }
 
@@ -807,9 +809,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     try {
       parsedPayload = JSON.parse(payload);
     } catch (error) {
-      throw new BadInputError(`Event payload is not valid JSON: ${error.message}`, {
-        cause: error,
-      });
+      // Only the kind: the parse error's message quotes the start of the payload.
+      throw new BadInputError(`Event payload is not valid JSON (${errorKind(error)}).`);
     }
     if (parsedPayload.sessionKey) {
       return Buffer.from(strip0xPrefix(parsedPayload.sessionKey), "hex");
@@ -908,9 +909,9 @@ async function reconstructHistory(startMessageCID, sessionKey) {
       // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID or answerMessageCID).
       currentCid = messageFile.parentCID;
     } catch (error) {
+      // Only the kind: a failed parse quotes the start of the decrypted message.
       console.error(
-        `[History] Failed to reconstruct history at CID ${currentCid}. Stopping history build.`,
-        error,
+        `[History] Failed to reconstruct history at CID ${currentCid} (${errorKind(error)}). Stopping history build.`,
       );
 
       break;
