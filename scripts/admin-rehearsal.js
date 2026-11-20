@@ -30,6 +30,7 @@ const {
   runPlan,
 } = require("./rehearsal/steps");
 const { assertSafeCanBeTreasury } = require("./rehearsal/token");
+const { isLiveNetwork, signerRoleNote, reportSignerRole } = require("./rehearsal/oracleRole");
 
 const { ethers } = hre;
 
@@ -430,7 +431,8 @@ async function decideRun({ plan, contracts, signer, snapshot, log, save }) {
 /**
  * What a forward run starts from: the pair, chain, this pair's snapshot and the live state,
  * after every check that needs no decision: two-step ownership, the cache file, the snapshot,
- * the signer's ownership and no transaction pending.
+ * the signer's ownership and no transaction pending. On a live network it also says whether
+ * the signer holds the oracle role.
  */
 async function readForwardStart({
   contracts,
@@ -439,6 +441,7 @@ async function readForwardStart({
   legacySnapshotFile,
   network,
   log,
+  checkSignerRole,
 }) {
   await assertOwnershipMovesInTwoSteps(contracts);
   const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
@@ -453,6 +456,9 @@ async function readForwardStart({
     );
   }
   assertSignerOwnsBoth(signer.address, live);
+  if (checkSignerRole) {
+    await reportSignerRole({ aiAgent: contracts.aiAgent, signer: signer.address, log });
+  }
   await assertNoPendingTransactions({
     provider: ethers.provider,
     address: signer.address,
@@ -495,6 +501,7 @@ async function forwardPhase({
   legacySnapshotFile = null,
   network = hre.network.name,
   execute = runPlan,
+  checkSignerRole = isLiveNetwork(network),
 }) {
   if (!safeAddress) {
     throw new RehearsalError("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
@@ -506,6 +513,7 @@ async function forwardPhase({
     legacySnapshotFile,
     network,
     log,
+    checkSignerRole,
   });
   const { pair, chainId, snapshot: left, live } = start;
   // A dry run takes the same path, so that it predicts the live run: it resumes, settles,
@@ -578,14 +586,22 @@ async function readConfirmable({
 /**
  * Compares the chain with the snapshot, `attempts` times at most while it differs. A forward run
  * stopped between authorising the Safe as an oracle and removing it has changed nothing the
- * snapshot holds, so the Safe's role is read too, and read again with the rest.
+ * snapshot holds, so the Safe's role is read too, and read again with the rest. Given `signer`,
+ * its own oracle role is read the same way: the phase does not pass while it is held.
  */
-async function readReturned({ contracts, state, safe, attempts, verify, sleep }) {
+async function readReturned({ contracts, state, safe, signer, attempts, verify, sleep }) {
+  const roleHeld = async (field, address) =>
+    address && (await contracts.aiAgent.isOracle(address))
+      ? [{ field, expected: "false", actual: "true" }]
+      : [];
   const read = async () => {
     const returned = await verify({ contracts, state });
-    if (!safe || !(await contracts.aiAgent.isOracle(safe))) return returned;
-    const role = { field: "safeIsOracle", expected: "false", actual: "true" };
-    return { ok: false, mismatches: [...returned.mismatches, role] };
+    const roles = [
+      ...(await roleHeld("safeIsOracle", safe)),
+      ...(await roleHeld("signerIsOracle", signer)),
+    ];
+    if (roles.length === 0) return returned;
+    return { ok: false, mismatches: [...returned.mismatches, ...roles] };
   };
   let result = await read();
   for (let attempt = 2; !result.ok && attempt <= attempts; attempt += 1) {
@@ -593,6 +609,17 @@ async function readReturned({ contracts, state, safe, attempts, verify, sleep })
     result = await read();
   }
   return result;
+}
+
+/** Lists what differs from the snapshot, with what to do about the signer's role, and refuses. */
+function refuseNotReturned({ mismatches, signer, log }) {
+  for (const m of mismatches) {
+    log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
+  }
+  if (mismatches.some((m) => m.field === "signerIsOracle")) {
+    log(chalk.yellow(signerRoleNote(signer)));
+  }
+  throw new RehearsalError("Rehearsal state has not been fully returned");
 }
 
 async function confirmPhase({
@@ -605,6 +632,7 @@ async function confirmPhase({
   accept = acceptReturned,
   verify = verifyReturned,
   sleep = defaultSleep,
+  checkSignerRole = isLiveNetwork(network),
 }) {
   const { pair, chainId, snapshot } = await readConfirmable({
     contracts,
@@ -627,16 +655,12 @@ async function confirmPhase({
     contracts,
     state,
     safe,
+    signer: checkSignerRole ? signer.address : null,
     attempts,
     verify,
     sleep,
   });
-  if (!ok) {
-    for (const m of mismatches) {
-      log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
-    }
-    throw new RehearsalError("Rehearsal state has not been fully returned");
-  }
+  if (!ok) refuseNotReturned({ mismatches, signer: signer.address, log });
   // Only now: marked any earlier, a failed confirm would let the next forward run start from
   // the live state and overwrite the one record of the pre-rehearsal values.
   // Written as version 2 whatever it was read as, on the network and chain it was checked on.
