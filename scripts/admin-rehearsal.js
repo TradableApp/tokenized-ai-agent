@@ -382,7 +382,7 @@ async function beginRun({
 }) {
   const safe = assertSafeAddress(safeAddress, live);
   if (!resuming) {
-    assertNoLeftovers(await findLeftovers({ contracts, safe, rehearsalPromptFee }));
+    assertNoLeftovers(await findLeftovers({ contracts, safe, rehearsalPromptFee, state: live }));
     return { safe, rehearsalPromptFee, baseline: live, steps: {}, confirmed: false };
   }
   // The confirm phase checks the Safe the snapshot names. Resumed with another one, that

@@ -53,6 +53,8 @@ function toRecord(snapshot) {
 function writeSynced(temporary, text) {
   const descriptor = fs.openSync(temporary, "wx", 0o600);
   try {
+    // The mode asked for at open passes through the umask; this one is the file's, whatever it is.
+    fs.fchmodSync(descriptor, 0o600);
     fs.writeFileSync(descriptor, text);
     fs.fsyncSync(descriptor);
   } finally {
@@ -265,6 +267,14 @@ function fromVersionTwo(record) {
   };
 }
 
+/** Refuses a version 1 record whose fee is not a whole amount, before it is read as one. */
+function assertVersionOneFee(record, file) {
+  if (isAmount(record.promptFee)) return;
+  throw new RehearsalError(
+    `The snapshot at ${file} has a field the script does not write, promptFee, so it cannot be used as a baseline. ${MOVE_ASIDE}`,
+  );
+}
+
 function fromVersionOne(record) {
   const { pair, safe, confirmed, ...values } = record;
   return {
@@ -288,7 +298,10 @@ function readSnapshot(file, { pair, network, chainId }) {
   if (!fs.existsSync(file)) return null;
   const record = parseFile(file);
   assertPairOf(record, file, pair);
-  if (record.version === undefined) return fromVersionOne(record);
+  if (record.version === undefined) {
+    assertVersionOneFee(record, file);
+    return fromVersionOne(record);
+  }
   if (record.version !== SNAPSHOT_VERSION) {
     throw new RehearsalError(
       `The snapshot at ${file} was written by version ${record.version} of this script, which this one cannot read. ${MOVE_ASIDE}`,

@@ -5,34 +5,44 @@ const { sameValue, RehearsalError } = require("./values");
 /** The live values the leftover check and the resume decisions read. */
 async function readLive({ contracts, safe }) {
   const { aiAgent, escrow } = contracts;
-  const [promptFee, treasury, safeIsOracle, agentOwner, escrowOwner, agentPending, escrowPending] =
-    await Promise.all([
-      escrow.promptFee(),
-      escrow.treasury(),
-      aiAgent.isOracle(safe),
-      aiAgent.owner(),
-      escrow.owner(),
-      aiAgent.pendingOwner(),
-      escrow.pendingOwner(),
-    ]);
-  return {
-    promptFee,
-    treasury,
-    safeIsOracle,
-    agentOwner,
-    escrowOwner,
-    agentPendingOwner: agentPending,
-    escrowPendingOwner: escrowPending,
-  };
+  const [promptFee, treasury, agentOwner, escrowOwner, beyond] = await Promise.all([
+    escrow.promptFee(),
+    escrow.treasury(),
+    aiAgent.owner(),
+    escrow.owner(),
+    readBeyondState({ contracts, safe }),
+  ]);
+  return { promptFee, treasury, agentOwner, escrowOwner, ...beyond };
+}
+
+/** The live values the leftover check needs that the baseline state does not hold. */
+async function readBeyondState({ contracts, safe }) {
+  const { aiAgent, escrow } = contracts;
+  const [safeIsOracle, agentPendingOwner, escrowPendingOwner] = await Promise.all([
+    aiAgent.isOracle(safe),
+    aiAgent.pendingOwner(),
+    escrow.pendingOwner(),
+  ]);
+  return { safeIsOracle, agentPendingOwner, escrowPendingOwner };
 }
 
 /**
  * What a rehearsal leaves on the pair until it is finished: each as a line saying what was
  * found. Read when the baseline would come from the live state, where any of these would be
- * taken for a value from before the rehearsal and "restored" as such.
+ * taken for a value from before the rehearsal and "restored" as such. Given `state` (the
+ * baseline about to be saved), its values are judged, so the check and the baseline are one
+ * read; only the offers and the Safe's role, which it does not hold, are read.
  */
-async function findLeftovers({ contracts, safe, rehearsalPromptFee }) {
-  const live = await readLive({ contracts, safe });
+async function findLeftovers({ contracts, safe, rehearsalPromptFee, state }) {
+  const live = state
+    ? {
+        ...(await readBeyondState({ contracts, safe })),
+        promptFee: state.promptFee,
+        treasury: state.treasury,
+        agentOwner: state.agentOwner,
+        escrowOwner: state.escrowOwner,
+      }
+    : await readLive({ contracts, safe });
   const found = [];
   if (sameValue(live.promptFee, rehearsalPromptFee)) {
     found.push(
