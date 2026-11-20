@@ -38,6 +38,12 @@ async function versionOneText(contracts, state, extra = {}) {
   return JSON.stringify({ ...asText(state), pair: await pairOf(contracts), ...extra });
 }
 
+/** Step records of a forward run that offered both proxies to the Safe. */
+const OFFERS_DONE = Object.freeze({
+  "agent-owner-to-safe": { status: "done", txHash: `0x${"a1".repeat(32)}`, blockNumber: 1 },
+  "escrow-owner-to-safe": { status: "done", txHash: `0x${"a2".repeat(32)}`, blockNumber: 1 },
+});
+
 /** An agent and escrow owned by the deploy wallet, and a contract to stand in for the Safe. */
 async function deployRehearsalFixture() {
   const [deployer, oracle, treasury, safe, stranger] = await ethers.getSigners();
@@ -92,6 +98,7 @@ async function deployRehearsalFixture() {
 }
 
 module.exports = {
+  OFFERS_DONE,
   PROMPT_FEE,
   REHEARSAL_FEE,
   asText,

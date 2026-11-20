@@ -25,6 +25,7 @@ const { publishEncryptionKey: publishKey } = require("./helpers/encryptionKeyPro
 const {
   PROMPT_FEE,
   REHEARSAL_FEE,
+  OFFERS_DONE,
   snapshotText,
   versionOneText,
   deployRehearsalFixture,
@@ -739,7 +740,7 @@ describe("scripts/admin-rehearsal", function () {
       const fixture = await loadFixture(deployFixture);
       const { contracts, state, deployer, log } = fixture;
       const snapshotFile = scratch();
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
       expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(true);
       const laterFee = ethers.parseEther("5");
@@ -1353,7 +1354,7 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -1378,7 +1379,7 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -1402,7 +1403,10 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { safe: safe.address }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, { safe: safe.address, steps: OFFERS_DONE }),
+      );
       await contracts.aiAgent.connect(deployer).addOracle(safe.address);
 
       await expect(
@@ -1424,7 +1428,10 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { safe: safe.address }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, { safe: safe.address, steps: OFFERS_DONE }),
+      );
       const answers = [true, false];
       let reads = 0;
       const behind = new Proxy(contracts.aiAgent, {
@@ -1454,7 +1461,7 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       let reads = 0;
       let sleeps = 0;
 
@@ -1485,7 +1492,7 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       const answers = [
         { ok: false, mismatches: [{ field: "agentOwner", expected: "a", actual: "b" }] },
         { ok: true, mismatches: [] },
@@ -1511,7 +1518,7 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       let reads = 0;
 
       await expect(
@@ -1540,7 +1547,7 @@ describe("scripts/admin-rehearsal", function () {
       );
     });
     it("says so when the snapshot was taken without the encryption key, and confirms the rest", async function () {
-      const { contracts, state } = await loadFixture(deployFixture);
+      const { contracts, state, deployer } = await loadFixture(deployFixture);
       // Its own log: the fixture's is shared with the tests before this one.
       const lines = [];
       const log = (line) => lines.push(String(line));
@@ -1549,12 +1556,82 @@ describe("scripts/admin-rehearsal", function () {
       const older = { ...state };
       delete older.encryptionKey;
       delete older.encryptionKeyPublisher;
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, older));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, older, { steps: OFFERS_DONE }));
 
-      await confirmPhase({ contracts, log, snapshotFile });
+      await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
 
       expect(lines.join("\n")).to.match(/encryption key is not in the snapshot/);
     });
+  });
+
+  describe("confirmPhase and a forward run that has not finished", function () {
+    const scratch = () =>
+      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-unfinished-")), "snapshot.json");
+
+    async function confirmWith(fixture, steps) {
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, { steps }),
+      );
+      const accepted = [];
+      const refusal = confirmPhase({
+        contracts: fixture.contracts,
+        signer: fixture.deployer,
+        log: () => {},
+        snapshotFile,
+        accept: async () => {
+          accepted.push(true);
+          return [];
+        },
+      });
+      return { snapshotFile, refusal, accepted };
+    }
+
+    const confirmedIn = (file) => JSON.parse(fs.readFileSync(file, "utf8")).confirmed;
+
+    // A set broadcast and not yet mined matches the baseline now and changes the fee later.
+    it("refuses while a step is recorded as sent, naming it and its hash", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const hash = `0x${"cd".repeat(32)}`;
+      const { snapshotFile, refusal, accepted } = await confirmWith(fixture, {
+        ...OFFERS_DONE,
+        "fee-set": { status: "sent", txHash: hash },
+      });
+
+      await expect(refusal).to.be.rejectedWith(new RegExp(`fee-set[\\s\\S]*${hash}`));
+      expect(accepted).to.deep.equal([]);
+      expect(confirmedIn(snapshotFile)).to.equal(false);
+    });
+
+    it("refuses while the wallet has a transaction waiting to be mined", async function () {
+      const fixture = await loadFixture(deployFixture);
+      await ethers.provider.send("evm_setAutomine", [false]);
+      try {
+        await fixture.deployer.sendTransaction({ to: fixture.stranger.address, value: 1n });
+        const { snapshotFile, refusal, accepted } = await confirmWith(fixture, OFFERS_DONE);
+
+        await expect(refusal).to.be.rejectedWith(/waiting to be mined/);
+        expect(accepted).to.deep.equal([]);
+        expect(confirmedIn(snapshotFile)).to.equal(false);
+      } finally {
+        await ethers.provider.send("evm_setAutomine", [true]);
+        await ethers.provider.send("evm_mine", []);
+      }
+    });
+
+    // Stopped before the offers, the chain matches the baseline and no ownership was rehearsed.
+    for (const missing of ["agent-owner-to-safe", "escrow-owner-to-safe"]) {
+      it(`does not confirm a rehearsal whose ${missing} step is not recorded done`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const steps = { ...OFFERS_DONE };
+        delete steps[missing];
+        const { snapshotFile, refusal } = await confirmWith(fixture, steps);
+
+        await expect(refusal).to.be.rejectedWith(new RegExp(`${missing}[\\s\\S]*forward phase`));
+        expect(confirmedIn(snapshotFile)).to.equal(false);
+      });
+    }
   });
 
   describe("assertPhaseCanDryRun", function () {
