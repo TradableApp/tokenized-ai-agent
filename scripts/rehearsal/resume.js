@@ -219,18 +219,35 @@ async function settleWithoutReceipt(stepDef, record, getCounts) {
 }
 
 /**
+ * Runs `check` (the step's event) on a receipt that succeeded. A failure leaves the step recorded
+ * as sent, so every later run meets it again: the refusal says so, and how to get out.
+ */
+function checkLanded(stepDef, record, receipt, check) {
+  try {
+    check(stepDef, receipt);
+  } catch (error) {
+    throw new RehearsalError(
+      `[${stepDef.id}] was sent as ${record.txHash}, which landed in block ${receipt.blockNumber}, but its receipt does not show the step: ${error.message}. Nothing was sent. The step stays recorded as sent, so it will keep stopping every run until this is resolved; running again will not change it. Look the transaction up on a block explorer. If the recorded hash is not this step's transaction, move the snapshot aside (keep it: it holds the values from before the rehearsal), return any rehearsal value still live to that value by hand, then run again.`,
+      { cause: error },
+    );
+  }
+}
+
+/**
  * The step records with every `sent` step settled: done when its receipt succeeded and `check`
  * (its event) passes, forgotten when it reverted or, with no receipt, when its nonce is unused
  * and nothing is pending. State at the receipt's block is never read: a node may have pruned it.
  */
 async function settleSentSteps({ plan, steps, getReceipt, getCounts, check, log }) {
   let settled = { ...steps };
+  // Only the receipt's event is checked here, on purpose: the state at the receipt's block may
+  // have been pruned from the node. Sending a step checks both its event and that state.
   for (const stepDef of plan) {
     const record = steps[stepDef.id];
     if (record?.status !== "sent") continue;
     const receipt = await getReceipt(record.txHash);
     if (receipt?.status === 1) {
-      check(stepDef, receipt);
+      checkLanded(stepDef, record, receipt, check);
       log(`[${stepDef.id}] sent as ${record.txHash}: landed in block ${receipt.blockNumber}`);
       const done = { status: "done", txHash: record.txHash, blockNumber: receipt.blockNumber };
       settled = { ...settled, [stepDef.id]: done };
