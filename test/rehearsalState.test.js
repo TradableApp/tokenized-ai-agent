@@ -267,6 +267,19 @@ describe("scripts/rehearsal", function () {
       expect(calls[2].slice(1)).to.deep.equal([temporary, file]);
     });
 
+    it("leaves the snapshot readable by its owner only, whatever the umask allows", function () {
+      if (process.platform === "win32") this.skip();
+      const file = scratchFile();
+      const umask = process.umask(0);
+      try {
+        writeSnapshot(file, snapshot());
+      } finally {
+        process.umask(umask);
+      }
+
+      expect(fs.statSync(file).mode & 0o777).to.equal(0o600);
+    });
+
     // The rename is only durable once the folder's own entry for it is on disk.
     it("syncs the folder after the rename, so the new entry survives a crash", function () {
       const file = scratchFile();
@@ -521,6 +534,19 @@ describe("scripts/rehearsal", function () {
 
         expect(expectNoDelete(() => readSnapshot(file, EXPECTED))).to.match(/another pair/);
       });
+
+      for (const promptFee of [undefined, "1.5", "abc"]) {
+        it(`is refused in the script's words when its promptFee is ${promptFee}`, function () {
+          const file = scratchFile();
+          fs.writeFileSync(file, JSON.stringify({ treasury: OTHER, pair: PAIR, promptFee }));
+
+          const message = expectNoDelete(() => readSnapshot(file, EXPECTED));
+
+          expect(message).to.include(file);
+          expect(message).to.include("a field the script does not write, promptFee,");
+          expect(message).to.match(/Move it aside/);
+        });
+      }
 
       it("is refused when it does not say which pair it was taken for", function () {
         const file = write(null);

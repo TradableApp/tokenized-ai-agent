@@ -20,6 +20,20 @@ describe("scripts/rehearsal/resume", function () {
       });
     }
 
+    it("judges the state it is given, reading only what that state does not hold", async function () {
+      const fixture = await loadRehearsal();
+      const given = { ...fixture.state, promptFee: REHEARSAL_FEE };
+
+      const found = await findLeftovers({
+        contracts: fixture.contracts,
+        safe: fixture.safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        state: given,
+      });
+
+      expect(found.join("\n")).to.match(/promptFee\(\) is the rehearsal fee/);
+    });
+
     it("finds nothing on a pair no rehearsal has touched", async function () {
       const fixture = await loadRehearsal();
 

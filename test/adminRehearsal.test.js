@@ -1414,6 +1414,31 @@ describe("scripts/admin-rehearsal", function () {
       );
     });
 
+    // The leftover check must judge the state saved as the baseline, not a second read of it.
+    it("checks for leftovers in the same state it would save as the baseline", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = scratch();
+      const sentBefore = await nonce(fixture);
+      let reads = 0;
+      const shifting = new Proxy(fixture.contracts.escrow, {
+        get(target, property) {
+          if (property === "connect") return () => shifting;
+          if (property === "promptFee") {
+            return async (...args) => {
+              if (args.length === 0 && reads++ === 0) return REHEARSAL_FEE;
+              return target.promptFee(...args);
+            };
+          }
+          return Reflect.get(target, property, target);
+        },
+      });
+
+      await expect(
+        forward(fixture, { snapshotFile, contracts: { ...fixture.contracts, escrow: shifting } }),
+      ).to.be.rejectedWith(/leaves behind[\s\S]*promptFee\(\) is the rehearsal fee/);
+      expect(await nonce(fixture)).to.equal(sentBefore);
+    });
+
     it("refuses a sent step whose receipt holds no matching event, says it will keep stopping runs, and leaves the snapshot", async function () {
       const fixture = await loadRehearsal();
       const snapshotFile = scratch();
