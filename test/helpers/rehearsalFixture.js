@@ -50,12 +50,12 @@ const OFFERS_DONE = Object.freeze({
   "escrow-owner-to-safe": { status: "done", txHash: `0x${"a2".repeat(32)}`, blockNumber: 1 },
 });
 
-/** An agent and escrow owned by the deploy wallet, and a contract to stand in for the Safe. */
-async function deployRehearsalFixture() {
+/**
+ * An agent and escrow owned by the deploy wallet, paying fees in `token`, and a contract to stand
+ * in for the Safe.
+ */
+async function deployPair(token) {
   const [deployer, oracle, treasury, safe, stranger] = await ethers.getSigners();
-
-  const token = await (await ethers.getContractFactory("MockAbleToken")).deploy();
-  await token.waitForDeployment();
 
   const aiAgent = await upgrades.deployProxy(
     await ethers.getContractFactory("EVMAIAgent"),
@@ -90,6 +90,7 @@ async function deployRehearsalFixture() {
   return {
     contracts,
     state,
+    token,
     deployer,
     oracle,
     treasury,
@@ -99,12 +100,34 @@ async function deployRehearsalFixture() {
   };
 }
 
+/** The pair paying in an ordinary token, which moves between any two addresses. */
+async function deployRehearsalFixture() {
+  const token = await (await ethers.getContractFactory("MockAbleToken")).deploy();
+  await token.waitForDeployment();
+  return deployPair(token);
+}
+
+/**
+ * The pair paying in the SENSE token, which moves only when the sender or the recipient is on
+ * its owner's list. The deploy wallet owns the token; nothing is listed.
+ */
+async function deployRestrictedRehearsalFixture() {
+  const [deployer] = await ethers.getSigners();
+  const token = await upgrades.deployProxy(
+    await ethers.getContractFactory("SenseToken"),
+    ["SENSE Points", "SENSE", ethers.parseEther("1000000"), deployer.address],
+    { initializer: "initialize", kind: "uups" },
+  );
+  await token.waitForDeployment();
+  return deployPair(token);
+}
+
 /**
  * The fixture with a log of its own: the deployed state is shared between tests, a log kept in
  * the fixture would be too.
  */
-async function loadRehearsal() {
-  const fixture = await loadFixture(deployRehearsalFixture);
+async function loadRehearsal(deploy = deployRehearsalFixture) {
+  const fixture = await loadFixture(deploy);
   const lines = [];
   return { ...fixture, lines, log: (line) => lines.push(String(line)) };
 }
@@ -139,4 +162,5 @@ module.exports = {
   snapshotText,
   versionOneText,
   deployRehearsalFixture,
+  deployRestrictedRehearsalFixture,
 };
