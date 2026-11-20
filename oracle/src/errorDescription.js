@@ -72,15 +72,20 @@ function describedError(error) {
  * @returns {string}
  */
 function errorKind(error) {
-  try {
-    for (const candidate of [error?.code, error?.name]) {
-      const kind = plainKind(candidate);
-      if (kind !== null) return kind;
-    }
-  } catch {
-    // A getter that throws: the kind cannot be read, and this must not throw in its place.
+  for (const property of ["code", "name"]) {
+    const kind = plainKind(readProperty(error, property));
+    if (kind !== null) return kind;
   }
   return "Error";
+}
+
+/** `value[property]`, or undefined where reading it throws (a getter that throws). */
+function readProperty(value, property) {
+  try {
+    return value?.[property];
+  } catch {
+    return undefined;
+  }
 }
 
 // A code or name as a log line and an alert can carry it: one short word, never an address.
