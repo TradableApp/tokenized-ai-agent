@@ -62,6 +62,18 @@ function describedError(error) {
   return described;
 }
 
+/**
+ * The kind of `error` and nothing it says: its code, or its name where it has none. For a log
+ * line or an alert about an error whose message may carry an address, as a database error
+ * carries the one it was connecting to.
+ *
+ * @param {unknown} error
+ * @returns {string}
+ */
+function errorKind(error) {
+  return String(error?.code ?? error?.name ?? "Error");
+}
+
 // Any scheme (a database address carries a password as an RPC address carries a key), with the
 // slashes plain or escaped as JSON escapes them. Greedy on purpose: everything up to the next
 // space, quote or closing parenthesis goes, trailing punctuation included. Stopping at a dot or
@@ -104,4 +116,4 @@ function revertDetail(error) {
   return "";
 }
 
-module.exports = { describeError, describedError, withoutAddresses };
+module.exports = { describeError, describedError, errorKind, withoutAddresses };

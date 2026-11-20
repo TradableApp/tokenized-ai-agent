@@ -53,7 +53,7 @@ const {
   DEFAULT_POLL_INTERVAL_MS,
   createPollBackoff,
 } = require("./pollBackoff");
-const { describeError, describedError } = require("./errorDescription");
+const { describeError, describedError, errorKind } = require("./errorDescription");
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
@@ -690,7 +690,8 @@ async function initializeEliza() {
       void toolServerWatch.follow(elizaOS.getAgent(senseAiAgentId));
     }
   } catch (error) {
-    console.error("[ElizaOS] FAILED to start SenseAI Agent:", error);
+    // Only its kind: a database error carries the address it was connecting to.
+    console.error(`[ElizaOS] FAILED to start SenseAI Agent (${errorKind(error)}).`);
     throw error;
   }
 }
