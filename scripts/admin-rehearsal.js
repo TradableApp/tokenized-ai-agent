@@ -362,8 +362,8 @@ async function verifyReturned({ contracts, state }) {
   return { ok: mismatches.length === 0, mismatches };
 }
 
-function snapshotPath() {
-  return path.resolve(__dirname, `../cache/admin-rehearsal.${hre.network.name}.json`);
+function snapshotPath(networkName) {
+  return path.resolve(__dirname, `../cache/admin-rehearsal.${networkName}.json`);
 }
 
 /** The two proxies a rehearsal runs against, as the snapshot records them. */
@@ -398,23 +398,24 @@ async function assertOwnershipMovesInTwoSteps({ aiAgent, escrow }) {
   }
 }
 
-function loadEnv() {
-  if (process.env.ENV_FILE) {
-    dotenv.config({ path: process.env.ENV_FILE });
+/** Loads the network's settings file, then the repository's, into `env`. */
+function loadEnv(env) {
+  if (env.ENV_FILE) {
+    dotenv.config({ path: env.ENV_FILE, processEnv: env });
   }
-  dotenv.config({ path: path.resolve(__dirname, "../.env") });
+  dotenv.config({ path: path.resolve(__dirname, "../.env"), processEnv: env });
 }
 
-async function attachContracts() {
-  const agentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
-  const escrowAddress = process.env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
+async function attachContracts(env) {
+  const agentAddress = env.AI_AGENT_CONTRACT_ADDRESS;
+  const escrowAddress = env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
   if (!agentAddress || !escrowAddress) {
     throw new Error("AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS are required");
   }
   return {
     aiAgent: await ethers.getContractAt("EVMAIAgent", agentAddress),
     escrow: await ethers.getContractAt("EVMAIAgentEscrow", escrowAddress),
-    oracleAddress: process.env.REHEARSAL_ORACLE_ADDRESS,
+    oracleAddress: env.REHEARSAL_ORACLE_ADDRESS,
   };
 }
 
@@ -555,40 +556,48 @@ async function confirmPhase({
   );
 }
 
-async function main() {
-  loadEnv();
-  const phase = process.env.REHEARSAL_PHASE || "forward";
+/**
+ * Every input is a parameter, so the guards can be tested where the script runs them. Run as a
+ * script, it takes the process environment, Hardhat's network and the real contracts.
+ */
+async function main({
+  env = process.env,
+  networkName = hre.network.name,
+  loadEnvFile = loadEnv,
+  getSigners = () => ethers.getSigners(),
+  attach = attachContracts,
+  forward = forwardPhase,
+  confirm = confirmPhase,
+} = {}) {
+  loadEnvFile(env);
+  const phase = env.REHEARSAL_PHASE || "forward";
   if (!PHASES.has(phase)) {
     throw new Error(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
   }
-  const dryRun = process.env.DRY_RUN === "1";
+  const dryRun = env.DRY_RUN === "1";
   assertPhaseCanDryRun({ phase, dryRun });
-  assertMainnetConfirmed({
-    networkName: hre.network.name,
-    dryRun,
-    confirmed: process.env.REHEARSAL_MAINNET_CONFIRMED,
-  });
+  assertMainnetConfirmed({ networkName, dryRun, confirmed: env.REHEARSAL_MAINNET_CONFIRMED });
   const log = (line) => console.log(line);
 
-  const [signer] = await ethers.getSigners();
-  const contracts = await attachContracts();
+  const [signer] = await getSigners();
+  const contracts = await attach(env);
   log(
-    `--- Admin rehearsal on ${chalk.bold(hre.network.name)} · phase=${phase} · signer=${signer.address}${dryRun ? " · DRY RUN" : ""} ---`,
+    `--- Admin rehearsal on ${chalk.bold(networkName)} · phase=${phase} · signer=${signer.address}${dryRun ? " · DRY RUN" : ""} ---`,
   );
 
-  const snapshotFile = snapshotPath();
+  const snapshotFile = snapshotPath(networkName);
   if (phase === "forward") {
-    await forwardPhase({
+    await forward({
       contracts,
       signer,
       dryRun,
       log,
-      safeAddress: process.env.REHEARSAL_SAFE_ADDRESS,
-      rehearsalPromptFee: parseRehearsalFee(process.env.REHEARSAL_PROMPT_FEE),
+      safeAddress: env.REHEARSAL_SAFE_ADDRESS,
+      rehearsalPromptFee: parseRehearsalFee(env.REHEARSAL_PROMPT_FEE),
       snapshotFile,
     });
   } else {
-    await confirmPhase({ contracts, signer, log, snapshotFile });
+    await confirm({ contracts, signer, log, snapshotFile });
   }
 }
 
