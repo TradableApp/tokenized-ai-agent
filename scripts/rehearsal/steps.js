@@ -3,7 +3,7 @@ const chalk = require("chalk");
 const { sameValue } = require("./values");
 
 const RECOVERY_HINT =
-  "Re-run the forward phase to resume: the snapshot stays the restore baseline and records each step as it is sent and as it is proven, so a step recorded as sent is settled from its receipt and a finished pair is not sent again. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
+  "Re-run the forward phase to resume: the snapshot stays the restore baseline and records each step as it is sent and as it is proven, so a step recorded as sent is settled first and a finished pair is not sent again. The confirm phase refuses while a step is recorded as sent or the wallet has a transaction waiting to be mined; once the forward phase has finished, run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
 // Public RPC endpoints are load-balanced; the node that answers the read-back may not have the
 // block the receipt came from yet. Read at that block and retry rather than fail a landed tx.
 const VERIFY_ATTEMPTS = 5;

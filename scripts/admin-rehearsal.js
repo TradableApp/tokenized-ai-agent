@@ -18,6 +18,7 @@ const {
   decideSteps,
   settleSentSteps,
   assertNoPendingTransactions,
+  assertConfirmable,
 } = require("./rehearsal/resume");
 const {
   CONTRACT_KEYS,
@@ -520,11 +521,13 @@ async function confirmPhase({
       `No snapshot at ${snapshotFile}; run the forward phase first (for example bun run rehearse:base-testnet)`,
     );
   }
+  assertConfirmable(snapshot, snapshotFile);
+  await assertNoPendingTransactions({ provider: ethers.provider, address: signer.address });
   const { baseline: state, safe, confirmed } = snapshot;
   if (confirmed) {
     log(chalk.yellow("This snapshot was already confirmed. Checking it against the chain again."));
   }
-  const accepted = signer ? await accept({ contracts, signer, log }) : [];
+  const accepted = await accept({ contracts, signer, log });
   if (!("encryptionKey" in state)) {
     log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
   }

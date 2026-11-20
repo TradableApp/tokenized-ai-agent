@@ -203,6 +203,29 @@ async function settleSentSteps({ plan, steps, getReceipt, hasPending, check }) {
   return settled;
 }
 
+/**
+ * The confirm phase marks a rehearsal finished, so it refuses one that is not: a step still
+ * recorded as sent may yet land and change a value the chain now shows at its baseline, and a
+ * version 2 run whose ownership offers are not both recorded done rehearsed no ownership. A
+ * version 1 snapshot records no steps, and one already confirmed passed these checks before.
+ */
+function assertConfirmable(snapshot, file) {
+  for (const [id, record] of Object.entries(snapshot.steps)) {
+    if (record?.status === "sent") {
+      throw new Error(
+        `[${id}] is recorded in ${file} as sent as ${record.txHash} and has not been settled: it may still land and change what this phase would check. Nothing was sent. Run the forward phase to settle it, then run the confirm phase.`,
+      );
+    }
+  }
+  if (snapshot.version === 1 || snapshot.confirmed) return;
+  const missing = Object.keys(OFFERS).filter((id) => !isDone(snapshot.steps[id]));
+  if (missing.length > 0) {
+    throw new Error(
+      `${missing.map((id) => `[${id}]`).join(" and ")} not recorded done in ${file}: the forward phase did not finish, so no ownership was rehearsed. Nothing was sent. Run the forward phase to finish it, then run the confirm phase.`,
+    );
+  }
+}
+
 /** Refuses while the wallet has a transaction the chain has not mined yet. */
 async function assertNoPendingTransactions({ provider, address }) {
   const [pending, latest] = await Promise.all([
@@ -223,4 +246,5 @@ module.exports = {
   decideSteps,
   settleSentSteps,
   assertNoPendingTransactions,
+  assertConfirmable,
 };
