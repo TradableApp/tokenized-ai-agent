@@ -396,19 +396,17 @@ async function decideRun({ plan, contracts, signer, snapshot, log, save }) {
     plan,
     steps: snapshot.steps,
     getReceipt: (hash) => ethers.provider.getTransactionReceipt(hash),
-    // The run refused to start with a transaction pending, so one with no receipt did not land.
-    hasPending: false,
-    check: async (stepDef, receipt) => {
-      const target = contracts[CONTRACT_KEYS[stepDef.contract]].connect(signer);
-      findEvent(receipt, target, stepDef);
-      await verifyGetter(target, stepDef, receipt);
+    getCounts: async () => {
+      const [latest, pending] = await Promise.all([
+        ethers.provider.getTransactionCount(signer.address, "latest"),
+        ethers.provider.getTransactionCount(signer.address, "pending"),
+      ]);
+      return { latest, pending };
     },
+    check: (stepDef, receipt) =>
+      findEvent(receipt, contracts[CONTRACT_KEYS[stepDef.contract]], stepDef),
+    log,
   });
-  for (const [id, record] of Object.entries(snapshot.steps)) {
-    if (record.status === "sent") {
-      log(`[${id}] sent as ${record.txHash}: ${steps[id] ? "landed" : "did not land"}`);
-    }
-  }
   save({ ...snapshot, steps });
   const live = await readLive({ contracts, safe: snapshot.safe });
   return {

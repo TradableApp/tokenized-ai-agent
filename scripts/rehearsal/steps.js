@@ -93,7 +93,7 @@ async function sendStep(stepDef, target, log, record) {
   let receipt;
   try {
     const tx = await target[stepDef.method](...stepDef.args);
-    await record(stepDef.id, { status: "sent", txHash: tx.hash });
+    await record(stepDef.id, { status: "sent", txHash: tx.hash, nonce: tx.nonce });
     receipt = await tx.wait();
   } catch (error) {
     throw new Error(

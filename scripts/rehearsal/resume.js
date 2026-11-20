@@ -174,31 +174,57 @@ function decideSteps({ plan, steps, live, baseline, safe, rehearsalPromptFee }) 
 }
 
 /**
- * The step records with every `sent` step settled from its receipt: done when it succeeded and
- * `check` passes, forgotten (not landed) when it reverted or has no receipt and nothing is
- * pending. With no receipt and a transaction pending it refuses: it may still land.
+ * What to do with a step recorded as sent that this node has no receipt for: forget it (it did
+ * not land and will not) only when its nonce is still unused and nothing is waiting; otherwise
+ * refuse, since it, or a transaction that replaced it, may have landed or may still.
  */
-async function settleSentSteps({ plan, steps, getReceipt, hasPending, check }) {
-  const settled = { ...steps };
+async function settleWithoutReceipt(stepDef, record, getCounts) {
+  const sentAs = `[${stepDef.id}] was sent as ${record.txHash}, and no receipt was found on this node`;
+  if (typeof record.nonce !== "number") {
+    throw new Error(
+      `${sentAs}; no nonce was recorded with it, so it cannot be placed. Nothing was sent. Look the transaction up on an explorer, and run again once it is mined or certainly dropped.`,
+    );
+  }
+  const { latest, pending } = await getCounts();
+  if (latest > record.nonce) {
+    throw new Error(
+      `${sentAs}, but the wallet has used its nonce ${record.nonce}: it, or a replacement, landed and this node cannot show it. Nothing was sent. Run again against a node that has the receipt.`,
+    );
+  }
+  if (pending > latest) {
+    throw new Error(
+      `${sentAs}, and the wallet has a transaction waiting to be mined. Nothing was sent. Wait for it to be mined, then run again.`,
+    );
+  }
+}
+
+/**
+ * The step records with every `sent` step settled: done when its receipt succeeded and `check`
+ * (its event) passes, forgotten when it reverted or, with no receipt, when its nonce is unused
+ * and nothing is pending. State at the receipt's block is never read: a node may have pruned it.
+ */
+async function settleSentSteps({ plan, steps, getReceipt, getCounts, check, log }) {
+  let settled = { ...steps };
   for (const stepDef of plan) {
     const record = steps[stepDef.id];
     if (record?.status !== "sent") continue;
     const receipt = await getReceipt(record.txHash);
-    if (!receipt && hasPending) {
-      throw new Error(
-        `[${stepDef.id}] was sent as ${record.txHash} and has no receipt yet, and the wallet has a transaction waiting to be mined. Nothing was sent. Wait for it to be mined, then run again.`,
+    if (receipt?.status === 1) {
+      check(stepDef, receipt);
+      log(`[${stepDef.id}] sent as ${record.txHash}: landed in block ${receipt.blockNumber}`);
+      const done = { status: "done", txHash: record.txHash, blockNumber: receipt.blockNumber };
+      settled = { ...settled, [stepDef.id]: done };
+      continue;
+    }
+    if (receipt) {
+      log(`[${stepDef.id}] sent as ${record.txHash}: reverted, so it is sent again`);
+    } else {
+      await settleWithoutReceipt(stepDef, record, getCounts);
+      log(
+        `[${stepDef.id}] sent as ${record.txHash}: no receipt found on this node and its nonce is unused`,
       );
     }
-    if (receipt?.status === 1) {
-      await check(stepDef, receipt);
-      settled[stepDef.id] = {
-        status: "done",
-        txHash: record.txHash,
-        blockNumber: receipt.blockNumber,
-      };
-    } else {
-      delete settled[stepDef.id];
-    }
+    settled = Object.fromEntries(Object.entries(settled).filter(([id]) => id !== stepDef.id));
   }
   return settled;
 }
