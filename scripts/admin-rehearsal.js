@@ -11,6 +11,7 @@ const {
   readSnapshot,
   checkLegacySnapshot,
 } = require("./rehearsal/snapshot");
+const { findLeftovers, assertNoLeftovers } = require("./rehearsal/resume");
 
 const { ethers } = hre;
 
@@ -501,6 +502,10 @@ async function forwardPhase({
   // would, and then leaves it alone.
   const resuming = !dryRun && left !== null && !left.confirmed;
   const state = resuming ? left.baseline : live;
+  if (!resuming) {
+    const safe = assertSafeAddress(safeAddress, live);
+    assertNoLeftovers(await findLeftovers({ contracts, safe, rehearsalPromptFee }));
+  }
   if (resuming) {
     // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
     // Safe's oracle role would go unchecked.
