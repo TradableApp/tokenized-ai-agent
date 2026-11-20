@@ -344,8 +344,6 @@ describe("scripts/rehearsal", function () {
     for (const [what, content] of [
       ["a confirmed one of this pair", { promptFee: "1", pair: PAIR, confirmed: true }],
       ["one of another pair", { promptFee: "1", pair: { agent: AGENT, escrow: OTHER } }],
-      ["one that does not say which pair", { promptFee: "1" }],
-      ["one that is not JSON", "{ not json"],
     ]) {
       it(`warns about ${what}, uses nothing of it and leaves it where it is`, function () {
         const file = legacy(content);
@@ -360,5 +358,32 @@ describe("scripts/rehearsal", function () {
         expect(fs.readFileSync(file, "utf8")).to.equal(before);
       });
     }
+
+    // The old in-place write, cut off part-way, leaves exactly such a file of this pair.
+    for (const [what, content, why] of [
+      ["one that does not say which pair", { promptFee: "1" }, /does not say which pair/],
+      ["one that is not JSON", '{"promptFee": "1", "pa', /not JSON/],
+    ]) {
+      it(`refuses ${what}, which may be the only baseline, and leaves it`, function () {
+        const file = legacy(content);
+        const before = fs.readFileSync(file, "utf8");
+
+        const message = expectNoDelete(() => check(file));
+
+        expect(message).to.include(file);
+        expect(message).to.match(why);
+        expect(fs.readFileSync(file, "utf8")).to.equal(before);
+      });
+    }
+
+    it("reports a file it cannot read as what it is, not as a file that is not JSON", function () {
+      const file = scratchFile("admin-rehearsal.baseSepolia.json");
+      fs.mkdirSync(file);
+
+      const message = expectNoDelete(() => check(file));
+
+      expect(message).to.include("EISDIR");
+      expect(message).to.not.match(/not JSON/);
+    });
   });
 });
