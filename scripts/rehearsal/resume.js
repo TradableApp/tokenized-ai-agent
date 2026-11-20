@@ -1,6 +1,6 @@
 const { ethers } = require("ethers");
 
-const { sameValue } = require("./values");
+const { sameValue, RehearsalError } = require("./values");
 
 /** The live values the leftover check and the resume decisions read. */
 async function readLive({ contracts, safe }) {
@@ -52,7 +52,7 @@ async function findLeftovers({ contracts, safe, rehearsalPromptFee }) {
 /** Refuses to take the live state as the baseline while it shows any leftover. */
 function assertNoLeftovers(found) {
   if (found.length === 0) return;
-  throw new Error(
+  throw new RehearsalError(
     `The live state shows what a rehearsal leaves behind, and there is no unconfirmed snapshot to restore it from: ${found.join("; ")}. Nothing was sent. If a rehearsal's snapshot was lost, return these to their values from before it by hand, then run again.`,
   );
 }
@@ -95,7 +95,7 @@ const isDone = (record) => record?.status === "done";
 const decision = (action, reason, warn = false) => ({ action, reason, ...(warn ? { warn } : {}) });
 
 function refuse(text) {
-  throw new Error(
+  throw new RehearsalError(
     `${text} Nothing was sent. Find out what changed it and set it by hand before running again.`,
   );
 }
@@ -158,7 +158,9 @@ function decideOffer(id, { steps, live, safe }) {
 function decideSteps({ plan, steps, live, baseline, safe, rehearsalPromptFee }) {
   for (const [id, record] of Object.entries(steps)) {
     if (!isDone(record)) {
-      throw new Error(`[${id}] is recorded as ${record?.status}; it must be settled first.`);
+      throw new RehearsalError(
+        `[${id}] is recorded as ${record?.status}; it must be settled first.`,
+      );
     }
   }
   const context = { steps, live, baseline, safe, rehearsalPromptFee };
@@ -168,7 +170,8 @@ function decideSteps({ plan, steps, live, baseline, safe, rehearsalPromptFee }) 
   }
   for (const id of Object.keys(OFFERS)) decided[id] = decideOffer(id, context);
   return plan.map((step) => {
-    if (!decided[step.id]) throw new Error(`[${step.id}] is not a step the rehearsal knows`);
+    if (!decided[step.id])
+      throw new RehearsalError(`[${step.id}] is not a step the rehearsal knows`);
     return { step, ...decided[step.id] };
   });
 }
@@ -181,18 +184,18 @@ function decideSteps({ plan, steps, live, baseline, safe, rehearsalPromptFee }) 
 async function settleWithoutReceipt(stepDef, record, getCounts) {
   const sentAs = `[${stepDef.id}] was sent as ${record.txHash}, and no receipt was found on this node`;
   if (typeof record.nonce !== "number") {
-    throw new Error(
+    throw new RehearsalError(
       `${sentAs}; no nonce was recorded with it, so it cannot be placed. Nothing was sent. Look the transaction up on an explorer, and run again once it is mined or certainly dropped.`,
     );
   }
   const { latest, pending } = await getCounts();
   if (latest > record.nonce) {
-    throw new Error(
+    throw new RehearsalError(
       `${sentAs}, but the wallet has used its nonce ${record.nonce}: it, or a replacement, landed and this node cannot show it. Nothing was sent. Run again against a node that has the receipt.`,
     );
   }
   if (pending > latest) {
-    throw new Error(
+    throw new RehearsalError(
       `${sentAs}, and the wallet has a transaction waiting to be mined. Nothing was sent. Wait for it to be mined, then run again.`,
     );
   }
@@ -238,7 +241,7 @@ async function settleSentSteps({ plan, steps, getReceipt, getCounts, check, log 
 function assertConfirmable(snapshot, file) {
   for (const [id, record] of Object.entries(snapshot.steps)) {
     if (record?.status === "sent") {
-      throw new Error(
+      throw new RehearsalError(
         `[${id}] is recorded in ${file} as sent as ${record.txHash} and has not been settled: it may still land and change what this phase would check. Nothing was sent. Run the forward phase to settle it, then run the confirm phase.`,
       );
     }
@@ -246,7 +249,7 @@ function assertConfirmable(snapshot, file) {
   if (snapshot.version === 1 || snapshot.confirmed) return;
   const missing = Object.keys(OFFERS).filter((id) => !isDone(snapshot.steps[id]));
   if (missing.length > 0) {
-    throw new Error(
+    throw new RehearsalError(
       `${missing.map((id) => `[${id}]`).join(" and ")} not recorded done in ${file}: the forward phase did not finish, so no ownership was rehearsed. Nothing was sent. Run the forward phase to finish it, then run the confirm phase.`,
     );
   }
@@ -259,7 +262,7 @@ async function assertNoPendingTransactions({ provider, address }) {
     provider.getTransactionCount(address, "latest"),
   ]);
   if (pending > latest) {
-    throw new Error(
+    throw new RehearsalError(
       `The wallet ${address} has ${pending - latest} transaction(s) waiting to be mined. Nothing was sent. Wait for them to be mined, then run again.`,
     );
   }

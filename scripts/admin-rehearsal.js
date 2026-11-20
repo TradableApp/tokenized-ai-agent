@@ -3,7 +3,7 @@ const dotenv = require("dotenv");
 const path = require("path");
 const chalk = require("chalk");
 
-const { sameValue, isRevert } = require("./rehearsal/values");
+const { sameValue, isRevert, RehearsalError, describeFailure } = require("./rehearsal/values");
 const {
   snapshotPath,
   legacySnapshotPath,
@@ -87,14 +87,16 @@ const NO_ENCRYPTION_KEY_NOTE =
 
 function assertSafeAddress(safeAddress, state) {
   if (!ethers.isAddress(safeAddress) || safeAddress === ethers.ZeroAddress) {
-    throw new Error(`Safe address is not a usable address: ${safeAddress}`);
+    throw new RehearsalError(`Safe address is not a usable address: ${safeAddress}`);
   }
   const safe = ethers.getAddress(safeAddress);
   if (
     safe === ethers.getAddress(state.agentOwner) ||
     safe === ethers.getAddress(state.escrowOwner)
   ) {
-    throw new Error(`Safe ${safe} already owns a proxy; the transfer would rehearse nothing`);
+    throw new RehearsalError(
+      `Safe ${safe} already owns a proxy; the transfer would rehearse nothing`,
+    );
   }
   return safe;
 }
@@ -105,7 +107,7 @@ function assertSignerOwnsBoth(signerAddress, state) {
     signer !== ethers.getAddress(state.agentOwner) ||
     signer !== ethers.getAddress(state.escrowOwner)
   ) {
-    throw new Error(
+    throw new RehearsalError(
       `Signer ${signer} does not own both proxies (agentOwner=${state.agentOwner}, escrowOwner=${state.escrowOwner})`,
     );
   }
@@ -114,13 +116,15 @@ function assertSignerOwnsBoth(signerAddress, state) {
 async function assertSafeHasCode(safe) {
   const code = await ethers.provider.getCode(safe);
   if (code === "0x") {
-    throw new Error(`Safe ${safe} has no contract code; an EOA cannot stand in for the Safe`);
+    throw new RehearsalError(
+      `Safe ${safe} has no contract code; an EOA cannot stand in for the Safe`,
+    );
   }
 }
 
 function assertMainnetConfirmed({ networkName, dryRun, confirmed }) {
   if (networkName === MAINNET_NETWORK && !dryRun && confirmed !== "1") {
-    throw new Error(
+    throw new RehearsalError(
       `Live run on ${networkName} refused: set REHEARSAL_MAINNET_CONFIRMED=1 to send owner transactions on Base mainnet`,
     );
   }
@@ -129,7 +133,7 @@ function assertMainnetConfirmed({ networkName, dryRun, confirmed }) {
 /** The confirm phase sends the acceptance, so there is nothing a dry run of it could simulate. */
 function assertPhaseCanDryRun({ phase, dryRun }) {
   if (dryRun && phase === "confirm") {
-    throw new Error(
+    throw new RehearsalError(
       "The confirm phase has no dry run: it sends a transaction. Unset DRY_RUN to run it.",
     );
   }
@@ -143,7 +147,9 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
   const safe = assertSafeAddress(safeAddress, state);
   const fee = BigInt(rehearsalPromptFee);
   if (fee === BigInt(state.promptFee)) {
-    throw new Error("Rehearsal prompt fee equals the live fee; the event would prove nothing");
+    throw new RehearsalError(
+      "Rehearsal prompt fee equals the live fee; the event would prove nothing",
+    );
   }
 
   const feeEvent = (value) => ({ name: "PromptFeeUpdated", args: [value] });
@@ -290,7 +296,7 @@ async function loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, netwo
 /** A forward run cannot tell which steps a version 1 snapshot's rehearsal sent. */
 function assertForwardCanUse(snapshot, file) {
   if (snapshot?.version !== 1) return;
-  throw new Error(
+  throw new RehearsalError(
     `The snapshot at ${file} was written by an earlier version of this script and records no steps, so a forward run cannot tell which were sent. Nothing was sent. Run the confirm phase to check it against the chain; once it is confirmed, a forward run starts from the live state. If its rehearsal was returned by hand, move it aside.`,
   );
 }
@@ -311,7 +317,7 @@ async function assertOwnershipMovesInTwoSteps({ aiAgent, escrow }) {
       if (!isRevert(error)) {
         throw error;
       }
-      throw new Error(
+      throw new RehearsalError(
         `The ${name} has no pendingOwner(): this pair moves ownership in one step, and the rehearsal is written for a pair that moves it in two steps. Nothing was sent.`,
       );
     }
@@ -330,7 +336,9 @@ async function attachContracts(env) {
   const agentAddress = env.AI_AGENT_CONTRACT_ADDRESS;
   const escrowAddress = env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
   if (!agentAddress || !escrowAddress) {
-    throw new Error("AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS are required");
+    throw new RehearsalError(
+      "AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS are required",
+    );
   }
   return {
     aiAgent: await ethers.getContractAt("EVMAIAgent", agentAddress),
@@ -343,7 +351,7 @@ function parseRehearsalFee(raw) {
   try {
     return ethers.parseEther(raw || DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS);
   } catch {
-    throw new Error(
+    throw new RehearsalError(
       `REHEARSAL_PROMPT_FEE="${raw}" is not a token amount; give a decimal in whole tokens (for example 2), not wei`,
     );
   }
@@ -377,13 +385,13 @@ async function beginRun({
   // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
   // Safe's oracle role would go unchecked.
   if (left.safe && !sameValue(left.safe, safe)) {
-    throw new Error(
+    throw new RehearsalError(
       `The rehearsal in ${file} was started with the Safe ${left.safe}, not ${safe}. Nothing was sent. Resume it with the Safe it was started with.`,
     );
   }
   // Another fee would leave a set made with the first one looking like a value from elsewhere.
   if (!sameValue(left.rehearsalPromptFee, rehearsalPromptFee)) {
-    throw new Error(
+    throw new RehearsalError(
       `The rehearsal in ${file} was started with the rehearsal fee ${left.rehearsalPromptFee}, not ${rehearsalPromptFee}. Nothing was sent. Resume it with the fee it was started with.`,
     );
   }
@@ -428,7 +436,7 @@ async function forwardPhase({
   execute = runPlan,
 }) {
   if (!safeAddress) {
-    throw new Error("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
+    throw new RehearsalError("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
   }
 
   await assertOwnershipMovesInTwoSteps(contracts);
@@ -515,7 +523,7 @@ async function confirmPhase({
     log,
   });
   if (snapshot === null) {
-    throw new Error(
+    throw new RehearsalError(
       `No snapshot at ${snapshotFile}; run the forward phase first (for example bun run rehearse:base-testnet)`,
     );
   }
@@ -555,7 +563,7 @@ async function confirmPhase({
     for (const m of mismatches) {
       log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
     }
-    throw new Error("Rehearsal state has not been fully returned");
+    throw new RehearsalError("Rehearsal state has not been fully returned");
   }
   // Only now: marked any earlier, a failed confirm would let the next forward run start from
   // the live state and overwrite the one record of the pre-rehearsal values.
@@ -584,7 +592,7 @@ async function main({
   loadEnvFile(env);
   const phase = env.REHEARSAL_PHASE || "forward";
   if (!PHASES.has(phase)) {
-    throw new Error(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
+    throw new RehearsalError(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
   }
   const dryRun = env.DRY_RUN === "1";
   assertPhaseCanDryRun({ phase, dryRun });
@@ -641,7 +649,7 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(chalk.red(error.message));
+    console.error(chalk.red(describeFailure(error)));
     process.exitCode = 1;
   });
 }

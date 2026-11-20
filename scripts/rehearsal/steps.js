@@ -1,6 +1,6 @@
 const chalk = require("chalk");
 
-const { sameValue } = require("./values");
+const { sameValue, RehearsalError } = require("./values");
 
 const RECOVERY_HINT =
   "Re-run the forward phase to resume: the snapshot stays the restore baseline and records each step as it is sent and as it is proven, so a step recorded as sent is settled first and a finished pair is not sent again. The confirm phase refuses while a step is recorded as sent or the wallet has a transaction waiting to be mined; once the forward phase has finished, run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
@@ -33,12 +33,12 @@ function findEvent(receipt, target, stepDef) {
     (l) => l.topics[0] === topicHash && String(l.address).toLowerCase() === emitter,
   );
   if (!raw) {
-    throw new Error(`[${stepDef.id}] ${stepDef.event.name} was not emitted`);
+    throw new RehearsalError(`[${stepDef.id}] ${stepDef.event.name} was not emitted`);
   }
   const parsed = target.interface.parseLog(raw);
   stepDef.event.args.forEach((expected, i) => {
     if (!sameValue(parsed.args[i], expected)) {
-      throw new Error(
+      throw new RehearsalError(
         `[${stepDef.id}] ${stepDef.event.name} arg ${i} was ${parsed.args[i]}, expected ${expected}`,
       );
     }
@@ -68,7 +68,7 @@ async function verifyGetter(
     }
     if (attempt < attempts) await sleep(VERIFY_RETRY_MS);
   }
-  throw new Error(
+  throw new RehearsalError(
     `[${stepDef.id}] ${getterCall(stepDef.verify)} at block ${receipt.blockNumber} is ${last}, expected ${expected} after ${attempts} attempts`,
   );
 }
@@ -77,7 +77,7 @@ async function simulateStep(stepDef, target, log) {
   try {
     await target[stepDef.method].staticCall(...stepDef.args);
   } catch (error) {
-    throw new Error(
+    throw new RehearsalError(
       `[${stepDef.id}] dry run of ${stepDef.contract}.${stepDef.method} would revert: ${error.message}`,
     );
   }
@@ -85,30 +85,60 @@ async function simulateStep(stepDef, target, log) {
   return { id: stepDef.id, txHash: null, blockNumber: null };
 }
 
-/**
- * Sends one step. It is recorded "sent" with its hash as soon as the node returns one, before
- * the run waits for it, and "done" only after its event and getter checks pass.
- */
-async function sendStep(stepDef, target, log, record) {
-  let receipt;
+/** Sends the step's call and returns the transaction once the node has taken it. */
+async function submit(stepDef, target) {
   try {
-    const tx = await target[stepDef.method](...stepDef.args);
-    await record(stepDef.id, { status: "sent", txHash: tx.hash, nonce: tx.nonce });
-    receipt = await tx.wait();
+    return await target[stepDef.method](...stepDef.args);
   } catch (error) {
-    throw new Error(
+    throw new RehearsalError(
       `[${stepDef.id}] ${stepDef.contract}.${stepDef.method} failed: ${error.message}\n${RECOVERY_HINT}`,
+      { cause: error },
     );
   }
-  findEvent(receipt, target, stepDef);
-  await verifyGetter(target, stepDef, receipt);
-  await record(stepDef.id, {
-    status: "done",
-    txHash: receipt.hash,
-    blockNumber: receipt.blockNumber,
-  });
-  log(`  tx:       ${receipt.hash} (block ${receipt.blockNumber})`);
-  return { id: stepDef.id, txHash: receipt.hash, blockNumber: receipt.blockNumber };
+}
+
+/** What landed, for an error raised once the step's transaction is in a block. */
+function landed(stepDef, tx, receipt, error) {
+  return new RehearsalError(
+    `${error.message} ([${stepDef.id}] sent as ${tx.hash} landed in block ${receipt.blockNumber}). Nothing more was sent; run again to settle it from its receipt.`,
+    { cause: error },
+  );
+}
+
+/**
+ * Sends one step. Its hash is logged and it is recorded "sent", with the hash and nonce, as
+ * soon as the node returns it, before the run waits for it; it is recorded "done" only after
+ * its event and getter checks pass. Each failure says how far the step got.
+ */
+async function sendStep(stepDef, target, log, record) {
+  const tx = await submit(stepDef, target);
+  log(`  sent:     ${tx.hash} (nonce ${tx.nonce})`);
+  try {
+    await record(stepDef.id, { status: "sent", txHash: tx.hash, nonce: tx.nonce });
+  } catch (error) {
+    throw new RehearsalError(
+      `[${stepDef.id}] sent as ${tx.hash} (nonce ${tx.nonce}), but the snapshot could not be written: ${error.message}. The transaction may land, so send nothing by hand; fix the disk and run again.`,
+      { cause: error },
+    );
+  }
+  let receipt;
+  try {
+    receipt = await tx.wait();
+  } catch (error) {
+    throw new RehearsalError(
+      `[${stepDef.id}] sent as ${tx.hash}; waiting for it failed: ${error.message}\n${RECOVERY_HINT}`,
+      { cause: error },
+    );
+  }
+  log(`  block:    ${receipt.blockNumber}`);
+  try {
+    findEvent(receipt, target, stepDef);
+    await verifyGetter(target, stepDef, receipt);
+    await record(stepDef.id, { status: "done", txHash: tx.hash, blockNumber: receipt.blockNumber });
+  } catch (error) {
+    throw landed(stepDef, tx, receipt, error);
+  }
+  return { id: stepDef.id, txHash: tx.hash, blockNumber: receipt.blockNumber };
 }
 
 /**

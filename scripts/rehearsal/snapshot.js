@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const { sameValue } = require("./values");
+const { sameValue, RehearsalError } = require("./values");
 
 /**
  * The rehearsal's snapshot: the values before the rehearsal (its baseline), what it was run
@@ -72,7 +72,7 @@ function parseFile(file) {
   try {
     return JSON.parse(text);
   } catch (error) {
-    throw new Error(
+    throw new RehearsalError(
       `The snapshot at ${file} is not JSON (${error.message}), so it cannot be read as a baseline. ${MOVE_ASIDE}`,
     );
   }
@@ -81,12 +81,12 @@ function parseFile(file) {
 function assertPairOf(record, file, pair) {
   const recorded = record?.pair;
   if (!recorded?.agent || !recorded?.escrow) {
-    throw new Error(
+    throw new RehearsalError(
       `The snapshot at ${file} does not say which pair it was taken for, so it cannot be used as a baseline. ${MOVE_ASIDE}`,
     );
   }
   if (!sameValue(recorded.agent, pair.agent) || !sameValue(recorded.escrow, pair.escrow)) {
-    throw new Error(
+    throw new RehearsalError(
       `The snapshot at ${file} was taken for another pair (agent ${recorded.agent}, escrow ${recorded.escrow}), not agent ${pair.agent}, escrow ${pair.escrow}. ${MOVE_ASIDE}`,
     );
   }
@@ -94,12 +94,12 @@ function assertPairOf(record, file, pair) {
 
 function assertTakenOn(record, file, { network, chainId }) {
   if (record.network !== network) {
-    throw new Error(
+    throw new RehearsalError(
       `The snapshot at ${file} was taken on network ${record.network}, not ${network}. ${MOVE_ASIDE}`,
     );
   }
   if (!sameValue(record.chainId, chainId)) {
-    throw new Error(
+    throw new RehearsalError(
       `The snapshot at ${file} was taken on chain ${record.chainId}, not ${chainId}. ${MOVE_ASIDE}`,
     );
   }
@@ -149,7 +149,7 @@ function readSnapshot(file, { pair, network, chainId }) {
   assertPairOf(record, file, pair);
   if (record.version === undefined) return fromVersionOne(record);
   if (record.version !== SNAPSHOT_VERSION) {
-    throw new Error(
+    throw new RehearsalError(
       `The snapshot at ${file} was written by version ${record.version} of this script, which this one cannot read. ${MOVE_ASIDE}`,
     );
   }
@@ -190,7 +190,7 @@ function checkLegacySnapshot({ file, pair, log, moveTo }) {
     );
     return;
   }
-  throw new Error(
+  throw new RehearsalError(
     `${file} was written by an earlier version of this script, for this pair, and its rehearsal was not confirmed: it may be the only record of the values before that rehearsal. Nothing was sent. Move it to ${moveTo} and run the confirm phase to check it against the chain, or move it aside if that rehearsal was returned by hand.`,
   );
 }

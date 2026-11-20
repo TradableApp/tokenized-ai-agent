@@ -22,4 +22,25 @@ function isRevert(error) {
   return /revert/i.test(String(error?.message));
 }
 
-module.exports = { sameValue, isRevert };
+/**
+ * One of the script's own refusals or reports: its message says what happened and what to do,
+ * so it is printed alone. Anything else is unexpected and is printed with its stack.
+ */
+class RehearsalError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "RehearsalError";
+  }
+}
+
+/** The text printed for a failure that ends the run. */
+function describeFailure(error) {
+  if (!(error instanceof RehearsalError)) return String(error?.stack ?? error);
+  const { cause } = error;
+  if (cause && !(cause instanceof RehearsalError)) {
+    return `${error.message}\nCaused by: ${cause?.stack ?? cause}`;
+  }
+  return error.message;
+}
+
+module.exports = { sameValue, isRevert, RehearsalError, describeFailure };
