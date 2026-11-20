@@ -67,6 +67,7 @@ const PAIRS = [
     live: (live) => live.promptFee,
     before: ({ baseline }) => baseline.promptFee,
     during: ({ rehearsalPromptFee }) => rehearsalPromptFee,
+    byHand: ({ baseline }) => `escrow.setPromptFee(${baseline.promptFee})`,
   },
   {
     set: "treasury-set",
@@ -75,6 +76,7 @@ const PAIRS = [
     live: (live) => live.treasury,
     before: ({ baseline }) => baseline.treasury,
     during: ({ safe }) => safe,
+    byHand: ({ baseline }) => `escrow.setTreasury(${baseline.treasury})`,
   },
   {
     set: "oracle-add",
@@ -83,6 +85,7 @@ const PAIRS = [
     live: (live) => live.safeIsOracle,
     before: () => false,
     during: () => true,
+    byHand: ({ safe }) => `agent.removeOracle(${safe})`,
   },
 ];
 
@@ -255,17 +258,32 @@ function assertConfirmable(snapshot, file) {
   }
 }
 
-/** Refuses while the wallet has a transaction the chain has not mined yet. */
-async function assertNoPendingTransactions({ provider, address }) {
+/** Each set recorded done whose restore is not, with the call that restores it by hand. */
+function openSets({ steps, baseline, safe }) {
+  if (!baseline) return [];
+  return PAIRS.filter((pair) => isDone(steps[pair.set]) && !isDone(steps[pair.restore])).map(
+    (pair) => `[${pair.set}] (restore with ${pair.byHand({ baseline, safe })})`,
+  );
+}
+
+/**
+ * Refuses while the wallet has a transaction the chain has not mined yet, saying how to get out:
+ * the counts, how to clear a stuck nonce, and which rehearsal values may be live meanwhile.
+ */
+async function assertNoPendingTransactions({ provider, address, steps = {}, baseline, safe }) {
   const [pending, latest] = await Promise.all([
     provider.getTransactionCount(address, "pending"),
     provider.getTransactionCount(address, "latest"),
   ]);
-  if (pending > latest) {
-    throw new RehearsalError(
-      `The wallet ${address} has ${pending - latest} transaction(s) waiting to be mined. Nothing was sent. Wait for them to be mined, then run again.`,
-    );
-  }
+  if (pending <= latest) return;
+  const open = openSets({ steps, baseline, safe });
+  const live =
+    open.length === 0
+      ? ""
+      : ` These sets are recorded done and their restores are not, so their rehearsal values are live until restored: ${open.join("; ")}.`;
+  throw new RehearsalError(
+    `The wallet ${address} has ${pending - latest} transaction(s) waiting to be mined (latest ${latest}, pending ${pending}). Nothing was sent.${live} Wait for them to be mined, then run again. If one is stuck, replace it from this wallet with a transaction at nonce ${latest} (for example 0 value to itself, at a higher fee), then run again.`,
+  );
 }
 
 module.exports = {

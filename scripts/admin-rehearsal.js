@@ -454,7 +454,11 @@ async function forwardPhase({
     );
   }
   assertSignerOwnsBoth(signer.address, live);
-  await assertNoPendingTransactions({ provider: ethers.provider, address: signer.address });
+  await assertNoPendingTransactions({
+    provider: ethers.provider,
+    address: signer.address,
+    ...(left ?? {}),
+  });
 
   // A dry run takes the same path, so that it predicts the live run: it resumes, settles,
   // decides and refuses as the live run would, and only writes nothing.
@@ -528,7 +532,11 @@ async function confirmPhase({
     );
   }
   assertConfirmable(snapshot, snapshotFile);
-  await assertNoPendingTransactions({ provider: ethers.provider, address: signer.address });
+  await assertNoPendingTransactions({
+    provider: ethers.provider,
+    address: signer.address,
+    ...snapshot,
+  });
   const { baseline: state, safe, confirmed } = snapshot;
   if (confirmed) {
     log(chalk.yellow("This snapshot was already confirmed. Checking it against the chain again."));
