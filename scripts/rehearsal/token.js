@@ -32,9 +32,8 @@ function isEmptyRevert(error) {
 }
 
 /**
- * The escrow's token, and whether it keeps a list (`restricted`) with the Safe on it (`listed`).
- * Anything other than a yes, a no or a missing function is refused: nothing has been sent yet,
- * and a guess either way could leave users' payments refused while the Safe is the treasury.
+ * The escrow's token, and whether it keeps a list (`restricted`) with the Safe on it (`listed`),
+ * or `unknown` with the error when the answer was neither a yes, a no nor a missing function.
  */
 async function readTransferRule({ escrow, safe, runner }) {
   const token = await escrow.ableToken();
@@ -44,31 +43,97 @@ async function readTransferRule({ escrow, safe, runner }) {
     return { token, restricted: true, listed: listed === true };
   } catch (error) {
     if (isEmptyRevert(error)) return { token, restricted: false, listed: false };
-    throw new RehearsalError(
-      `The rehearsal could not tell whether the escrow's token ${token} moves only to or from addresses its owner has listed: asking it whether the Safe ${safe} is listed gave no yes or no. Nothing was sent. Check the token, then run again.`,
-      { cause: error },
-    );
+    return { token, unknown: true, cause: error };
   }
 }
 
 /**
- * Before a run that will make the Safe the treasury: refuses while the escrow's token keeps a
- * list and the Safe is not on it, since every payment the escrow sends to the treasury (a
- * cancellation fee, a branch or rename fee) would then be refused until the restore.
+ * Why the Safe must not become the treasury, or null when it may. A token that keeps a list
+ * refuses every payment the escrow sends to an unlisted treasury (a cancellation fee, a branch
+ * or rename fee) until the restore. An answer that cannot be read is refused too: a guess
+ * either way could leave users' payments refused while the Safe is the treasury.
  */
-async function assertSafeCanBeTreasury({ escrow, safe, runner, log }) {
-  const { token, restricted, listed } = await readTransferRule({ escrow, safe, runner });
+async function treasuryRefusal({ escrow, safe, runner, log }) {
+  const { token, restricted, listed, unknown, cause } = await readTransferRule({
+    escrow,
+    safe,
+    runner,
+  });
+  if (unknown) {
+    return {
+      reason: `The rehearsal could not tell whether the escrow's token ${token} moves only to or from addresses its owner has listed: asking it whether the Safe ${safe} is listed gave no yes or no.`,
+      advice: "Check the token, then run again.",
+      cause,
+    };
+  }
   if (!restricted) {
     log(`The escrow's token ${token} does not restrict who it moves between.`);
-    return;
+    return null;
   }
   if (listed) {
     log(`The escrow's token ${token} keeps a list, and the Safe ${safe} is on its list.`);
-    return;
+    return null;
   }
-  throw new RehearsalError(
-    `The escrow's token ${token} moves only to or from addresses its owner has listed, and the Safe ${safe} is not on its list. While the Safe is the treasury, every payment the escrow sends to the treasury would be refused. Nothing was sent. Have the token's owner list the Safe, or rehearse with a Safe that is listed, then run again.`,
-  );
+  return {
+    reason: `The escrow's token ${token} moves only to or from addresses its owner has listed, and the Safe ${safe} is not on its list. While the Safe is the treasury, every payment the escrow sends to the treasury would be refused.`,
+    advice:
+      "Have the token's owner list the Safe, or rehearse with a Safe that is listed, then run again.",
+  };
 }
 
-module.exports = { isEmptyRevert, readTransferRule, assertSafeCanBeTreasury };
+// Each restore and the set it undoes.
+const SET_OF = {
+  "fee-restore": "fee-set",
+  "treasury-restore": "treasury-set",
+  "oracle-remove": "oracle-add",
+};
+
+/**
+ * The decisions of a resumed run whose treasury step is refused: every restore whose set is
+ * already done (or seen on the chain) is still sent, so no rehearsal value is left live, and
+ * every other step is held back. Returns the decisions, and the ids sent and held.
+ */
+function holdUnstarted(decisions) {
+  const actionOf = Object.fromEntries(decisions.map((d) => [d.step.id, d.action]));
+  const setStarted = (id) => ["skip", "observe"].includes(actionOf[SET_OF[id]]);
+  const kept = (d) =>
+    d.action === "skip" ||
+    (d.action === "send" && SET_OF[d.step.id] && setStarted(d.step.id)) ||
+    (d.action === "observe" &&
+      Object.entries(SET_OF).some(
+        ([restore, set]) => set === d.step.id && actionOf[restore] === "send",
+      ));
+  const sent = [];
+  const held = [];
+  const next = decisions.map((d) => {
+    if (kept(d)) {
+      if (d.action === "send") sent.push(d.step.id);
+      return d;
+    }
+    held.push(d.step.id);
+    return { step: d.step, action: "skip", reason: "held back: the treasury step was refused" };
+  });
+  return { decisions: next, sent, held };
+}
+
+/** The refusal, saying exactly what this run sent and what it held back. */
+function treasuryRefused({ refusal, sent = [], held = [], dryRun }) {
+  const list = (ids) => ids.map((id) => `[${id}]`).join(", ");
+  const parts = [refusal.reason];
+  if (sent.length === 0) parts.push(dryRun ? "Nothing would be sent." : "Nothing was sent.");
+  else
+    parts.push(
+      `${dryRun ? "Would send" : "Sent"}: ${list(sent)}, to restore what an earlier run set.`,
+    );
+  if (held.length > 0) parts.push(`${dryRun ? "Would not send" : "Not sent"}: ${list(held)}.`);
+  parts.push(refusal.advice);
+  return new RehearsalError(parts.join(" "), refusal.cause ? { cause: refusal.cause } : undefined);
+}
+
+module.exports = {
+  isEmptyRevert,
+  readTransferRule,
+  treasuryRefusal,
+  holdUnstarted,
+  treasuryRefused,
+};

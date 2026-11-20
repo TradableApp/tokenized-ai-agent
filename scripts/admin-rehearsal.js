@@ -29,7 +29,7 @@ const {
   verifyGetter,
   runPlan,
 } = require("./rehearsal/steps");
-const { assertSafeCanBeTreasury } = require("./rehearsal/token");
+const { treasuryRefusal, holdUnstarted, treasuryRefused } = require("./rehearsal/token");
 const {
   isLiveNetwork,
   signerRoleNote,
@@ -545,10 +545,16 @@ async function forwardPhase({
     log(`Resuming: ${snapshotFile} stays the restore baseline: ${show(snapshot.baseline)}`);
   const plan = buildPlan({ state: snapshot.baseline, safeAddress, rehearsalPromptFee });
   await assertSafeHasCode(snapshot.safe);
-  if (willSetTreasury(snapshot, live)) {
-    const { escrow } = contracts;
-    await assertSafeCanBeTreasury({ escrow, safe: snapshot.safe, runner: ethers.provider, log });
-  }
+  // A fresh run refuses here, before anything is written; a resumed one restores first.
+  const refusal = willSetTreasury(snapshot, live)
+    ? await treasuryRefusal({
+        escrow: contracts.escrow,
+        safe: snapshot.safe,
+        runner: ethers.provider,
+        log,
+      })
+    : null;
+  if (refusal && !resuming) throw treasuryRefused({ refusal, dryRun });
 
   const save = (next) => {
     snapshot = next;
@@ -558,12 +564,14 @@ async function forwardPhase({
     save(snapshot);
     if (!dryRun) log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
-  const { decisions } = await decideRun({ plan, contracts, signer, snapshot, log, save });
+  const decided = await decideRun({ plan, contracts, signer, snapshot, log, save });
+  const { decisions, sent, held } = refusal ? holdUnstarted(decided.decisions) : decided;
   // A step's record is on disk before the next step is sent, so a restore is sent only after
   // its set's "done" record is written.
   const record = async (id, entry) =>
     save({ ...snapshot, steps: { ...snapshot.steps, [id]: entry } });
   const results = await execute({ plan, decisions, contracts, signer, dryRun, log, record });
+  if (refusal) throw treasuryRefused({ refusal, sent, held, dryRun });
   const returnTxs = dryRun ? [] : await buildSafeReturnTxs({ contracts, returnTo: signer.address });
   reportForward({ dryRun, results, returnTxs, log });
 }

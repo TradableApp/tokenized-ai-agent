@@ -56,7 +56,7 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
       const nonce = await nonceOf(fixture);
 
       await expect(forward(fixture, { snapshotFile, dryRun })).to.be.rejectedWith(
-        /is not on its list[\s\S]*Nothing was sent/,
+        /is not on its list[\s\S]*Nothing (was|would be) sent/,
       );
 
       expect(fs.existsSync(snapshotFile)).to.equal(false);
