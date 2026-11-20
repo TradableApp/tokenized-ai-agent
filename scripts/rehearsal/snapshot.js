@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
@@ -30,14 +31,8 @@ function legacySnapshotPath({ root, network }) {
 const asText = (values) =>
   Object.fromEntries(Object.entries(values).map(([key, value]) => [key, String(value)]));
 
-/**
- * Writes the snapshot whole: to a temporary file in the same folder, synced to disk, then
- * renamed over the old one. A run stopped part-way leaves the old snapshot or the new one,
- * never a cut-off file.
- */
-function writeSnapshot(file, snapshot) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const record = {
+function toRecord(snapshot) {
+  return {
     version: SNAPSHOT_VERSION,
     network: snapshot.network,
     chainId: String(snapshot.chainId),
@@ -52,15 +47,41 @@ function writeSnapshot(file, snapshot) {
     confirmed: snapshot.confirmed === true,
     updatedAt: new Date().toISOString(),
   };
-  const temporary = `${file}.tmp-${process.pid}`;
-  const descriptor = fs.openSync(temporary, "w");
+}
+
+/** Creates `temporary` (never an existing file or link), writes `text` and syncs it to disk. */
+function writeSynced(temporary, text) {
+  const descriptor = fs.openSync(temporary, "wx", 0o600);
   try {
-    fs.writeFileSync(descriptor, JSON.stringify(record, null, 2));
+    fs.writeFileSync(descriptor, text);
     fs.fsyncSync(descriptor);
   } finally {
     fs.closeSync(descriptor);
   }
-  fs.renameSync(temporary, file);
+}
+
+/**
+ * Writes the snapshot whole: to a new temporary file in the same folder under a random name,
+ * synced to disk, then renamed over the old one; a failed write removes the temporary file. A
+ * run stopped part-way leaves the old snapshot or the new one, never a cut-off file. The folder
+ * and the file are the running user's only: the file is what the next run restores from.
+ */
+function writeSnapshot(file, snapshot) {
+  const folder = path.dirname(file);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  fs.chmodSync(folder, 0o700);
+  const text = JSON.stringify(toRecord(snapshot), null, 2);
+  const temporary = path.join(
+    folder,
+    `.${path.basename(file)}.${crypto.randomBytes(8).toString("hex")}.tmp`,
+  );
+  try {
+    writeSynced(temporary, text);
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
+  }
   return file;
 }
 
@@ -107,6 +128,59 @@ function assertTakenOn(record, file, { network, chainId }) {
 
 const withFee = (values) => ({ ...values, promptFee: BigInt(values.promptFee) });
 
+const STEP_IDS = new Set([
+  "fee-set",
+  "fee-restore",
+  "treasury-set",
+  "treasury-restore",
+  "oracle-add",
+  "oracle-remove",
+  "agent-owner-to-safe",
+  "escrow-owner-to-safe",
+]);
+const isAmount = (value) => typeof value === "string" && /^[0-9]+$/.test(value);
+const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const isHash = (value) => typeof value === "string" && value.length > 2;
+
+/** The first field of a step record that is not what the script writes, or null. */
+function badStep(id, record) {
+  if (!STEP_IDS.has(id)) return `steps.${id}`;
+  if (!isObject(record)) return `steps.${id}`;
+  if (record.status === "sent") return isHash(record.txHash) ? null : `steps.${id}.txHash`;
+  if (record.status !== "done") return `steps.${id}.status`;
+  return record.observed === true || isHash(record.txHash) ? null : `steps.${id}.txHash`;
+}
+
+/**
+ * The first field of a version 2 record that is not what the script writes, or null. A
+ * confirmed record is no baseline, so it may lack the Safe and the rehearsal fee: one rewritten
+ * from a version 1 file has neither.
+ */
+function badField(record) {
+  if (!isAmount(record.chainId)) return "chainId";
+  const open = record.confirmed !== true;
+  if (open && (typeof record.safe !== "string" || record.safe === "")) return "safe";
+  if (open && !isAmount(record.rehearsalPromptFee)) return "rehearsalPromptFee";
+  if (!isObject(record.baseline)) return "baseline";
+  if (!isAmount(record.baseline.promptFee)) return "baseline.promptFee";
+  if (!isObject(record.steps)) return "steps";
+  for (const [id, step] of Object.entries(record.steps)) {
+    const bad = badStep(id, step);
+    if (bad) return bad;
+  }
+  return null;
+}
+
+/** Refuses a version 2 record with a field the script does not write, naming the field. */
+function assertWhole(record, file) {
+  const bad = badField(record);
+  if (bad) {
+    throw new RehearsalError(
+      `The snapshot at ${file} has a field the script does not write, ${bad}, so it cannot be used as a baseline. ${MOVE_ASIDE}`,
+    );
+  }
+}
+
 function fromVersionTwo(record) {
   return {
     version: 2,
@@ -114,12 +188,11 @@ function fromVersionTwo(record) {
     chainId: BigInt(record.chainId),
     pair: record.pair,
     safe: record.safe,
-    rehearsalPromptFee:
-      record.rehearsalPromptFee === null || record.rehearsalPromptFee === undefined
-        ? null
-        : BigInt(record.rehearsalPromptFee),
+    rehearsalPromptFee: isAmount(record.rehearsalPromptFee)
+      ? BigInt(record.rehearsalPromptFee)
+      : null,
     baseline: withFee(record.baseline),
-    steps: record.steps ?? {},
+    steps: record.steps,
     confirmed: record.confirmed === true,
   };
 }
@@ -153,6 +226,7 @@ function readSnapshot(file, { pair, network, chainId }) {
       `The snapshot at ${file} was written by version ${record.version} of this script, which this one cannot read. ${MOVE_ASIDE}`,
     );
   }
+  assertWhole(record, file);
   assertTakenOn(record, file, { network, chainId });
   return fromVersionTwo(record);
 }

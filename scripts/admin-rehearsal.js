@@ -384,7 +384,7 @@ async function beginRun({
   }
   // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
   // Safe's oracle role would go unchecked.
-  if (left.safe && !sameValue(left.safe, safe)) {
+  if (!sameValue(left.safe, safe)) {
     throw new RehearsalError(
       `The rehearsal in ${file} was started with the Safe ${left.safe}, not ${safe}. Nothing was sent. Resume it with the Safe it was started with.`,
     );
