@@ -978,17 +978,42 @@ describe("scripts/admin-rehearsal", function () {
 
     it("resumes this pair's snapshot in a dry run as a live run would, and leaves the file as it is", async function () {
       const fixture = await loadRehearsal();
-      const snapshotFile = scratch();
-      fs.writeFileSync(
-        snapshotFile,
-        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress),
+      const done = { status: "done", txHash: `0x${"ab".repeat(32)}`, blockNumber: 1 };
+      const text = await snapshotText(
+        fixture.contracts,
+        fixture.state,
+        fixture.safeContractAddress,
+        {
+          steps: { "fee-set": done, "fee-restore": done },
+        },
       );
-      const before = fs.readFileSync(snapshotFile, "utf8");
+      const [dryFile, liveFile] = [scratch(), scratch()];
+      fs.writeFileSync(dryFile, text);
+      fs.writeFileSync(liveFile, text);
+      // What each run decided, without sending: the plan is run by a stand-in.
+      const decided = {};
+      const capture =
+        (key) =>
+        async ({ decisions }) => {
+          decided[key] = decisions.map(({ step, action }) => [step.id, action]);
+          return [];
+        };
 
-      await run(fixture, { snapshotFile, dryRun: true });
+      await run(fixture, { snapshotFile: dryFile, dryRun: true, execute: capture("dry") });
+      await run(fixture, { snapshotFile: liveFile, dryRun: false, execute: capture("live") });
 
-      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
-      expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(true);
+      expect(decided.dry).to.deep.equal([
+        ["fee-set", "skip"],
+        ["fee-restore", "skip"],
+        ["treasury-set", "send"],
+        ["treasury-restore", "send"],
+        ["oracle-add", "send"],
+        ["oracle-remove", "send"],
+        ["agent-owner-to-safe", "send"],
+        ["escrow-owner-to-safe", "send"],
+      ]);
+      expect(decided.live).to.deep.equal(decided.dry);
+      expect(fs.readFileSync(dryFile, "utf8")).to.equal(text);
     });
 
     // A node that did not answer is not a pair without the getter.
