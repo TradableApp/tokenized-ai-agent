@@ -7,6 +7,7 @@ const {
   settleSentSteps,
   assertNoPendingTransactions,
 } = require("../scripts/rehearsal/resume");
+const { RehearsalError } = require("../scripts/rehearsal/values");
 const { REHEARSAL_FEE, loadRehearsal } = require("./helpers/rehearsalFixture");
 
 describe("scripts/rehearsal/resume", function () {
@@ -306,6 +307,22 @@ describe("scripts/rehearsal/resume", function () {
           },
         }),
       ).to.be.rejectedWith(/event not emitted/);
+    });
+
+    it("says a step whose receipt fails its event check will keep stopping runs, and how to get out", async function () {
+      const checkError = new Error("event not emitted");
+      const failure = await settle({
+        receipt: { status: 1, hash: "0xaa", blockNumber: 9 },
+        check: () => {
+          throw checkError;
+        },
+      }).catch((error) => error);
+
+      expect(failure).to.be.instanceOf(RehearsalError);
+      expect(failure.cause).to.equal(checkError);
+      expect(failure.message).to.match(
+        /\[fee-set\] was sent as 0xaa[\s\S]*event not emitted[\s\S]*keep stopping every run[\s\S]*block explorer[\s\S]*hash[\s\S]*move the snapshot aside/,
+      );
     });
 
     it("forgets a step whose transaction reverted", async function () {

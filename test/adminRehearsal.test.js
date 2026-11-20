@@ -1388,6 +1388,24 @@ describe("scripts/admin-rehearsal", function () {
       );
     });
 
+    it("refuses a sent step whose receipt holds no matching event, says it will keep stopping runs, and leaves the snapshot", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = scratch();
+      const unrelated = await fixture.contracts.escrow
+        .connect(fixture.deployer)
+        .setTreasury(fixture.treasury.address);
+      await unrelated.wait();
+      await withSteps(fixture, snapshotFile, {
+        "fee-set": { status: "sent", txHash: unrelated.hash, nonce: unrelated.nonce },
+      });
+      const before = fs.readFileSync(snapshotFile, "utf8");
+
+      await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(
+        /PromptFeeUpdated was not emitted[\s\S]*keep stopping every run[\s\S]*block explorer[\s\S]*move the snapshot aside/,
+      );
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+    });
+
     it("forgets a sent step this node has no receipt for when its nonce is unused, and sends it", async function () {
       const fixture = await loadRehearsal();
       const snapshotFile = scratch();
