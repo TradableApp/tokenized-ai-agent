@@ -1,6 +1,6 @@
 const chalk = require("chalk");
 
-const { sameValue, RehearsalError } = require("./values");
+const { sameValue, RehearsalError, SnapshotNotDurable } = require("./values");
 
 const RECOVERY_HINT =
   "Re-run the forward phase to resume: the snapshot stays the restore baseline and records each step as it is sent and as it is proven, so a step recorded as sent is settled first and a finished pair is not sent again. The confirm phase refuses while a step is recorded as sent or the wallet has a transaction waiting to be mined; once the forward phase has finished, run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
@@ -105,6 +105,19 @@ function landed(stepDef, tx, receipt, error) {
   );
 }
 
+/** What is on disk, for a step sent whose "sent" record could not be saved, or not durably. */
+function unrecorded(stepDef, tx, error) {
+  const sentAs = `[${stepDef.id}] sent as ${tx.hash} (nonce ${tx.nonce})`;
+  const saved =
+    error instanceof SnapshotNotDurable
+      ? `and recorded as sent in the snapshot, which could not be made durable (${error.cause?.message ?? error.message}): a crash may still lose that record`
+      : `but the snapshot could not be written: ${error.message}`;
+  return new RehearsalError(
+    `${sentAs}, ${saved}. The transaction may land, so send nothing by hand; fix the disk and run again.`,
+    { cause: error },
+  );
+}
+
 /**
  * Sends one step. Its hash is logged and it is recorded "sent", with the hash and nonce, as
  * soon as the node returns it, before the run waits for it; it is recorded "done" only after
@@ -116,10 +129,7 @@ async function sendStep(stepDef, target, log, record) {
   try {
     await record(stepDef.id, { status: "sent", txHash: tx.hash, nonce: tx.nonce });
   } catch (error) {
-    throw new RehearsalError(
-      `[${stepDef.id}] sent as ${tx.hash} (nonce ${tx.nonce}), but the snapshot could not be written: ${error.message}. The transaction may land, so send nothing by hand; fix the disk and run again.`,
-      { cause: error },
-    );
+    throw unrecorded(stepDef, tx, error);
   }
   let receipt;
   try {

@@ -4,9 +4,20 @@
  */
 function sameValue(actual, expected) {
   if (typeof expected === "bigint" || typeof actual === "bigint") {
-    return BigInt(actual) === BigInt(expected);
+    const [left, right] = [asAmount(actual), asAmount(expected)];
+    return left !== null && right !== null && left === right;
   }
   return String(actual).toLowerCase() === String(expected).toLowerCase();
+}
+
+/** `value` as an amount, or null when it is nothing or no whole number. */
+function asAmount(value) {
+  if (value === null || value === undefined || value === "") return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -43,4 +54,15 @@ function describeFailure(error) {
   return error.message;
 }
 
-module.exports = { sameValue, isRevert, RehearsalError, describeFailure };
+/**
+ * The snapshot is on disk, renamed into place, but its folder could not be synced: a crash now
+ * may lose it. A caller says it was written, not that it was not.
+ */
+class SnapshotNotDurable extends RehearsalError {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "SnapshotNotDurable";
+  }
+}
+
+module.exports = { sameValue, isRevert, RehearsalError, SnapshotNotDurable, describeFailure };

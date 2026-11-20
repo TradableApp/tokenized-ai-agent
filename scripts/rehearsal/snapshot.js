@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const { sameValue, RehearsalError } = require("./values");
+const { sameValue, RehearsalError, SnapshotNotDurable } = require("./values");
 
 /**
  * The rehearsal's snapshot: the values before the rehearsal (its baseline), what it was run
@@ -112,7 +112,7 @@ function syncFolder(folder, file) {
 }
 
 function durability(file, error) {
-  return new RehearsalError(
+  return new SnapshotNotDurable(
     `The snapshot at ${file} was written, but could not be made durable: ${error.message}`,
     { cause: error },
   );
@@ -176,6 +176,34 @@ const isObject = (value) => value !== null && typeof value === "object" && !Arra
 const isHash = (value) => typeof value === "string" && value.length > 2;
 const isNonce = (value) => Number.isSafeInteger(value) && value >= 0;
 const isName = (value) => typeof value === "string" && value !== "";
+const isAddress = (value) => typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+const isBytes = (value) => typeof value === "string" && /^0x(?:[0-9a-fA-F]{2})*$/.test(value);
+
+// The baseline as the script writes it: what readState reads, each field as text. The owners,
+// treasury and fee are always read; the key and its publisher only from a proxy that has them,
+// and the oracle and its role only when an oracle address is given.
+const BASELINE_REQUIRED = { agentOwner: isAddress, escrowOwner: isAddress, treasury: isAddress };
+const BASELINE_OPTIONAL = {
+  encryptionKey: isBytes,
+  encryptionKeyPublisher: isAddress,
+  oracle: isAddress,
+  oracleAuthorized: (value) => value === "true" || value === "false",
+};
+
+/**
+ * The first baseline field not in the form the script writes, or null. A confirmed record is
+ * no baseline and may come from a version 1 file, so only the fields it holds are checked.
+ */
+function badBaseline(baseline, open) {
+  if (!isAmount(baseline.promptFee)) return "baseline.promptFee";
+  for (const [field, valid] of Object.entries(BASELINE_REQUIRED)) {
+    if ((open || field in baseline) && !valid(baseline[field])) return `baseline.${field}`;
+  }
+  for (const [field, valid] of Object.entries(BASELINE_OPTIONAL)) {
+    if (field in baseline && !valid(baseline[field])) return `baseline.${field}`;
+  }
+  return null;
+}
 
 /** The first field of a step record that is not what the script writes, or null. */
 function badStep(id, record) {
@@ -201,7 +229,8 @@ function badField(record) {
   if (open && !isName(record.safe)) return "safe";
   if (open && !isAmount(record.rehearsalPromptFee)) return "rehearsalPromptFee";
   if (!isObject(record.baseline)) return "baseline";
-  if (!isAmount(record.baseline.promptFee)) return "baseline.promptFee";
+  const baseline = badBaseline(record.baseline, open);
+  if (baseline) return baseline;
   if (!isObject(record.steps)) return "steps";
   for (const [id, step] of Object.entries(record.steps)) {
     const bad = badStep(id, step);
