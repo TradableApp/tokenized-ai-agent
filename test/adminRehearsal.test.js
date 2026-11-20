@@ -744,7 +744,10 @@ describe("scripts/admin-rehearsal", function () {
       // keep the ORIGINAL baseline, otherwise the confirm phase would bless the rehearsal value.
       const fixture = await loadRehearsal();
       const snapshotFile = scratchSnapshot();
-      fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress),
+      );
       const before = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
       await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
 
@@ -800,7 +803,7 @@ describe("scripts/admin-rehearsal", function () {
       const other = { ...fixture.state, treasury: fixture.stranger.address };
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(fixture.contracts, other, {
+        await snapshotText(fixture.contracts, other, fixture.safeContractAddress, {
           pair: { agent: fixture.stranger.address, escrow: fixture.stranger.address },
         }),
       );
@@ -831,7 +834,9 @@ describe("scripts/admin-rehearsal", function () {
         };
         fs.writeFileSync(
           snapshotFile,
-          await snapshotText(fixture.contracts, fixture.state, { pair }),
+          await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
+            pair,
+          }),
         );
         let executed = false;
 
@@ -862,11 +867,11 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses another pair's snapshot in the confirm phase too", async function () {
-      const { contracts, state, stranger, log } = await loadRehearsal();
+      const { contracts, state, safeContractAddress, stranger, log } = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(contracts, state, {
+        await snapshotText(contracts, state, safeContractAddress, {
           pair: { agent: stranger.address, escrow: stranger.address },
         }),
       );
@@ -880,9 +885,12 @@ describe("scripts/admin-rehearsal", function () {
     // changed on purpose since, and a resume from it would put the old ones back.
     it("starts from the live state when the snapshot's rehearsal was already confirmed", async function () {
       const fixture = await loadRehearsal();
-      const { contracts, state, deployer, log } = fixture;
+      const { contracts, state, safeContractAddress, deployer, log } = fixture;
       const snapshotFile = scratch();
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, safeContractAddress, { steps: OFFERS_DONE }),
+      );
       await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
       expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(true);
       const laterFee = ethers.parseEther("5");
@@ -902,7 +910,7 @@ describe("scripts/admin-rehearsal", function () {
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(fixture.contracts, fixture.state, { safe: fixture.stranger.address }),
+        await snapshotText(fixture.contracts, fixture.state, fixture.stranger.address),
       );
       let executed = false;
 
@@ -934,7 +942,7 @@ describe("scripts/admin-rehearsal", function () {
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(fixture.contracts, fixture.state, {
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
           pair: { agent: fixture.stranger.address, escrow: fixture.stranger.address },
         }),
       );
@@ -947,7 +955,10 @@ describe("scripts/admin-rehearsal", function () {
     it("resumes this pair's snapshot in a dry run as a live run would, and leaves the file as it is", async function () {
       const fixture = await loadRehearsal();
       const snapshotFile = scratch();
-      fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress),
+      );
       const before = fs.readFileSync(snapshotFile, "utf8");
 
       await run(fixture, { snapshotFile, dryRun: true });
@@ -1136,7 +1147,10 @@ describe("scripts/admin-rehearsal", function () {
       it(`refuses a snapshot of this pair taken on another ${what}`, async function () {
         const fixture = await loadRehearsal();
         const snapshotFile = path.join(folder(), "snapshot.json");
-        fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state, extra));
+        fs.writeFileSync(
+          snapshotFile,
+          await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, extra),
+        );
 
         await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(refusal);
         expect(fixture.executed).to.equal(false);
@@ -1156,12 +1170,12 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses to confirm while an unconfirmed snapshot of this pair is still in the cache", async function () {
-      const { contracts, state, deployer, log } = await loadRehearsal();
+      const { contracts, state, safeContractAddress, deployer, log } = await loadRehearsal();
       const dir = folder();
       const legacySnapshotFile = path.join(dir, "admin-rehearsal.hardhat.json");
       const snapshotFile = path.join(dir, "snapshot.json");
       fs.writeFileSync(legacySnapshotFile, await versionOneText(contracts, state));
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, safeContractAddress));
 
       await expect(
         confirmPhase({ contracts, signer: deployer, log, snapshotFile, legacySnapshotFile }),
@@ -1213,7 +1227,9 @@ describe("scripts/admin-rehearsal", function () {
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(fixture.contracts, fixture.state, { confirmed: true }),
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
+          confirmed: true,
+        }),
       );
       await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
 
@@ -1226,7 +1242,10 @@ describe("scripts/admin-rehearsal", function () {
     it("does not look for leftovers when it resumes from this pair's unconfirmed snapshot", async function () {
       const fixture = await loadRehearsal();
       const snapshotFile = scratch();
-      fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress),
+      );
       await fixture.contracts.escrow
         .connect(fixture.deployer)
         .setTreasury(fixture.safeContractAddress);
@@ -1256,10 +1275,11 @@ describe("scripts/admin-rehearsal", function () {
     const nonce = (fixture) => ethers.provider.getTransactionCount(fixture.deployer.address);
 
     async function withSteps(fixture, snapshotFile, steps) {
-      const written = JSON.parse(await snapshotText(fixture.contracts, fixture.state));
       fs.writeFileSync(
         snapshotFile,
-        JSON.stringify({ ...written, safe: fixture.safeContractAddress, steps }),
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
+          steps,
+        }),
       );
     }
 
@@ -1461,10 +1481,11 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     async function withSteps(fixture, snapshotFile, steps) {
-      const written = JSON.parse(await snapshotText(fixture.contracts, fixture.state));
       fs.writeFileSync(
         snapshotFile,
-        JSON.stringify({ ...written, safe: fixture.safeContractAddress, steps }),
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
+          steps,
+        }),
       );
       return fs.readFileSync(snapshotFile, "utf8");
     }
@@ -1588,11 +1609,14 @@ describe("scripts/admin-rehearsal", function () {
   describe("confirmPhase", function () {
     it("accepts the ownership the Safe offered back, then confirms the snapshot", async function () {
       const fixture = await loadRehearsal();
-      const { contracts, state, deployer, safe } = fixture;
+      const { contracts, state, safeContractAddress, deployer, safe } = fixture;
       const lines = [];
       const log = (line) => lines.push(String(line));
       const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, safeContractAddress, { steps: OFFERS_DONE }),
+      );
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -1612,9 +1636,12 @@ describe("scripts/admin-rehearsal", function () {
 
     it("does not confirm while the Safe has still to send its transactions", async function () {
       const fixture = await loadRehearsal();
-      const { contracts, state, deployer, safe, log } = fixture;
+      const { contracts, state, safeContractAddress, deployer, safe, log } = fixture;
       const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, safeContractAddress, { steps: OFFERS_DONE }),
+      );
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -1637,7 +1664,7 @@ describe("scripts/admin-rehearsal", function () {
       const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(contracts, state, { safe: safe.address, steps: OFFERS_DONE }),
+        await snapshotText(contracts, state, safe.address, { steps: OFFERS_DONE }),
       );
       await contracts.aiAgent.connect(deployer).addOracle(safe.address);
 
@@ -1659,7 +1686,7 @@ describe("scripts/admin-rehearsal", function () {
       const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(contracts, state, { safe: safe.address, steps: OFFERS_DONE }),
+        await snapshotText(contracts, state, safe.address, { steps: OFFERS_DONE }),
       );
       const answers = [true, false];
       let reads = 0;
@@ -1685,9 +1712,12 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("gives up after its attempts and reports what still differs", async function () {
-      const { contracts, state, deployer, log } = await loadRehearsal();
+      const { contracts, state, safeContractAddress, deployer, log } = await loadRehearsal();
       const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, safeContractAddress, { steps: OFFERS_DONE }),
+      );
       let reads = 0;
       let sleeps = 0;
 
@@ -1713,9 +1743,12 @@ describe("scripts/admin-rehearsal", function () {
 
     // The acceptance has just landed; a node behind that block still reports the Safe as owner.
     it("reads again after accepting, past a node that has not caught up", async function () {
-      const { contracts, state, deployer, log } = await loadRehearsal();
+      const { contracts, state, safeContractAddress, deployer, log } = await loadRehearsal();
       const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, safeContractAddress, { steps: OFFERS_DONE }),
+      );
       const answers = [
         { ok: false, mismatches: [{ field: "agentOwner", expected: "a", actual: "b" }] },
         { ok: true, mismatches: [] },
@@ -1736,9 +1769,12 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("does not read again when it accepted nothing: the chain's answer is the answer", async function () {
-      const { contracts, state, deployer, log } = await loadRehearsal();
+      const { contracts, state, safeContractAddress, deployer, log } = await loadRehearsal();
       const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, safeContractAddress, { steps: OFFERS_DONE }),
+      );
       let reads = 0;
 
       await expect(
@@ -1767,7 +1803,7 @@ describe("scripts/admin-rehearsal", function () {
       );
     });
     it("says so when the snapshot was taken without the encryption key, and confirms the rest", async function () {
-      const { contracts, state, deployer } = await loadRehearsal();
+      const { contracts, state, safeContractAddress, deployer } = await loadRehearsal();
       // Its own log: the fixture's is shared with the tests before this one.
       const lines = [];
       const log = (line) => lines.push(String(line));
@@ -1776,7 +1812,10 @@ describe("scripts/admin-rehearsal", function () {
       const older = { ...state };
       delete older.encryptionKey;
       delete older.encryptionKeyPublisher;
-      fs.writeFileSync(snapshotFile, await snapshotText(contracts, older, { steps: OFFERS_DONE }));
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, older, safeContractAddress, { steps: OFFERS_DONE }),
+      );
 
       await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
 
@@ -1791,7 +1830,9 @@ describe("scripts/admin-rehearsal", function () {
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
-        await snapshotText(fixture.contracts, fixture.state, { steps }),
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
+          steps,
+        }),
       );
       const accepted = [];
       const refusal = confirmPhase({

@@ -19,27 +19,18 @@ async function pairOf(contracts) {
   };
 }
 
-// The Safe stand-in the fixture deploys; every load of the fixture puts it at the same address.
-let fixtureSafe;
-
-function safeOfFixture() {
-  if (!fixtureSafe) {
-    throw new Error("snapshotText needs the fixture's Safe: load the rehearsal fixture first");
-  }
-  return fixtureSafe;
-}
-
 /**
  * A snapshot file's text as the script writes it (version 2): the baseline values, the pair,
- * network and chain they were read from, and the steps recorded so far.
+ * network and chain they were read from, the Safe, and the steps recorded so far.
  */
-async function snapshotText(contracts, state, extra = {}) {
+async function snapshotText(contracts, state, safe, extra = {}) {
+  if (!safe) throw new Error("snapshotText needs the Safe the snapshot names");
   return JSON.stringify({
     version: 2,
     network: "hardhat",
     chainId: "31337",
     pair: await pairOf(contracts),
-    safe: safeOfFixture(),
+    safe,
     rehearsalPromptFee: String(REHEARSAL_FEE),
     baseline: asText(state),
     steps: {},
@@ -93,7 +84,6 @@ async function deployRehearsalFixture() {
   const safeContract = await (await ethers.getContractFactory("MockAbleToken")).deploy();
   await safeContract.waitForDeployment();
   const safeContractAddress = await safeContract.getAddress();
-  fixtureSafe = safeContractAddress;
 
   const contracts = { aiAgent, escrow };
   const state = await readState(contracts);
