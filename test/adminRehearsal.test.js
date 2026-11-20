@@ -689,6 +689,36 @@ describe("scripts/admin-rehearsal", function () {
       expect(executed).to.equal(false);
     });
 
+    // One address of the pair the same is still another pair: a new escrow beside the same agent
+    // has its own treasury and fee.
+    for (const differing of ["agent", "escrow"]) {
+      it(`refuses a snapshot whose ${differing} alone is another one, before any transaction`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const snapshotFile = scratch();
+        const pair = {
+          agent: await fixture.contracts.aiAgent.getAddress(),
+          escrow: await fixture.contracts.escrow.getAddress(),
+          [differing]: fixture.stranger.address,
+        };
+        fs.writeFileSync(
+          snapshotFile,
+          await snapshotText(fixture.contracts, fixture.state, { pair }),
+        );
+        let executed = false;
+
+        await expect(
+          run(fixture, {
+            snapshotFile,
+            execute: async () => {
+              executed = true;
+              return [];
+            },
+          }),
+        ).to.be.rejectedWith(/another pair/);
+        expect(executed).to.equal(false);
+      });
+    }
+
     it("refuses a snapshot that does not say which pair it was taken for", async function () {
       const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratch();
