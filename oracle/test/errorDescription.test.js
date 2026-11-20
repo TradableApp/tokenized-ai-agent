@@ -175,6 +175,47 @@ describe("errorKind — what kind of error it was, and nothing it says", () => {
     expect(errorKind({ code: 503, message: "down" })).to.equal("503");
   });
 
+  it("is never text that spans lines", () => {
+    const error = Object.assign(new Error("x"), { code: "E1\nforged log line" });
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
+  it("is never an address", () => {
+    const error = { code: "postgres://user:pw@db/agent", name: "https://rpc.example/v2/key" };
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
+  it("is at most 64 characters", () => {
+    expect(errorKind({ code: "E".repeat(65) })).to.equal("Error");
+    expect(errorKind({ code: "E".repeat(64) })).to.equal("E".repeat(64));
+  });
+
+  it("is only a code or name given as text or a number", () => {
+    const code = { toString: () => "ECONNREFUSED" };
+
+    expect(errorKind({ code })).to.equal("Error");
+  });
+
+  it("does not throw for an error whose code cannot be read", () => {
+    const error = {};
+    Object.defineProperty(error, "code", {
+      get() {
+        throw new Error("no");
+      },
+    });
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
+  it("reads an object with no prototype", () => {
+    const error = Object.assign(Object.create(null), { code: "ECONNRESET" });
+
+    expect(errorKind(error)).to.equal("ECONNRESET");
+    expect(errorKind(Object.create(null))).to.equal("Error");
+  });
+
   it("is Error for a value with neither, never its message", () => {
     expect(errorKind({ message: "postgres://user:pw@db/agent" })).to.equal("Error");
     expect(errorKind(null)).to.equal("Error");
