@@ -19,6 +19,7 @@ const {
   assertPhaseCanDryRun,
   findEvent,
   verifyGetter,
+  main,
 } = require("../scripts/admin-rehearsal");
 const { publishEncryptionKey: publishKey } = require("./helpers/encryptionKeyProof");
 
@@ -1186,6 +1187,127 @@ describe("scripts/admin-rehearsal", function () {
       expect(() =>
         assertMainnetConfirmed({ networkName: "baseSepolia", dryRun: false, confirmed: undefined }),
       ).to.not.throw();
+    });
+  });
+
+  describe("main", function () {
+    const AGENT = "0x1111111111111111111111111111111111111111";
+    const ESCROW = "0x2222222222222222222222222222222222222222";
+    const SIGNER = "0x4444444444444444444444444444444444444444";
+    const SAFE = "0x5555555555555555555555555555555555555555";
+    let phaseBefore;
+
+    // A main that read the process environment would stop at its first check here, before it
+    // loaded a settings file or reached a network.
+    before(function () {
+      phaseBefore = process.env.REHEARSAL_PHASE;
+      process.env.REHEARSAL_PHASE = "not-a-phase";
+    });
+
+    after(function () {
+      if (phaseBefore === undefined) delete process.env.REHEARSAL_PHASE;
+      else process.env.REHEARSAL_PHASE = phaseBefore;
+    });
+
+    /** main with every input a stand-in, recording what it reached. */
+    function runMain({ env = {}, networkName = "baseSepolia" } = {}) {
+      const calls = { loaded: null, attached: false, forward: null, confirm: null };
+      const contracts = {
+        aiAgent: { getAddress: async () => AGENT },
+        escrow: { getAddress: async () => ESCROW },
+      };
+      const promise = main({
+        env,
+        networkName,
+        loadEnvFile: (loadedInto) => {
+          calls.loaded = loadedInto;
+        },
+        getSigners: async () => [{ address: SIGNER }],
+        attach: async () => {
+          calls.attached = true;
+          return contracts;
+        },
+        forward: async (options) => {
+          calls.forward = options;
+        },
+        confirm: async (options) => {
+          calls.confirm = options;
+        },
+      });
+      return { promise, calls, contracts };
+    }
+
+    it("refuses a dry run of the confirm phase before attaching to the contracts", async function () {
+      const { promise, calls } = runMain({ env: { REHEARSAL_PHASE: "confirm", DRY_RUN: "1" } });
+
+      await expect(promise).to.be.rejectedWith(/confirm phase has no dry run/);
+      expect(calls.attached).to.equal(false);
+      expect(calls.confirm).to.equal(null);
+    });
+
+    for (const phase of ["forward", "confirm"]) {
+      it(`refuses a live ${phase} phase on Base mainnet without the flag, before attaching`, async function () {
+        const { promise, calls } = runMain({
+          env: { REHEARSAL_PHASE: phase, REHEARSAL_SAFE_ADDRESS: SAFE },
+          networkName: "base",
+        });
+
+        await expect(promise).to.be.rejectedWith(/REHEARSAL_MAINNET_CONFIRMED=1/);
+        expect(calls.attached).to.equal(false);
+        expect(calls[phase]).to.equal(null);
+      });
+    }
+
+    it("runs a live forward phase on Base mainnet when the flag is set", async function () {
+      const { promise, calls } = runMain({
+        env: { REHEARSAL_SAFE_ADDRESS: SAFE, REHEARSAL_MAINNET_CONFIRMED: "1" },
+        networkName: "base",
+      });
+
+      await promise;
+
+      expect(calls.forward).to.include({ dryRun: false, safeAddress: SAFE });
+    });
+
+    it("runs a dry run on Base mainnet without the flag", async function () {
+      const { promise, calls } = runMain({
+        env: { DRY_RUN: "1", REHEARSAL_SAFE_ADDRESS: SAFE },
+        networkName: "base",
+      });
+
+      await promise;
+
+      expect(calls.forward).to.include({ dryRun: true });
+    });
+
+    it("refuses a phase it does not know", async function () {
+      const { promise, calls } = runMain({ env: { REHEARSAL_PHASE: "backward" } });
+
+      await expect(promise).to.be.rejectedWith(/REHEARSAL_PHASE must be one of forward, confirm/);
+      expect(calls.attached).to.equal(false);
+    });
+
+    it("loads the settings file into the environment it is given and reads them from it", async function () {
+      const env = { REHEARSAL_SAFE_ADDRESS: SAFE, REHEARSAL_PROMPT_FEE: "3" };
+      const { promise, calls, contracts } = runMain({ env });
+
+      await promise;
+
+      expect(calls.loaded).to.equal(env);
+      expect(calls.forward.contracts).to.equal(contracts);
+      expect(calls.forward.signer.address).to.equal(SIGNER);
+      expect(calls.forward.rehearsalPromptFee).to.equal(ethers.parseEther("3"));
+      expect(calls.confirm).to.equal(null);
+    });
+
+    it("runs the confirm phase with the signer and the contracts", async function () {
+      const { promise, calls, contracts } = runMain({ env: { REHEARSAL_PHASE: "confirm" } });
+
+      await promise;
+
+      expect(calls.confirm.contracts).to.equal(contracts);
+      expect(calls.confirm.signer.address).to.equal(SIGNER);
+      expect(calls.forward).to.equal(null);
     });
   });
 });
