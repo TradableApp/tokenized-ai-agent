@@ -109,24 +109,28 @@ async function loadRehearsal() {
   return { ...fixture, lines, log: (line) => lines.push(String(line)) };
 }
 
-const scratchDirs = [];
-
-/** A new folder under the system's temporary folder, removed by `removeScratchDirs`. */
-function scratchDir(prefix) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  scratchDirs.push(dir);
-  return dir;
-}
-
-/** Removes every folder `scratchDir` made, and only those. */
-function removeScratchDirs() {
-  for (const dir of scratchDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+/**
+ * Scratch folders for one suite, so that suites sharing this helper never remove each other's:
+ * `scratchDir` makes a new folder under the system's temporary folder, and `removeScratchDirs`
+ * removes every folder this pair's `scratchDir` made, and only those.
+ */
+function scratchFolders() {
+  const made = [];
+  return {
+    scratchDir(prefix) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+      made.push(dir);
+      return dir;
+    },
+    removeScratchDirs() {
+      for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 module.exports = {
   loadRehearsal,
-  scratchDir,
-  removeScratchDirs,
+  scratchFolders,
   OFFERS_DONE,
   PROMPT_FEE,
   REHEARSAL_FEE,

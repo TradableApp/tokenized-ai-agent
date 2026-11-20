@@ -28,9 +28,10 @@ const {
   snapshotText,
   versionOneText,
   loadRehearsal,
-  scratchDir,
-  removeScratchDirs,
+  scratchFolders,
 } = require("./helpers/rehearsalFixture");
+
+const { scratchDir, removeScratchDirs } = scratchFolders();
 
 describe("scripts/admin-rehearsal", function () {
   after(removeScratchDirs);

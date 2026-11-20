@@ -15,7 +15,9 @@ const {
   readSnapshot,
   checkLegacySnapshot,
 } = require("../scripts/rehearsal/snapshot");
-const { scratchDir, removeScratchDirs } = require("./helpers/rehearsalFixture");
+const { scratchFolders } = require("./helpers/rehearsalFixture");
+
+const { scratchDir, removeScratchDirs } = scratchFolders();
 
 describe("scripts/rehearsal", function () {
   after(removeScratchDirs);
