@@ -35,7 +35,9 @@ async function findLeftovers({ contracts, safe, rehearsalPromptFee }) {
   const live = await readLive({ contracts, safe });
   const found = [];
   if (sameValue(live.promptFee, rehearsalPromptFee)) {
-    found.push(`promptFee() is the rehearsal fee ${rehearsalPromptFee}`);
+    found.push(
+      `promptFee() is the rehearsal fee ${rehearsalPromptFee}: a rehearsal may have left it, or the pair's real fee may simply equal the rehearsal fee, and then choose another REHEARSAL_PROMPT_FEE`,
+    );
   }
   if (sameValue(live.treasury, safe)) {
     found.push(
