@@ -13,6 +13,7 @@ const {
   scrubAgentSettingsInPostgres,
   cleanStoredAgentSettings,
   cleanAgentDatabase,
+  startAgentWithCleanSettings,
 } = require("../src/elizaos/agentSettings");
 
 // The oracle's source with its comment lines taken out, so a call that is only mentioned in a
@@ -132,15 +133,11 @@ describe("what the agent framework may copy from the environment", function () {
 
   // The oracle tells the framework through the function above and in no other way, so the list
   // cannot be set to something else, or to nothing, beside it.
-  it("is set in the oracle before the agent is added, and only through the list", function () {
+  it("is never set by the oracle itself, only handed to the start-up that sets it", function () {
     const source = oracleSource();
-    const set = source.indexOf("allowOnlyListedEnv(setAllowedEnvVars)");
-    const added = source.indexOf("elizaOS.addAgents(");
 
-    expect(set, "the list is set").to.be.greaterThan(-1);
-    expect(added, "addAgents is called").to.be.greaterThan(-1);
-    expect(set).to.be.lessThan(added);
     expect(source.match(/setAllowedEnvVars\(/g) ?? [], "no call of its own").to.have.lengthOf(0);
+    expect(source).to.not.include("allowOnlyListedEnv(");
   });
 });
 
@@ -427,18 +424,6 @@ describe("what the oracle hands the framework for one agent", function () {
     expect(found.servers.market.command).to.equal("node");
     expect(found.servers.market.env.A_KEY).to.equal("tool-key");
   });
-
-  it("is what the oracle adds the agent with, with a clean before the agent is added and after it starts", function () {
-    const source = oracleSource();
-    const added = source.indexOf("elizaOS.addAgents(");
-    const started = source.indexOf("await elizaOS.startAgents()");
-    const cleans = [...source.matchAll(/await cleanStoredAgentSettings\(/g)].map((m) => m.index);
-
-    expect(source.slice(added, started)).to.include("agentForFramework(");
-    expect(cleans).to.have.lengthOf(2);
-    expect(cleans[0]).to.be.lessThan(added);
-    expect(cleans[1]).to.be.greaterThan(started);
-  });
 });
 
 describe("the clean at start-up", function () {
@@ -545,22 +530,64 @@ describe("the clean at start-up", function () {
     expect(out.lines.join(" ")).to.include("could not be sent");
   });
 
-  // The clean runs before the oracle starts on its events. An alert that takes minutes to send,
-  // or never comes back, must not hold that up.
-  it("does not wait for the alert to be sent", async function () {
+  // The alert is the only notice that secrets need rotating, and only the first clean of an old
+  // row sends it: a start that stops soon after must not have left before it was sent.
+  it("waits for the alert to be sent", async function () {
     const out = recorder();
-    let alerted = false;
+    let sent = false;
 
     await cleanStoredAgentSettings({
       scrub: async () => ({ agents: 1, removedSecrets: 1, removedToolServers: 0 }),
-      alert: () => {
-        alerted = true;
-        return new Promise(() => {});
+      alert: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        sent = true;
       },
       log: out.log,
     });
 
-    expect(alerted).to.be.true;
+    expect(sent).to.be.true;
+  });
+
+  it("waits for the alert about a clean that failed, too", async function () {
+    const out = recorder();
+    let sent = false;
+
+    await cleanStoredAgentSettings({
+      scrub: async () => {
+        throw Object.assign(new Error("no route"), { code: "ECONNREFUSED" });
+      },
+      alert: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        sent = true;
+      },
+      log: out.log,
+    });
+
+    expect(sent).to.be.true;
+  });
+
+  // The clean runs before the oracle starts on its events. An alert that takes minutes to send,
+  // or never comes back, must not hold that up for longer than the wait it is given.
+  it("stops waiting for an alert that does not come back, and says so", async function () {
+    const out = recorder();
+    const started = Date.now();
+
+    await cleanStoredAgentSettings({
+      scrub: async () => ({ agents: 1, removedSecrets: 1, removedToolServers: 0 }),
+      alert: () => new Promise(() => {}),
+      log: out.log,
+      alertWaitMs: 30,
+    });
+
+    expect(Date.now() - started).to.be.lessThan(1000);
+    expect(out.lines.join(" ")).to.include("still being sent");
+  });
+
+  it("waits no longer than ten seconds unless told otherwise", function () {
+    const source = fs.readFileSync(path.join(__dirname, "../src/elizaos/agentSettings.js"), "utf8");
+
+    expect(source).to.match(/const ALERT_WAIT_MS = 10 \* 1000;/);
+    expect(source).to.match(/alertWaitMs = ALERT_WAIT_MS/);
   });
 });
 
@@ -600,13 +627,6 @@ describe("the clean of the agent database", function () {
     expect(seen).to.deep.equal([
       { postgresUrl: "postgres://user:pw@host/db", keepSettings: ["model", "secrets"] },
     ]);
-  });
-
-  it("is what the oracle runs, with the character the agent is added with", function () {
-    const source = oracleSource();
-
-    expect(source).to.match(/cleanAgentDatabase\(\{\s*postgresUrl: agentStateDbUrl,/);
-    expect(source).to.match(/character: senseAiCharacter,/);
   });
 
   // The connection itself, with a stand-in for the database client.
@@ -660,5 +680,151 @@ describe("the clean of the agent database", function () {
     const result = await scrubAgentSettingsInPostgres({ postgresUrl: "postgres://h/db", Client });
 
     expect(result.agents).to.equal(0);
+  });
+});
+
+describe("the agent's start, with its stored settings cleaned", function () {
+  const character = { name: "A", settings: { model: "m", mcp: { servers: { market: {} } } } };
+
+  function standIns({ rows = { agents: 1, removedSecrets: 0, removedToolServers: 0 } } = {}) {
+    const calls = [];
+    const record = { calls, scrubs: [], alerts: [], allowed: null, added: null, lines: [] };
+    return {
+      record,
+      options: {
+        postgresUrl: "postgres://user:pw@host/db",
+        character,
+        env: { POSTGRES_URL: "postgres://user:pw@host/db", PGLITE_DATA_DIR: undefined },
+        alert: async (subject) => record.alerts.push(subject),
+        setAllowedEnvVars: (list) => {
+          calls.push("allow");
+          record.allowed = list;
+        },
+        addAgent: async (agent) => {
+          calls.push("add");
+          record.added = agent;
+          return ["id-1"];
+        },
+        startAgents: async (ids) => {
+          calls.push(`start:${ids.join(",")}`);
+        },
+        log: (line) => record.lines.push(line),
+        scrubInPostgres: async (options) => {
+          calls.push("clean");
+          record.scrubs.push(options);
+          return typeof rows === "function" ? rows() : rows;
+        },
+      },
+    };
+  }
+
+  it("cleans, sets the list, adds the agent, starts it and cleans again, in that order", async function () {
+    const { record, options } = standIns();
+
+    const ids = await startAgentWithCleanSettings(options);
+
+    expect(record.calls).to.deep.equal(["clean", "allow", "add", "start:id-1", "clean"]);
+    expect(ids).to.deep.equal(["id-1"]);
+  });
+
+  it("cleans the database it is given, both times, keeping what the character defines", async function () {
+    const { record, options } = standIns();
+
+    await startAgentWithCleanSettings(options);
+
+    expect(record.scrubs).to.deep.equal([
+      { postgresUrl: "postgres://user:pw@host/db", keepSettings: ["model", "mcp"] },
+      { postgresUrl: "postgres://user:pw@host/db", keepSettings: ["model", "mcp"] },
+    ]);
+  });
+
+  it("sets exactly the list, and adds the agent as the framework is to store it", async function () {
+    const { record, options } = standIns();
+
+    await startAgentWithCleanSettings(options);
+
+    expect(record.allowed).to.deep.equal([...AGENT_ENV_ALLOW_LIST]);
+    expect(record.added).to.deep.equal(agentForFramework({ character, env: options.env }));
+  });
+
+  it("alerts through the alert it is given when a clean removed something", async function () {
+    const { record, options } = standIns({
+      rows: { agents: 1, removedSecrets: 2, removedToolServers: 0 },
+    });
+
+    await startAgentWithCleanSettings(options);
+
+    expect(record.alerts).to.have.lengthOf(2);
+    expect(record.alerts[0]).to.include("were removed");
+  });
+
+  it("still sets the list and starts the agent where there is no agent database", async function () {
+    const { record, options } = standIns();
+
+    await startAgentWithCleanSettings({ ...options, postgresUrl: null });
+
+    expect(record.calls).to.deep.equal(["allow", "add", "start:id-1"]);
+  });
+
+  it("does not clean again, or hide the failure, when the agent does not start", async function () {
+    const { record, options } = standIns();
+
+    let thrown;
+    try {
+      await startAgentWithCleanSettings({
+        ...options,
+        startAgents: async () => {
+          throw new Error("no start");
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown?.message).to.equal("no start");
+    expect(record.calls).to.deep.equal(["clean", "allow", "add"]);
+  });
+
+  it("does not start, or clean again, when the agent cannot be added", async function () {
+    const { record, options } = standIns();
+
+    let thrown;
+    try {
+      await startAgentWithCleanSettings({
+        ...options,
+        addAgent: async () => {
+          throw new Error("no add");
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown?.message).to.equal("no add");
+    expect(record.calls).to.deep.equal(["clean", "allow"]);
+  });
+
+  // What is left in the oracle is the hand-over of its own values. The framework is reached
+  // only through this start, so nothing can add or start an agent beside it.
+  it("is how the oracle starts its agent, with its own database, character and alert", function () {
+    const source = oracleSource();
+    const at = source.indexOf("await startAgentWithCleanSettings({");
+    expect(at, "the oracle calls it").to.be.greaterThan(-1);
+    // Only what the oracle hands over: from the call to its first callback. Read to the end of
+    // the file, the same words are found in other calls, and a value changed here would pass.
+    const call = source.slice(at, source.indexOf("addAgent:", at));
+    expect(call, "nothing is spread in over a value").to.not.include("...");
+    expect(call).to.match(/POSTGRES_URL: agentStateDbUrl \?\? undefined,/);
+    expect(call).to.match(/PGLITE_DATA_DIR: process\.env\.PGLITE_DATA_DIR,/);
+
+    expect(call).to.match(/postgresUrl: agentStateDbUrl,/);
+    expect(call).to.match(/character: senseAiCharacter,/);
+    expect(call).to.match(/alert: sendAlert,/);
+    expect(call).to.match(/\n\s+setAllowedEnvVars,/);
+    expect(source.match(/elizaOS\.addAgents\(/g)).to.have.lengthOf(1);
+    expect(source.match(/elizaOS\.startAgents\(/g)).to.have.lengthOf(1);
+    expect(source.indexOf("elizaOS.addAgents(")).to.be.greaterThan(source.indexOf("addAgent:"));
+    expect(source).to.not.include("cleanAgentDatabase(");
+    expect(source).to.not.include("agentForFramework(");
   });
 });

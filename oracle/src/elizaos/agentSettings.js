@@ -182,7 +182,7 @@ async function scrubStoredAgentSettings({ query, allowList = AGENT_ENV_ALLOW_LIS
   return total;
 }
 
-// One short-lived connection: this runs once, after the agent has started.
+// One short-lived connection for each clean: before the agent is added and after it has started.
 const SCRUB_QUERY_TIMEOUT_MS = 10 * 1000;
 
 /**
@@ -217,6 +217,10 @@ async function scrubAgentSettingsInPostgres({ postgresUrl, keepSettings, Client 
   }
 }
 
+// How long a clean waits for its alert to be sent before the start-up goes on without it.
+const ALERT_WAIT_MS = 10 * 1000;
+const STILL_SENDING = Symbol("still sending");
+
 /**
  * The clean at start-up, with what it reports. A failure does not stop the oracle: answers do
  * not depend on it. It is alerted, because until it succeeds a stored row may hold values that
@@ -232,9 +236,15 @@ async function scrubAgentSettingsInPostgres({ postgresUrl, keepSettings, Client 
  *   }>,
  *   alert: (subject: string, message: string) => Promise<unknown>,
  *   log?: (line: string) => void,
+ *   alertWaitMs?: number,
  * }} options
  */
-async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
+async function cleanStoredAgentSettings({
+  scrub,
+  alert,
+  log = console.log,
+  alertWaitMs = ALERT_WAIT_MS,
+}) {
   let subject;
   let message;
   try {
@@ -257,11 +267,24 @@ async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
       `The agent's stored settings were not cleaned at start-up (${kind}). The oracle is ` +
       "answering. A stored row may still hold values from an earlier build.";
   }
-  // Not waited for. The clean runs before the oracle starts on its events, and an alert can take
-  // minutes to send or to give up.
-  Promise.resolve()
+  // Waited for, for a bounded time. Of an old row only the first clean has anything to report,
+  // so a start that stops soon after must not have left before the alert went out. But the clean
+  // runs before the oracle starts on its events, and an alert can take minutes to send or to
+  // give up, so past the wait it is left to finish on its own.
+  const sending = Promise.resolve()
     .then(() => alert(subject, message))
     .catch(() => log("[ElizaOS] The alert about the stored agent settings could not be sent."));
+  let timer;
+  const waited = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(STILL_SENDING), alertWaitMs);
+  });
+  try {
+    if ((await Promise.race([sending, waited])) === STILL_SENDING) {
+      log("[ElizaOS] The alert about the stored agent settings is still being sent.");
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -273,6 +296,7 @@ async function cleanStoredAgentSettings({ scrub, alert, log = console.log }) {
  *   alert: (subject: string, message: string) => Promise<unknown>,
  *   log?: (line: string) => void,
  *   scrubInPostgres?: typeof scrubAgentSettingsInPostgres,
+ *   alertWaitMs?: number,
  * }} options `character` is the one the agent is added with: the setting names it defines are
  *   the only ones a stored row may keep.
  */
@@ -282,6 +306,7 @@ async function cleanAgentDatabase({
   alert,
   log = console.log,
   scrubInPostgres = scrubAgentSettingsInPostgres,
+  alertWaitMs,
 }) {
   if (!postgresUrl) {
     // The framework's own store is then a local one, inside the enclave.
@@ -292,7 +317,63 @@ async function cleanAgentDatabase({
     scrub: () => scrubInPostgres({ postgresUrl, keepSettings: Object.keys(character.settings) }),
     alert,
     log,
+    alertWaitMs,
   });
+}
+
+/**
+ * Adds and starts the agent with nothing stored reaching it, and nothing it stores left behind.
+ * The order is the point, and is why this is one function and not five lines in the oracle:
+ *
+ * 1. Clean what an earlier start stored: the framework puts it back into the agent it starts.
+ * 2. Tell the framework which environment variables it may copy into the character it stores.
+ *    With no list it copies all of them.
+ * 3. Add the agent, with the database address and the tool servers given to the runtime and not
+ *    to the character, which is what the framework stores.
+ * 4. Start it.
+ * 5. Clean again, for what the start itself wrote.
+ *
+ * A failure to add or start is thrown as it is; the second clean is not run then.
+ *
+ * Each clean waits for its own alert, for `alertWaitMs` at most. Both wait only when both have
+ * something to report: a clean that fails does each time, an old row only on the first.
+ *
+ * @param {{
+ *   postgresUrl: string|null,
+ *   character: { settings: object },
+ *   env?: { POSTGRES_URL?: string, PGLITE_DATA_DIR?: string },
+ *   alert: (subject: string, message: string) => Promise<unknown>,
+ *   setAllowedEnvVars: (names: string[]) => void,
+ *   addAgent: (agent: { character: object, settings: object }) => Promise<string[]>,
+ *   startAgents: (agentIds: string[]) => Promise<unknown>,
+ *   log?: (line: string) => void,
+ *   scrubInPostgres?: typeof scrubAgentSettingsInPostgres,
+ *   alertWaitMs?: number,
+ * }} options `addAgent` adds the one agent it is handed and returns the ids; `startAgents`
+ *   starts them, after whatever the caller needs done between the two.
+ * @returns {Promise<string[]>} the ids `addAgent` returned
+ */
+async function startAgentWithCleanSettings({
+  postgresUrl,
+  character,
+  env,
+  alert,
+  setAllowedEnvVars,
+  addAgent,
+  startAgents,
+  log,
+  scrubInPostgres,
+  alertWaitMs,
+}) {
+  const clean = () =>
+    cleanAgentDatabase({ postgresUrl, character, alert, log, scrubInPostgres, alertWaitMs });
+
+  await clean();
+  allowOnlyListedEnv(setAllowedEnvVars);
+  const agentIds = await addAgent(agentForFramework({ character, env }));
+  await startAgents(agentIds);
+  await clean();
+  return agentIds;
 }
 
 module.exports = {
@@ -304,4 +385,5 @@ module.exports = {
   scrubAgentSettingsInPostgres,
   cleanStoredAgentSettings,
   cleanAgentDatabase,
+  startAgentWithCleanSettings,
 };

@@ -743,8 +743,8 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
   // --- Upgradability ---
 
   /**
-   * @notice Ownership cannot be given up: the owner authorises oracles, sets the fees and the
-   *         treasury, and upgrades this contract. With no owner none of that can be done again.
+   * @notice Ownership cannot be given up: the owner sets the fees and the treasury, and upgrades
+   *         this contract. With no owner none of that can be done again.
    * @dev Ownership moves in two steps ({transferOwnership}, then {acceptOwnership} by the new
    *      owner), so an address that cannot act never becomes the owner.
    *

@@ -16,6 +16,7 @@ const {
   forwardPhase,
   confirmPhase,
   assertMainnetConfirmed,
+  assertPhaseCanDryRun,
   findEvent,
   verifyGetter,
 } = require("../scripts/admin-rehearsal");
@@ -31,6 +32,18 @@ describe("scripts/admin-rehearsal", function () {
     const key = new ethers.SigningKey(ethers.id("admin-rehearsal-encryption-key"));
     await publishKey(aiAgent, oracle, key);
     return key.publicKey;
+  }
+
+  /** A snapshot file's text as the script writes it: the values, and the pair they were read from. */
+  async function snapshotText(contracts, state, extra = {}) {
+    return JSON.stringify({
+      ...Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)])),
+      pair: {
+        agent: await contracts.aiAgent.getAddress(),
+        escrow: await contracts.escrow.getAddress(),
+      },
+      ...extra,
+    });
   }
 
   async function deployFixture() {
@@ -555,7 +568,9 @@ describe("scripts/admin-rehearsal", function () {
       const firstStepAt = fixture.lines.findIndex((l) => l.includes("[fee-set]"));
       expect(savedAt).to.be.greaterThan(-1);
       expect(savedAt).to.be.lessThan(firstStepAt);
-      const saved = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      const { pair, safe, ...saved } = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(safe).to.equal(fixture.safeContractAddress);
+      expect(pair.escrow).to.equal(await fixture.contracts.escrow.getAddress());
       expect(saved).to.deep.equal({
         agentOwner: fixture.state.agentOwner,
         escrowOwner: fixture.state.escrowOwner,
@@ -603,12 +618,7 @@ describe("scripts/admin-rehearsal", function () {
       // keep the ORIGINAL baseline, otherwise the confirm phase would bless the rehearsal value.
       const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratchSnapshot();
-      fs.writeFileSync(
-        snapshotFile,
-        JSON.stringify(
-          Object.fromEntries(Object.entries(fixture.state).map(([k, v]) => [k, String(v)])),
-        ),
-      );
+      fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
       const before = fs.readFileSync(snapshotFile, "utf8");
       await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
 
@@ -621,6 +631,230 @@ describe("scripts/admin-rehearsal", function () {
       expect(await fixture.contracts.aiAgent.pendingOwner()).to.equal(fixture.safeContractAddress);
       expect(await fixture.contracts.escrow.pendingOwner()).to.equal(fixture.safeContractAddress);
     });
+  });
+
+  describe("forwardPhase and the pair a snapshot belongs to", function () {
+    function scratch() {
+      return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-pair-")), "snapshot.json");
+    }
+
+    function run(fixture, overrides) {
+      fixture.lines = [];
+      return forwardPhase({
+        contracts: fixture.contracts,
+        signer: fixture.deployer,
+        dryRun: false,
+        log: (line) => fixture.lines.push(String(line)),
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        ...overrides,
+      });
+    }
+
+    it("records the pair in the snapshot it writes", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+
+      await run(fixture, { snapshotFile });
+
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).pair).to.deep.equal({
+        agent: await fixture.contracts.aiAgent.getAddress(),
+        escrow: await fixture.contracts.escrow.getAddress(),
+      });
+    });
+
+    // A file left by a rehearsal of another pair holds that pair's treasury and fee. Taken as
+    // the baseline, its "restore" steps would write them to this pair.
+    it("refuses a snapshot taken for another pair, before any transaction", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const other = { ...fixture.state, treasury: fixture.stranger.address };
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, other, {
+          pair: { agent: fixture.stranger.address, escrow: fixture.stranger.address },
+        }),
+      );
+      let executed = false;
+
+      await expect(
+        run(fixture, {
+          snapshotFile,
+          execute: async () => {
+            executed = true;
+            return [];
+          },
+        }),
+      ).to.be.rejectedWith(/another pair/);
+      expect(executed).to.equal(false);
+    });
+
+    it("refuses a snapshot that does not say which pair it was taken for", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify(
+          Object.fromEntries(Object.entries(fixture.state).map(([k, v]) => [k, String(v)])),
+        ),
+      );
+
+      await expect(run(fixture, { snapshotFile })).to.be.rejectedWith(/does not say which pair/);
+    });
+
+    it("refuses another pair's snapshot in the confirm phase too", async function () {
+      const { contracts, state, stranger, log } = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(contracts, state, {
+          pair: { agent: stranger.address, escrow: stranger.address },
+        }),
+      );
+
+      await expect(confirmPhase({ contracts, log, snapshotFile })).to.be.rejectedWith(
+        /another pair/,
+      );
+    });
+
+    // A finished rehearsal's snapshot is no longer a baseline: the settings may have been
+    // changed on purpose since, and a resume from it would put the old ones back.
+    it("starts from the live state when the snapshot's rehearsal was already confirmed", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const { contracts, state, deployer, log } = fixture;
+      const snapshotFile = scratch();
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(true);
+      const laterFee = ethers.parseEther("5");
+      await contracts.escrow.connect(deployer).setPromptFee(laterFee);
+
+      await run(fixture, { snapshotFile });
+
+      expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(false);
+      expect(await contracts.escrow.promptFee()).to.equal(laterFee);
+      const written = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(written.promptFee).to.equal(String(laterFee));
+      expect(written.confirmed).to.equal(undefined);
+    });
+
+    it("refuses to resume with another Safe than the one the rehearsal was started with", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, { safe: fixture.stranger.address }),
+      );
+      let executed = false;
+
+      await expect(
+        run(fixture, {
+          snapshotFile,
+          execute: async () => {
+            executed = true;
+            return [];
+          },
+        }),
+      ).to.be.rejectedWith(/was started with the Safe/);
+      expect(executed).to.equal(false);
+    });
+
+    it("records the Safe in the snapshot it writes", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+
+      await run(fixture, { snapshotFile });
+
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).safe).to.equal(
+        fixture.safeContractAddress,
+      );
+    });
+
+    it("refuses another pair's snapshot in a dry run too, and leaves the file as it is", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, {
+          pair: { agent: fixture.stranger.address, escrow: fixture.stranger.address },
+        }),
+      );
+      const before = fs.readFileSync(snapshotFile, "utf8");
+
+      await expect(run(fixture, { snapshotFile, dryRun: true })).to.be.rejectedWith(/another pair/);
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+    });
+
+    it("leaves this pair's snapshot alone in a dry run", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
+      const before = fs.readFileSync(snapshotFile, "utf8");
+
+      await run(fixture, { snapshotFile, dryRun: true });
+
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+      expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(false);
+    });
+
+    // A node that did not answer is not a pair without the getter.
+    for (const proxyName of ["aiAgent", "escrow"]) {
+      it(`passes on a node's own error from ${proxyName}.pendingOwner() instead of calling the pair one-step`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const unanswered = new Proxy(fixture.contracts[proxyName], {
+          get(target, property) {
+            if (property === "pendingOwner") {
+              return async () => {
+                throw Object.assign(new Error("bad gateway"), { code: "SERVER_ERROR" });
+              };
+            }
+            return Reflect.get(target, property, target);
+          },
+        });
+
+        await expect(
+          run(fixture, {
+            contracts: { ...fixture.contracts, [proxyName]: unanswered },
+            snapshotFile: scratch(),
+            dryRun: true,
+          }),
+        ).to.be.rejectedWith("bad gateway");
+      });
+    }
+
+    // A pair from before two-step ownership has no pendingOwner(). The dry run passed against
+    // it and the live run stopped after the fee, treasury and oracle steps had been sent.
+    for (const dryRun of [true, false]) {
+      it(`refuses a pair that moves ownership in one step before anything is sent (dryRun=${dryRun})`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const oneStep = new Proxy(fixture.contracts.aiAgent, {
+          get(target, property) {
+            if (property === "pendingOwner") {
+              return async () => {
+                throw Object.assign(new Error("execution reverted"), { code: "CALL_EXCEPTION" });
+              };
+            }
+            return Reflect.get(target, property, target);
+          },
+        });
+        let executed = false;
+        const snapshotFile = scratch();
+
+        await expect(
+          run(fixture, {
+            contracts: { ...fixture.contracts, aiAgent: oneStep },
+            dryRun,
+            snapshotFile,
+            execute: async () => {
+              executed = true;
+              return [];
+            },
+          }),
+        ).to.be.rejectedWith(/agent has no pendingOwner\(\).*two steps/s);
+        expect(executed).to.equal(false);
+        expect(fs.existsSync(snapshotFile)).to.equal(false);
+      });
+    }
   });
 
   describe("forwardPhase failure path", function () {
@@ -689,10 +923,7 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(
-        snapshotFile,
-        JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]))),
-      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -717,10 +948,7 @@ describe("scripts/admin-rehearsal", function () {
         fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
         "s.json",
       );
-      fs.writeFileSync(
-        snapshotFile,
-        JSON.stringify(Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]))),
-      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -731,6 +959,146 @@ describe("scripts/admin-rehearsal", function () {
       await expect(
         confirmPhase({ contracts, signer: deployer, log, snapshotFile }),
       ).to.be.rejectedWith(/not been fully returned/);
+      // Still the baseline: marked confirmed here, the next forward run would start from the
+      // live state, which holds the rehearsal's values, and the record of the old ones is gone.
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(undefined);
+    });
+
+    // A forward run stopped between authorising the Safe as an oracle and removing it has moved
+    // no ownership and changed nothing the snapshot holds.
+    it("does not confirm while the Safe still holds the oracle role the rehearsal gave it", async function () {
+      const { contracts, state, deployer, safe, log } = await loadFixture(deployFixture);
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { safe: safe.address }));
+      await contracts.aiAgent.connect(deployer).addOracle(safe.address);
+
+      await expect(
+        confirmPhase({ contracts, signer: deployer, log, snapshotFile }),
+      ).to.be.rejectedWith(/not been fully returned/);
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(undefined);
+
+      await contracts.aiAgent.connect(deployer).removeOracle(safe.address);
+      await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
+      const written = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(written.confirmed).to.equal(true);
+      expect(written.safe).to.equal(safe.address);
+    });
+
+    // The removal of the Safe's role can be as fresh as the acceptance, and as late to a node.
+    it("reads the Safe's oracle role again with the rest, past a node that has not caught up", async function () {
+      const { contracts, state, deployer, safe, log } = await loadFixture(deployFixture);
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { safe: safe.address }));
+      const answers = [true, false];
+      let reads = 0;
+      const behind = new Proxy(contracts.aiAgent, {
+        get(target, property) {
+          if (property === "isOracle") return async () => answers[reads++];
+          return Reflect.get(target, property, target);
+        },
+      });
+
+      await confirmPhase({
+        contracts: { ...contracts, aiAgent: behind },
+        signer: deployer,
+        log,
+        snapshotFile,
+        accept: async () => ["agent"],
+        verify: async () => ({ ok: true, mismatches: [] }),
+        sleep: async () => {},
+      });
+
+      expect(reads).to.equal(2);
+      expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).confirmed).to.equal(true);
+    });
+
+    it("gives up after its attempts and reports what still differs", async function () {
+      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      let reads = 0;
+      let sleeps = 0;
+
+      await expect(
+        confirmPhase({
+          contracts,
+          signer: deployer,
+          log,
+          snapshotFile,
+          accept: async () => ["agent"],
+          verify: async () => {
+            reads += 1;
+            return { ok: false, mismatches: [{ field: "agentOwner", expected: "a", actual: "b" }] };
+          },
+          sleep: async () => {
+            sleeps += 1;
+          },
+        }),
+      ).to.be.rejectedWith(/not been fully returned/);
+      expect(reads).to.equal(5);
+      expect(sleeps).to.equal(4);
+    });
+
+    // The acceptance has just landed; a node behind that block still reports the Safe as owner.
+    it("reads again after accepting, past a node that has not caught up", async function () {
+      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      const answers = [
+        { ok: false, mismatches: [{ field: "agentOwner", expected: "a", actual: "b" }] },
+        { ok: true, mismatches: [] },
+      ];
+      let reads = 0;
+
+      await confirmPhase({
+        contracts,
+        signer: deployer,
+        log,
+        snapshotFile,
+        accept: async () => ["agent"],
+        verify: async () => answers[reads++],
+        sleep: async () => {},
+      });
+
+      expect(reads).to.equal(2);
+    });
+
+    it("does not read again when it accepted nothing: the chain's answer is the answer", async function () {
+      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
+      const snapshotFile = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
+        "s.json",
+      );
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, state));
+      let reads = 0;
+
+      await expect(
+        confirmPhase({
+          contracts,
+          signer: deployer,
+          log,
+          snapshotFile,
+          accept: async () => [],
+          verify: async () => {
+            reads += 1;
+            return { ok: false, mismatches: [{ field: "agentOwner", expected: "a", actual: "b" }] };
+          },
+          sleep: async () => {},
+        }),
+      ).to.be.rejectedWith(/not been fully returned/);
+      expect(reads).to.equal(1);
     });
 
     it("explains how to produce a missing snapshot", async function () {
@@ -748,14 +1116,26 @@ describe("scripts/admin-rehearsal", function () {
       const log = (line) => lines.push(String(line));
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-older-"));
       const snapshotFile = path.join(dir, "snapshot.json");
-      const older = { ...state, promptFee: String(state.promptFee) };
+      const older = { ...state };
       delete older.encryptionKey;
       delete older.encryptionKeyPublisher;
-      fs.writeFileSync(snapshotFile, JSON.stringify(older));
+      fs.writeFileSync(snapshotFile, await snapshotText(contracts, older));
 
       await confirmPhase({ contracts, log, snapshotFile });
 
       expect(lines.join("\n")).to.match(/encryption key is not in the snapshot/);
+    });
+  });
+
+  describe("assertPhaseCanDryRun", function () {
+    // The confirm phase sends the acceptance. A dry run of it would skip the mainnet flag and
+    // send all the same.
+    it("refuses a dry run of the confirm phase, which sends a transaction", function () {
+      expect(() => assertPhaseCanDryRun({ phase: "confirm", dryRun: true })).to.throw(
+        /confirm phase has no dry run/,
+      );
+      expect(() => assertPhaseCanDryRun({ phase: "confirm", dryRun: false })).to.not.throw();
+      expect(() => assertPhaseCanDryRun({ phase: "forward", dryRun: true })).to.not.throw();
     });
   });
 
