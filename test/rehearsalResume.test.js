@@ -42,6 +42,8 @@ describe("scripts/rehearsal/resume", function () {
 
       expect(found).to.have.lengthOf(1);
       expect(found[0]).to.match(/treasury\(\) is the Safe/);
+      // It may be the real treasury and no leftover: then the treasury steps rehearse nothing.
+      expect(found[0]).to.match(/real treasury[\s\S]*another Safe/);
     });
 
     it("finds the Safe left holding the oracle role", async function () {

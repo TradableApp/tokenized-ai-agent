@@ -1087,6 +1087,21 @@ describe("scripts/admin-rehearsal", function () {
       expect(JSON.parse(fs.readFileSync(snapshotFile, "utf8")).version).to.equal(2);
     });
 
+    it("starts from the live state when a version 1 snapshot in the new folder was confirmed", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = path.join(folder(), "snapshot.json");
+      fs.writeFileSync(
+        snapshotFile,
+        await versionOneText(fixture.contracts, fixture.state, { confirmed: true }),
+      );
+
+      await forward(fixture, { snapshotFile });
+
+      expect(fixture.executed).to.equal(true);
+      const written = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(written).to.deep.include({ version: 2, confirmed: false });
+    });
+
     for (const dryRun of [false, true]) {
       it(`refuses a version 1 snapshot in the new folder for a forward run, which records no steps (dryRun=${dryRun})`, async function () {
         const fixture = await loadRehearsal();
