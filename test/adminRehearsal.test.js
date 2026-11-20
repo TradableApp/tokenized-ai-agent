@@ -1331,6 +1331,23 @@ describe("scripts/admin-rehearsal", function () {
       expect(steps["fee-set"].status).to.equal("done");
     });
 
+    it("removes the Safe's oracle role when a resumed run finds the role it added still held", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
+      await withSteps(fixture, snapshotFile, { "oracle-add": done });
+      await fixture.contracts.aiAgent
+        .connect(fixture.deployer)
+        .addOracle(fixture.safeContractAddress);
+
+      await forward(fixture, { snapshotFile });
+
+      expect(await fixture.contracts.aiAgent.isOracle(fixture.safeContractAddress)).to.equal(false);
+      const steps = JSON.parse(fs.readFileSync(snapshotFile, "utf8")).steps;
+      expect(steps["oracle-remove"].status).to.equal("done");
+      expect(steps["oracle-remove"].observed).to.equal(undefined);
+    });
+
     it("refuses a finished pair whose value is the rehearsal value again, sending nothing", async function () {
       const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratch();

@@ -235,6 +235,18 @@ describe("scripts/rehearsal/resume", function () {
         expect(decided["agent-owner-to-safe"].action).to.equal("skip");
       });
 
+      it("refuses an offer recorded done whose pending owner is no longer the Safe, naming it", function () {
+        expect(() =>
+          decide({ steps: { "agent-owner-to-safe": done }, live: { agentPendingOwner: ZERO } }),
+        ).to.throw(new RegExp(`agent-owner-to-safe[\\s\\S]*${ZERO}`));
+      });
+
+      it("refuses to replace an offer open to another address, naming it", function () {
+        expect(() => decide({ live: { escrowPendingOwner: OWNER } })).to.throw(
+          new RegExp(`escrow-owner-to-safe[\\s\\S]*${OWNER}`),
+        );
+      });
+
       it("records an offer already open to the Safe as observed, without sending it again", function () {
         const decided = decide({ live: { escrowPendingOwner: SAFE } });
 
