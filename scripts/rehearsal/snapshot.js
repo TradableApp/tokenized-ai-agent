@@ -82,7 +82,40 @@ function writeSnapshot(file, snapshot) {
     fs.rmSync(temporary, { force: true });
     throw error;
   }
+  syncFolder(folder, file);
   return file;
+}
+
+// Where a folder cannot be opened to be synced (Windows): there is nothing more to do there.
+const FOLDER_SYNC_UNSUPPORTED = new Set(["EISDIR", "EPERM", "EINVAL"]);
+
+/**
+ * Syncs the folder, so the rename's new entry survives a crash. The new snapshot is in place
+ * by then; a failure is still thrown, as a write that did not finish, so a caller that cannot
+ * be sure it was recorded stops.
+ */
+function syncFolder(folder, file) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(folder, "r");
+  } catch (error) {
+    if (FOLDER_SYNC_UNSUPPORTED.has(error.code)) return;
+    throw durability(file, error);
+  }
+  try {
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    throw durability(file, error);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function durability(file, error) {
+  return new RehearsalError(
+    `The snapshot at ${file} was written, but could not be made durable: ${error.message}`,
+    { cause: error },
+  );
 }
 
 const MOVE_ASIDE =
