@@ -2,6 +2,7 @@ const { expect } = require("chai");
 
 const {
   findLeftovers,
+  assertNoLeftovers,
   decideSteps,
   settleSentSteps,
   assertNoPendingTransactions,
@@ -32,6 +33,18 @@ describe("scripts/rehearsal/resume", function () {
 
       expect(found).to.have.lengthOf(1);
       expect(found[0]).to.match(/promptFee\(\) is the rehearsal fee/);
+    });
+
+    // The pair's own fee may be the rehearsal fee: the refusal must not only blame a rehearsal.
+    it("refuses a fee at the rehearsal fee and says the pair's real fee may simply be that fee", async function () {
+      const fixture = await loadRehearsal();
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+
+      const found = await leftovers(fixture);
+
+      expect(() => assertNoLeftovers(found)).to.throw(
+        /real fee may simply equal the rehearsal fee[\s\S]*another REHEARSAL_PROMPT_FEE/,
+      );
     });
 
     it("finds the Safe left as the treasury", async function () {
