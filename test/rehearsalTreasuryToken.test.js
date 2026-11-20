@@ -199,6 +199,15 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
       expect(isEmptyRevert(null)).to.equal(false);
     });
 
+    // The bare revert text alone proves nothing: it must come with a code that says a node
+    // answered a call. An error of no known form is no answer.
+    it("is false for the bare revert text on an error of no known form", function () {
+      expect(isEmptyRevert({ message: "execution reverted" })).to.equal(false);
+      expect(isEmptyRevert(new Error("execution reverted"))).to.equal(false);
+      expect(isEmptyRevert({ code: null, message: "execution reverted" })).to.equal(false);
+      expect(isEmptyRevert({ code: {}, message: "execution reverted" })).to.equal(false);
+    });
+
     // On a live network the read goes through Hardhat's HTTP provider, which throws its own
     // ProviderError: the node's JSON-RPC code and message, and `data` only when the node sent it.
     describe("as Hardhat's HTTP provider reports a node's answer", function () {
