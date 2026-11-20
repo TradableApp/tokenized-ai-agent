@@ -293,9 +293,12 @@ async function loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, netwo
   return { pair, chainId, snapshot };
 }
 
-/** A forward run cannot tell which steps a version 1 snapshot's rehearsal sent. */
+/**
+ * A forward run cannot tell which steps a version 1 snapshot's rehearsal sent. A confirmed one
+ * is a finished rehearsal, as a confirmed version 2 one is, and the run starts from live state.
+ */
 function assertForwardCanUse(snapshot, file) {
-  if (snapshot?.version !== 1) return;
+  if (snapshot?.version !== 1 || snapshot.confirmed) return;
   throw new RehearsalError(
     `The snapshot at ${file} was written by an earlier version of this script and records no steps, so a forward run cannot tell which were sent. Nothing was sent. Run the confirm phase to check it against the chain; once it is confirmed, a forward run starts from the live state. If its rehearsal was returned by hand, move it aside.`,
   );

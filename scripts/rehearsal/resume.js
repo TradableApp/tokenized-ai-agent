@@ -37,7 +37,11 @@ async function findLeftovers({ contracts, safe, rehearsalPromptFee }) {
   if (sameValue(live.promptFee, rehearsalPromptFee)) {
     found.push(`promptFee() is the rehearsal fee ${rehearsalPromptFee}`);
   }
-  if (sameValue(live.treasury, safe)) found.push(`treasury() is the Safe ${safe}`);
+  if (sameValue(live.treasury, safe)) {
+    found.push(
+      `treasury() is the Safe ${safe}: a rehearsal may have left it, or the Safe may be the real treasury, and then the treasury steps would rehearse nothing; set the treasury back, or rehearse with another Safe`,
+    );
+  }
   for (const name of ["agent", "escrow"]) {
     if (sameValue(live[`${name}Owner`], safe)) found.push(`the Safe owns the ${name}`);
     const pending = live[`${name}PendingOwner`];
