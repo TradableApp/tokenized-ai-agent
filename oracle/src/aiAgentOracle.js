@@ -1097,9 +1097,7 @@ function registerProvenanceHandlers(runtime) {
     });
   } catch (err) {
     // Attribution is a nicety; never let it cost an answer.
-    console.error(
-      `[ElizaOS] Could not subscribe provenance handlers: ${describeError(err)}`,
-    );
+    console.error(`[ElizaOS] Could not subscribe provenance handlers: ${describeError(err)}`);
   }
 }
 
@@ -1305,10 +1303,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           },
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
-            console.error(
-              "[ElizaOS] Runtime Error during handleMessage:",
-              describedError(error),
-            );
+            console.error("[ElizaOS] Runtime Error during handleMessage:", describedError(error));
             runProvenance.finish(runId); // release the run; a rejected answer still frees it
             reject(error);
           },
