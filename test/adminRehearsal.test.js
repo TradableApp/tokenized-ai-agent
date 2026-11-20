@@ -93,7 +93,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("buildPlan", function () {
     it("orders set-and-restore pairs before the ownership transfers", async function () {
-      const { state, safe, oracle, treasury } = await loadRehearsal();
+      const { state, safe, treasury } = await loadRehearsal();
 
       const plan = buildPlan({
         state,

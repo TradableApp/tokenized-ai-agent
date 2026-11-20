@@ -145,10 +145,8 @@ function decidePair(pair, context) {
 }
 
 function decideOffer(id, { steps, live, safe }) {
+  // A Safe that already owns the proxy never gets here: the run needs the signer to own both.
   const name = OFFERS[id];
-  if (sameValue(live[`${name}Owner`], safe)) {
-    refuse(`The Safe already owns the ${name}; run the confirm phase once it has offered it back.`);
-  }
   const pending = live[`${name}PendingOwner`];
   const toSafe = sameValue(pending, safe);
   if (isDone(steps[id])) {

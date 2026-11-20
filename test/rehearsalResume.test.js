@@ -253,12 +253,6 @@ describe("scripts/rehearsal/resume", function () {
 
         expect(decided["escrow-owner-to-safe"].action).to.equal("observe");
       });
-
-      it("refuses when the Safe already owns the proxy", function () {
-        expect(() => decide({ live: { agentOwner: SAFE } })).to.throw(
-          /Safe already owns the agent/,
-        );
-      });
     });
   });
 

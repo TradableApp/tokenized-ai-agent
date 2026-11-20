@@ -426,6 +426,53 @@ async function decideRun({ plan, contracts, signer, snapshot, log, save }) {
   };
 }
 
+/**
+ * What a forward run starts from: the pair, chain, this pair's snapshot and the live state,
+ * after every check that needs no decision: two-step ownership, the cache file, the snapshot,
+ * the signer's ownership and no transaction pending.
+ */
+async function readForwardStart({
+  contracts,
+  signer,
+  snapshotFile,
+  legacySnapshotFile,
+  network,
+  log,
+}) {
+  await assertOwnershipMovesInTwoSteps(contracts);
+  const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
+  assertForwardCanUse(loaded.snapshot, snapshotFile);
+  const live = await readState(contracts);
+  log(`Live state: ${show(live)}`);
+  if (!contracts.oracleAddress) {
+    log(
+      chalk.yellow(
+        "REHEARSAL_ORACLE_ADDRESS is not set: the live oracle's authorization is not in the snapshot and will not be checked by the confirm phase.",
+      ),
+    );
+  }
+  assertSignerOwnsBoth(signer.address, live);
+  await assertNoPendingTransactions({
+    provider: ethers.provider,
+    address: signer.address,
+    ...(loaded.snapshot ?? {}),
+  });
+  return { ...loaded, live };
+}
+
+function reportForward({ dryRun, results, returnTxs, log }) {
+  if (dryRun) {
+    const simulated = results.filter((r) => !r.skipped && !r.observed).length;
+    log(chalk.green(`\nDry run complete: ${simulated} calls simulated, nothing sent or written.`));
+    return;
+  }
+  log(chalk.green("\nForward phase complete."));
+  log(
+    "\nQueue these four transactions from the Safe, in this order (Transaction Builder → custom data): it accepts ownership of both proxies, then offers it back. Then run REHEARSAL_PHASE=confirm, which accepts the offer from this wallet:",
+  );
+  log(JSON.stringify(returnTxs, null, 2));
+}
+
 async function forwardPhase({
   contracts,
   signer,
@@ -441,28 +488,15 @@ async function forwardPhase({
   if (!safeAddress) {
     throw new RehearsalError("REHEARSAL_SAFE_ADDRESS is required for the forward phase");
   }
-
-  await assertOwnershipMovesInTwoSteps(contracts);
-  const file = snapshotFile;
-  const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
-  const { pair, chainId, snapshot: left } = loaded;
-  assertForwardCanUse(left, file);
-  const live = await readState(contracts);
-  log(`Live state: ${show(live)}`);
-  if (!contracts.oracleAddress) {
-    log(
-      chalk.yellow(
-        "REHEARSAL_ORACLE_ADDRESS is not set: the live oracle's authorization is not in the snapshot and will not be checked by the confirm phase.",
-      ),
-    );
-  }
-  assertSignerOwnsBoth(signer.address, live);
-  await assertNoPendingTransactions({
-    provider: ethers.provider,
-    address: signer.address,
-    ...(left ?? {}),
+  const start = await readForwardStart({
+    contracts,
+    signer,
+    snapshotFile,
+    legacySnapshotFile,
+    network,
+    log,
   });
-
+  const { pair, chainId, snapshot: left, live } = start;
   // A dry run takes the same path, so that it predicts the live run: it resumes, settles,
   // decides and refuses as the live run would, and only writes nothing.
   const resuming = left !== null && !left.confirmed;
@@ -473,42 +507,75 @@ async function forwardPhase({
     contracts,
     safeAddress,
     rehearsalPromptFee,
-    file,
+    file: snapshotFile,
   });
   let snapshot = { ...begun, network, chainId, pair };
   if (resuming)
-    log(`Resuming: ${file} exists and stays the restore baseline: ${show(snapshot.baseline)}`);
+    log(`Resuming: ${snapshotFile} stays the restore baseline: ${show(snapshot.baseline)}`);
   const plan = buildPlan({ state: snapshot.baseline, safeAddress, rehearsalPromptFee });
   await assertSafeHasCode(snapshot.safe);
 
   const save = (next) => {
     snapshot = next;
-    if (!dryRun) writeSnapshot(file, snapshot);
+    if (!dryRun) writeSnapshot(snapshotFile, snapshot);
   };
   if (!resuming) {
     save(snapshot);
-    if (!dryRun) log(`Pre-rehearsal state saved to ${file} before any transaction is sent`);
+    if (!dryRun) log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
   const { decisions } = await decideRun({ plan, contracts, signer, snapshot, log, save });
   // A step's record is on disk before the next step is sent, so a restore is sent only after
   // its set's "done" record is written.
   const record = async (id, entry) =>
     save({ ...snapshot, steps: { ...snapshot.steps, [id]: entry } });
-
   const results = await execute({ plan, decisions, contracts, signer, dryRun, log, record });
+  const returnTxs = dryRun ? [] : await buildSafeReturnTxs({ contracts, returnTo: signer.address });
+  reportForward({ dryRun, results, returnTxs, log });
+}
 
-  if (dryRun) {
-    const simulated = results.filter((r) => !r.skipped && !r.observed).length;
-    log(chalk.green(`\nDry run complete: ${simulated} calls simulated, nothing sent or written.`));
-    return;
+/** The snapshot the confirm phase checks, once it is known to be one it may mark confirmed. */
+async function readConfirmable({
+  contracts,
+  signer,
+  snapshotFile,
+  legacySnapshotFile,
+  network,
+  log,
+}) {
+  const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
+  const { snapshot } = loaded;
+  if (snapshot === null) {
+    throw new RehearsalError(
+      `No snapshot at ${snapshotFile}; run the forward phase first (for example bun run rehearse:base-testnet)`,
+    );
   }
+  assertConfirmable(snapshot, snapshotFile);
+  await assertNoPendingTransactions({
+    provider: ethers.provider,
+    address: signer.address,
+    ...snapshot,
+  });
+  return loaded;
+}
 
-  log(chalk.green("\nForward phase complete."));
-  const returnTxs = await buildSafeReturnTxs({ contracts, returnTo: signer.address });
-  log(
-    "\nQueue these four transactions from the Safe, in this order (Transaction Builder → custom data): it accepts ownership of both proxies, then offers it back. Then run REHEARSAL_PHASE=confirm, which accepts the offer from this wallet:",
-  );
-  log(JSON.stringify(returnTxs, null, 2));
+/**
+ * Compares the chain with the snapshot, `attempts` times at most while it differs. A forward run
+ * stopped between authorising the Safe as an oracle and removing it has changed nothing the
+ * snapshot holds, so the Safe's role is read too, and read again with the rest.
+ */
+async function readReturned({ contracts, state, safe, attempts, verify, sleep }) {
+  const read = async () => {
+    const returned = await verify({ contracts, state });
+    if (!safe || !(await contracts.aiAgent.isOracle(safe))) return returned;
+    const role = { field: "safeIsOracle", expected: "false", actual: "true" };
+    return { ok: false, mismatches: [...returned.mismatches, role] };
+  };
+  let result = await read();
+  for (let attempt = 2; !result.ok && attempt <= attempts; attempt += 1) {
+    await sleep(VERIFY_RETRY_MS);
+    result = await read();
+  }
+  return result;
 }
 
 async function confirmPhase({
@@ -522,54 +589,31 @@ async function confirmPhase({
   verify = verifyReturned,
   sleep = defaultSleep,
 }) {
-  const { pair, chainId, snapshot } = await loadSnapshot({
+  const { pair, chainId, snapshot } = await readConfirmable({
     contracts,
+    signer,
     snapshotFile,
     legacySnapshotFile,
     network,
     log,
-  });
-  if (snapshot === null) {
-    throw new RehearsalError(
-      `No snapshot at ${snapshotFile}; run the forward phase first (for example bun run rehearse:base-testnet)`,
-    );
-  }
-  assertConfirmable(snapshot, snapshotFile);
-  await assertNoPendingTransactions({
-    provider: ethers.provider,
-    address: signer.address,
-    ...snapshot,
   });
   const { baseline: state, safe, confirmed } = snapshot;
   if (confirmed) {
     log(chalk.yellow("This snapshot was already confirmed. Checking it against the chain again."));
   }
   const accepted = await accept({ contracts, signer, log });
-  if (!("encryptionKey" in state)) {
-    log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
-  }
+  if (!("encryptionKey" in state)) log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
   // An acceptance that has just landed can be read from a node still behind its block, which
   // reports the Safe as owner. Read again then. With nothing accepted, the first answer stands.
   const attempts = accepted.length > 0 ? VERIFY_ATTEMPTS : 1;
-  // A forward run stopped between authorising the Safe as an oracle and removing it has changed
-  // nothing the snapshot holds. Without the second read, the phase would call such a run
-  // complete. It is read with the rest, so it is read again with the rest.
-  const read = async () => {
-    const returned = await verify({ contracts, state });
-    if (!safe || !(await contracts.aiAgent.isOracle(safe))) return returned;
-    return {
-      ok: false,
-      mismatches: [
-        ...returned.mismatches,
-        { field: "safeIsOracle", expected: "false", actual: "true" },
-      ],
-    };
-  };
-  let { ok, mismatches } = await read();
-  for (let attempt = 2; !ok && attempt <= attempts; attempt += 1) {
-    await sleep(VERIFY_RETRY_MS);
-    ({ ok, mismatches } = await read());
-  }
+  const { ok, mismatches } = await readReturned({
+    contracts,
+    state,
+    safe,
+    attempts,
+    verify,
+    sleep,
+  });
   if (!ok) {
     for (const m of mismatches) {
       log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
