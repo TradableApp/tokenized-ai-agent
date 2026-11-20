@@ -346,6 +346,37 @@ describe("scripts/rehearsal/resume", function () {
         .be.undefined;
     });
 
+    it("prints the counts and how to clear a stuck nonce", async function () {
+      await expect(
+        assertNoPendingTransactions({ provider: provider(5, 4), address: ADDRESS }),
+      ).to.be.rejectedWith(/latest 4, pending 5[\s\S]*replace[\s\S]*nonce 4/i);
+    });
+
+    it("names each set recorded done whose restore is not, with the value to restore by hand", async function () {
+      const SAFE = "0x5555555555555555555555555555555555555555";
+      const TREASURY = "0x6666666666666666666666666666666666666666";
+      const done = { status: "done", txHash: "0xab", blockNumber: 1 };
+
+      const failure = await assertNoPendingTransactions({
+        provider: provider(5, 4),
+        address: ADDRESS,
+        steps: {
+          "fee-set": done,
+          "treasury-set": done,
+          "treasury-restore": done,
+          "oracle-add": done,
+        },
+        baseline: { promptFee: 1000n, treasury: TREASURY },
+        safe: SAFE,
+      }).catch((error) => error);
+
+      expect(failure.message).to.include("[fee-set]");
+      expect(failure.message).to.include("setPromptFee(1000)");
+      expect(failure.message).to.include("[oracle-add]");
+      expect(failure.message).to.include(`removeOracle(${SAFE})`);
+      expect(failure.message).to.not.include("[treasury-set]");
+    });
+
     it("refuses while the wallet has a transaction waiting to be mined", async function () {
       await expect(
         assertNoPendingTransactions({ provider: provider(5, 4), address: ADDRESS }),
