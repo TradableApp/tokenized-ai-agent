@@ -63,15 +63,33 @@ function describedError(error) {
 }
 
 /**
- * The kind of `error` and nothing it says: its code, or its name where it has none. For a log
- * line or an alert about an error whose message may carry an address, as a database error
- * carries the one it was connecting to.
+ * The kind of `error` and nothing it says: its code, or its name where it has none, when that is
+ * text or a number of letters, digits, "_", "." and "-", at most 64 characters; "Error" when
+ * neither is, or neither can be read. It never throws. For a log line or an alert about an error
+ * whose message may carry an address, as a database error carries the one it was connecting to.
  *
  * @param {unknown} error
  * @returns {string}
  */
 function errorKind(error) {
-  return String(error?.code ?? error?.name ?? "Error");
+  try {
+    for (const candidate of [error?.code, error?.name]) {
+      const kind = plainKind(candidate);
+      if (kind !== null) return kind;
+    }
+  } catch {
+    // A getter that throws: the kind cannot be read, and this must not throw in its place.
+  }
+  return "Error";
+}
+
+// A code or name as a log line and an alert can carry it: one short word, never an address.
+const KIND = /^[A-Za-z0-9_.-]{1,64}$/;
+
+function plainKind(value) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value);
+  return KIND.test(text) ? text : null;
 }
 
 // Any scheme (a database address carries a password as an RPC address carries a key), with the
