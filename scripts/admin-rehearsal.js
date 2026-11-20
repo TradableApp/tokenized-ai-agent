@@ -4,6 +4,9 @@ const fs = require("fs");
 const path = require("path");
 const chalk = require("chalk");
 
+const { sameValue, isRevert } = require("./rehearsal/values");
+const { writeSnapshot, readSnapshot } = require("./rehearsal/snapshot");
+
 const { ethers } = hre;
 
 const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
@@ -63,19 +66,6 @@ async function readEncryptionKey(aiAgent) {
     }
     return {};
   }
-}
-
-/**
- * True when a read failed because the contract reverted, as opposed to the node not answering.
- * ethers reports a revert as CALL_EXCEPTION. The in-process Hardhat network throws its own
- * error with no ethers code, recognizable only by its text; an error that carries any other
- * code came from a real node and is never taken for a revert, whatever its text says.
- */
-function isRevert(error) {
-  if (error?.code === "CALL_EXCEPTION") return true;
-  if (typeof error?.code === "string") return false;
-
-  return /revert/i.test(String(error?.message));
 }
 
 const NO_ENCRYPTION_KEY_NOTE =
@@ -202,13 +192,6 @@ function buildPlan({ state, safeAddress, rehearsalPromptFee }) {
       offered,
     ),
   ];
-}
-
-function sameValue(actual, expected) {
-  if (typeof expected === "bigint" || typeof actual === "bigint") {
-    return BigInt(actual) === BigInt(expected);
-  }
-  return String(actual).toLowerCase() === String(expected).toLowerCase();
 }
 
 /** The getter call as text, e.g. `isOracle(0xSafe)`, for logs and errors. */
@@ -390,55 +373,6 @@ async function pairOf({ aiAgent, escrow }) {
     escrow.getAddress(),
   ]);
   return { agent: agentAddress, escrow: escrowAddress };
-}
-
-/**
- * The snapshot holds the pre-rehearsal values and the pair they were read from. The file is
- * named after the network only, so one left by a rehearsal of another pair would otherwise be
- * taken as this pair's baseline, and its treasury and fee written here as a "restore".
- * `safe` is the Safe the rehearsal was run with: it is authorised as an oracle on the way, and the
- * confirm phase checks it no longer is. `confirmed` marks a rehearsal the confirm phase has
- * passed: its values are no longer a baseline.
- */
-function writeSnapshot(state, file, pair, { safe, confirmed = false } = {}) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const serialisable = Object.fromEntries(Object.entries(state).map(([k, v]) => [k, String(v)]));
-  const record = {
-    ...serialisable,
-    pair,
-    ...(safe ? { safe } : {}),
-    ...(confirmed ? { confirmed: true } : {}),
-  };
-  fs.writeFileSync(file, JSON.stringify(record, null, 2));
-  return file;
-}
-
-/**
- * Reads the snapshot for `pair`: `{ state, safe, confirmed }`. Refuses one that is not this
- * pair's.
- */
-function readSnapshot(file, pair) {
-  if (!fs.existsSync(file)) {
-    throw new Error(
-      `No snapshot at ${file}; run the forward phase first (for example bun run rehearse:base-testnet)`,
-    );
-  }
-  const { pair: recorded, safe, confirmed, ...raw } = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (!recorded?.agent || !recorded?.escrow) {
-    throw new Error(
-      `The snapshot at ${file} does not say which pair it was taken for, so it cannot be used as a baseline. Move it aside if it belongs to a rehearsal still to be returned by hand, or delete it, then run the forward phase again.`,
-    );
-  }
-  if (!sameValue(recorded.agent, pair.agent) || !sameValue(recorded.escrow, pair.escrow)) {
-    throw new Error(
-      `The snapshot at ${file} was taken for another pair (agent ${recorded.agent}, escrow ${recorded.escrow}), not agent ${pair.agent}, escrow ${pair.escrow}. Nothing was sent. Move it aside or delete it, then run the forward phase again.`,
-    );
-  }
-  return {
-    state: { ...raw, promptFee: BigInt(raw.promptFee) },
-    safe,
-    confirmed: confirmed === true,
-  };
 }
 
 /**
