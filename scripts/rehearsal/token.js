@@ -6,21 +6,29 @@ const { RehearsalError } = require("./values");
 // token has no such function.
 const TRANSFER_RULE_ABI = ["function isTransferExempt(address account) view returns (bool)"];
 
+// A node's whole answer to a revert that carried no data, with nothing after it. A reason after
+// it ("execution reverted: ...") means the contract said something, and its data was dropped.
+const BARE_REVERT = /^execution reverted$/i;
+
 /**
  * True when a call reverted with no data at all: what a contract with no such function and no
- * fallback answers. A revert with data is the contract's own answer, and a node that did not
- * answer is no answer; neither is taken for a missing function. ethers turns any JSON-RPC error
- * to a call into CALL_EXCEPTION, so with no data the node's own words must say it reverted. The
- * in-process Hardhat network throws its own error, with the empty data and no ethers code.
+ * fallback answers. Exactly two shapes count: data of exactly `0x`, or no data and a message
+ * that is the node's bare revert text. A revert with data or with a reason is the contract's
+ * own answer, and a node that refused or failed the request is no answer; neither is taken for
+ * a missing function.
+ *
+ * The error comes in three forms. ethers turns a JSON-RPC error into CALL_EXCEPTION with the
+ * node's own error under `info.error`. Hardhat's HTTP provider throws a ProviderError carrying
+ * the node's numeric code and message, and `data` only when the node sent it. The in-process
+ * Hardhat network throws its own error with the empty data. Any other ethers code is refused.
  */
 function isEmptyRevert(error) {
   if (error === null || typeof error !== "object") return false;
-  if (error.code === "CALL_EXCEPTION") {
-    if (error.data === "0x") return true;
-    return error.data == null && /revert/i.test(String(error.info?.error?.message ?? ""));
-  }
-  if (typeof error.code === "string") return false;
-  return error.data === "0x" && /reverted/i.test(String(error.message));
+  if (typeof error.code === "string" && error.code !== "CALL_EXCEPTION") return false;
+  if (error.data === "0x") return true;
+  if (error.data !== undefined && error.data !== null) return false;
+  const message = error.code === "CALL_EXCEPTION" ? error.info?.error?.message : error.message;
+  return BARE_REVERT.test(String(message ?? "").trim());
 }
 
 /**
