@@ -104,13 +104,13 @@ describe("the oracle's start of the agent", function () {
   let consoles;
   let privateKeyBefore;
 
-  // loadOracle sets the signing key the module reads at load; the suites after this one get
-  // back whatever they had.
-  before(function () {
+  // loadOracle sets the signing key the module reads at load; each test gets back whatever was
+  // there before it.
+  beforeEach(function () {
     privateKeyBefore = process.env.PRIVATE_KEY;
   });
 
-  after(function () {
+  afterEach(function () {
     if (privateKeyBefore === undefined) delete process.env.PRIVATE_KEY;
     else process.env.PRIVATE_KEY = privateKeyBefore;
   });
