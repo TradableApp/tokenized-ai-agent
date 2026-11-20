@@ -98,6 +98,56 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
     expect(await fixture.contracts.escrow.treasury()).to.equal(fixture.treasury.address);
   });
 
+  // A resumed run may find a set already live. Refusing then would strand it at the rehearsal
+  // value, so the restores of sets already done are still sent, and only the treasury pair, and
+  // whatever has not started, waits.
+  describe("on a resumed run whose fee was already set", function () {
+    async function resumedAfterFeeSet(fixture) {
+      const snapshotFile = scratch();
+      const done = { status: "done", txHash: `0x${"cd".repeat(32)}`, blockNumber: 1 };
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
+          steps: { "fee-set": done },
+        }),
+      );
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+      return snapshotFile;
+    }
+
+    it("restores the fee, sends nothing else, and ends saying what was and was not sent", async function () {
+      const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
+      const snapshotFile = await resumedAfterFeeSet(fixture);
+
+      await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(
+        /is not on its list[\s\S]*Sent: \[fee-restore\][\s\S]*Not sent: \[treasury-set\], \[treasury-restore\]/,
+      );
+
+      const { escrow, aiAgent } = fixture.contracts;
+      expect(await escrow.promptFee()).to.equal(PROMPT_FEE);
+      expect(await escrow.treasury()).to.equal(fixture.treasury.address);
+      expect(await aiAgent.isOracle(fixture.safeContractAddress)).to.equal(false);
+      expect(await aiAgent.pendingOwner()).to.equal(ethers.ZeroAddress);
+      expect(await escrow.pendingOwner()).to.equal(ethers.ZeroAddress);
+      const { steps } = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(steps["fee-restore"].status).to.equal("done");
+      expect(steps).to.not.have.property("treasury-set");
+    });
+
+    it("says in a dry run what it would send, and sends nothing", async function () {
+      const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
+      const snapshotFile = await resumedAfterFeeSet(fixture);
+      const before = fs.readFileSync(snapshotFile, "utf8");
+
+      await expect(forward(fixture, { snapshotFile, dryRun: true })).to.be.rejectedWith(
+        /Would send: \[fee-restore\][\s\S]*Would not send: \[treasury-set\]/,
+      );
+
+      expect(await fixture.contracts.escrow.promptFee()).to.equal(REHEARSAL_FEE);
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+    });
+  });
+
   it("refuses when it cannot tell whether the token keeps a list", async function () {
     const fixture = await loadRehearsal();
     // An address with no code answers every call with nothing, which reads as no answer.
