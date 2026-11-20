@@ -174,12 +174,17 @@ const STEP_IDS = new Set([
 const isAmount = (value) => typeof value === "string" && /^[0-9]+$/.test(value);
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const isHash = (value) => typeof value === "string" && value.length > 2;
+const isNonce = (value) => Number.isSafeInteger(value) && value >= 0;
+const isName = (value) => typeof value === "string" && value !== "";
 
 /** The first field of a step record that is not what the script writes, or null. */
 function badStep(id, record) {
   if (!STEP_IDS.has(id)) return `steps.${id}`;
   if (!isObject(record)) return `steps.${id}`;
-  if (record.status === "sent") return isHash(record.txHash) ? null : `steps.${id}.txHash`;
+  if (record.status === "sent") {
+    if (!isHash(record.txHash)) return `steps.${id}.txHash`;
+    return isNonce(record.nonce) ? null : `steps.${id}.nonce`;
+  }
   if (record.status !== "done") return `steps.${id}.status`;
   return record.observed === true || isHash(record.txHash) ? null : `steps.${id}.txHash`;
 }
@@ -190,9 +195,10 @@ function badStep(id, record) {
  * from a version 1 file has neither.
  */
 function badField(record) {
+  if (!isName(record.network)) return "network";
   if (!isAmount(record.chainId)) return "chainId";
   const open = record.confirmed !== true;
-  if (open && (typeof record.safe !== "string" || record.safe === "")) return "safe";
+  if (open && !isName(record.safe)) return "safe";
   if (open && !isAmount(record.rehearsalPromptFee)) return "rehearsalPromptFee";
   if (!isObject(record.baseline)) return "baseline";
   if (!isAmount(record.baseline.promptFee)) return "baseline.promptFee";
