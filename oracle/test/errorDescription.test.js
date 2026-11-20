@@ -87,6 +87,52 @@ describe("errorDescription — what an error is, without the address it was sent
     expect(withoutAddresses("https://ai3.storage/v1/not-a-real-key")).to.equal("[address removed]");
   });
 
+  // Node's fetch fails with "fetch failed" and puts what happened in `cause`. Its kind is what
+  // tells a refused connection from a timeout; its message may carry the address.
+  describe("an error with a cause", () => {
+    const refused = () =>
+      Object.assign(new Error("connect ECONNREFUSED https://rpc.example/v2/not-a-real-key"), {
+        code: "ECONNREFUSED",
+      });
+
+    it("is described with its cause's kind and never its cause's message", () => {
+      const text = describeError(new Error("fetch failed", { cause: refused() }));
+
+      expect(text).to.equal("fetch failed (cause: ECONNREFUSED)");
+      expect(describedError(new Error("fetch failed", { cause: refused() })).message).to.equal(
+        text,
+      );
+    });
+
+    it("takes the cause's name where it has no code", () => {
+      expect(describeError(new Error("x", { cause: new TypeError("bad") }))).to.equal(
+        "x (cause: TypeError)",
+      );
+    });
+
+    it("cleans a cause whose code or name carries an address", () => {
+      const cause = { code: "https://rpc.example/v2/not-a-real-key", name: "postgres://u:pw@db/a" };
+
+      const text = describeError(new Error("fetch failed", { cause }));
+
+      expect(text).to.equal("fetch failed (cause: Error)");
+      expect(text).to.not.include("not-a-real-key");
+    });
+
+    it("goes one level down only", () => {
+      const cause = { code: "EAI_AGAIN", cause: { code: "ENOTFOUND" } };
+
+      expect(describeError(new Error("fetch failed", { cause }))).to.equal(
+        "fetch failed (cause: EAI_AGAIN)",
+      );
+    });
+
+    it("adds nothing when there is no cause", () => {
+      expect(describeError(new Error("fetch failed"))).to.equal("fetch failed");
+      expect(describeError(new Error("x", { cause: undefined }))).to.equal("x");
+    });
+  });
+
   describe("a revert", () => {
     const revert = (extra) =>
       ethers.makeError("execution reverted (unknown custom error)", "CALL_EXCEPTION", {
