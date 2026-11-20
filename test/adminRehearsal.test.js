@@ -20,6 +20,7 @@ const {
   verifyGetter,
   main,
 } = require("../scripts/admin-rehearsal");
+const { SnapshotNotDurable } = require("../scripts/rehearsal/values");
 const { publishEncryptionKey: publishKey } = require("./helpers/encryptionKeyProof");
 const {
   PROMPT_FEE,
@@ -359,6 +360,28 @@ describe("scripts/admin-rehearsal", function () {
           /snapshot could not be written[\s\S]*may land[\s\S]*send nothing by hand/,
         );
         expect(failure.cause).to.equal(diskFull);
+        expect(failure.message).to.not.match(/recorded as sent/);
+      });
+
+      it("says a step whose sent record was written but not made durable is on disk, may land, and to send nothing by hand", async function () {
+        const fixture = await loadRehearsal();
+        const notDurable = new SnapshotNotDurable(
+          "The snapshot at s.json was written, but could not be made durable: EIO",
+          { cause: new Error("EIO") },
+        );
+
+        const { failure, lines } = await runFee(fixture, {
+          record: async (id, entry) => {
+            if (entry.status === "sent") throw notDurable;
+          },
+        });
+
+        expect(failure.message).to.include(`[fee-set] sent as ${hashIn(lines)}`);
+        expect(failure.message).to.match(
+          /recorded as sent[\s\S]*could not be made durable[\s\S]*may land[\s\S]*send nothing by hand/,
+        );
+        expect(failure.message).to.not.match(/could not be written/);
+        expect(failure.cause).to.equal(notDurable);
       });
 
       it("says a step that landed but could not be recorded done landed, and to run again", async function () {

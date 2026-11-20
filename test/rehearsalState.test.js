@@ -6,6 +6,7 @@ const {
   sameValue,
   isRevert,
   RehearsalError,
+  SnapshotNotDurable,
   describeFailure,
 } = require("../scripts/rehearsal/values");
 const {
@@ -35,6 +36,13 @@ describe("scripts/rehearsal", function () {
       expect(sameValue(2n, "2")).to.equal(true);
       expect(sameValue("2", 2n)).to.equal(true);
       expect(sameValue(2n, 3n)).to.equal(false);
+    });
+
+    it("is false, not a throw, when an amount meets nothing or something that is no number", function () {
+      for (const other of [null, undefined, "", "abc", 1.5, {}]) {
+        expect(sameValue(2n, other), String(other)).to.equal(false);
+        expect(sameValue(other, 2n), String(other)).to.equal(false);
+      }
     });
 
     it("compares addresses without regard to letter case", function () {
@@ -94,7 +102,7 @@ describe("scripts/rehearsal", function () {
       pair: PAIR,
       safe: OTHER,
       rehearsalPromptFee: 2n,
-      baseline: { agentOwner: AGENT, treasury: ESCROW, promptFee: 1n },
+      baseline: { agentOwner: AGENT, escrowOwner: AGENT, treasury: ESCROW, promptFee: 1n },
       steps: {},
       confirmed: false,
       ...overrides,
@@ -178,7 +186,7 @@ describe("scripts/rehearsal", function () {
         pair: PAIR,
         safe: OTHER,
         rehearsalPromptFee: "2",
-        baseline: { agentOwner: AGENT, treasury: ESCROW, promptFee: "1" },
+        baseline: { agentOwner: AGENT, escrowOwner: AGENT, treasury: ESCROW, promptFee: "1" },
         steps: { "fee-set": { status: "sent", txHash: "0xab", nonce: 0 } },
         confirmed: false,
       });
@@ -291,6 +299,7 @@ describe("scripts/rehearsal", function () {
         },
       });
 
+      expect(error).to.be.instanceOf(SnapshotNotDurable);
       expect(error?.message).to.match(/written, but could not be made durable[\s\S]*EIO/);
       expect(error?.cause?.code).to.equal("EIO");
       expect(JSON.parse(fs.readFileSync(file, "utf8")).version).to.equal(2);
@@ -357,7 +366,12 @@ describe("scripts/rehearsal", function () {
         steps,
         confirmed: false,
       });
-      expect(read.baseline).to.deep.equal({ agentOwner: AGENT, treasury: ESCROW, promptFee: 1n });
+      expect(read.baseline).to.deep.equal({
+        agentOwner: AGENT,
+        escrowOwner: AGENT,
+        treasury: ESCROW,
+        promptFee: 1n,
+      });
     });
 
     it("refuses a file that is not JSON, and never takes it for a missing snapshot", function () {
@@ -400,6 +414,22 @@ describe("scripts/rehearsal", function () {
       ["rehearsalPromptFee", (r) => ({ ...r, rehearsalPromptFee: undefined })],
       ["baseline", (r) => ({ ...r, baseline: undefined })],
       ["baseline.promptFee", (r) => ({ ...r, baseline: { treasury: ESCROW } })],
+      ...["agentOwner", "escrowOwner", "treasury"].flatMap((field) =>
+        [undefined, "", "0x1234", 5].map((value) => [
+          `baseline.${field}`,
+          (r) => ({ ...r, baseline: { ...r.baseline, [field]: value } }),
+        ]),
+      ),
+      ...[
+        ["encryptionKeyPublisher", "not an address"],
+        ["oracle", "0x12"],
+        ["encryptionKey", "not hex"],
+        ["encryptionKey", "0xabc"],
+        ["oracleAuthorized", "yes"],
+      ].map(([field, value]) => [
+        `baseline.${field}`,
+        (r) => ({ ...r, baseline: { ...r.baseline, [field]: value } }),
+      ]),
       ["steps", (r) => ({ ...r, steps: [] })],
       ["steps.fee-set", (r) => ({ ...r, steps: { "fee-set": null } })],
       ["steps.fee-set.status", (r) => ({ ...r, steps: { "fee-set": { status: "queued" } } })],
@@ -425,6 +455,28 @@ describe("scripts/rehearsal", function () {
         expect(message).to.include(`a field the script does not write, ${field},`);
       });
     }
+
+    it("reads back every baseline field the script writes, in the form it writes them", function () {
+      const file = scratchFile();
+      const baseline = {
+        agentOwner: AGENT,
+        escrowOwner: ESCROW,
+        treasury: OTHER,
+        promptFee: 1n,
+        encryptionKey: "0x",
+        encryptionKeyPublisher: "0x0000000000000000000000000000000000000000",
+        oracle: OTHER,
+        oracleAuthorized: false,
+      };
+      writeSnapshot(file, snapshot({ baseline }));
+
+      expect(readSnapshot(file, EXPECTED).baseline).to.deep.equal({
+        ...baseline,
+        oracleAuthorized: "false",
+      });
+      writeSnapshot(file, snapshot({ baseline: { ...baseline, encryptionKey: "0x04ab" } }));
+      expect(readSnapshot(file, EXPECTED).baseline.encryptionKey).to.equal("0x04ab");
+    });
 
     it("reads back a step recorded as sent with its hash and the first nonce, zero", function () {
       const file = scratchFile();
