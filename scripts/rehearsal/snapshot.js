@@ -157,16 +157,36 @@ function readSnapshot(file, { pair, network, chainId }) {
   return fromVersionTwo(record);
 }
 
-/** Why a file left in the cache by an earlier version is no baseline: null when it may be one. */
-function legacyNotUsed(file, pair) {
-  let record;
+const LEGACY_UNREADABLE =
+  "it may be a snapshot of this pair cut off part-way, and the only record of the values before that rehearsal. Nothing was sent. Recover what you can of it, then move it aside and run again.";
+
+/** The record in a file left in the cache; refuses one it cannot read, as it may be a baseline. */
+function readLegacy(file) {
+  let text;
   try {
-    record = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return "it is not JSON";
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    throw new RehearsalError(
+      `${file}, written by an earlier version of this script, cannot be read (${error.message}): ${LEGACY_UNREADABLE}`,
+      { cause: error },
+    );
   }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new RehearsalError(
+      `${file}, written by an earlier version of this script, is not JSON (${error.message}): ${LEGACY_UNREADABLE}`,
+    );
+  }
+}
+
+/** Why a file left in the cache is no baseline of this pair: null when it may be one. */
+function legacyNotUsed(file, pair) {
+  const record = readLegacy(file);
   if (!record?.pair?.agent || !record?.pair?.escrow) {
-    return "it does not say which pair it was taken for";
+    throw new RehearsalError(
+      `${file}, written by an earlier version of this script, does not say which pair it was taken for: ${LEGACY_UNREADABLE}`,
+    );
   }
   if (!sameValue(record.pair.agent, pair.agent) || !sameValue(record.pair.escrow, pair.escrow)) {
     return `it was taken for another pair (agent ${record.pair.agent}, escrow ${record.pair.escrow})`;
@@ -178,8 +198,9 @@ function legacyNotUsed(file, pair) {
 /**
  * The snapshot earlier versions wrote to Hardhat's cache. It is read, and never written, moved
  * or deleted. One of this pair whose rehearsal was not confirmed may be the only record of the
- * values before that rehearsal, so nothing runs until it has been moved by hand; any other is
- * reported and left where it is.
+ * values before that rehearsal, so nothing runs until it has been moved by hand, and so does one
+ * that cannot be read, is not JSON or names no pair: it may be such a file cut off part-way. One
+ * of another pair, or confirmed, is reported and left where it is.
  */
 function checkLegacySnapshot({ file, pair, log, moveTo }) {
   if (!file || !fs.existsSync(file)) return;
