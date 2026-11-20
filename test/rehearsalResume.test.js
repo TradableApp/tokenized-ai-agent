@@ -266,8 +266,18 @@ describe("scripts/rehearsal/resume", function () {
 
       it("refuses an offer recorded done whose pending owner is no longer the Safe, naming it", function () {
         expect(() =>
+          decide({ steps: { "agent-owner-to-safe": done }, live: { agentPendingOwner: OWNER } }),
+        ).to.throw(new RegExp(`agent-owner-to-safe[\\s\\S]*${OWNER}`));
+      });
+
+      // Most often a rehearsal the confirm phase took back and then failed on: the way out is
+      // to move the snapshot aside, not to set anything by hand.
+      it("says to move the snapshot aside for an offer recorded done with none open", function () {
+        expect(() =>
           decide({ steps: { "agent-owner-to-safe": done }, live: { agentPendingOwner: ZERO } }),
-        ).to.throw(new RegExp(`agent-owner-to-safe[\\s\\S]*${ZERO}`));
+        ).to.throw(
+          /agent-owner-to-safe[\s\S]*no ownership offer is open[\s\S]*move the snapshot aside/,
+        );
       });
 
       it("refuses to replace an offer open to another address, naming it", function () {

@@ -30,7 +30,12 @@ const {
   runPlan,
 } = require("./rehearsal/steps");
 const { assertSafeCanBeTreasury } = require("./rehearsal/token");
-const { isLiveNetwork, signerRoleNote, reportSignerRole } = require("./rehearsal/oracleRole");
+const {
+  isLiveNetwork,
+  signerRoleNote,
+  reportSignerRole,
+  assertOracleIsNotSigner,
+} = require("./rehearsal/oracleRole");
 
 const { ethers } = hre;
 
@@ -443,6 +448,11 @@ async function readForwardStart({
   log,
   checkSignerRole,
 }) {
+  assertOracleIsNotSigner({
+    oracle: contracts.oracleAddress,
+    signer: signer.address,
+    source: "REHEARSAL_ORACLE_ADDRESS",
+  });
   await assertOwnershipMovesInTwoSteps(contracts);
   const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
   assertForwardCanUse(loaded.snapshot, snapshotFile);
@@ -575,6 +585,11 @@ async function readConfirmable({
     );
   }
   assertConfirmable(snapshot, snapshotFile);
+  assertOracleIsNotSigner({
+    oracle: snapshot.baseline.oracle,
+    signer: signer.address,
+    source: `The live oracle the snapshot at ${snapshotFile} watches`,
+  });
   await assertNoPendingTransactions({
     provider: ethers.provider,
     address: signer.address,
@@ -619,7 +634,9 @@ function refuseNotReturned({ mismatches, signer, log }) {
   if (mismatches.some((m) => m.field === "signerIsOracle")) {
     log(chalk.yellow(signerRoleNote(signer)));
   }
-  throw new RehearsalError("Rehearsal state has not been fully returned");
+  throw new RehearsalError(
+    "Rehearsal state has not been fully returned: each line above differs from the snapshot. Return each to the snapshot's value and run this phase again. If one differs because it was changed on purpose since the rehearsal, this phase fails on it every time: move the snapshot aside (keep it: it holds the values from before the rehearsal), and a later forward run starts from the live state.",
+  );
 }
 
 async function confirmPhase({
