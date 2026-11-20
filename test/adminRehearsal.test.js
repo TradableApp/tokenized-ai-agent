@@ -277,36 +277,65 @@ describe("scripts/admin-rehearsal", function () {
       ).to.be.rejectedWith(/PromptFeeUpdated/);
     });
 
-    it("skips a step whose getter already holds its target, so a partial run can be resumed", async function () {
-      // The live run on Base Sepolia stopped after fee-set had landed (a lagging public RPC node
-      // served the read-back). Re-running from the SAME baseline must not re-prove fee-set and
-      // must still restore the fee and finish the ownership hand-over.
+    it("follows the decisions it is given: skips, records as observed, and sends", async function () {
       const { contracts, state, deployer, safe } = await loadFixture(deployFixture);
       await contracts.escrow.connect(deployer).setPromptFee(REHEARSAL_FEE);
-      const lines = [];
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
         rehearsalPromptFee: REHEARSAL_FEE,
       });
+      const decisions = plan.map((step) => ({
+        step,
+        action:
+          { "fee-set": "observe", "treasury-set": "skip", "treasury-restore": "skip" }[step.id] ??
+          "send",
+        reason: "test",
+      }));
+      const recorded = [];
 
-      const results = await runPlan({
+      await runPlan({
+        plan,
+        decisions,
+        contracts,
+        signer: deployer,
+        dryRun: false,
+        log: () => {},
+        record: async (id, entry) => recorded.push([id, entry.status, entry.observed === true]),
+      });
+
+      expect(recorded[0]).to.deep.equal(["fee-set", "done", true]);
+      expect(recorded.map(([id]) => id)).to.not.include("treasury-set");
+      expect(await contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
+      expect(await contracts.aiAgent.pendingOwner()).to.equal(safe.address);
+    });
+
+    it("records each step as sent, with its hash, before it waits for it, and as done after its checks", async function () {
+      const { contracts, state, deployer, safe } = await loadFixture(deployFixture);
+      const plan = buildPlan({
+        state,
+        safeAddress: safe.address,
+        rehearsalPromptFee: REHEARSAL_FEE,
+      });
+      const recorded = [];
+
+      await runPlan({
         plan,
         contracts,
         signer: deployer,
         dryRun: false,
-        log: (l) => lines.push(String(l)),
+        log: () => {},
+        record: async (id, entry) => recorded.push({ id, ...entry }),
       });
 
-      const feeSet = results.find((r) => r.id === "fee-set");
-      expect(feeSet).to.deep.include({ txHash: null, skipped: true });
-      expect(lines.some((l) => l.includes("[fee-set]") || l.includes("already"))).to.equal(true);
-      expect(results.filter((r) => r.skipped)).to.have.length(1);
-      expect(await contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
-      expect(await contracts.aiAgent.owner()).to.equal(deployer.address);
-      expect(await contracts.escrow.owner()).to.equal(deployer.address);
-      expect(await contracts.aiAgent.pendingOwner()).to.equal(safe.address);
-      expect(await contracts.escrow.pendingOwner()).to.equal(safe.address);
+      expect(recorded).to.have.lengthOf(plan.length * 2);
+      plan.forEach((step, i) => {
+        const [sent, done] = [recorded[2 * i], recorded[2 * i + 1]];
+        expect(sent).to.deep.include({ id: step.id, status: "sent" });
+        expect(sent.txHash).to.match(/^0x[0-9a-f]{64}$/);
+        expect(done).to.deep.include({ id: step.id, status: "done", txHash: sent.txHash });
+        expect(done.blockNumber).to.be.a("number");
+      });
     });
   });
 
@@ -572,12 +601,15 @@ describe("scripts/admin-rehearsal", function () {
       const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratchSnapshot();
       fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
-      const before = fs.readFileSync(snapshotFile, "utf8");
+      const before = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
       await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
 
       await run(fixture, { snapshotFile });
 
-      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+      const after = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
+      expect(after.baseline).to.deep.equal(before.baseline);
+      expect(after.steps["fee-set"]).to.deep.equal({ status: "done", observed: true });
+      expect(after.steps["fee-restore"].status).to.equal("done");
       expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(true);
       expect(fixture.lines.some((l) => l.includes("Pre-rehearsal state saved"))).to.equal(false);
       expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
@@ -1045,6 +1077,123 @@ describe("scripts/admin-rehearsal", function () {
 
       expect(fixture.executed).to.equal(true);
     });
+  });
+
+  describe("forwardPhase run again: what it sends and what it refuses", function () {
+    const scratch = () =>
+      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-again-")), "snapshot.json");
+
+    function forward(fixture, overrides = {}) {
+      fixture.lines = [];
+      return forwardPhase({
+        contracts: fixture.contracts,
+        signer: fixture.deployer,
+        dryRun: false,
+        log: (line) => fixture.lines.push(String(line)),
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        ...overrides,
+      });
+    }
+
+    const nonce = (fixture) => ethers.provider.getTransactionCount(fixture.deployer.address);
+
+    async function withSteps(fixture, snapshotFile, steps) {
+      const written = JSON.parse(await snapshotText(fixture.contracts, fixture.state));
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify({ ...written, safe: fixture.safeContractAddress, steps }),
+      );
+    }
+
+    it("sends nothing again after a forward run that finished", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      await forward(fixture, { snapshotFile });
+      const sentBefore = await nonce(fixture);
+
+      await forward(fixture, { snapshotFile });
+
+      expect(await nonce(fixture)).to.equal(sentBefore);
+      expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
+    });
+
+    it("does not send a restore that landed without being recorded", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
+      await withSteps(fixture, snapshotFile, { "fee-set": done });
+      const sentBefore = await nonce(fixture);
+
+      await forward(fixture, { snapshotFile });
+
+      const steps = JSON.parse(fs.readFileSync(snapshotFile, "utf8")).steps;
+      expect(steps["fee-restore"]).to.deep.equal({ status: "done", observed: true });
+      // Treasury, oracle and the two offers: six transactions, none for the fee.
+      expect((await nonce(fixture)) - sentBefore).to.equal(6);
+    });
+
+    it("settles a step recorded as sent from its receipt, and does not send it again", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const tx = await fixture.contracts.escrow
+        .connect(fixture.deployer)
+        .setPromptFee(REHEARSAL_FEE);
+      const receipt = await tx.wait();
+      await withSteps(fixture, snapshotFile, { "fee-set": { status: "sent", txHash: tx.hash } });
+
+      await forward(fixture, { snapshotFile });
+
+      const steps = JSON.parse(fs.readFileSync(snapshotFile, "utf8")).steps;
+      expect(steps["fee-set"]).to.deep.equal({
+        status: "done",
+        txHash: tx.hash,
+        blockNumber: receipt.blockNumber,
+      });
+      expect(steps["fee-restore"].status).to.equal("done");
+      expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
+    });
+
+    it("refuses a finished pair whose value is the rehearsal value again, sending nothing", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
+      await withSteps(fixture, snapshotFile, { "fee-set": done, "fee-restore": done });
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+      const sentBefore = await nonce(fixture);
+
+      await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(/rehearsal value/);
+      expect(await nonce(fixture)).to.equal(sentBefore);
+    });
+
+    it("refuses to resume with another rehearsal fee than the one it was started with", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      await withSteps(fixture, snapshotFile, {});
+
+      await expect(
+        forward(fixture, { snapshotFile, rehearsalPromptFee: ethers.parseEther("3") }),
+      ).to.be.rejectedWith(/was started with the rehearsal fee/);
+    });
+
+    for (const dryRun of [false, true]) {
+      it(`refuses to start while the wallet has a transaction waiting to be mined (dryRun=${dryRun})`, async function () {
+        const fixture = await loadFixture(deployFixture);
+        const snapshotFile = scratch();
+        await ethers.provider.send("evm_setAutomine", [false]);
+        try {
+          await fixture.deployer.sendTransaction({ to: fixture.stranger.address, value: 1n });
+
+          await expect(forward(fixture, { snapshotFile, dryRun })).to.be.rejectedWith(
+            /waiting to be mined/,
+          );
+          expect(fs.existsSync(snapshotFile)).to.equal(false);
+        } finally {
+          await ethers.provider.send("evm_setAutomine", [true]);
+          await ethers.provider.send("evm_mine", []);
+        }
+      });
+    }
   });
 
   describe("forwardPhase failure path", function () {
