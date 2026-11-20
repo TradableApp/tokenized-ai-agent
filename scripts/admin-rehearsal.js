@@ -11,7 +11,14 @@ const {
   readSnapshot,
   checkLegacySnapshot,
 } = require("./rehearsal/snapshot");
-const { findLeftovers, assertNoLeftovers } = require("./rehearsal/resume");
+const {
+  readLive,
+  findLeftovers,
+  assertNoLeftovers,
+  decideSteps,
+  settleSentSteps,
+  assertNoPendingTransactions,
+} = require("./rehearsal/resume");
 
 const { ethers } = hre;
 
@@ -19,7 +26,7 @@ const DEFAULT_REHEARSAL_PROMPT_FEE_TOKENS = "2";
 const PHASES = new Set(["forward", "confirm"]);
 const MAINNET_NETWORK = "base";
 const RECOVERY_HINT =
-  "Re-run the forward phase to resume: the existing snapshot stays the restore baseline and steps whose getter already holds the target are skipped. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
+  "Re-run the forward phase to resume: the snapshot stays the restore baseline and records each step as it is sent and as it is proven, so a step recorded as sent is settled from its receipt and a finished pair is not sent again. Run REHEARSAL_PHASE=confirm to list what differs from the snapshot; a proxy whose pending owner is the Safe needs acceptOwnership() from the Safe; a proxy owned by the Safe is returned with transferOwnership(<deploy wallet>) from the Safe, and then accepted by the confirm phase from this wallet.";
 // Public RPC endpoints are load-balanced; the node that answers the read-back may not have the
 // block the receipt came from yet. Read at that block and retry rather than fail a landed tx.
 const VERIFY_ATTEMPTS = 5;
@@ -261,52 +268,75 @@ async function verifyGetter(
   );
 }
 
-/** True when the chain already holds the step's target value (a step an earlier run completed). */
-async function alreadyApplied(target, stepDef) {
-  const actual = await target[stepDef.verify.getter](...(stepDef.verify.args ?? []));
-  return sameValue(actual, stepDef.verify.expected);
+async function simulateStep(stepDef, target, log) {
+  try {
+    await target[stepDef.method].staticCall(...stepDef.args);
+  } catch (error) {
+    throw new Error(
+      `[${stepDef.id}] dry run of ${stepDef.contract}.${stepDef.method} would revert: ${error.message}`,
+    );
+  }
+  log("  dry-run:  call simulated OK");
+  return { id: stepDef.id, txHash: null, blockNumber: null };
 }
 
-async function runPlan({ plan, contracts, signer, dryRun, log }) {
+/**
+ * Sends one step. It is recorded "sent" with its hash as soon as the node returns one, before
+ * the run waits for it, and "done" only after its event and getter checks pass.
+ */
+async function sendStep(stepDef, target, log, record) {
+  let receipt;
+  try {
+    const tx = await target[stepDef.method](...stepDef.args);
+    await record(stepDef.id, { status: "sent", txHash: tx.hash });
+    receipt = await tx.wait();
+  } catch (error) {
+    throw new Error(
+      `[${stepDef.id}] ${stepDef.contract}.${stepDef.method} failed: ${error.message}\n${RECOVERY_HINT}`,
+    );
+  }
+  findEvent(receipt, target, stepDef);
+  await verifyGetter(target, stepDef, receipt);
+  await record(stepDef.id, {
+    status: "done",
+    txHash: receipt.hash,
+    blockNumber: receipt.blockNumber,
+  });
+  log(`  tx:       ${receipt.hash} (block ${receipt.blockNumber})`);
+  return { id: stepDef.id, txHash: receipt.hash, blockNumber: receipt.blockNumber };
+}
+
+/**
+ * Runs the plan as decided: `send` steps are sent (static-called in a dry run), `skip` steps
+ * are left, and `observe` steps are recorded done without being sent. With no decisions every
+ * step is sent. `record(id, entry)` keeps the step records; a dry run records nothing.
+ */
+async function runPlan({
+  plan,
+  decisions = plan.map((step) => ({ step, action: "send" })),
+  contracts,
+  signer,
+  dryRun,
+  log,
+  record = async () => {},
+}) {
   const results = [];
-  for (const stepDef of plan) {
+  for (const { step: stepDef, action, reason, warn } of decisions) {
     const target = contracts[CONTRACT_KEYS[stepDef.contract]].connect(signer);
     describeStep(stepDef, target, log);
-
-    if (dryRun) {
-      try {
-        await target[stepDef.method].staticCall(...stepDef.args);
-      } catch (error) {
-        throw new Error(
-          `[${stepDef.id}] dry run of ${stepDef.contract}.${stepDef.method} would revert: ${error.message}`,
-        );
-      }
-      log("  dry-run:  call simulated OK");
-      results.push({ id: stepDef.id, txHash: null, blockNumber: null });
-      continue;
-    }
-
-    if (await alreadyApplied(target, stepDef)) {
-      log(
-        `  skip:     ${getterCall(stepDef.verify)} already == ${stepDef.verify.expected} (applied by an earlier run)`,
-      );
+    const would = dryRun ? "would " : "";
+    if (action === "skip") {
+      log(warn ? chalk.yellow(`  ${would}skip: ${reason}`) : `  ${would}skip: ${reason}`);
       results.push({ id: stepDef.id, txHash: null, blockNumber: null, skipped: true });
-      continue;
+    } else if (action === "observe") {
+      log(`  ${would}record as done without sending: ${reason}`);
+      if (!dryRun) await record(stepDef.id, { status: "done", observed: true });
+      results.push({ id: stepDef.id, txHash: null, blockNumber: null, observed: true });
+    } else if (dryRun) {
+      results.push(await simulateStep(stepDef, target, log));
+    } else {
+      results.push(await sendStep(stepDef, target, log, record));
     }
-
-    let receipt;
-    try {
-      const tx = await target[stepDef.method](...stepDef.args);
-      receipt = await tx.wait();
-    } catch (error) {
-      throw new Error(
-        `[${stepDef.id}] ${stepDef.contract}.${stepDef.method} failed: ${error.message}\n${RECOVERY_HINT}`,
-      );
-    }
-    findEvent(receipt, target, stepDef);
-    await verifyGetter(target, stepDef, receipt);
-    log(`  tx:       ${receipt.hash} (block ${receipt.blockNumber})`);
-    results.push({ id: stepDef.id, txHash: receipt.hash, blockNumber: receipt.blockNumber });
   }
   return results;
 }
@@ -452,6 +482,74 @@ function parseRehearsalFee(raw) {
   }
 }
 
+const show = (values) =>
+  JSON.stringify(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, String(v)])));
+
+/**
+ * The run's snapshot. A snapshot left by an aborted live run is the ONLY record of the
+ * pre-rehearsal values; the live state may already carry rehearsal values (e.g. the fee). It
+ * stays the restore baseline and is never overwritten, and it must be resumed with the Safe and
+ * rehearsal fee it was started with. To start over deliberately, move the file aside first. A
+ * snapshot the confirm phase has passed is a finished rehearsal, not a baseline: the next one
+ * starts from the live state, which must then show nothing a rehearsal leaves behind.
+ */
+async function beginRun({
+  left,
+  resuming,
+  live,
+  contracts,
+  safeAddress,
+  rehearsalPromptFee,
+  file,
+}) {
+  const safe = assertSafeAddress(safeAddress, live);
+  if (!resuming) {
+    assertNoLeftovers(await findLeftovers({ contracts, safe, rehearsalPromptFee }));
+    return { safe, rehearsalPromptFee, baseline: live, steps: {}, confirmed: false };
+  }
+  // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
+  // Safe's oracle role would go unchecked.
+  if (left.safe && !sameValue(left.safe, safe)) {
+    throw new Error(
+      `The rehearsal in ${file} was started with the Safe ${left.safe}, not ${safe}. Nothing was sent. Resume it with the Safe it was started with.`,
+    );
+  }
+  // Another fee would leave a set made with the first one looking like a value from elsewhere.
+  if (!sameValue(left.rehearsalPromptFee, rehearsalPromptFee)) {
+    throw new Error(
+      `The rehearsal in ${file} was started with the rehearsal fee ${left.rehearsalPromptFee}, not ${rehearsalPromptFee}. Nothing was sent. Resume it with the fee it was started with.`,
+    );
+  }
+  return { ...left, safe };
+}
+
+/** Each step a run with this snapshot sends, skips or records as observed. */
+async function decideRun({ plan, contracts, signer, snapshot, log, save }) {
+  const steps = await settleSentSteps({
+    plan,
+    steps: snapshot.steps,
+    getReceipt: (hash) => ethers.provider.getTransactionReceipt(hash),
+    // The run refused to start with a transaction pending, so one with no receipt did not land.
+    hasPending: false,
+    check: async (stepDef, receipt) => {
+      const target = contracts[CONTRACT_KEYS[stepDef.contract]].connect(signer);
+      findEvent(receipt, target, stepDef);
+      await verifyGetter(target, stepDef, receipt);
+    },
+  });
+  for (const [id, record] of Object.entries(snapshot.steps)) {
+    if (record.status === "sent") {
+      log(`[${id}] sent as ${record.txHash}: ${steps[id] ? "landed" : "did not land"}`);
+    }
+  }
+  save({ ...snapshot, steps });
+  const live = await readLive({ contracts, safe: snapshot.safe });
+  return {
+    steps,
+    decisions: decideSteps({ ...snapshot, plan, steps, live }),
+  };
+}
+
 async function forwardPhase({
   contracts,
   signer,
@@ -469,21 +567,11 @@ async function forwardPhase({
   }
 
   await assertOwnershipMovesInTwoSteps(contracts);
-  const {
-    pair,
-    chainId,
-    snapshot: left,
-  } = await loadSnapshot({
-    contracts,
-    snapshotFile,
-    legacySnapshotFile,
-    network,
-    log,
-  });
-  assertForwardCanUse(left, snapshotFile);
+  const file = snapshotFile;
+  const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
+  const { pair, chainId, snapshot: left } = loaded;
+  assertForwardCanUse(left, file);
   const live = await readState(contracts);
-  const show = (st) =>
-    JSON.stringify(Object.fromEntries(Object.entries(st).map(([k, v]) => [k, String(v)])));
   log(`Live state: ${show(live)}`);
   if (!contracts.oracleAddress) {
     log(
@@ -493,47 +581,39 @@ async function forwardPhase({
     );
   }
   assertSignerOwnsBoth(signer.address, live);
+  await assertNoPendingTransactions({ provider: ethers.provider, address: signer.address });
 
-  // A snapshot left by an aborted live run is the ONLY record of the pre-rehearsal values; the
-  // live state may already carry rehearsal values (e.g. the fee). It stays the restore baseline
-  // and is never overwritten. To start over deliberately, move the file aside first. A snapshot
-  // the confirm phase has passed is a finished rehearsal, not a baseline: the next one starts
-  // from the live state. A dry run reads the file too, so that it refuses what the live run
-  // would, and then leaves it alone.
   const resuming = !dryRun && left !== null && !left.confirmed;
-  const state = resuming ? left.baseline : live;
+  const begun = await beginRun({
+    left,
+    resuming,
+    live,
+    contracts,
+    safeAddress,
+    rehearsalPromptFee,
+    file,
+  });
+  let snapshot = { ...begun, network, chainId, pair };
+  if (resuming)
+    log(`Resuming: ${file} exists and stays the restore baseline: ${show(snapshot.baseline)}`);
+  const plan = buildPlan({ state: snapshot.baseline, safeAddress, rehearsalPromptFee });
+  await assertSafeHasCode(snapshot.safe);
+
+  const save = (next) => {
+    snapshot = next;
+    if (!dryRun) writeSnapshot(file, snapshot);
+  };
   if (!resuming) {
-    const safe = assertSafeAddress(safeAddress, live);
-    assertNoLeftovers(await findLeftovers({ contracts, safe, rehearsalPromptFee }));
+    save(snapshot);
+    if (!dryRun) log(`Pre-rehearsal state saved to ${file} before any transaction is sent`);
   }
-  if (resuming) {
-    // The confirm phase checks the Safe the snapshot names. Resumed with another one, that
-    // Safe's oracle role would go unchecked.
-    if (left.safe && !sameValue(left.safe, safeAddress)) {
-      throw new Error(
-        `The rehearsal in ${snapshotFile} was started with the Safe ${left.safe}, not ${safeAddress}. Nothing was sent. Resume it with the Safe it was started with.`,
-      );
-    }
-    log(`Resuming: ${snapshotFile} exists and stays the restore baseline: ${show(state)}`);
-  }
-  const plan = buildPlan({ state, safeAddress, rehearsalPromptFee });
-  await assertSafeHasCode(ethers.getAddress(safeAddress));
+  const { decisions } = await decideRun({ plan, contracts, signer, snapshot, log, save });
+  // A step's record is on disk before the next step is sent, so a restore is sent only after
+  // its set's "done" record is written.
+  const record = async (id, entry) =>
+    save({ ...snapshot, steps: { ...snapshot.steps, [id]: entry } });
 
-  if (!dryRun && !resuming) {
-    writeSnapshot(snapshotFile, {
-      network,
-      chainId,
-      pair,
-      safe: ethers.getAddress(safeAddress),
-      rehearsalPromptFee,
-      baseline: state,
-      steps: {},
-      confirmed: false,
-    });
-    log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
-  }
-
-  const results = await execute({ plan, contracts, signer, dryRun, log });
+  const results = await execute({ plan, decisions, contracts, signer, dryRun, log, record });
 
   if (dryRun) {
     log(chalk.green(`\nDry run complete: ${results.length} calls simulated, nothing sent.`));

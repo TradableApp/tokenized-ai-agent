@@ -539,7 +539,7 @@ describe("scripts/admin-rehearsal", function () {
       const firstStepAt = fixture.lines.findIndex((l) => l.includes("[fee-set]"));
       expect(savedAt).to.be.greaterThan(-1);
       expect(savedAt).to.be.lessThan(firstStepAt);
-      const { pair, safe, baseline, updatedAt, ...saved } = JSON.parse(
+      const { pair, safe, baseline, updatedAt, steps, ...saved } = JSON.parse(
         fs.readFileSync(snapshotFile, "utf8"),
       );
       expect(safe).to.equal(fixture.safeContractAddress);
@@ -550,9 +550,10 @@ describe("scripts/admin-rehearsal", function () {
         network: "hardhat",
         chainId: "31337",
         rehearsalPromptFee: String(REHEARSAL_FEE),
-        steps: {},
         confirmed: false,
       });
+      // Every step the run sent is recorded done.
+      expect(Object.values(steps).map((step) => step.status)).to.deep.equal(Array(8).fill("done"));
       expect(baseline).to.deep.equal({
         agentOwner: fixture.state.agentOwner,
         escrowOwner: fixture.state.escrowOwner,
