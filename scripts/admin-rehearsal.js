@@ -583,7 +583,9 @@ async function forwardPhase({
   assertSignerOwnsBoth(signer.address, live);
   await assertNoPendingTransactions({ provider: ethers.provider, address: signer.address });
 
-  const resuming = !dryRun && left !== null && !left.confirmed;
+  // A dry run takes the same path, so that it predicts the live run: it resumes, settles,
+  // decides and refuses as the live run would, and only writes nothing.
+  const resuming = left !== null && !left.confirmed;
   const begun = await beginRun({
     left,
     resuming,
@@ -616,7 +618,8 @@ async function forwardPhase({
   const results = await execute({ plan, decisions, contracts, signer, dryRun, log, record });
 
   if (dryRun) {
-    log(chalk.green(`\nDry run complete: ${results.length} calls simulated, nothing sent.`));
+    const simulated = results.filter((r) => !r.skipped && !r.observed).length;
+    log(chalk.green(`\nDry run complete: ${simulated} calls simulated, nothing sent or written.`));
     return;
   }
 
