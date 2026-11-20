@@ -35,6 +35,7 @@ const {
   signerRoleNote,
   reportSignerRole,
   assertOracleIsNotSigner,
+  assertSnapshotOracleIsNotSigner,
 } = require("./rehearsal/oracleRole");
 
 const { ethers } = hre;
@@ -448,11 +449,10 @@ async function readForwardStart({
   log,
   checkSignerRole,
 }) {
-  assertOracleIsNotSigner({
-    oracle: contracts.oracleAddress,
-    signer: signer.address,
-    source: "REHEARSAL_ORACLE_ADDRESS",
-  });
+  if (checkSignerRole) {
+    const { oracleAddress: oracle } = contracts;
+    assertOracleIsNotSigner({ oracle, signer: signer.address, source: "REHEARSAL_ORACLE_ADDRESS" });
+  }
   await assertOwnershipMovesInTwoSteps(contracts);
   const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
   assertForwardCanUse(loaded.snapshot, snapshotFile);
@@ -593,11 +593,6 @@ async function readConfirmable({
     );
   }
   assertConfirmable(snapshot, snapshotFile);
-  assertOracleIsNotSigner({
-    oracle: snapshot.baseline.oracle,
-    signer: signer.address,
-    source: `The live oracle the snapshot at ${snapshotFile} watches`,
-  });
   await assertNoPendingTransactions({
     provider: ethers.provider,
     address: signer.address,
@@ -672,6 +667,15 @@ async function confirmPhase({
     log(chalk.yellow("This snapshot was already confirmed. Checking it against the chain again."));
   }
   const accepted = await accept({ contracts, signer, log });
+  if (checkSignerRole) {
+    const { oracle } = state;
+    assertSnapshotOracleIsNotSigner({
+      oracle,
+      signer: signer.address,
+      file: snapshotFile,
+      accepted,
+    });
+  }
   if (!("encryptionKey" in state)) log(chalk.yellow(NO_ENCRYPTION_KEY_NOTE));
   // An acceptance that has just landed can be read from a node still behind its block, which
   // reports the Safe as owner. Read again then. With nothing accepted, the first answer stands.
