@@ -38,7 +38,7 @@ async function reportSignerRole({ aiAgent, signer, log }) {
 function assertOracleIsNotSigner({ oracle, signer, source }) {
   if (!oracle || !sameValue(oracle, signer)) return;
   throw new RehearsalError(
-    `${source} is the signer ${signer}. The rehearsal checks that the live oracle keeps its role, and the signer's own role is one the owner removes before the handover, so they must be two addresses. Nothing was sent. Name the address the oracle answers prompts from, or leave it unset.`,
+    `${source} is the signer ${signer}. The rehearsal checks that the live oracle keeps its role, and the signer's own role is one the owner removes before the handover, so they must be two addresses. Nothing has been sent. Name the address the oracle answers prompts from, or leave it unset.`,
   );
 }
 

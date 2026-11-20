@@ -20,14 +20,18 @@ const BARE_REVERT = /^execution reverted$/i;
  * The error comes in three forms. ethers turns a JSON-RPC error into CALL_EXCEPTION with the
  * node's own error under `info.error`. Hardhat's HTTP provider throws a ProviderError carrying
  * the node's numeric code and message, and `data` only when the node sent it. The in-process
- * Hardhat network throws its own error with the empty data. Any other ethers code is refused.
+ * Hardhat network throws its own error with the empty data. Any other ethers code is refused,
+ * and so is the bare text on an error with no code: nothing says a node answered.
  */
 function isEmptyRevert(error) {
   if (error === null || typeof error !== "object") return false;
   if (typeof error.code === "string" && error.code !== "CALL_EXCEPTION") return false;
   if (error.data === "0x") return true;
   if (error.data !== undefined && error.data !== null) return false;
-  const message = error.code === "CALL_EXCEPTION" ? error.info?.error?.message : error.message;
+  // The text alone proves nothing: it counts only on an error whose code says a node answered.
+  const fromEthers = error.code === "CALL_EXCEPTION";
+  if (!fromEthers && typeof error.code !== "number") return false;
+  const message = fromEthers ? error.info?.error?.message : error.message;
   return BARE_REVERT.test(String(message ?? "").trim());
 }
 

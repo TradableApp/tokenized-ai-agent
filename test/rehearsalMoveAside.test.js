@@ -76,7 +76,7 @@ describe("the rehearsal's way out of a snapshot it cannot finish", function () {
 
       await expect(
         forward(fixture, { contracts, snapshotFile, dryRun, network: LIVE }),
-      ).to.be.rejectedWith(/REHEARSAL_ORACLE_ADDRESS is the signer[\s\S]*Nothing was sent/);
+      ).to.be.rejectedWith(/REHEARSAL_ORACLE_ADDRESS is the signer[\s\S]*Nothing has been sent/);
 
       expect(fs.existsSync(snapshotFile)).to.equal(false);
       expect(await ethers.provider.getTransactionCount(fixture.deployer.address)).to.equal(nonce);
