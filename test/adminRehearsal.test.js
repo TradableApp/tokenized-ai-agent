@@ -801,7 +801,7 @@ describe("scripts/admin-rehearsal", function () {
       expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
     });
 
-    it("leaves this pair's snapshot alone in a dry run", async function () {
+    it("resumes this pair's snapshot in a dry run as a live run would, and leaves the file as it is", async function () {
       const fixture = await loadFixture(deployFixture);
       const snapshotFile = scratch();
       fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
@@ -810,7 +810,7 @@ describe("scripts/admin-rehearsal", function () {
       await run(fixture, { snapshotFile, dryRun: true });
 
       expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
-      expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(false);
+      expect(fixture.lines.some((l) => /resum/i.test(l))).to.equal(true);
     });
 
     // A node that did not answer is not a pair without the getter.
@@ -1195,6 +1195,96 @@ describe("scripts/admin-rehearsal", function () {
         }
       });
     }
+  });
+
+  describe("the dry run, on the same path as a live run", function () {
+    const scratch = () =>
+      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-dry-")), "snapshot.json");
+    const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
+
+    function forward(fixture, overrides = {}) {
+      fixture.lines = [];
+      return forwardPhase({
+        contracts: fixture.contracts,
+        signer: fixture.deployer,
+        dryRun: true,
+        log: (line) => fixture.lines.push(String(line)),
+        safeAddress: fixture.safeContractAddress,
+        rehearsalPromptFee: REHEARSAL_FEE,
+        ...overrides,
+      });
+    }
+
+    async function withSteps(fixture, snapshotFile, steps) {
+      const written = JSON.parse(await snapshotText(fixture.contracts, fixture.state));
+      fs.writeFileSync(
+        snapshotFile,
+        JSON.stringify({ ...written, safe: fixture.safeContractAddress, steps }),
+      );
+      return fs.readFileSync(snapshotFile, "utf8");
+    }
+
+    const simulated = (fixture) =>
+      fixture.lines.filter((l) => l.includes("call simulated OK")).length;
+
+    it("simulates only the steps a resumed live run would send, and says which it would skip", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const before = await withSteps(fixture, snapshotFile, { "fee-set": done });
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+      const nonce = await ethers.provider.getTransactionCount(fixture.deployer.address);
+
+      await forward(fixture, { snapshotFile });
+
+      expect(simulated(fixture)).to.equal(7);
+      expect(fixture.lines.some((l) => /would skip/.test(l))).to.equal(true);
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+      expect(await ethers.provider.getTransactionCount(fixture.deployer.address)).to.equal(nonce);
+    });
+
+    it("simulates nothing after a forward run that finished", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      await forward(fixture, { snapshotFile, dryRun: false });
+      const before = fs.readFileSync(snapshotFile, "utf8");
+
+      await forward(fixture, { snapshotFile });
+
+      expect(simulated(fixture)).to.equal(0);
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+    });
+
+    it("does not take what a resumed rehearsal set for a leftover", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      await withSteps(fixture, snapshotFile, { "treasury-set": done });
+      await fixture.contracts.escrow
+        .connect(fixture.deployer)
+        .setTreasury(fixture.safeContractAddress);
+
+      await forward(fixture, { snapshotFile });
+
+      expect(simulated(fixture)).to.equal(7);
+    });
+
+    it("refuses what the live run would refuse: a finished pair back at the rehearsal value", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      await withSteps(fixture, snapshotFile, { "fee-set": done, "fee-restore": done });
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+
+      await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(/rehearsal value/);
+    });
+
+    it("refuses what the live run would refuse: another rehearsal fee than the one started with", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      await withSteps(fixture, snapshotFile, {});
+
+      await expect(
+        forward(fixture, { snapshotFile, rehearsalPromptFee: ethers.parseEther("3") }),
+      ).to.be.rejectedWith(/was started with the rehearsal fee/);
+    });
   });
 
   describe("forwardPhase failure path", function () {
