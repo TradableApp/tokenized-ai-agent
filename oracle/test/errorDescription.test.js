@@ -1,7 +1,12 @@
 const { expect } = require("chai");
 const util = require("node:util");
 const { ethers } = require("ethers");
-const { describeError, describedError, withoutAddresses } = require("../src/errorDescription");
+const {
+  describeError,
+  describedError,
+  errorKind,
+  withoutAddresses,
+} = require("../src/errorDescription");
 const { isTransientProviderError } = require("../src/errors");
 const { refusedByProvider } = require("./helpers/refusedByProvider");
 
@@ -148,6 +153,32 @@ describe("errorDescription — what an error is, without the address it was sent
         "down: [address removed]",
       );
     });
+  });
+});
+
+describe("errorKind — what kind of error it was, and nothing it says", () => {
+  it("is the error's code when it has one", () => {
+    const error = Object.assign(new Error("connect to postgres://user:pw@db/agent failed"), {
+      code: "ECONNREFUSED",
+    });
+
+    expect(errorKind(error)).to.equal("ECONNREFUSED");
+  });
+
+  it("is the error's name when it has no code", () => {
+    expect(errorKind(new TypeError("postgres://user:pw@db/agent is not valid"))).to.equal(
+      "TypeError",
+    );
+  });
+
+  it("is a numeric code as text", () => {
+    expect(errorKind({ code: 503, message: "down" })).to.equal("503");
+  });
+
+  it("is Error for a value with neither, never its message", () => {
+    expect(errorKind({ message: "postgres://user:pw@db/agent" })).to.equal("Error");
+    expect(errorKind(null)).to.equal("Error");
+    expect(errorKind(undefined)).to.equal("Error");
   });
 });
 
