@@ -333,6 +333,7 @@ describe("scripts/admin-rehearsal", function () {
       plan.forEach((step, i) => {
         const [sent, done] = [recorded[2 * i], recorded[2 * i + 1]];
         expect(sent).to.deep.include({ id: step.id, status: "sent" });
+        expect(sent.nonce).to.be.a("number");
         expect(sent.txHash).to.match(/^0x[0-9a-f]{64}$/);
         expect(done).to.deep.include({ id: step.id, status: "done", txHash: sent.txHash });
         expect(done.blockNumber).to.be.a("number");
@@ -1154,6 +1155,79 @@ describe("scripts/admin-rehearsal", function () {
       });
       expect(steps["fee-restore"].status).to.equal("done");
       expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
+    });
+
+    // A node that has pruned the state at the receipt's block cannot answer a read there.
+    it("settles a sent step from its receipt and event, without reading state at its block", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const tx = await fixture.contracts.escrow
+        .connect(fixture.deployer)
+        .setPromptFee(REHEARSAL_FEE);
+      const receipt = await tx.wait();
+      await withSteps(fixture, snapshotFile, {
+        "fee-set": { status: "sent", txHash: tx.hash, nonce: tx.nonce },
+      });
+      const pruned = new Proxy(fixture.contracts.escrow, {
+        get(target, property) {
+          if (property === "connect") return () => pruned;
+          if (property === "promptFee") {
+            return async (...args) => {
+              if (args.some((a) => a && typeof a === "object" && "blockTag" in a)) {
+                throw new Error("missing trie node");
+              }
+              return target.promptFee(...args);
+            };
+          }
+          return Reflect.get(target, property, target);
+        },
+      });
+
+      await forward(fixture, {
+        snapshotFile,
+        contracts: { ...fixture.contracts, escrow: pruned },
+        execute: async () => [],
+      });
+
+      const steps = JSON.parse(fs.readFileSync(snapshotFile, "utf8")).steps;
+      expect(steps["fee-set"]).to.deep.equal({
+        status: "done",
+        txHash: tx.hash,
+        blockNumber: receipt.blockNumber,
+      });
+    });
+
+    it("refuses a sent step whose receipt does not carry the step's event", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const other = await fixture.contracts.escrow
+        .connect(fixture.deployer)
+        .setPromptFee(ethers.parseEther("1.5"));
+      await other.wait();
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(PROMPT_FEE);
+      await withSteps(fixture, snapshotFile, {
+        "fee-set": { status: "sent", txHash: other.hash, nonce: other.nonce },
+      });
+
+      await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(
+        /\[fee-set\] PromptFeeUpdated arg 0/,
+      );
+    });
+
+    it("forgets a sent step this node has no receipt for when its nonce is unused, and sends it", async function () {
+      const fixture = await loadFixture(deployFixture);
+      const snapshotFile = scratch();
+      const nonce = await ethers.provider.getTransactionCount(fixture.deployer.address);
+      await withSteps(fixture, snapshotFile, {
+        "fee-set": { status: "sent", txHash: `0x${"ef".repeat(32)}`, nonce },
+      });
+
+      await forward(fixture, { snapshotFile });
+
+      expect(fixture.lines.some((l) => l.includes("no receipt found on this node"))).to.equal(true);
+      const steps = JSON.parse(fs.readFileSync(snapshotFile, "utf8")).steps;
+      expect(steps["fee-set"].txHash).to.not.equal(`0x${"ef".repeat(32)}`);
+      expect(steps["fee-set"].status).to.equal("done");
     });
 
     it("refuses a finished pair whose value is the rehearsal value again, sending nothing", async function () {

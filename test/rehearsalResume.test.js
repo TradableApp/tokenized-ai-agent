@@ -251,23 +251,24 @@ describe("scripts/rehearsal/resume", function () {
 
   describe("settleSentSteps", function () {
     const plan = [{ id: "fee-set" }, { id: "fee-restore" }];
-    const sent = { status: "sent", txHash: "0xaa" };
+    const sent = { status: "sent", txHash: "0xaa", nonce: 7 };
 
-    function settle({ receipt, hasPending = false, check = async () => {} }) {
+    function settle({ receipt, latest = 7, pending = latest, record = sent, check = () => {} }) {
       return settleSentSteps({
         plan,
-        steps: { "fee-set": sent },
+        steps: { "fee-set": record },
         getReceipt: async () => receipt,
-        hasPending,
+        getCounts: async () => ({ latest, pending }),
         check,
+        log: () => {},
       });
     }
 
-    it("marks a sent step done once its receipt succeeded and its check passes", async function () {
+    it("marks a sent step done once its receipt succeeded and its event check passes", async function () {
       const checked = [];
       const steps = await settle({
         receipt: { status: 1, hash: "0xaa", blockNumber: 9 },
-        check: async (stepDef, receipt) => checked.push([stepDef.id, receipt.blockNumber]),
+        check: (stepDef, receipt) => checked.push([stepDef.id, receipt.blockNumber]),
       });
 
       expect(steps).to.deep.equal({
@@ -280,11 +281,11 @@ describe("scripts/rehearsal/resume", function () {
       await expect(
         settle({
           receipt: { status: 1, hash: "0xaa", blockNumber: 9 },
-          check: async () => {
-            throw new Error("getter disagrees");
+          check: () => {
+            throw new Error("event not emitted");
           },
         }),
-      ).to.be.rejectedWith(/getter disagrees/);
+      ).to.be.rejectedWith(/event not emitted/);
     });
 
     it("forgets a step whose transaction reverted", async function () {
@@ -293,14 +294,26 @@ describe("scripts/rehearsal/resume", function () {
       );
     });
 
-    it("forgets a step with no receipt while the wallet has nothing pending", async function () {
-      expect(await settle({ receipt: null })).to.deep.equal({});
+    it("forgets a step with no receipt whose nonce is unused while nothing is pending", async function () {
+      expect(await settle({ receipt: null, latest: 7, pending: 7 })).to.deep.equal({});
+    });
+
+    it("refuses a step with no receipt whose nonce the wallet has used: it or a replacement landed", async function () {
+      await expect(settle({ receipt: null, latest: 8 })).to.be.rejectedWith(
+        /fee-set[\s\S]*landed[\s\S]*cannot show it/,
+      );
     });
 
     it("refuses a step with no receipt while the wallet has a transaction pending", async function () {
-      await expect(settle({ receipt: null, hasPending: true })).to.be.rejectedWith(
+      await expect(settle({ receipt: null, latest: 7, pending: 8 })).to.be.rejectedWith(
         /fee-set[\s\S]*wait[\s\S]*run again/i,
       );
+    });
+
+    it("refuses a step with no receipt and no nonce recorded, which it cannot place", async function () {
+      await expect(
+        settle({ receipt: null, record: { status: "sent", txHash: "0xaa" } }),
+      ).to.be.rejectedWith(/fee-set[\s\S]*no nonce/);
     });
 
     it("leaves steps recorded as done as they are", async function () {
@@ -311,8 +324,11 @@ describe("scripts/rehearsal/resume", function () {
         getReceipt: async () => {
           throw new Error("not asked");
         },
-        hasPending: false,
-        check: async () => {},
+        getCounts: async () => {
+          throw new Error("not asked");
+        },
+        check: () => {},
+        log: () => {},
       });
 
       expect(steps).to.deep.equal({ "fee-set": doneStep });
