@@ -163,7 +163,10 @@ describe("scripts/rehearsal", function () {
     it("writes version 2 with every field, amounts as text", function () {
       const file = scratchFile();
 
-      writeSnapshot(file, snapshot({ steps: { "fee-set": { status: "sent", txHash: "0xab" } } }));
+      writeSnapshot(
+        file,
+        snapshot({ steps: { "fee-set": { status: "sent", txHash: "0xab", nonce: 0 } } }),
+      );
 
       const written = JSON.parse(fs.readFileSync(file, "utf8"));
       expect(written).to.deep.include({
@@ -174,7 +177,7 @@ describe("scripts/rehearsal", function () {
         safe: OTHER,
         rehearsalPromptFee: "2",
         baseline: { agentOwner: AGENT, treasury: ESCROW, promptFee: "1" },
-        steps: { "fee-set": { status: "sent", txHash: "0xab" } },
+        steps: { "fee-set": { status: "sent", txHash: "0xab", nonce: 0 } },
         confirmed: false,
       });
       expect(Date.parse(written.updatedAt)).to.not.be.NaN;
@@ -388,6 +391,8 @@ describe("scripts/rehearsal", function () {
 
     // A file edited by hand must be refused by name, not fail on a missing field part-way.
     for (const [field, edit] of [
+      ["network", (r) => ({ ...r, network: undefined })],
+      ["network", (r) => ({ ...r, network: 8453 })],
       ["chainId", (r) => ({ ...r, chainId: undefined })],
       ["safe", (r) => ({ ...r, safe: undefined })],
       ["rehearsalPromptFee", (r) => ({ ...r, rehearsalPromptFee: undefined })],
@@ -397,6 +402,10 @@ describe("scripts/rehearsal", function () {
       ["steps.fee-set", (r) => ({ ...r, steps: { "fee-set": null } })],
       ["steps.fee-set.status", (r) => ({ ...r, steps: { "fee-set": { status: "queued" } } })],
       ["steps.fee-set.txHash", (r) => ({ ...r, steps: { "fee-set": { status: "sent" } } })],
+      ...[undefined, -1, 1.5, "7"].map((nonce) => [
+        "steps.fee-set.nonce",
+        (r) => ({ ...r, steps: { "fee-set": { status: "sent", txHash: "0xab", nonce } } }),
+      ]),
       [
         "steps.fee-done",
         (r) => ({ ...r, steps: { "fee-done": { status: "done", txHash: "0xab" } } }),
@@ -411,9 +420,17 @@ describe("scripts/rehearsal", function () {
         const message = expectNoDelete(() => readSnapshot(file, EXPECTED));
 
         expect(message).to.include(file);
-        expect(message).to.include(field);
+        expect(message).to.include(`a field the script does not write, ${field},`);
       });
     }
+
+    it("reads back a step recorded as sent with its hash and the first nonce, zero", function () {
+      const file = scratchFile();
+      const steps = { "fee-set": { status: "sent", txHash: "0xab", nonce: 0 } };
+      writeSnapshot(file, snapshot({ steps }));
+
+      expect(readSnapshot(file, EXPECTED).steps).to.deep.equal(steps);
+    });
 
     it("refuses a snapshot written by a version of the script it does not know", function () {
       const file = scratchFile();

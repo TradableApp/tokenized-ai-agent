@@ -1317,7 +1317,9 @@ describe("scripts/admin-rehearsal", function () {
         .connect(fixture.deployer)
         .setPromptFee(REHEARSAL_FEE);
       const receipt = await tx.wait();
-      await withSteps(fixture, snapshotFile, { "fee-set": { status: "sent", txHash: tx.hash } });
+      await withSteps(fixture, snapshotFile, {
+        "fee-set": { status: "sent", txHash: tx.hash, nonce: tx.nonce },
+      });
 
       await forward(fixture, { snapshotFile });
 
@@ -1874,7 +1876,7 @@ describe("scripts/admin-rehearsal", function () {
       const hash = `0x${"cd".repeat(32)}`;
       const { snapshotFile, refusal, accepted } = await confirmWith(fixture, {
         ...OFFERS_DONE,
-        "fee-set": { status: "sent", txHash: hash },
+        "fee-set": { status: "sent", txHash: hash, nonce: 0 },
       });
 
       await expect(refusal).to.be.rejectedWith(new RegExp(`fee-set[\\s\\S]*${hash}`));
