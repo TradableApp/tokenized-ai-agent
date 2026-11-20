@@ -264,6 +264,107 @@ describe("scripts/admin-rehearsal", function () {
       expect(await contracts.escrow.pendingOwner()).to.equal(safe.address);
     });
 
+    describe("when something fails after the node has taken the transaction", function () {
+      async function runFee(fixture, { record, tamper = false }) {
+        const plan = buildPlan({
+          state: fixture.state,
+          safeAddress: fixture.safe.address,
+          rehearsalPromptFee: REHEARSAL_FEE,
+        });
+        const first = tamper
+          ? { ...plan[0], event: { name: "PromptFeeUpdated", args: [PROMPT_FEE] } }
+          : plan[0];
+        const lines = [];
+        let failure;
+        try {
+          await runPlan({
+            plan: [first],
+            contracts: fixture.contracts,
+            signer: fixture.deployer,
+            dryRun: false,
+            log: (l) => lines.push(String(l)),
+            record,
+          });
+        } catch (error) {
+          failure = error;
+        }
+        return { failure, lines };
+      }
+
+      const hashIn = (lines) => lines.join("\n").match(/sent: +(0x[0-9a-f]{64})/)?.[1];
+
+      it("logs the hash as soon as the node returns it", async function () {
+        const fixture = await loadFixture(deployFixture);
+
+        const { failure, lines } = await runFee(fixture, { record: async () => {} });
+
+        expect(failure).to.equal(undefined);
+        expect(hashIn(lines)).to.match(/^0x[0-9a-f]{64}$/);
+      });
+
+      it("says a step whose sent record could not be written may land, and to send nothing by hand", async function () {
+        const fixture = await loadFixture(deployFixture);
+        const diskFull = new Error("ENOSPC: no space left on device");
+
+        const { failure, lines } = await runFee(fixture, {
+          record: async (id, entry) => {
+            if (entry.status === "sent") throw diskFull;
+          },
+        });
+
+        const hash = hashIn(lines);
+        expect(failure.message).to.include(`[fee-set] sent as ${hash}`);
+        expect(failure.message).to.match(
+          /snapshot could not be written[\s\S]*may land[\s\S]*send nothing by hand/,
+        );
+        expect(failure.cause).to.equal(diskFull);
+      });
+
+      it("says a step that landed but could not be recorded done landed, and to run again", async function () {
+        const fixture = await loadFixture(deployFixture);
+        const diskFull = new Error("ENOSPC: no space left on device");
+
+        const { failure, lines } = await runFee(fixture, {
+          record: async (id, entry) => {
+            if (entry.status === "done") throw diskFull;
+          },
+        });
+
+        expect(failure.message).to.include(hashIn(lines));
+        expect(failure.message).to.match(/\[fee-set\][\s\S]*landed[\s\S]*run again/);
+        expect(failure.cause).to.equal(diskFull);
+      });
+
+      it("says a step whose event check failed after it landed landed, naming its hash", async function () {
+        const fixture = await loadFixture(deployFixture);
+
+        const { failure, lines } = await runFee(fixture, { record: async () => {}, tamper: true });
+
+        expect(failure.message).to.include(hashIn(lines));
+        expect(failure.message).to.match(/PromptFeeUpdated[\s\S]*landed[\s\S]*run again/);
+      });
+
+      it("keeps the error a failed send was reported with", async function () {
+        const fixture = await loadFixture(deployFixture);
+        const plan = buildPlan({
+          state: fixture.state,
+          safeAddress: fixture.safe.address,
+          rehearsalPromptFee: REHEARSAL_FEE,
+        });
+
+        const failure = await runPlan({
+          plan,
+          contracts: fixture.contracts,
+          signer: fixture.stranger,
+          dryRun: false,
+          log: () => {},
+        }).catch((error) => error);
+
+        expect(failure.message).to.match(/\[fee-set\]/);
+        expect(failure.cause).to.be.an("error");
+      });
+    });
+
     it("rejects when the emitted event does not match the plan", async function () {
       const { contracts, state, log, deployer, safe } = await loadFixture(deployFixture);
       const plan = buildPlan({

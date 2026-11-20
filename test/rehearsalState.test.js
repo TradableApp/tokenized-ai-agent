@@ -3,7 +3,12 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { sameValue, isRevert } = require("../scripts/rehearsal/values");
+const {
+  sameValue,
+  isRevert,
+  RehearsalError,
+  describeFailure,
+} = require("../scripts/rehearsal/values");
 const {
   snapshotPath,
   legacySnapshotPath,
@@ -31,6 +36,31 @@ describe("scripts/rehearsal", function () {
     it("compares addresses without regard to letter case", function () {
       expect(sameValue(AGENT.toUpperCase().replace("0X", "0x"), AGENT)).to.equal(true);
       expect(sameValue(AGENT, ESCROW)).to.equal(false);
+    });
+  });
+
+  describe("describeFailure", function () {
+    it("is only the message for one of the script's own refusals", function () {
+      expect(describeFailure(new RehearsalError("Nothing was sent."))).to.equal(
+        "Nothing was sent.",
+      );
+    });
+
+    it("carries the stack of anything else, so an unexpected failure can be traced", function () {
+      const error = new TypeError("cannot read properties of undefined");
+
+      const text = describeFailure(error);
+
+      expect(text).to.include("cannot read properties of undefined");
+      expect(text).to.include(error.stack);
+    });
+
+    it("carries the stack of the error a refusal was made from", function () {
+      const cause = new Error("socket hang up");
+      const text = describeFailure(new RehearsalError("[fee-set] failed", { cause }));
+
+      expect(text).to.include("[fee-set] failed");
+      expect(text).to.include(cause.stack);
     });
   });
 
