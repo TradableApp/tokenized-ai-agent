@@ -692,7 +692,8 @@ async function initializeEliza() {
   } catch (error) {
     // Only its kind: a database error carries the address it was connecting to.
     console.error(`[ElizaOS] FAILED to start SenseAI Agent (${errorKind(error)}).`);
-    throw error;
+    // Described, not as it is: this reaches the start-up's handler, which prints it whole.
+    throw describedError(error);
   }
 }
 
@@ -887,7 +888,10 @@ async function reconstructHistory(startMessageCID, sessionKey) {
         rawMessageCache.set(currentCid, encryptedString);
         networkFetches += 1;
       } catch (error) {
-        console.error(`[History] Failed to fetch CID ${currentCid} from storage.`, error);
+        console.error(
+          `[History] Failed to fetch CID ${currentCid} from storage.`,
+          describedError(error),
+        );
         break;
       }
     }
@@ -1041,7 +1045,7 @@ async function queryTradableAssistant(conversationHistory, userWallet) {
     console.log(`[Routing] Tradable Response received (${answer.length} chars)`);
     return answer;
   } catch (error) {
-    console.error("[Routing] Error querying Tradable Assistant:", error);
+    console.error("[Routing] Error querying Tradable Assistant:", describedError(error));
     throw error; // Propagate error so queryWithFailover can handle fallback
   }
 }
@@ -1094,7 +1098,7 @@ function registerProvenanceHandlers(runtime) {
   } catch (err) {
     // Attribution is a nicety; never let it cost an answer.
     console.error(
-      `[ElizaOS] Could not subscribe provenance handlers: ${String(err?.message ?? err)}`,
+      `[ElizaOS] Could not subscribe provenance handlers: ${describeError(err)}`,
     );
   }
 }
@@ -1223,7 +1227,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
     composedSources = sourcesFromState(composed);
   } catch (err) {
     console.error(
-      `[ElizaOS] Context composition failed, answering without it: ${String(err?.message ?? err)}`,
+      `[ElizaOS] Context composition failed, answering without it: ${describeError(err)}`,
     );
   }
 
@@ -1301,7 +1305,10 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           },
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
-            console.error("[ElizaOS] Runtime Error during handleMessage:", error);
+            console.error(
+              "[ElizaOS] Runtime Error during handleMessage:",
+              describedError(error),
+            );
             runProvenance.finish(runId); // release the run; a rejected answer still frees it
             reject(error);
           },
@@ -1573,7 +1580,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
          check this warning first when quality drops after a config change. Model ids are
          guarded by test/modelLifecycle.test.js and retirement dates are published at
          https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/model-versions */
-      console.warn("[Failover] ElizaOS path failed. Falling back to ChainGPT.", err);
+      console.warn(
+        "[Failover] ElizaOS path failed. Falling back to ChainGPT.",
+        describedError(err),
+      );
 
       // 4. Failover 1: ChainGPT
       try {
