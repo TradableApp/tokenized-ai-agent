@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const util = require("node:util");
 const { ethers } = require("ethers");
 const chai = require("chai");
@@ -289,4 +290,88 @@ describe("errors on the answer path are printed described", function () {
       expect(printed()).to.not.include("not-a-real-key");
     });
   }
+});
+
+// A payload sealed with the right key whose plaintext is not JSON: the parse error's message
+// quotes the first characters of that plaintext, which is the user's own text.
+describe("a payload that decrypts but does not parse", function () {
+  const SECRET = "my private question about my holdings";
+  const key = crypto.randomBytes(32);
+  let consoles;
+  let privateKeyBefore;
+
+  /** Seals `text` as the oracle's payloads are sealed: iv, then ciphertext and tag. */
+  function seal(text) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const sealed = Buffer.concat([cipher.update(Buffer.from(text)), cipher.final()]);
+    const combined = Buffer.concat([sealed, cipher.getAuthTag()]);
+    return `${iv.toString("base64")}.${combined.toString("base64")}`;
+  }
+
+  beforeEach(function () {
+    privateKeyBefore = process.env.PRIVATE_KEY;
+    consoles = ["error", "log", "warn"].map((level) => sinon.stub(console, level));
+  });
+
+  afterEach(function () {
+    sinon.restore();
+    if (privateKeyBefore === undefined) delete process.env.PRIVATE_KEY;
+    else process.env.PRIVATE_KEY = privateKeyBefore;
+  });
+
+  const printed = () =>
+    consoles
+      .flatMap((stub) => stub.getCalls())
+      .map((call) =>
+        call.args.map((arg) => (typeof arg === "string" ? arg : util.inspect(arg))).join(" "),
+      )
+      .join("\n");
+
+  it("is refused as bad input that names the kind of failure and quotes none of it", function () {
+    const oracle = loadOracle(makeFramework());
+
+    let refused;
+    try {
+      oracle.decryptSymmetrically(seal(SECRET), key);
+    } catch (error) {
+      refused = error;
+    }
+
+    expect(refused?.name).to.equal("BadInputError");
+    expect(refused.message).to.include("SyntaxError");
+    expect(util.inspect(refused, { depth: 10 })).to.not.include("my private");
+  });
+
+  // The example settings run the oracle in Sapphire mode, where the event payload is JSON text.
+  it("is refused as bad input quoting none of it when the event payload is not JSON", async function () {
+    const oracle = loadOracle(makeFramework());
+
+    const refused = await oracle.getSessionKey(SECRET, "0x", "1").then(
+      () => null,
+      (error) => error,
+    );
+
+    expect(refused?.name).to.equal("BadInputError");
+    expect(refused.message).to.include("SyntaxError");
+    expect(util.inspect(refused, { depth: 10 })).to.not.include("my private");
+  });
+
+  it("stops the history there, and prints nothing of it", async function () {
+    const fetchData = sinon.stub().resolves(seal(SECRET));
+    const oracle = loadOracle(makeFramework(), {
+      "./storage/storage": {
+        initializeStorage: async () => {},
+        uploadData: async () => {},
+        fetchData,
+        queryTransactionByTags: async () => [],
+      },
+    });
+
+    const history = await oracle.reconstructHistory("cid-1", key);
+
+    expect(history).to.deep.equal([]);
+    expect(printed()).to.match(/Failed to reconstruct history at CID cid-1/);
+    expect(printed()).to.not.include("my private");
+  });
 });
