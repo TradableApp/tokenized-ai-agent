@@ -1,4 +1,8 @@
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { ethers, upgrades } = require("hardhat");
+const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 const { readState } = require("../../scripts/admin-rehearsal");
 
@@ -86,13 +90,9 @@ async function deployRehearsalFixture() {
 
   const contracts = { aiAgent, escrow };
   const state = await readState(contracts);
-  const lines = [];
-  const log = (line) => lines.push(String(line));
   return {
     contracts,
     state,
-    lines,
-    log,
     deployer,
     oracle,
     treasury,
@@ -102,7 +102,34 @@ async function deployRehearsalFixture() {
   };
 }
 
+/**
+ * The fixture with a log of its own: the deployed state is shared between tests, a log kept in
+ * the fixture would be too.
+ */
+async function loadRehearsal() {
+  const fixture = await loadFixture(deployRehearsalFixture);
+  const lines = [];
+  return { ...fixture, lines, log: (line) => lines.push(String(line)) };
+}
+
+const scratchDirs = [];
+
+/** A new folder under the system's temporary folder, removed by `removeScratchDirs`. */
+function scratchDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  scratchDirs.push(dir);
+  return dir;
+}
+
+/** Removes every folder `scratchDir` made, and only those. */
+function removeScratchDirs() {
+  for (const dir of scratchDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+}
+
 module.exports = {
+  loadRehearsal,
+  scratchDir,
+  removeScratchDirs,
   OFFERS_DONE,
   PROMPT_FEE,
   REHEARSAL_FEE,

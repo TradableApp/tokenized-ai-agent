@@ -1,6 +1,5 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
-const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -28,10 +27,14 @@ const {
   OFFERS_DONE,
   snapshotText,
   versionOneText,
-  deployRehearsalFixture,
+  loadRehearsal,
+  scratchDir,
+  removeScratchDirs,
 } = require("./helpers/rehearsalFixture");
 
 describe("scripts/admin-rehearsal", function () {
+  after(removeScratchDirs);
+
   /** Publishes a throwaway encryption key as `oracle` and returns it. */
   async function publishEncryptionKey(aiAgent, oracle) {
     const key = new ethers.SigningKey(ethers.id("admin-rehearsal-encryption-key"));
@@ -39,11 +42,9 @@ describe("scripts/admin-rehearsal", function () {
     return key.publicKey;
   }
 
-  const deployFixture = deployRehearsalFixture;
-
   describe("readState", function () {
     it("captures the live owner, treasury and prompt fee", async function () {
-      const { state, deployer, treasury } = await loadFixture(deployFixture);
+      const { state, deployer, treasury } = await loadRehearsal();
 
       expect(state.agentOwner).to.equal(deployer.address);
       expect(state.escrowOwner).to.equal(deployer.address);
@@ -52,7 +53,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("captures the published encryption key and who published it", async function () {
-      const { contracts, oracle } = await loadFixture(deployFixture);
+      const { contracts, oracle } = await loadRehearsal();
       const before = await readState(contracts);
       expect(before.encryptionKey).to.equal("0x");
       expect(before.encryptionKeyPublisher).to.equal(ethers.ZeroAddress);
@@ -64,7 +65,7 @@ describe("scripts/admin-rehearsal", function () {
       expect(after.encryptionKeyPublisher).to.equal(oracle.address);
     });
     it("leaves the encryption key out for an agent that does not have it yet", async function () {
-      const { contracts, deployer } = await loadFixture(deployFixture);
+      const { contracts, deployer } = await loadRehearsal();
       // The agent's interface at the escrow's address: the owner reads work, the two key getters
       // revert, as they do on a proxy still running the version before the key.
       const olderAgent = contracts.aiAgent.attach(await contracts.escrow.getAddress());
@@ -76,7 +77,7 @@ describe("scripts/admin-rehearsal", function () {
       expect(state).to.not.have.property("encryptionKeyPublisher");
     });
     it("does not take a node's own error for a missing key, even when its text mentions a revert", async function () {
-      const { contracts } = await loadFixture(deployFixture);
+      const { contracts } = await loadRehearsal();
       const refused = Object.assign(new Error("429: request reverted by rate limiter"), {
         code: "SERVER_ERROR",
       });
@@ -92,7 +93,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("buildPlan", function () {
     it("orders set-and-restore pairs before the ownership transfers", async function () {
-      const { state, safe, oracle, treasury } = await loadFixture(deployFixture);
+      const { state, safe, oracle, treasury } = await loadRehearsal();
 
       const plan = buildPlan({
         state,
@@ -121,7 +122,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("pairs every step with the event and getter that prove it", async function () {
-      const { state, safe, deployer } = await loadFixture(deployFixture);
+      const { state, safe, deployer } = await loadRehearsal();
 
       const plan = buildPlan({
         state,
@@ -161,7 +162,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("rejects a Safe address that is zero, malformed or already the owner", async function () {
-      const { state, deployer } = await loadFixture(deployFixture);
+      const { state, deployer } = await loadRehearsal();
 
       expect(() =>
         buildPlan({ state, safeAddress: ethers.ZeroAddress, rehearsalPromptFee: REHEARSAL_FEE }),
@@ -175,7 +176,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("rejects a rehearsal fee equal to the live fee", async function () {
-      const { state, safe } = await loadFixture(deployFixture);
+      const { state, safe } = await loadRehearsal();
 
       expect(() =>
         buildPlan({ state, safeAddress: safe.address, rehearsalPromptFee: PROMPT_FEE }),
@@ -185,7 +186,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("runPlan (dry run)", function () {
     it("prints every call and expected event without changing state", async function () {
-      const { contracts, state, lines, log, deployer, safe } = await loadFixture(deployFixture);
+      const { contracts, state, lines, log, deployer, safe } = await loadRehearsal();
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -208,7 +209,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("fails on the first step the signer could not execute", async function () {
-      const { contracts, state, log, stranger, safe } = await loadFixture(deployFixture);
+      const { contracts, state, log, stranger, safe } = await loadRehearsal();
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -223,7 +224,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("runPlan (live)", function () {
     it("names the failed step and the recovery path when a live call reverts", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const plan = buildPlan({
         state: fixture.state,
         safeAddress: fixture.safeContractAddress,
@@ -242,8 +243,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("executes, proves each event and getter, and leaves fees restored and ownership offered to the Safe", async function () {
-      const { contracts, state, log, deployer, oracle, treasury, safe } =
-        await loadFixture(deployFixture);
+      const { contracts, state, log, deployer, oracle, treasury, safe } = await loadRehearsal();
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -293,8 +293,48 @@ describe("scripts/admin-rehearsal", function () {
 
       const hashIn = (lines) => lines.join("\n").match(/sent: +(0x[0-9a-f]{64})/)?.[1];
 
+      it("records the step as sent before it waits for the transaction", async function () {
+        const fixture = await loadRehearsal();
+        const events = [];
+        const escrow = fixture.contracts.escrow.connect(fixture.deployer);
+        const watched = new Proxy(escrow, {
+          get(target, property) {
+            if (property === "connect") return () => watched;
+            if (property !== "setPromptFee") return Reflect.get(target, property, target);
+            return async (...args) => {
+              const tx = await target.setPromptFee(...args);
+              return new Proxy(tx, {
+                get(sent, key) {
+                  if (key !== "wait") return Reflect.get(sent, key, sent);
+                  return async () => {
+                    events.push("wait");
+                    return sent.wait();
+                  };
+                },
+              });
+            };
+          },
+        });
+        const plan = buildPlan({
+          state: fixture.state,
+          safeAddress: fixture.safe.address,
+          rehearsalPromptFee: REHEARSAL_FEE,
+        });
+
+        await runPlan({
+          plan: [plan[0]],
+          contracts: { ...fixture.contracts, escrow: watched },
+          signer: fixture.deployer,
+          dryRun: false,
+          log: () => {},
+          record: async (id, entry) => events.push(entry.status),
+        });
+
+        expect(events).to.deep.equal(["sent", "wait", "done"]);
+      });
+
       it("logs the hash as soon as the node returns it", async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
 
         const { failure, lines } = await runFee(fixture, { record: async () => {} });
 
@@ -303,7 +343,7 @@ describe("scripts/admin-rehearsal", function () {
       });
 
       it("says a step whose sent record could not be written may land, and to send nothing by hand", async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const diskFull = new Error("ENOSPC: no space left on device");
 
         const { failure, lines } = await runFee(fixture, {
@@ -321,7 +361,7 @@ describe("scripts/admin-rehearsal", function () {
       });
 
       it("says a step that landed but could not be recorded done landed, and to run again", async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const diskFull = new Error("ENOSPC: no space left on device");
 
         const { failure, lines } = await runFee(fixture, {
@@ -336,7 +376,7 @@ describe("scripts/admin-rehearsal", function () {
       });
 
       it("says a step whose event check failed after it landed landed, naming its hash", async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
 
         const { failure, lines } = await runFee(fixture, { record: async () => {}, tamper: true });
 
@@ -345,7 +385,7 @@ describe("scripts/admin-rehearsal", function () {
       });
 
       it("keeps the error a failed send was reported with", async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const plan = buildPlan({
           state: fixture.state,
           safeAddress: fixture.safe.address,
@@ -366,7 +406,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("rejects when the emitted event does not match the plan", async function () {
-      const { contracts, state, log, deployer, safe } = await loadFixture(deployFixture);
+      const { contracts, state, log, deployer, safe } = await loadRehearsal();
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -380,7 +420,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("follows the decisions it is given: skips, records as observed, and sends", async function () {
-      const { contracts, state, deployer, safe } = await loadFixture(deployFixture);
+      const { contracts, state, deployer, safe } = await loadRehearsal();
       await contracts.escrow.connect(deployer).setPromptFee(REHEARSAL_FEE);
       const plan = buildPlan({
         state,
@@ -413,7 +453,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("records each step as sent, with its hash, before it waits for it, and as done after its checks", async function () {
-      const { contracts, state, deployer, safe } = await loadFixture(deployFixture);
+      const { contracts, state, deployer, safe } = await loadRehearsal();
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -486,7 +526,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("buildSafeReturnTxs", function () {
     it("has the Safe accept both proxies and then offer them back to the deploy wallet", async function () {
-      const { contracts, deployer } = await loadFixture(deployFixture);
+      const { contracts, deployer } = await loadRehearsal();
 
       const txs = await buildSafeReturnTxs({ contracts, returnTo: deployer.address });
 
@@ -505,7 +545,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("is a sequence the Safe can send as written, after which the deploy wallet accepts", async function () {
-      const { contracts, state, log, deployer, safe } = await loadFixture(deployFixture);
+      const { contracts, state, log, deployer, safe } = await loadRehearsal();
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -531,7 +571,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("verifyReturned", function () {
     it("reports an offer still open, then the Safe as owner, then passes once returned", async function () {
-      const { contracts, state, log, deployer, safe } = await loadFixture(deployFixture);
+      const { contracts, state, log, deployer, safe } = await loadRehearsal();
       const plan = buildPlan({
         state,
         safeAddress: safe.address,
@@ -565,7 +605,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("watches the live oracle: a rehearsal that leaves it without its role is reported", async function () {
-      const { contracts, deployer, oracle } = await loadFixture(deployFixture);
+      const { contracts, deployer, oracle } = await loadRehearsal();
       const watched = { ...contracts, oracleAddress: oracle.address };
       const state = await readState(watched);
       expect(state.oracle).to.equal(oracle.address);
@@ -580,7 +620,7 @@ describe("scripts/admin-rehearsal", function () {
       ]);
     });
     it("watches the encryption key: a rehearsal that leaves clients without it is reported", async function () {
-      const { contracts, deployer, oracle } = await loadFixture(deployFixture);
+      const { contracts, deployer, oracle } = await loadRehearsal();
       const key = await publishEncryptionKey(contracts.aiAgent, oracle);
       const state = await readState(contracts);
 
@@ -615,7 +655,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("forwardPhase", function () {
     function scratchSnapshot() {
-      return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")), "snapshot.json");
+      return path.join(scratchDir("rehearsal-"), "snapshot.json");
     }
 
     function run(fixture, overrides) {
@@ -633,7 +673,7 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     it("writes the pre-rehearsal snapshot before the first transaction is sent", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratchSnapshot();
 
       await run(fixture, { snapshotFile });
@@ -669,7 +709,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("writes no snapshot on a dry run", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratchSnapshot();
 
       await run(fixture, { dryRun: true, snapshotFile });
@@ -678,7 +718,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses before any transaction when the signer does not own both proxies", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       await fixture.contracts.escrow
         .connect(fixture.deployer)
         .transferOwnership(fixture.stranger.address);
@@ -692,7 +732,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses an address with no contract code as the Safe", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
 
       await expect(run(fixture, { safeAddress: fixture.safe.address })).to.be.rejectedWith(
         /no contract code/,
@@ -702,7 +742,7 @@ describe("scripts/admin-rehearsal", function () {
     it("resumes from an existing snapshot as the restore baseline instead of overwriting it", async function () {
       // Mid-run abort: the snapshot (fee 1) exists and the live fee is already 2. A re-run must
       // keep the ORIGINAL baseline, otherwise the confirm phase would bless the rehearsal value.
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratchSnapshot();
       fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
       const before = JSON.parse(fs.readFileSync(snapshotFile, "utf8"));
@@ -724,7 +764,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("forwardPhase and the pair a snapshot belongs to", function () {
     function scratch() {
-      return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-pair-")), "snapshot.json");
+      return path.join(scratchDir("rehearsal-pair-"), "snapshot.json");
     }
 
     function run(fixture, overrides) {
@@ -741,7 +781,7 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     it("records the pair in the snapshot it writes", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
 
       await run(fixture, { snapshotFile });
@@ -755,7 +795,7 @@ describe("scripts/admin-rehearsal", function () {
     // A file left by a rehearsal of another pair holds that pair's treasury and fee. Taken as
     // the baseline, its "restore" steps would write them to this pair.
     it("refuses a snapshot taken for another pair, before any transaction", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const other = { ...fixture.state, treasury: fixture.stranger.address };
       fs.writeFileSync(
@@ -782,7 +822,7 @@ describe("scripts/admin-rehearsal", function () {
     // has its own treasury and fee.
     for (const differing of ["agent", "escrow"]) {
       it(`refuses a snapshot whose ${differing} alone is another one, before any transaction`, async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const snapshotFile = scratch();
         const pair = {
           agent: await fixture.contracts.aiAgent.getAddress(),
@@ -809,7 +849,7 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     it("refuses a snapshot that does not say which pair it was taken for", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
@@ -822,7 +862,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses another pair's snapshot in the confirm phase too", async function () {
-      const { contracts, state, stranger, log } = await loadFixture(deployFixture);
+      const { contracts, state, stranger, log } = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
@@ -839,7 +879,7 @@ describe("scripts/admin-rehearsal", function () {
     // A finished rehearsal's snapshot is no longer a baseline: the settings may have been
     // changed on purpose since, and a resume from it would put the old ones back.
     it("starts from the live state when the snapshot's rehearsal was already confirmed", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const { contracts, state, deployer, log } = fixture;
       const snapshotFile = scratch();
       fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
@@ -858,7 +898,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses to resume with another Safe than the one the rehearsal was started with", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
@@ -879,7 +919,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("records the Safe in the snapshot it writes", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
 
       await run(fixture, { snapshotFile });
@@ -890,7 +930,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses another pair's snapshot in a dry run too, and leaves the file as it is", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
@@ -905,7 +945,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("resumes this pair's snapshot in a dry run as a live run would, and leaves the file as it is", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
       const before = fs.readFileSync(snapshotFile, "utf8");
@@ -919,7 +959,7 @@ describe("scripts/admin-rehearsal", function () {
     // A node that did not answer is not a pair without the getter.
     for (const proxyName of ["aiAgent", "escrow"]) {
       it(`passes on a node's own error from ${proxyName}.pendingOwner() instead of calling the pair one-step`, async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const unanswered = new Proxy(fixture.contracts[proxyName], {
           get(target, property) {
             if (property === "pendingOwner") {
@@ -945,7 +985,7 @@ describe("scripts/admin-rehearsal", function () {
     // it and the live run stopped after the fee, treasury and oracle steps had been sent.
     for (const dryRun of [true, false]) {
       it(`refuses a pair that moves ownership in one step before anything is sent (dryRun=${dryRun})`, async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const oneStep = new Proxy(fixture.contracts.aiAgent, {
           get(target, property) {
             if (property === "pendingOwner") {
@@ -977,8 +1017,8 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("the snapshot's own folder, and the file earlier versions left in the cache", function () {
-    function scratchDir() {
-      return fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-folder-"));
+    function folder() {
+      return scratchDir("rehearsal-folder-");
     }
 
     /** A forward run with a snapshot and a legacy file of its own, recording whether it sent. */
@@ -1003,8 +1043,8 @@ describe("scripts/admin-rehearsal", function () {
 
     for (const dryRun of [false, true]) {
       it(`refuses an unconfirmed snapshot of this pair in the cache, and leaves it there (dryRun=${dryRun})`, async function () {
-        const fixture = await loadFixture(deployFixture);
-        const dir = scratchDir();
+        const fixture = await loadRehearsal();
+        const dir = folder();
         const legacySnapshotFile = path.join(dir, "cache", "admin-rehearsal.hardhat.json");
         const snapshotFile = path.join(dir, "rehearsal-state", "snapshot.json");
         fs.mkdirSync(path.dirname(legacySnapshotFile));
@@ -1027,8 +1067,8 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     it("warns about a snapshot of another pair in the cache, leaves it there and goes on", async function () {
-      const fixture = await loadFixture(deployFixture);
-      const dir = scratchDir();
+      const fixture = await loadRehearsal();
+      const dir = folder();
       const legacySnapshotFile = path.join(dir, "admin-rehearsal.hardhat.json");
       const snapshotFile = path.join(dir, "rehearsal-state", "snapshot.json");
       fs.writeFileSync(
@@ -1049,8 +1089,8 @@ describe("scripts/admin-rehearsal", function () {
 
     for (const dryRun of [false, true]) {
       it(`refuses a version 1 snapshot in the new folder for a forward run, which records no steps (dryRun=${dryRun})`, async function () {
-        const fixture = await loadFixture(deployFixture);
-        const snapshotFile = path.join(scratchDir(), "snapshot.json");
+        const fixture = await loadRehearsal();
+        const snapshotFile = path.join(folder(), "snapshot.json");
         fs.writeFileSync(snapshotFile, await versionOneText(fixture.contracts, fixture.state));
         const before = fs.readFileSync(snapshotFile, "utf8");
 
@@ -1062,8 +1102,8 @@ describe("scripts/admin-rehearsal", function () {
       });
 
       it(`refuses a snapshot that is not JSON, and does not take it for a missing one (dryRun=${dryRun})`, async function () {
-        const fixture = await loadFixture(deployFixture);
-        const snapshotFile = path.join(scratchDir(), "snapshot.json");
+        const fixture = await loadRehearsal();
+        const snapshotFile = path.join(folder(), "snapshot.json");
         fs.writeFileSync(snapshotFile, '{"version": 2, "baseline": {');
 
         await expect(forward(fixture, { snapshotFile, dryRun })).to.be.rejectedWith(
@@ -1079,8 +1119,8 @@ describe("scripts/admin-rehearsal", function () {
       ["chain", { chainId: "84532" }, /chain 84532/],
     ]) {
       it(`refuses a snapshot of this pair taken on another ${what}`, async function () {
-        const fixture = await loadFixture(deployFixture);
-        const snapshotFile = path.join(scratchDir(), "snapshot.json");
+        const fixture = await loadRehearsal();
+        const snapshotFile = path.join(folder(), "snapshot.json");
         fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state, extra));
 
         await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(refusal);
@@ -1089,8 +1129,8 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     it("confirms a version 1 snapshot moved into the new folder, and writes it back as version 2", async function () {
-      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
-      const snapshotFile = path.join(scratchDir(), "snapshot.json");
+      const { contracts, state, deployer, log } = await loadRehearsal();
+      const snapshotFile = path.join(folder(), "snapshot.json");
       fs.writeFileSync(snapshotFile, await versionOneText(contracts, state));
 
       await confirmPhase({ contracts, signer: deployer, log, snapshotFile });
@@ -1101,8 +1141,8 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses to confirm while an unconfirmed snapshot of this pair is still in the cache", async function () {
-      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
-      const dir = scratchDir();
+      const { contracts, state, deployer, log } = await loadRehearsal();
+      const dir = folder();
       const legacySnapshotFile = path.join(dir, "admin-rehearsal.hardhat.json");
       const snapshotFile = path.join(dir, "snapshot.json");
       fs.writeFileSync(legacySnapshotFile, await versionOneText(contracts, state));
@@ -1134,13 +1174,12 @@ describe("scripts/admin-rehearsal", function () {
       });
     }
 
-    const scratch = () =>
-      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-left-")), "snapshot.json");
+    const scratch = () => path.join(scratchDir("rehearsal-left-"), "snapshot.json");
 
     // A lost snapshot after treasury-set would otherwise make the Safe the "original" treasury.
     for (const dryRun of [false, true]) {
       it(`refuses to take a baseline from live state that holds the Safe as treasury (dryRun=${dryRun})`, async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         await fixture.contracts.escrow
           .connect(fixture.deployer)
           .setTreasury(fixture.safeContractAddress);
@@ -1155,7 +1194,7 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     it("refuses after a confirmed rehearsal too, when the live fee is the rehearsal fee", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(
         snapshotFile,
@@ -1170,7 +1209,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("does not look for leftovers when it resumes from this pair's unconfirmed snapshot", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       fs.writeFileSync(snapshotFile, await snapshotText(fixture.contracts, fixture.state));
       await fixture.contracts.escrow
@@ -1184,8 +1223,7 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("forwardPhase run again: what it sends and what it refuses", function () {
-    const scratch = () =>
-      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-again-")), "snapshot.json");
+    const scratch = () => path.join(scratchDir("rehearsal-again-"), "snapshot.json");
 
     function forward(fixture, overrides = {}) {
       fixture.lines = [];
@@ -1211,7 +1249,7 @@ describe("scripts/admin-rehearsal", function () {
     }
 
     it("sends nothing again after a forward run that finished", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       await forward(fixture, { snapshotFile });
       const sentBefore = await nonce(fixture);
@@ -1223,7 +1261,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("does not send a restore that landed without being recorded", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
       await withSteps(fixture, snapshotFile, { "fee-set": done });
@@ -1238,7 +1276,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("settles a step recorded as sent from its receipt, and does not send it again", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const tx = await fixture.contracts.escrow
         .connect(fixture.deployer)
@@ -1260,7 +1298,7 @@ describe("scripts/admin-rehearsal", function () {
 
     // A node that has pruned the state at the receipt's block cannot answer a read there.
     it("settles a sent step from its receipt and event, without reading state at its block", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const tx = await fixture.contracts.escrow
         .connect(fixture.deployer)
@@ -1299,7 +1337,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses a sent step whose receipt does not carry the step's event", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const other = await fixture.contracts.escrow
         .connect(fixture.deployer)
@@ -1316,7 +1354,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("forgets a sent step this node has no receipt for when its nonce is unused, and sends it", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const nonce = await ethers.provider.getTransactionCount(fixture.deployer.address);
       await withSteps(fixture, snapshotFile, {
@@ -1332,7 +1370,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("removes the Safe's oracle role when a resumed run finds the role it added still held", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
       await withSteps(fixture, snapshotFile, { "oracle-add": done });
@@ -1349,7 +1387,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses a finished pair whose value is the rehearsal value again, sending nothing", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
       await withSteps(fixture, snapshotFile, { "fee-set": done, "fee-restore": done });
@@ -1361,7 +1399,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses to resume with another rehearsal fee than the one it was started with", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       await withSteps(fixture, snapshotFile, {});
 
@@ -1372,7 +1410,7 @@ describe("scripts/admin-rehearsal", function () {
 
     for (const dryRun of [false, true]) {
       it(`refuses to start while the wallet has a transaction waiting to be mined (dryRun=${dryRun})`, async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const snapshotFile = scratch();
         await ethers.provider.send("evm_setAutomine", [false]);
         try {
@@ -1391,8 +1429,7 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("the dry run, on the same path as a live run", function () {
-    const scratch = () =>
-      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-dry-")), "snapshot.json");
+    const scratch = () => path.join(scratchDir("rehearsal-dry-"), "snapshot.json");
     const done = { status: "done", txHash: "0x" + "ab".repeat(32), blockNumber: 1 };
 
     function forward(fixture, overrides = {}) {
@@ -1421,7 +1458,7 @@ describe("scripts/admin-rehearsal", function () {
       fixture.lines.filter((l) => l.includes("call simulated OK")).length;
 
     it("simulates only the steps a resumed live run would send, and says which it would skip", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       const before = await withSteps(fixture, snapshotFile, { "fee-set": done });
       await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
@@ -1436,7 +1473,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("simulates nothing after a forward run that finished", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       await forward(fixture, { snapshotFile, dryRun: false });
       const before = fs.readFileSync(snapshotFile, "utf8");
@@ -1448,7 +1485,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("does not take what a resumed rehearsal set for a leftover", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       await withSteps(fixture, snapshotFile, { "treasury-set": done });
       await fixture.contracts.escrow
@@ -1461,7 +1498,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses what the live run would refuse: a finished pair back at the rehearsal value", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       await withSteps(fixture, snapshotFile, { "fee-set": done, "fee-restore": done });
       await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
@@ -1470,7 +1507,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses what the live run would refuse: another rehearsal fee than the one started with", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const snapshotFile = scratch();
       await withSteps(fixture, snapshotFile, {});
 
@@ -1482,11 +1519,8 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("forwardPhase failure path", function () {
     it("keeps the snapshot and surfaces the step error when a transaction fails mid-run", async function () {
-      const fixture = await loadFixture(deployFixture);
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const fixture = await loadRehearsal();
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       let snapshotExistedWhenPlanRan = null;
       const execute = async () => {
         snapshotExistedWhenPlanRan = fs.existsSync(snapshotFile);
@@ -1513,7 +1547,7 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("findEvent", function () {
     it("ignores a matching event emitted by another contract", async function () {
-      const { contracts, safe, deployer } = await loadFixture(deployFixture);
+      const { contracts, safe, deployer } = await loadRehearsal();
       const target = contracts.aiAgent;
       const iface = target.interface;
       const topicHash = iface.getEvent("OwnershipTransferred").topicHash;
@@ -1538,14 +1572,11 @@ describe("scripts/admin-rehearsal", function () {
 
   describe("confirmPhase", function () {
     it("accepts the ownership the Safe offered back, then confirms the snapshot", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const { contracts, state, deployer, safe } = fixture;
       const lines = [];
       const log = (line) => lines.push(String(line));
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       const plan = buildPlan({
         state,
@@ -1565,12 +1596,9 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("does not confirm while the Safe has still to send its transactions", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const { contracts, state, deployer, safe, log } = fixture;
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       const plan = buildPlan({
         state,
@@ -1590,11 +1618,8 @@ describe("scripts/admin-rehearsal", function () {
     // A forward run stopped between authorising the Safe as an oracle and removing it has moved
     // no ownership and changed nothing the snapshot holds.
     it("does not confirm while the Safe still holds the oracle role the rehearsal gave it", async function () {
-      const { contracts, state, deployer, safe, log } = await loadFixture(deployFixture);
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const { contracts, state, deployer, safe, log } = await loadRehearsal();
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(
         snapshotFile,
         await snapshotText(contracts, state, { safe: safe.address, steps: OFFERS_DONE }),
@@ -1615,11 +1640,8 @@ describe("scripts/admin-rehearsal", function () {
 
     // The removal of the Safe's role can be as fresh as the acceptance, and as late to a node.
     it("reads the Safe's oracle role again with the rest, past a node that has not caught up", async function () {
-      const { contracts, state, deployer, safe, log } = await loadFixture(deployFixture);
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const { contracts, state, deployer, safe, log } = await loadRehearsal();
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(
         snapshotFile,
         await snapshotText(contracts, state, { safe: safe.address, steps: OFFERS_DONE }),
@@ -1648,11 +1670,8 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("gives up after its attempts and reports what still differs", async function () {
-      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const { contracts, state, deployer, log } = await loadRehearsal();
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       let reads = 0;
       let sleeps = 0;
@@ -1679,11 +1698,8 @@ describe("scripts/admin-rehearsal", function () {
 
     // The acceptance has just landed; a node behind that block still reports the Safe as owner.
     it("reads again after accepting, past a node that has not caught up", async function () {
-      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const { contracts, state, deployer, log } = await loadRehearsal();
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       const answers = [
         { ok: false, mismatches: [{ field: "agentOwner", expected: "a", actual: "b" }] },
@@ -1705,11 +1721,8 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("does not read again when it accepted nothing: the chain's answer is the answer", async function () {
-      const { contracts, state, deployer, log } = await loadFixture(deployFixture);
-      const snapshotFile = path.join(
-        fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-")),
-        "s.json",
-      );
+      const { contracts, state, deployer, log } = await loadRehearsal();
+      const snapshotFile = path.join(scratchDir("rehearsal-"), "s.json");
       fs.writeFileSync(snapshotFile, await snapshotText(contracts, state, { steps: OFFERS_DONE }));
       let reads = 0;
 
@@ -1731,7 +1744,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("explains how to produce a missing snapshot", async function () {
-      const { contracts, log } = await loadFixture(deployFixture);
+      const { contracts, log } = await loadRehearsal();
       const missing = path.join(os.tmpdir(), "rehearsal-missing", "snapshot.json");
 
       await expect(confirmPhase({ contracts, log, snapshotFile: missing })).to.be.rejectedWith(
@@ -1739,11 +1752,11 @@ describe("scripts/admin-rehearsal", function () {
       );
     });
     it("says so when the snapshot was taken without the encryption key, and confirms the rest", async function () {
-      const { contracts, state, deployer } = await loadFixture(deployFixture);
+      const { contracts, state, deployer } = await loadRehearsal();
       // Its own log: the fixture's is shared with the tests before this one.
       const lines = [];
       const log = (line) => lines.push(String(line));
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-older-"));
+      const dir = scratchDir("rehearsal-older-");
       const snapshotFile = path.join(dir, "snapshot.json");
       const older = { ...state };
       delete older.encryptionKey;
@@ -1757,8 +1770,7 @@ describe("scripts/admin-rehearsal", function () {
   });
 
   describe("confirmPhase and a forward run that has not finished", function () {
-    const scratch = () =>
-      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-unfinished-")), "snapshot.json");
+    const scratch = () => path.join(scratchDir("rehearsal-unfinished-"), "snapshot.json");
 
     async function confirmWith(fixture, steps) {
       const snapshotFile = scratch();
@@ -1784,7 +1796,7 @@ describe("scripts/admin-rehearsal", function () {
 
     // A set broadcast and not yet mined matches the baseline now and changes the fee later.
     it("refuses while a step is recorded as sent, naming it and its hash", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       const hash = `0x${"cd".repeat(32)}`;
       const { snapshotFile, refusal, accepted } = await confirmWith(fixture, {
         ...OFFERS_DONE,
@@ -1797,7 +1809,7 @@ describe("scripts/admin-rehearsal", function () {
     });
 
     it("refuses while the wallet has a transaction waiting to be mined", async function () {
-      const fixture = await loadFixture(deployFixture);
+      const fixture = await loadRehearsal();
       await ethers.provider.send("evm_setAutomine", [false]);
       try {
         await fixture.deployer.sendTransaction({ to: fixture.stranger.address, value: 1n });
@@ -1815,7 +1827,7 @@ describe("scripts/admin-rehearsal", function () {
     // Stopped before the offers, the chain matches the baseline and no ownership was rehearsed.
     for (const missing of ["agent-owner-to-safe", "escrow-owner-to-safe"]) {
       it(`does not confirm a rehearsal whose ${missing} step is not recorded done`, async function () {
-        const fixture = await loadFixture(deployFixture);
+        const fixture = await loadRehearsal();
         const steps = { ...OFFERS_DONE };
         delete steps[missing];
         const { snapshotFile, refusal } = await confirmWith(fixture, steps);

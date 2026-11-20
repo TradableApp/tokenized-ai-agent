@@ -1,6 +1,5 @@
 const { expect } = require("chai");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 
 const {
@@ -16,14 +15,17 @@ const {
   readSnapshot,
   checkLegacySnapshot,
 } = require("../scripts/rehearsal/snapshot");
+const { scratchDir, removeScratchDirs } = require("./helpers/rehearsalFixture");
 
 describe("scripts/rehearsal", function () {
+  after(removeScratchDirs);
+
   const AGENT = "0x1111111111111111111111111111111111111111";
   const ESCROW = "0x2222222222222222222222222222222222222222";
   const OTHER = "0x3333333333333333333333333333333333333333";
 
   function scratchFile(name = "snapshot.json") {
-    return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-state-")), name);
+    return path.join(scratchDir("rehearsal-state-"), name);
   }
 
   describe("sameValue", function () {
@@ -179,7 +181,7 @@ describe("scripts/rehearsal", function () {
     });
 
     it("creates the folder, and leaves no temporary file beside the snapshot", function () {
-      const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-state-")), "nested");
+      const dir = path.join(scratchDir("rehearsal-state-"), "nested");
       const file = path.join(dir, "snapshot.json");
 
       writeSnapshot(file, snapshot());
@@ -262,7 +264,7 @@ describe("scripts/rehearsal", function () {
     });
 
     it("keeps the folder and the file to the user who runs it", function () {
-      const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rehearsal-state-")), "state");
+      const dir = path.join(scratchDir("rehearsal-state-"), "state");
       const file = path.join(dir, "snapshot.json");
 
       writeSnapshot(file, snapshot());

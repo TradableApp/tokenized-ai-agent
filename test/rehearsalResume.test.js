@@ -1,5 +1,4 @@
 const { expect } = require("chai");
-const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 const {
   findLeftovers,
@@ -7,7 +6,7 @@ const {
   settleSentSteps,
   assertNoPendingTransactions,
 } = require("../scripts/rehearsal/resume");
-const { REHEARSAL_FEE, deployRehearsalFixture } = require("./helpers/rehearsalFixture");
+const { REHEARSAL_FEE, loadRehearsal } = require("./helpers/rehearsalFixture");
 
 describe("scripts/rehearsal/resume", function () {
   describe("findLeftovers", function () {
@@ -20,13 +19,13 @@ describe("scripts/rehearsal/resume", function () {
     }
 
     it("finds nothing on a pair no rehearsal has touched", async function () {
-      const fixture = await loadFixture(deployRehearsalFixture);
+      const fixture = await loadRehearsal();
 
       expect(await leftovers(fixture)).to.deep.equal([]);
     });
 
     it("finds the fee left at the rehearsal fee", async function () {
-      const fixture = await loadFixture(deployRehearsalFixture);
+      const fixture = await loadRehearsal();
       await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
 
       const found = await leftovers(fixture);
@@ -36,7 +35,7 @@ describe("scripts/rehearsal/resume", function () {
     });
 
     it("finds the Safe left as the treasury", async function () {
-      const fixture = await loadFixture(deployRehearsalFixture);
+      const fixture = await loadRehearsal();
       await fixture.contracts.escrow.connect(fixture.deployer).setTreasury(fixture.safe.address);
 
       const found = await leftovers(fixture);
@@ -46,7 +45,7 @@ describe("scripts/rehearsal/resume", function () {
     });
 
     it("finds the Safe left holding the oracle role", async function () {
-      const fixture = await loadFixture(deployRehearsalFixture);
+      const fixture = await loadRehearsal();
       await fixture.contracts.aiAgent.connect(fixture.deployer).addOracle(fixture.safe.address);
 
       const found = await leftovers(fixture);
@@ -56,7 +55,7 @@ describe("scripts/rehearsal/resume", function () {
     });
 
     it("finds an ownership offer left open, to anyone", async function () {
-      const fixture = await loadFixture(deployRehearsalFixture);
+      const fixture = await loadRehearsal();
       await fixture.contracts.escrow
         .connect(fixture.deployer)
         .transferOwnership(fixture.stranger.address);
@@ -68,7 +67,7 @@ describe("scripts/rehearsal/resume", function () {
     });
 
     it("finds a proxy the Safe owns", async function () {
-      const fixture = await loadFixture(deployRehearsalFixture);
+      const fixture = await loadRehearsal();
       await fixture.contracts.aiAgent
         .connect(fixture.deployer)
         .transferOwnership(fixture.safe.address);

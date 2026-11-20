@@ -101,19 +101,31 @@ function refusedConnection() {
 const history = [{ role: "user", content: "What is the sentiment on SOL?" }];
 
 describe("the oracle's start of the agent", function () {
-  let errors;
+  let consoles;
+  let privateKeyBefore;
+
+  // loadOracle sets the signing key the module reads at load; the suites after this one get
+  // back whatever they had.
+  before(function () {
+    privateKeyBefore = process.env.PRIVATE_KEY;
+  });
+
+  after(function () {
+    if (privateKeyBefore === undefined) delete process.env.PRIVATE_KEY;
+    else process.env.PRIVATE_KEY = privateKeyBefore;
+  });
 
   beforeEach(function () {
-    errors = sinon.stub(console, "error");
-    sinon.stub(console, "log");
-    sinon.stub(console, "warn");
+    consoles = ["error", "log", "warn"].map((level) => sinon.stub(console, level));
   });
 
   afterEach(function () {
     sinon.restore();
   });
 
-  const loggedErrors = () => errors.getCalls().map((call) => call.args.map(String).join(" "));
+  const lineOf = (call) => call.args.map(String).join(" ");
+  const loggedErrors = () => consoles[0].getCalls().map(lineOf);
+  const everyLine = () => consoles.flatMap((stub) => stub.getCalls().map(lineOf)).join("\n");
 
   for (const [where, failure] of [
     ["started", { startFails: refusedConnection() }],
@@ -128,8 +140,8 @@ describe("the oracle's start of the agent", function () {
 
       const lines = loggedErrors();
       expect(lines).to.include("[ElizaOS] FAILED to start SenseAI Agent (ECONNREFUSED).");
-      expect(lines.join("\n")).to.not.include("not-a-real-password");
-      expect(lines.join("\n")).to.not.include("db.internal");
+      expect(everyLine()).to.not.include("not-a-real-password");
+      expect(everyLine()).to.not.include("db.internal");
     });
   }
 
