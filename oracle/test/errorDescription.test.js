@@ -209,6 +209,28 @@ describe("errorKind — what kind of error it was, and nothing it says", () => {
     expect(errorKind(error)).to.equal("Error");
   });
 
+  it("is the error's name when its code cannot be read", () => {
+    const error = new TypeError("x");
+    Object.defineProperty(error, "code", {
+      get() {
+        throw new Error("no");
+      },
+    });
+
+    expect(errorKind(error)).to.equal("TypeError");
+  });
+
+  it("does not throw for an error whose name cannot be read", () => {
+    const error = {};
+    Object.defineProperty(error, "name", {
+      get() {
+        throw new Error("no");
+      },
+    });
+
+    expect(errorKind(error)).to.equal("Error");
+  });
+
   it("reads an object with no prototype", () => {
     const error = Object.assign(Object.create(null), { code: "ECONNRESET" });
 
