@@ -1,3 +1,4 @@
+const util = require("node:util");
 const { ethers } = require("ethers");
 const chai = require("chai");
 const chaiAsPromised = require("chai-as-promised");
@@ -21,8 +22,19 @@ const CHARACTER = Object.freeze({
 });
 const DATABASE_ADDRESS = "postgres://oracle:not-a-real-password@db.internal/oracle_agent";
 
-/** A framework stand-in whose add and start can be told to fail, recording what reached it. */
-function makeFramework({ addFails, startFails, startTakesMs = 0 } = {}) {
+/**
+ * A framework stand-in whose add, start, context composition, event subscription and run can be
+ * told to fail, recording what reached it.
+ */
+function makeFramework({
+  addFails,
+  startFails,
+  startTakesMs = 0,
+  composeFails,
+  subscribeFails,
+  runFails,
+  runCrashes,
+} = {}) {
   const seen = { added: null, startCalls: 0, started: false, handled: 0, startedWhenHandled: null };
 
   const runtime = {
@@ -30,8 +42,12 @@ function makeFramework({ addFails, startFails, startTakesMs = 0 } = {}) {
     ensureConnection: sinon.stub().resolves(),
     createMemory: sinon.stub().resolves(),
     getMemoryById: sinon.stub().resolves(null),
-    composeState: sinon.stub().resolves({ values: {}, text: "", data: { providers: {} } }),
-    registerEvent: () => {},
+    composeState: composeFails
+      ? sinon.stub().rejects(composeFails)
+      : sinon.stub().resolves({ values: {}, text: "", data: { providers: {} } }),
+    registerEvent: () => {
+      if (subscribeFails) throw subscribeFails;
+    },
   };
 
   class ElizaOS {
@@ -53,6 +69,12 @@ function makeFramework({ addFails, startFails, startTakesMs = 0 } = {}) {
     }
 
     async handleMessage(_target, _message, options) {
+      if (runFails) throw runFails;
+      if (runCrashes) {
+        // As the framework reports a crash inside its pipeline: through onError, not a throw.
+        options.onError(runCrashes);
+        return { messageId: "m1", userMessage: {} };
+      }
       seen.handled += 1;
       seen.startedWhenHandled = seen.started;
       await options.onResponse({ text: "an answer", thought: "t" });
@@ -64,7 +86,7 @@ function makeFramework({ addFails, startFails, startTakesMs = 0 } = {}) {
   return { ElizaOS, seen };
 }
 
-function loadOracle(framework) {
+function loadOracle(framework, extraStubs = {}) {
   process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
   return withTestKeys(
     proxyquire("../src/aiAgentOracle", {
@@ -88,6 +110,7 @@ function loadOracle(framework) {
           countRejectedRun: () => {},
         }),
       },
+      ...extraStubs,
     }),
   );
 }
@@ -178,4 +201,92 @@ describe("the oracle's start of the agent", function () {
     expect(framework.seen.startCalls).to.equal(1);
     expect(framework.seen.handled).to.equal(0);
   });
+
+  // The rejection reaches the start-up's own handler, which prints and reports it whole.
+  it("rejects with an error that keeps the code and carries no address when the agent cannot start", async function () {
+    const oracle = loadOracle(makeFramework({ startFails: refusedConnection() }));
+
+    const error = await oracle.queryElizaOS(history, "room-1", "0xuser").then(
+      () => null,
+      (rejection) => rejection,
+    );
+
+    expect(error).to.be.an.instanceOf(Error);
+    expect(error.code).to.equal("ECONNREFUSED");
+    expect(util.inspect(error, { depth: 10 })).to.not.include("not-a-real-password");
+    expect(util.inspect(error, { depth: 10 })).to.not.include("db.internal");
+  });
+});
+
+describe("errors on the answer path are printed described", function () {
+  // Where a provider puts the access key: in the address of the request that failed.
+  const ADDRESS = "https://rpc.example/v2/not-a-real-key";
+  const failedRequest = () => new Error(`request to ${ADDRESS} failed`);
+  let consoles;
+  let privateKeyBefore;
+
+  beforeEach(function () {
+    privateKeyBefore = process.env.PRIVATE_KEY;
+    consoles = ["error", "log", "warn"].map((level) => sinon.stub(console, level));
+  });
+
+  afterEach(function () {
+    sinon.restore();
+    if (privateKeyBefore === undefined) delete process.env.PRIVATE_KEY;
+    else process.env.PRIVATE_KEY = privateKeyBefore;
+  });
+
+  // Every argument as the console would print it: an Error with its stack and properties.
+  const printed = () =>
+    consoles
+      .flatMap((stub) => stub.getCalls())
+      .map((call) =>
+        call.args.map((arg) => (typeof arg === "string" ? arg : util.inspect(arg))).join(" "),
+      )
+      .join("\n");
+
+  it("when the context cannot be composed, and the run still answers", async function () {
+    const oracle = loadOracle(makeFramework({ composeFails: failedRequest() }));
+
+    const answer = await oracle.queryElizaOS(history, "room-1", "0xuser");
+
+    expect(answer.text).to.equal("an answer");
+    expect(printed()).to.match(/Context composition failed/);
+    expect(printed()).to.not.include("not-a-real-key");
+  });
+
+  it("when the provenance handlers cannot be subscribed, and the run still answers", async function () {
+    const oracle = loadOracle(makeFramework({ subscribeFails: failedRequest() }));
+
+    const answer = await oracle.queryElizaOS(history, "room-1", "0xuser");
+
+    expect(answer.text).to.equal("an answer");
+    expect(printed()).to.match(/Could not subscribe provenance handlers/);
+    expect(printed()).to.not.include("not-a-real-key");
+  });
+
+  /** The dispatcher with the routing and the last tier stood in for, and no network. */
+  function loadDispatcher(framework) {
+    sinon.stub(global, "fetch").rejects(new Error("unreachable in a test"));
+    const queryGeminiDirect = sinon.stub().resolves("A direct answer.");
+    const oracle = loadOracle(framework, {
+      "./geminiDirect": { classifyIntent: async () => "MARKET", queryGeminiDirect },
+    });
+    return oracle;
+  }
+
+  for (const [how, failure] of [
+    ["throws", { runFails: failedRequest() }],
+    ["crashes inside its pipeline", { runCrashes: failedRequest() }],
+  ]) {
+    it(`when the agent's run ${how} and the answer falls back to another model`, async function () {
+      const oracle = loadDispatcher(makeFramework(failure));
+
+      const answer = await oracle.queryAIModel(history, "room-1", "0xuser");
+
+      expect(answer.text).to.equal("A direct answer.");
+      expect(printed()).to.match(/Falling back to ChainGPT/);
+      expect(printed()).to.not.include("not-a-real-key");
+    });
+  }
 });

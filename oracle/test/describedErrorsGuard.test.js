@@ -20,8 +20,18 @@ const GUARDED = [
   "oracleState/outageTracker.js",
 ];
 
-// `${error.message}` in a template, or `error.message` handed to console as an argument.
-const RAW_MESSAGE = /\$\{\s*\w+\??\.message\s*\}|console\.\w+\([^;]*\b\w+\.message\s*[,)]/;
+// `${error.message}` in a template, `error.message` handed to console as an argument, an
+// optional-chained message read inside a template (`${String(err?.message ?? err)}`), or an
+// error object handed to console whole as its last argument, where the console prints its
+// message and stack as they are.
+const RAW_MESSAGE = new RegExp(
+  [
+    /\$\{\s*\w+\??\.message\s*\}/.source,
+    /console\.\w+\([^;]*\b\w+\.message\s*[,)]/.source,
+    /\$\{[^}]*\b\w+\?\.message\b/.source,
+    /console\.\w+\([^;]*,\s*(?:e|err|err2|error|reason|cause)\s*\);?$/.source,
+  ].join("|"),
+);
 // A malformed payload's parse error is about the payload, and is what the dropped event's log
 // line needs to say.
 // The third is the message of an error that describedError or describeError already made.
@@ -47,10 +57,20 @@ describe("errors are described before they are put into text", () => {
     });
   }
 
-  it("recognises the two forms it looks for", () => {
+  it("recognises a message put into a template or handed to console", () => {
     expect(RAW_MESSAGE.test("console.warn(`could not store: ${storeError.message}`);")).to.be.true;
     expect(RAW_MESSAGE.test('console.error("idle client error:", error.message);')).to.be.true;
     expect(RAW_MESSAGE.test("console.warn(`could not store: ${describeError(storeError)}`);")).to.be
       .false;
+  });
+
+  it("recognises an optional-chained message and an error handed to console whole", () => {
+    expect(RAW_MESSAGE.test("`[ElizaOS] Composition failed: ${String(err?.message ?? err)}`,")).to
+      .be.true;
+    expect(RAW_MESSAGE.test('console.warn("[Failover] ElizaOS path failed.", err);')).to.be.true;
+    expect(RAW_MESSAGE.test('console.error("[Routing] Error:", error);')).to.be.true;
+    expect(RAW_MESSAGE.test('console.error("[Routing] Error:", describedError(error));')).to.be
+      .false;
+    expect(RAW_MESSAGE.test("if (errBody?.error?.message) {")).to.be.false;
   });
 });
