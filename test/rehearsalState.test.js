@@ -242,13 +242,72 @@ describe("scripts/rehearsal", function () {
         writeSnapshot(file, snapshot()),
       );
 
-      expect(calls.map(([name]) => name)).to.deep.equal(["openSync", "fsyncSync", "renameSync"]);
+      expect(calls.map(([name]) => name).slice(0, 3)).to.deep.equal([
+        "openSync",
+        "fsyncSync",
+        "renameSync",
+      ]);
       const [, temporary, flags, mode] = calls[0];
       expect(path.dirname(temporary)).to.equal(path.dirname(file));
       expect(flags).to.equal("wx");
       expect(mode).to.equal(0o600);
       expect(calls[2].slice(1)).to.deep.equal([temporary, file]);
     });
+
+    // The rename is only durable once the folder's own entry for it is on disk.
+    it("syncs the folder after the rename, so the new entry survives a crash", function () {
+      const file = scratchFile();
+
+      const { calls } = watchFs(["openSync", "fsyncSync", "renameSync"], () =>
+        writeSnapshot(file, snapshot()),
+      );
+
+      expect(calls.map(([name]) => name)).to.deep.equal([
+        "openSync",
+        "fsyncSync",
+        "renameSync",
+        "openSync",
+        "fsyncSync",
+      ]);
+      expect(calls[3].slice(1, 3)).to.deep.equal([path.dirname(file), "r"]);
+    });
+
+    it("says the snapshot was written but not made durable when the folder cannot be synced", function () {
+      const file = scratchFile();
+      const realFsync = fs.fsyncSync;
+      let fsyncs = 0;
+
+      const { error } = watchFs(["fsyncSync"], () => writeSnapshot(file, snapshot()), {
+        fsyncSync: (descriptor) => {
+          fsyncs += 1;
+          if (fsyncs === 2)
+            throw Object.assign(new Error("EIO: i/o error, fsync"), { code: "EIO" });
+          return realFsync(descriptor);
+        },
+      });
+
+      expect(error?.message).to.match(/written, but could not be made durable[\s\S]*EIO/);
+      expect(error?.cause?.code).to.equal("EIO");
+      expect(JSON.parse(fs.readFileSync(file, "utf8")).version).to.equal(2);
+    });
+
+    for (const code of ["EISDIR", "EPERM", "EINVAL"]) {
+      it(`goes on where the platform cannot open a folder to sync it (${code})`, function () {
+        const file = scratchFile();
+        const folder = path.dirname(file);
+        const realOpen = fs.openSync;
+
+        const { error } = watchFs(["openSync"], () => writeSnapshot(file, snapshot()), {
+          openSync: (target, ...rest) => {
+            if (target === folder) throw Object.assign(new Error(code), { code });
+            return realOpen(target, ...rest);
+          },
+        });
+
+        expect(error).to.equal(undefined);
+        expect(JSON.parse(fs.readFileSync(file, "utf8")).version).to.equal(2);
+      });
+    }
 
     it("names the temporary file by chance, not only by the process", function () {
       const file = scratchFile();
