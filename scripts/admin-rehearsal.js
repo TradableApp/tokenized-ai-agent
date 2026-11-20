@@ -29,6 +29,7 @@ const {
   verifyGetter,
   runPlan,
 } = require("./rehearsal/steps");
+const { assertSafeCanBeTreasury } = require("./rehearsal/token");
 
 const { ethers } = hre;
 
@@ -460,6 +461,16 @@ async function readForwardStart({
   return { ...loaded, live };
 }
 
+/**
+ * True when this run will make the Safe the treasury: its set is not recorded done and the
+ * Safe is not already the treasury. Once it is, refusing would only keep it there.
+ */
+function willSetTreasury(snapshot, live) {
+  return (
+    snapshot.steps["treasury-set"]?.status !== "done" && !sameValue(live.treasury, snapshot.safe)
+  );
+}
+
 function reportForward({ dryRun, results, returnTxs, log }) {
   if (dryRun) {
     const simulated = results.filter((r) => !r.skipped && !r.observed).length;
@@ -516,6 +527,10 @@ async function forwardPhase({
     log(`Resuming: ${snapshotFile} stays the restore baseline: ${show(snapshot.baseline)}`);
   const plan = buildPlan({ state: snapshot.baseline, safeAddress, rehearsalPromptFee });
   await assertSafeHasCode(snapshot.safe);
+  if (willSetTreasury(snapshot, live)) {
+    const { escrow } = contracts;
+    await assertSafeCanBeTreasury({ escrow, safe: snapshot.safe, runner: ethers.provider, log });
+  }
 
   const save = (next) => {
     snapshot = next;
