@@ -2,7 +2,10 @@ const { expect } = require("chai");
 const fs = require("fs");
 const path = require("path");
 
-const { forwardPhase, confirmPhase } = require("../scripts/admin-rehearsal");
+const { ethers } = require("hardhat");
+
+const { forwardPhase, confirmPhase, readState } = require("../scripts/admin-rehearsal");
+const { publishEncryptionKey } = require("./helpers/encryptionKeyProof");
 const {
   REHEARSAL_FEE,
   OFFERS_DONE,
@@ -38,11 +41,11 @@ describe("the rehearsal and the signer's own oracle role", function () {
     });
   }
 
-  async function confirmable(fixture, network) {
+  async function confirmable(fixture, network, state = fixture.state) {
     const snapshotFile = scratch();
     fs.writeFileSync(
       snapshotFile,
-      await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress, {
+      await snapshotText(fixture.contracts, state, fixture.safeContractAddress, {
         steps: OFFERS_DONE,
         network,
       }),
@@ -63,6 +66,13 @@ describe("the rehearsal and the signer's own oracle role", function () {
 
   const grantSignerRole = (fixture) =>
     fixture.contracts.aiAgent.connect(fixture.deployer).addOracle(fixture.deployer.address);
+  // The signer publishes the encryption key clients encrypt to, as the deploy wallet would if
+  // it had been run as the oracle.
+  const signerPublishesKey = async (fixture) => {
+    await grantSignerRole(fixture);
+    const key = new ethers.SigningKey(ethers.id("rehearsal-signer-encryption-key"));
+    await publishEncryptionKey(fixture.contracts.aiAgent, fixture.deployer, key);
+  };
   const confirmedIn = (file) => JSON.parse(fs.readFileSync(file, "utf8")).confirmed;
 
   it("counts every network but the local ones as live", function () {
@@ -136,5 +146,56 @@ describe("the rehearsal and the signer's own oracle role", function () {
     await confirm(fixture, snapshotFile, "hardhat");
 
     expect(confirmedIn(snapshotFile)).to.equal(true);
+  });
+
+  // Revoking the role of the oracle that published the encryption key withdraws the key, and
+  // no prompt can be submitted until an oracle publishes one. Another oracle cannot replace the
+  // signer's key while it is published, so the removal cannot simply be advised.
+  describe("when the signer published the encryption key", function () {
+    const plainAdvice = "so the owner removes it before the handover";
+
+    function expectKeyNote(text, signer) {
+      expect(text).to.include(`The signer ${signer} holds the oracle role`);
+      expect(text).to.include("published the encryption key");
+      expect(text).to.include("would withdraw that key");
+      expect(text).to.include("EncryptionKeyHeldByAnotherOracle");
+      expect(text).to.include("agent.setOracleEncryptionKey(");
+      expect(text).to.not.include(plainAdvice);
+    }
+
+    it("does not advise the removal as is in the forward phase, and says what removing it does", async function () {
+      const fixture = await loadRehearsal();
+      await signerPublishesKey(fixture);
+
+      await forward(fixture, { network: LIVE, dryRun: true });
+
+      expectKeyNote(fixture.lines.join("\n"), fixture.deployer.address);
+    });
+
+    it("says the same when the confirm phase refuses for the signer's role", async function () {
+      const fixture = await loadRehearsal();
+      await signerPublishesKey(fixture);
+      const snapshotFile = await confirmable(fixture, LIVE, await readState(fixture.contracts));
+
+      await expect(confirm(fixture, snapshotFile, LIVE)).to.be.rejectedWith(
+        /not been fully returned[\s\S]*published the encryption key/,
+      );
+
+      expectKeyNote(fixture.lines.join("\n"), fixture.deployer.address);
+      expect(confirmedIn(snapshotFile)).to.equal(false);
+    });
+
+    it("still gives the plain advice when another oracle published the key", async function () {
+      const fixture = await loadRehearsal();
+      await grantSignerRole(fixture);
+      const key = new ethers.SigningKey(ethers.id("rehearsal-oracle-encryption-key"));
+      await publishEncryptionKey(fixture.contracts.aiAgent, fixture.oracle, key);
+
+      await forward(fixture, { network: LIVE, dryRun: true });
+
+      const text = fixture.lines.join("\n");
+      expect(text).to.include(plainAdvice);
+      expect(text).to.not.include("would withdraw that key");
+    });
   });
 });
