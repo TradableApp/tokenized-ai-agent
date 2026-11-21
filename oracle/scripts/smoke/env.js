@@ -1,32 +1,24 @@
 /**
  * Smoke configuration: per-environment default tables plus the SMOKE_* overrides.
  *
- * One script serves Base Sepolia today and Base mainnet later, so the per-chain facts live in a
- * table keyed by SMOKE_ENV, and every explicit SMOKE_* variable wins over the table. Mainnet has
- * no committed addresses yet: its table names what is REQUIRED and the resolver fails once,
- * listing every missing variable BY NAME. No value — RPC URLs carry API keys and private keys are
- * private — ever appears in an error message.
+ * One script serves Base Sepolia and Base mainnet, so the per-chain facts live in a table keyed
+ * by SMOKE_ENV, and every explicit SMOKE_* variable wins over the table. No table carries a pair's
+ * addresses or the oracle's key: a pair is deployed fresh, and a committed default would point a
+ * funded wallet at the old one. Each table names its RPC and chain id, and the resolver fails once,
+ * listing every missing SMOKE_* variable BY NAME. No value — RPC URLs carry API keys and private
+ * keys are private — ever appears in an error message.
  */
 
 const SMOKE_ENVS = Object.freeze({
+  // Addresses and the oracle's key come from SMOKE_ESCROW_ADDRESS / SMOKE_AGENT_ADDRESS /
+  // SMOKE_TOKEN_ADDRESS / SMOKE_ORACLE_PUBLIC_KEY on every network.
   "base-testnet": Object.freeze({
     rpcUrl: "https://sepolia.base.org",
     chainId: 84532,
-    escrow: "0x36ec08471F2b995024967204D7542713cFaf5Fa4",
-    agent: "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
-    token: "0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80",
-    // The deployed oracle's ECIES public key (compose.base-testnet.yaml PUBLIC_KEY). Not a secret:
-    // it is what every client encrypts TO. Override with SMOKE_ORACLE_PUBLIC_KEY after a key
-    // rotation — a stale key here means prompts land on-chain and are never answered.
-    oraclePublicKey:
-      "0x0416f5d18e33f98511a465603133837e3ec99c7f3a9ecc8beade30d520753317d54edbf421d412b673c36639fc9147e54e3150b4499eb344efdb2ac04dab952f9f",
   }),
   "base-mainnet": Object.freeze({
     rpcUrl: "https://mainnet.base.org",
     chainId: 8453,
-    // Deliberately absent: filled from SMOKE_ESCROW_ADDRESS / SMOKE_AGENT_ADDRESS /
-    // SMOKE_TOKEN_ADDRESS / SMOKE_ORACLE_PUBLIC_KEY once the mainnet contracts exist. Guessing
-    // here would point a funded wallet at the wrong contract.
   }),
 });
 

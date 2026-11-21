@@ -321,15 +321,18 @@ re-runnable as a canary.
 **Run it (from `oracle/`):**
 ```bash
 SMOKE_PRIVATE_KEY=0x<Tradable Test User 0x971c…8057 MetaMask private key> \
+SMOKE_ESCROW_ADDRESS=0x… SMOKE_AGENT_ADDRESS=0x… SMOKE_TOKEN_ADDRESS=0x… \
+SMOKE_ORACLE_PUBLIC_KEY=0x04… \
 bun run smoke:base-testnet
 ```
-Defaults for the RPC (`https://sepolia.base.org`), chainId (84532), the escrow/agent/ABLE
-addresses **and the oracle's ECIES `PUBLIC_KEY`** live in the `base-testnet` table in
-`oracle/scripts/smoke/env.js`. Every `SMOKE_*` variable overrides its table entry — set
-`SMOKE_ORACLE_PUBLIC_KEY` after a key rotation (a stale key means prompts land on-chain and are
-never answered). `SMOKE_ENV=base-mainnet` (`bun run smoke:base-mainnet`) switches to the mainnet
-RPC/chainId and **requires** `SMOKE_ESCROW_ADDRESS`, `SMOKE_AGENT_ADDRESS`,
-`SMOKE_TOKEN_ADDRESS` and `SMOKE_ORACLE_PUBLIC_KEY` by name — nothing is guessed on mainnet.
+The `base-testnet` table in `oracle/scripts/smoke/env.js` holds only the RPC
+(`https://sepolia.base.org`) and chainId (84532). The pair's escrow, agent and token addresses and
+the oracle's ECIES public key are **required** by name on every network
+(`SMOKE_ESCROW_ADDRESS`, `SMOKE_AGENT_ADDRESS`, `SMOKE_TOKEN_ADDRESS`,
+`SMOKE_ORACLE_PUBLIC_KEY`): a pair is deployed fresh, and a committed default would smoke the old
+one. Take the key from the oracle's `[OracleKeys] … encryptionKey=` start-up line (a stale key
+means prompts land on-chain and are never answered). `SMOKE_ENV=base-mainnet`
+(`bun run smoke:base-mainnet`) switches to the mainnet RPC/chainId and requires the same four.
 
 **Modes (run-day extensions, CU-14ym9bvdmjr):**
 
