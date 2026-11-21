@@ -528,10 +528,14 @@ and waits for its one-hour refund.
   plans, branches and renames in every open tab without a deploy; cancelling, refunds and
   revoking a plan are never stopped by it.
 - Order: a dApp build that hears the switch is live first; then close the old pair; then wait
-  until every prompt on it is answered, cancelled or refunded; only then move the oracle. The
-  oracle keeps answering the old pair until then.
-- A copy of the dApp from before the switch existed never hears it, so the wait is not
-  optional.
+  until every prompt on it is answered, cancelled or refunded (a prompt can be refunded once it
+  is an hour old); only then move the oracle. The oracle keeps answering the old pair until
+  then.
+- A copy of the dApp built before the switch was added never hears it and can still send a
+  prompt to the old pair after it is closed. The wait is for those prompts: skipping it leaves
+  them paid with no oracle to answer. A prompt that still arrives after the oracle has moved can
+  be refunded by anyone once it is an hour old (`processRefund` on the escrow pays the user who
+  sent it), and the operator's procedure has a step for that.
 - The owner writes the switch with the operator script in the harness repository, which also
   holds the step-by-step procedure.
 
@@ -560,6 +564,7 @@ and waits for its one-hour refund.
 - ROFL deploy = `build → update → deploy`, never `restart`/`release`. **Never `oasis rofl machine release`.**
 - The oracle's own address (made by the ROFL key service, printed at start-up as `signer=`; not the deploy wallet) needs Base Sepolia ETH for **every answer** — if it runs dry, prompts submit but never get answered (smoke times out → exit 1).
 - The oracle's own address must hold the oracle role on the agent: removing the deploy wallet's role before granting the signer's leaves prompts paid and unanswered until the signer is granted it. Follow §1.1.
+- Moving the oracle to a new agent and escrow before the old pair has drained leaves prompts paid and unanswered until their one-hour refund: close the old pair with the prompts switch and wait first (see "Moving prompts to a new agent and escrow").
 - Testnet TEE lives ~1 h (`playground_short`) — run the smoke promptly after boot.
 - Storage math: qcow2 = `storage.size` + 2048 MiB ≤ offer storage, or the app never registers a replica and `machine logs` 404s. Read `machine show` → `net.oasis.error` first.
 - `rofl deploy` without `--term hour` rents monthly.
