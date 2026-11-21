@@ -9,13 +9,13 @@
  * database. That database is outside the enclave. With no list set the framework copies every
  * variable, so the list below is set before the agent is added, and it holds names of settings
  * only: model names and the framework's own tuning values. Nothing the oracle must keep to itself
- * belongs in it. The plugins that need a credential read it from the environment themselves.
+ * belongs in it. A plugin of ours that needs a credential reads it from the environment itself.
  *
  * The framework's plugins read their settings through the runtime and never from the
- * environment, so two things the list keeps out still have to reach them: the address of the
- * agent database, and the tool servers with what each is started with. Both are handed to the
- * runtime as its own settings, which it keeps in memory and does not store. See
- * agentForFramework.
+ * environment, so two things the list keeps out still have to reach them: where the agent
+ * database is (POSTGRES_URL, or PGLITE_DATA_DIR), and the tool servers with what each is started
+ * with. Both are handed to the runtime as its own settings, which it keeps in memory and does
+ * not store. See agentForFramework.
  *
  * What an earlier build stored is still in the database, and the framework merges it back in on
  * every start, so every stored agent is cleaned before the agent is added and again after it has

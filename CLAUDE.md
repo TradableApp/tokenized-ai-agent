@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-AI agent with ROFL (Runtime OFf-chain Logic) running on Oasis Sapphire (confidential EVM) and Base chains. Enables trusted, confidential off-chain computation for tokenized AI agent logic.
+Token-gated AI agent: contracts on Base, and an oracle that runs in an Oasis ROFL TEE (Runtime OFf-chain Logic; the ROFL app is registered on Sapphire, where ROFL apps live). The `Sapphire*` contracts are a community example for Oasis Sapphire, kept in parity with their own idioms; no deployment of them is planned.
 
-> `simple-tokenized-ai-agent` is archived — this is the active repo.
+> `simple-tokenized-ai-agent` is a deliberately simpler public reference implementation; this repo is the primary codebase.
 
 ## Two-Layer Project Structure
 
@@ -33,7 +33,7 @@ git submodule update --remote packages/shared-schema
 git add packages/shared-schema && git commit -m "chore: bump sense-ai-shared-schema to <version>"
 ```
 
-Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-schema"` (path-based dependency at `oracle/package.json` → `"../packages/shared-schema"`). Phase 3 of the v0.3.0 SenseAI plan introduces the actual adapter swap; this submodule lands now so both apps stay in lockstep on table shape and migration history.
+It is a path dependency of the oracle (`oracle/package.json` → `"../packages/shared-schema"`, imported as `@tradableapp/sense-ai-shared-schema`), so both apps stay in lockstep on table shape and migration history.
 
 ## Scripts
 
@@ -45,29 +45,30 @@ Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-sc
 | `bun run coverage` | Coverage report |
 | `bun run lint` | Lint code |
 | `bun run format` | Format code |
-| `bun run deploy:localnet` | Deploy to local Hardhat network |
-| `bun run deploy:testnet` | Deploy to Oasis Sapphire testnet |
-| `bun run deploy:mainnet` | Deploy to Oasis Sapphire mainnet |
-| `bun run deploy:base-localnet` | Deploy to local Base network |
-| `bun run deploy:base-testnet` | Deploy to Base testnet |
+| `bun run deploy:localnet` | Deploy the Sapphire community example to Sapphire localnet |
+| `bun run deploy:testnet` | Deploy the Sapphire community example to Sapphire testnet |
+| `bun run deploy:mainnet` | Deploy the Sapphire community example to Sapphire mainnet |
+| `bun run deploy:base-localnet` | Deploy the Base pair to a local Hardhat node |
+| `bun run deploy:base-testnet` | Deploy the Base pair to Base Sepolia |
 | `bun run deploy:base-mainnet` | Deploy to Base mainnet (`DEPLOY_MAINNET_CONFIRMED=1`) |
 | `ORACLE_ADDRESS=0x… bun run authorize-oracle:base-testnet grant` | After a fresh deploy whose first oracle is the deploy wallet: adds the oracle's own signer and checks `isOracle`. Sends nothing when the role is held; refuses an `ORACLE_ADDRESS` that is the signing wallet |
 | `ORACLE_ADDRESS=0x… ANSWER_TX_HASH=0x… bun run authorize-oracle:base-testnet retire-deployer` | Removes the deploy wallet's oracle role, only when `ORACLE_ADDRESS` holds the role and `ANSWER_TX_HASH` is a successful `submitAnswer` to the agent sent by it; then checks both. Both phases refuse once the agent's owner is not the signer (the Safe's path is named). `:base-localnet` and `:base-mainnet` exist too; on mainnet a send needs `DEPLOY_MAINNET_CONFIRMED=1` |
 | `bun run list-fee-token-exempt:base-testnet [--check]` | Lists the escrow and the treasury the escrow names on a fee token that keeps a list (`setTransferExempt`), only those not listed, after checking `escrow.ableToken()` is `TOKEN_CONTRACT_ADDRESS`; reads both back. When the signer is not the token's owner it sends nothing and prints the calls as Safe Transaction Builder JSON. `--check` only reads and fails while either is unlisted. An ordinary token needs nothing. `:base-localnet` and `:base-mainnet` exist too |
 | `bun run rehearse:base-testnet:dry` | Admin rehearsal dry run on Base testnet: takes the same path as the live run (snapshot, leftover check, resume decisions and refusals), simulates only the owner calls the live run would send, says which it would skip, and sends and writes nothing (needs `REHEARSAL_SAFE_ADDRESS`; optional `REHEARSAL_PROMPT_FEE` in whole tokens, default 2) |
-| `bun run rehearse:base-testnet` | Admin rehearsal forward phase: fee/treasury/oracle set-and-restore, then ownership of both proxies offered to the Safe; prints the four Safe transactions (accept both, then offer both back). Before a run that will make the Safe the treasury it asks the escrow's token whether the Safe is on its list (`isTransferExempt`). An ordinary token is recognised only by a revert whose data is exactly `0x`, or that has no data and whose message is the node's bare `execution reverted`; a no, a revert with a reason or data, or any other answer is a refusal. The refusal names the payments an unlisted treasury stops: the fees a user pays straight to the treasury (cancel, branch, rename or delete); a resumed run's refusal says that rehearsing with another Safe needs the snapshot moved aside, since a resume refuses another Safe. A fresh run refuses before anything is sent or written; a resumed run first sends the restore of every set already done, holds back every other step, and ends non-zero naming what it sent and what it held back. On every network but `hardhat`, `localhost` and `localnet` it says whether the signer holds the oracle role, and how the owner removes it (it never removes it; when the signer is the encryption key publisher it says that removing the role withdraws that key, that no client reads the key from the agent today and the oracle does not publish its own yet, that the role is still removed, and that a key must never be published from the deploy wallet), and refuses a `REHEARSAL_ORACLE_ADDRESS` that is the signer, and an unconfirmed snapshot to resume whose oracle is the signer (after the pending-transaction check it sends only the restores of sets already done, holds every other step and ends non-zero naming both). The snapshot is `rehearsal-state/admin-rehearsal.<network>.<agent>.json` (git-ignored, outside the cache `hardhat clean` empties, written to a temporary file and renamed); it records each step as sent and as done, so a re-run resumes without repeating a finished pair, settles a step left as sent from its receipt and event when the node has one (with none, forgets it only if its recorded nonce is unused and nothing is pending), and refuses rather than guesses where the chain and the records disagree, on another rehearsal fee or Safe, or while the wallet has a transaction pending. With no unconfirmed snapshot it refuses a live state that shows rehearsal leftovers. A snapshot earlier versions left in `cache/` is only read: an unconfirmed one of this pair, or one that cannot be read, is not JSON or names no pair, is refused until moved by hand. The folder (0700, file 0600) is as sensitive as the script: the next run restores what it holds. Messages say "move it aside", never delete |
+| `bun run rehearse:base-testnet` | Admin rehearsal forward phase: fee/treasury/oracle set-and-restore, then ownership of both proxies offered to the Safe; prints the four Safe transactions (accept both, then offer both back). Before a run that will make the Safe the treasury it asks the escrow's token whether the Safe is on its list (`isTransferExempt`). An ordinary token is recognised only by a revert whose data is exactly `0x`, or that has no data and whose message is the node's bare `execution reverted`; a no, a revert with a reason or data, or any other answer is a refusal. The refusal names the payments an unlisted treasury stops: the fees a user pays straight to the treasury (cancel, branch, rename or delete); a resumed run's refusal says that rehearsing with another Safe needs the snapshot moved aside, since a resume refuses another Safe. A fresh run refuses before anything is sent or written; a resumed run first sends the restore of every set already done, holds back every other step, and ends non-zero naming what it sent and what it held back. On every network but `hardhat`, `localhost` and `localnet` it says whether the signer holds the oracle role, and how the owner removes it (it never removes it; when the signer is the encryption key publisher it says that removing the role withdraws that key, that no client reads the key from the agent today and the oracle does not publish its own yet, that the role is still removed, and that a key must never be published from the deploy wallet), and refuses a `REHEARSAL_ORACLE_ADDRESS` that is the signer, and an unconfirmed snapshot to resume whose oracle is the signer (after the pending-transaction check it sends only the restores of sets already done, holds every other step and ends non-zero naming both). The snapshot is `rehearsal-state/admin-rehearsal.<network>.<agent address in lower case>.json` (git-ignored, outside the cache `hardhat clean` empties, written to a temporary file and renamed); it records each step as sent and as done, so a re-run resumes without repeating a finished pair, settles a step left as sent from its receipt and event when the node has one (with none, forgets it only if its recorded nonce is unused and nothing is pending), and refuses rather than guesses where the chain and the records disagree, on another rehearsal fee or Safe, or while the wallet has a transaction pending. With no unconfirmed snapshot it refuses a live state that shows rehearsal leftovers. A snapshot earlier versions left in `cache/` is only read: an unconfirmed one of this pair, or one that cannot be read, is not JSON or names no pair, is refused until moved by hand. The folder (0700, file 0600) is as sensitive as the script: the next run restores what it holds. Messages say "move it aside", never delete |
 | `bun run rehearse:base-testnet:confirm` | Accepts the ownership the Safe offered back, then verifies ownership, fees, treasury and oracle match the pre-rehearsal snapshot and that no offer is left open. The snapshot records the pair, network and chain it was read from and the Safe: one from another pair, network or chain is refused (a forward dry run refuses it too), and a version 1 snapshot moved into `rehearsal-state/` is checked and written back as version 2, one this phase has passed is not reused as a baseline, the phase does not pass while the Safe still holds the oracle role the rehearsal gave it, nor, on a live network, while the signer holds the oracle role (only the new owner could remove it after the handover), and, on a live network, a snapshot whose live oracle is the signer (an earlier version allowed it) is refused once the ownership offered back has been accepted, and its refusal says to move the snapshot aside when a value differs because it was changed on purpose since, and it refuses while the wallet has a transaction pending, while any step is recorded as sent, or when the forward run did not record both ownership offers done. It has no dry run: `DRY_RUN=1` with it is refused |
 | `bun run rehearse:base-mainnet[:dry|:confirm]` | Same three phases against Base mainnet; the forward and confirm phases both send transactions and refuse unless `REHEARSAL_MAINNET_CONFIRMED=1` is set explicitly (the dry run needs no flag) |
 
 ### Oracle (run from `oracle/`)
 | Command | Purpose |
 |---------|---------|
-| `bun test` | Run oracle test suite |
+| `bun run test` | Run oracle test suite (mocha; not `bun test`, which is Bun's own runner) |
 | `bun run test -- --grep "pattern"` | Run a single matching test |
 | `bun run coverage` | Oracle coverage (nyc) |
-| `bun run start:localnet` | Start oracle against local Hardhat network |
-| `bun run start:testnet` | Start oracle against Sapphire testnet |
-| `bun run start:mainnet` | Start oracle against Sapphire mainnet |
+| `bun run start:localnet` | Start oracle against Sapphire localnet (community example) |
+| `bun run start:testnet` | Start oracle against Sapphire testnet (community example) |
+| `bun run start:mainnet` | Start oracle against Sapphire mainnet (community example) |
+| `bun run start:base-localnet` | Start oracle against a local Hardhat node |
 | `bun run start:base-testnet` | Start oracle against Base testnet |
 | `bun run start:base-mainnet` | Start oracle against Base mainnet |
 | `bun run dev` | Start with nodemon (hot reload) |
@@ -75,7 +76,7 @@ Imported in oracle code as `import { ... } from "@tradableapp/sense-ai-shared-sc
 
 Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.oracle.example mocha ...`
 
-### ROFL — Sapphire (run from root)
+### ROFL — Sapphire community example (run from root)
 | Command | Purpose |
 |---------|---------|
 | `bun run rofl:create:testnet` | Create ROFL app on Sapphire testnet |
@@ -95,9 +96,10 @@ Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.or
 ### ROFL — Base (run from root)
 | Command | Purpose |
 |---------|---------|
-| `bun run rofl:create:base-testnet` | Create ROFL app on Base testnet |
+| `bun run rofl:create:base-testnet` | Create the ROFL app (on Sapphire testnet) for the oracle that serves Base Sepolia |
 | `bun run rofl:deploy:base-testnet` | Full ROFL deploy workflow (Base testnet) |
-| `bun run rofl:create:base-mainnet` | Create ROFL app on Base mainnet |
+| `bun run rofl:create:base-mainnet` | Create the ROFL app (on Sapphire mainnet) for the oracle that serves Base mainnet |
+| `bun run release:base-mainnet` | Build and push a versioned oracle image and set the version in `rofl.yaml` (Base mainnet) |
 | `bun run rofl:deploy:base-mainnet` | Full ROFL deploy workflow (Base mainnet) |
 | `bun run rofl:init:cloud-sql:sepolia-on-mainnet` | Verification run: Cloud SQL cert for the `base-mainnet` app on the testnet instance |
 | `bun run rofl:set:sepolia-on-mainnet` | Verification run: push `base-testnet` config/secrets to the `base-mainnet` app |
@@ -109,7 +111,7 @@ Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.or
 
 ### Dual Contract Families
 
-Two parallel contract families exist, one per chain:
+Two parallel contract families exist, one per chain. SenseAI runs on the EVM family on Base; the Sapphire family is a community example kept in parity with its own idioms:
 
 | Family | Chain | Contracts |
 |--------|-------|-----------|
@@ -140,7 +142,7 @@ Both keys are registered with `oracle/src/secretValues.js` when obtained, and re
 
 ### Oracle Event Flow (`oracle/src/aiAgentOracle.js`)
 
-The main 1940-line orchestration file. High-level flow on each contract event:
+The main orchestration file. High-level flow on each contract event:
 
 1. Event lands in `pollEvents()` → pushed to `p-queue` (concurrency 5)
 2. `handleAndRecord()` wraps each handler — catches validation errors to silently drop malicious payloads, queues retryable failures in the state store for retry. It never saves the chain cursor — the scan loops do, once a whole batch is handled
@@ -148,7 +150,7 @@ The main 1940-line orchestration file. High-level flow on each contract event:
 4. `reconstructHistory()` fetches prior messages from decentralized storage using the linked-list `parentCID` chain; raw encrypted strings are cached in LRU cache (100k items, 24h TTL) to avoid redundant fetches
 5. `queryAIModel()` routes to the AI tier (see below)
 6. Response is encrypted and new storage files created via `formatters.js`, uploaded to Autonomys or Irys
-7. Oracle submits response transaction; on Sapphire via `roflUtility.js:submitTx()` (ROFL appd socket), on EVM via normal ethers signer
+7. Oracle submits the answer through the contract with its ethers signer (wrapped with the Sapphire helpers on a Sapphire network). Only the Sapphire app's own oracle registration at start-up goes through `roflUtility.js:submitTx()` (ROFL appd socket)
 
 Sequential transaction submission is enforced by `txMutex` (async-mutex) to prevent nonce collisions.
 
@@ -171,11 +173,11 @@ Sequential transaction submission is enforced by `txMutex` (async-mutex) to prev
 
 **Agent settings (`oracle/src/elizaos/agentSettings.js`).** The agent framework copies environment variables into the character's settings when the agent is added, and writes the character to the agent database when the agent starts. With no list it copies every variable. `AGENT_ENV_ALLOW_LIST` is that list, set before `addAgents` by `startAgentWithCleanSettings` and in no other way: model names and the framework's own tuning values, and a test refuses a name that looks like a credential or a service address. The framework's plugins read settings through the runtime and never from the environment, so what the list keeps out and a plugin still needs is handed to the runtime as its own settings, which it keeps in memory and does not store: `agentForFramework` takes the tool servers (`mcp`) out of the character and passes them, with `POSTGRES_URL` and `PGLITE_DATA_DIR` for the database plugin, as the agent's `settings` in `addAgents`. The character keeps an empty `mcp` block in their place: on a start the framework puts stored settings under the character's own and the tool plugin looks in the character before the runtime, so a name left out would let a stored block choose the command the oracle runs. Tests build the framework's runtime and check that both are found, neither is in the character, and a stored block does not override. A plugin of ours that needs a credential reads it from the environment itself. `startAgentWithCleanSettings` is the only place the oracle adds and starts its agent, and it owns the order: clean, set the list, add, start, clean again. Tests call it with stand-ins, so a step that is skipped or moved fails a test. The clean (`cleanStoredAgentSettings`) so runs twice, before the agent is added and after it has started, and removes from every row of `agents` any stored value whose name is not on the list, any stored tool servers, and any setting under a name the character does not define itself (the framework reads a stored setting ahead of the one handed to the runtime). The framework merges stored values back in on every start, so not copying is not enough; the clean before the start keeps what an earlier build stored out of the running agent, and the one after removes what the start itself wrote. Rotate a credential an earlier build stored once a start-up line shows the clean ran. A failed clean is alerted with the kind of error only and does not stop the oracle. The clean waits for its alert for at most ten seconds: only the first clean of an old row has anything to report, so a start that stops soon after must not leave before the alert is out, but the clean runs before the oracle starts on its events and must not hold them up. Where no agent database is configured it says so and does nothing. To give the framework a new setting, add its name to the list; never add a credential. A new framework plugin that reads a setting with no environment fallback gets it through `agentForFramework`.
 
-**Tool server watch (`oracle/src/elizaos/toolServerWatch.js`).** The framework's MCP service connects the character's tool servers and calls their tools, and on its own tells the oracle nothing it can act on. `initializeEliza` points the watch at the agent after the agents start (`follow`) and does not wait for it: the service counts as started only after it has tried every server, which can take minutes. A service not started after three minutes is alerted as missing, and is still attached to when it arrives. When the service has started the watch prints `[ToolServer] <server> connected, N tools`, and sends `CRITICAL: Market-data tool server unavailable` when a server is not connected, does not offer a tool the answers rely on (`oracle/src/elizaos/marketDataTools.js`), or connected only after the agent was shown its tools (the framework builds that list once; the alert says to restart). The oracle still starts, because only some answers need these tools. It wraps the service's tool call and sorts each call into one of four outcomes. `ok`. `failed`, which is thrown as `ToolCallFailedError` so the error is never handed to the model as data: any status but the three below, the server's own words for not reaching its provider, and a call that threw. `refused` (400, 404, 422, or thrown back as invalid): the request was wrong and not the server, and the model is given the result as before. `unclear`: an error with no status, most often a filter the model wrote that the server could not run; the model is given it too. If the service cannot be wrapped at all, the watch sends `CRITICAL: Market-data tool calls are not being watched`. Every call prints one line with the server, the tool and the outcome. Nothing a tool or the model wrote is printed, thrown or alerted by the watch: the model writes a call's arguments from the user's prompt, and a tool's error text can repeat them. An outcome is worded by the watch, and a tool's name is printed only when the server offers a tool of that name. The MCP plugin's own lines that carry the model's arguments, its reasoning or a tool's output are hidden by `oracle/src/elizaos/mutedFrameworkLogs.js`; that covers the plugin, which uses the framework's shared logger, and not the agent runtime's own logger. `queryElizaOS` prints the length of each emission, not its opening. Alerts about calls, at most one in ten minutes: `CRITICAL: Market-data tool calls are failing` after five failed calls in a row or ten of the last twenty (a key that stopped working fails every call while the server stays connected), and `CRITICAL: Market-data tool calls are being refused` after ten refusals since a call was last answered (a key of the wrong kind). A server that was fine and no longer is sends `CRITICAL: Market-data tool server lost` once, after a second look 30 seconds later, again if what is wrong with it changes, and its return is printed at warning level. The watch looks at the servers every minute, after every failed call, and on every heartbeat. The heartbeat carries `toolServers`: each server's `status`, `tools` and `usable` (false for a connected server the agent cannot use), cumulative `calls: { ok, failed, refused, unclear }`, and `rejectedRuns: { toolError, noTool, unreadable }`. When a tool step fails, the MCP plugin replies with an apology (`toolError`), or says it has no tool (`noTool`), or asks the user to repeat the request because the model's choice could not be read (`unreadable`); `toolFailureKind` (`oracle/src/answerSelection.js`) recognises each by the thought sent with it. Such a reply is never the stored answer and its thought is kept out of the stored reasoning. A run that has one is rejected by `queryElizaOS` with `UnansweredToolFailureError` and counted in `rejectedRuns`, unless a synthesis of ours answered, or the plugin wrote from a tool's result after the last failure; a plain reply after the failure does not count, because the framework's closing reply is written from the failed step. `queryAIModel` then answers with the direct Gemini call and does not ask ChainGPT, which keeps its own record of the conversation outside the TEE. `COINGECKO_API_KEY` is required at start-up on every network that is not local, and the example file's placeholder counts as missing.
+**Tool server watch (`oracle/src/elizaos/toolServerWatch.js`).** The framework's MCP service connects the character's tool servers and calls their tools, and on its own tells the oracle nothing it can act on. `initializeEliza` points the watch at the agent after the agents start (`follow`) and does not wait for it: the service counts as started only after it has tried every server, which can take minutes. A service not started after three minutes is alerted as missing, and is still attached to when it arrives. When the service has started the watch prints `[ToolServer] <server> connected, N tools`, and sends `CRITICAL: Market-data tool server unavailable` when a server is not connected, does not offer a tool the answers rely on (`oracle/src/elizaos/marketDataTools.js`), or connected only after the agent was shown its tools (the framework builds that list once; the alert says to restart). The oracle still starts, because only some answers need these tools. It wraps the service's tool call and sorts each call into one of four outcomes. `ok`. `failed`, which is thrown as `ToolCallFailedError` so the error is never handed to the model as data: any status but the three below, the server's own words for not reaching its provider, and a call that threw. `refused` (400, 404, 422, or thrown back as invalid): the request was wrong and not the server, and the model is given the result as before. `unclear`: an error with no status, most often a filter the model wrote that the server could not run; the model is given it too. If the service cannot be wrapped at all, the watch sends `CRITICAL: Market-data tool calls are not being watched`. Every call prints one line with the server, the tool and the outcome. Nothing a tool or the model wrote is printed, thrown or alerted by the watch: the model writes a call's arguments from the user's prompt, and a tool's error text can repeat them. An outcome is worded by the watch, and a tool's name is printed only when the server offers a tool of that name. The MCP plugin's own lines that carry the model's arguments, its reasoning or a tool's output are hidden by `oracle/src/elizaos/mutedFrameworkLogs.js`; that covers the plugin, which uses the framework's shared logger, and not the agent runtime's own logger. `queryElizaOS` prints the length of each emission, not its opening. Alerts about calls, at most one in ten minutes: `CRITICAL: Market-data tool calls are failing` after five failed calls in a row or ten of the last twenty (a key that stopped working fails every call while the server stays connected), and `CRITICAL: Market-data tool calls are being refused` after ten refusals since a call was last answered (a key of the wrong kind). A server that was fine and no longer is sends `CRITICAL: Market-data tool server lost` once, after a second look 30 seconds later, again if what is wrong with it changes, and its return is printed at warning level. The watch looks at the servers every minute, after every failed call, and on every heartbeat. The heartbeat carries `toolServers` (`observe()` in `toolServerWatch.js`, read by `oracle/src/oracleVitals.js`): `{ servers: { <name>: { status, tools, usable } }, calls: { ok, failed, refused, unclear }, rejectedRuns: { toolError, noTool, unreadable } }`, where `usable` is false for a connected server the agent cannot use and the counts are cumulative. When a tool step fails, the MCP plugin replies with an apology (`toolError`), or says it has no tool (`noTool`), or asks the user to repeat the request because the model's choice could not be read (`unreadable`); `toolFailureKind` (`oracle/src/answerSelection.js`) recognises each by the thought sent with it. Such a reply is never the stored answer and its thought is kept out of the stored reasoning. A run that has one is rejected by `queryElizaOS` with `UnansweredToolFailureError` and counted in `rejectedRuns`, unless a synthesis of ours answered, or the plugin wrote from a tool's result after the last failure; a plain reply after the failure does not count, because the framework's closing reply is written from the failed step. `queryAIModel` then answers with the direct Gemini call and does not ask ChainGPT, which keeps its own record of the conversation outside the TEE. `COINGECKO_API_KEY` is required at start-up on every network that is not local, and the example file's placeholder counts as missing.
 
 ### Decentralized Storage Layer (`oracle/src/formatters.js`)
 
-Conversation data is stored on Autonomys (`@autonomys/auto-drive`) with Irys as fallback. File types:
+Conversation data is uploaded to Autonomys (`@autonomys/auto-drive`), or to Irys/Arweave when `STORAGE_PROVIDER=irys` (`oracle/src/storage/storage.js`); reads take either kind of id. File types:
 
 - `ConversationFile` — created once per conversation, stores metadata
 - `MessageFile` — one per message; contains `parentCID` linking to prior message (linked-list for history reconstruction)
@@ -218,8 +220,10 @@ This repo sits at the centre of the SenseAI stack. Three sibling repos depend on
 |---------|-----------|
 | `sense-ai-dapp` | Calls `EVMAIAgentEscrow.initiatePrompt()` for all user writes; parses `PromptSubmitted` event to extract `answerMessageId` at param index 3 (0-based, non-indexed) |
 | `sense-ai-subgraph` | Indexes events from both `EVMAIAgent` and `EVMAIAgentEscrow`; ABI files in `sense-ai-subgraph/abis/` must match compiled artifacts |
-| `able-contracts` | `AbleToken` is the ERC20 payment token; `EVMAIAgentEscrow` calls `token.transferFrom(user, escrow, amount)` |
-| `sense-contracts` | `SenseToken` is the fee token the escrow is deployed with where SenseAI is paid in SENSE. It moves only when the sender or the recipient is exempt, so the escrow and the treasury must both be on its exempt list |
+| `sense-contracts` | `SenseToken`, SenseAI's fee token. It moves only when the sender or the recipient is on its owner's exempt list, so the escrow and the treasury must both be listed (`list-fee-token-exempt:<network>`) |
+| `able-contracts` | `AbleToken`, an ordinary ERC-20 and the other token the escrow supports |
+
+The escrow takes whichever token it is initialised with (`initialize(_tokenAddress, …)`, stored in `ableToken`; the getter has that name whatever the token is) and takes a payment with `safeTransferFrom(user, escrow, amount)`.
 
 ### The Universal Key: `answerMessageId`
 
@@ -246,12 +250,9 @@ cp artifacts/contracts/EVMAIAgentEscrow.sol/EVMAIAgentEscrow.json ../sense-ai-su
 
 Any change to event signatures must be reflected in all three downstream consumers before deploying.
 
-### Deployed Addresses (Base Sepolia)
+### Deployed Addresses
 
-| Contract | Proxy Address |
-|----------|--------------|
-| EVMAIAgent | `0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D` |
-| EVMAIAgentEscrow | `0x36ec08471F2b995024967204D7542713cFaf5Fa4` |
+Base Sepolia and Base mainnet each get a fresh agent and escrow pair deployed from the current contracts (`DEPLOY_MODE=fresh`; the runbook's "Fresh pair, in order"). Their addresses are filled on deploy day.
 
 ### Critical Event Signatures
 
@@ -273,7 +274,7 @@ PromptSubmitted(
 
 ## Contract Test Suite
 
-Phase 2 tests (153 passing) cover the full prompt lifecycle, spending limits, cancellation, refunds, and cross-contract flows. Key continuity contracts encoded as tests:
+The contract tests (`bun run test` at the root; the count is in its last line) cover the full prompt lifecycle, spending limits, cancellation, refunds, and cross-contract flows. Key continuity contracts encoded as tests:
 
 - `PromptSubmitted` param order guard — verifies `answerMessageId` is at index 3
 - `answerMessageId` lifecycle — `initiatePrompt()` → `PromptSubmitted` → `finalizePayment(answerMessageId)` succeeds and emits `PaymentFinalized` with the same ID
@@ -288,13 +289,13 @@ All four contracts hold ownership in two steps (`Ownable2StepUpgradeable` on the
 
 ## Key Notes
 
-- `deploy:mainnet` and all mainnet ROFL commands are irreversible — confirm before running
+- `deploy:base-mainnet` and all mainnet ROFL commands are irreversible — confirm before running
 - Run `bun run compile` at root before starting the oracle; it loads ABI artifacts from `../../artifacts/contracts/`
 - ROFL requires Oasis CLI tooling and Docker for image build/push
 - Confidential compute: on Sapphire, sensitive agent data remains encrypted via TEE; on Base, AES-256-GCM is applied client-side in the oracle
 - ABI artifacts from this repo are consumed by `sense-ai-dapp` via its `sync-contracts` script and by `sense-ai-subgraph/abis/` manually
 - `REPORT_GAS=true bunx hardhat test` enables gas reporter for contract tests
-- **SapphireAIAgent is Oasis grant-only** — the dApp has no Sapphire support; mainnet will be Base EVM only. Sapphire differences from EVMAIAgent are intentional per-ecosystem implementations.
+- **The Sapphire contracts are a community example** — the dApp has no Sapphire support and SenseAI runs on Base only; no Sapphire deployment is planned. Sapphire differences from EVMAIAgent are intentional per-ecosystem implementations, kept in parity with their own idioms.
 
 ## MCP Tools
 
