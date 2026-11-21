@@ -53,9 +53,12 @@ async function readTransferRule({ escrow, safe, runner }) {
 
 /**
  * Why the Safe must not become the treasury, or null when it may. A token that keeps a list
- * refuses every payment the escrow sends to an unlisted treasury (a cancellation fee, a branch
- * or rename fee) until the restore. An answer that cannot be read is refused too: a guess
- * either way could leave users' payments refused while the Safe is the treasury.
+ * moves only when the sender or the recipient is listed, so with an unlisted Safe as the
+ * treasury every fee a user pays straight to the treasury is refused until the restore: the
+ * cancellation fee, and the branch and metadata (rename or delete) fees. The escrow's own
+ * payment of an answered prompt's fee still moves while the escrow is listed. An answer that
+ * cannot be read is refused too: a guess either way could leave users' payments refused while
+ * the Safe is the treasury.
  */
 async function treasuryRefusal({ escrow, safe, runner, log }) {
   const { token, restricted, listed, unknown, cause } = await readTransferRule({
@@ -79,9 +82,12 @@ async function treasuryRefusal({ escrow, safe, runner, log }) {
     return null;
   }
   return {
-    reason: `The escrow's token ${token} moves only to or from addresses its owner has listed, and the Safe ${safe} is not on its list. While the Safe is the treasury, every payment the escrow sends to the treasury would be refused.`,
+    reason: `The escrow's token ${token} moves only to or from addresses its owner has listed, and the Safe ${safe} is not on its list. While the Safe is the treasury, every fee a user pays straight to the treasury would be refused: the fee for cancelling a prompt, and the fee for a branch or for a rename or delete of a conversation. (An answered prompt's fee, which the escrow pays the treasury, would still move while the escrow is listed.)`,
     advice:
       "Have the token's owner list the Safe, or rehearse with a Safe that is listed, then run again.",
+    // A resume refuses another Safe (`beginRun`), so that way out needs the snapshot moved.
+    resumedAdvice: (file) =>
+      `Have the token's owner list the Safe, then run again. To rehearse with another Safe that is listed instead, move the snapshot at ${file} aside once these restores are done (keep it: it holds the values from before the rehearsal), since a resumed run refuses another Safe; a fresh run then starts from the live state.`,
   };
 }
 
@@ -121,8 +127,11 @@ function holdUnstarted(decisions) {
   return { decisions: next, sent, held };
 }
 
-/** The refusal, saying exactly what this run sent and what it held back. */
-function treasuryRefused({ refusal, sent = [], held = [], dryRun }) {
+/**
+ * The refusal, saying exactly what this run sent and what it held back. `resumedFile` is the
+ * snapshot a resumed run read, whose advice then says how another Safe can be used.
+ */
+function treasuryRefused({ refusal, sent = [], held = [], dryRun, resumedFile = null }) {
   const list = (ids) => ids.map((id) => `[${id}]`).join(", ");
   const parts = [refusal.reason];
   if (sent.length === 0) parts.push(dryRun ? "Nothing would be sent." : "Nothing was sent.");
@@ -131,7 +140,9 @@ function treasuryRefused({ refusal, sent = [], held = [], dryRun }) {
       `${dryRun ? "Would send" : "Sent"}: ${list(sent)}, to restore what an earlier run set.`,
     );
   if (held.length > 0) parts.push(`${dryRun ? "Would not send" : "Not sent"}: ${list(held)}.`);
-  parts.push(refusal.advice);
+  parts.push(
+    resumedFile && refusal.resumedAdvice ? refusal.resumedAdvice(resumedFile) : refusal.advice,
+  );
   return new RehearsalError(parts.join(" "), refusal.cause ? { cause: refusal.cause } : undefined);
 }
 

@@ -74,6 +74,20 @@ function assertSnapshotOracleIsNotSigner({ oracle, signer, file, accepted }) {
   );
 }
 
+/**
+ * Refuses, before a resumed forward run sends anything, a snapshot that watches the signer as
+ * the live oracle, which an earlier version of the script allowed. The confirm phase can never
+ * pass with it (`assertSnapshotOracleIsNotSigner`), so resuming would only send steps toward a
+ * rehearsal that cannot be confirmed. The snapshot is still the one record of the values before
+ * the rehearsal, so it is kept and the way out is by hand.
+ */
+function assertResumedOracleIsNotSigner({ oracle, signer, file }) {
+  if (!oracle || !sameValue(oracle, signer)) return;
+  throw new RehearsalError(
+    `The snapshot at ${file} watches the signer ${signer} as the live oracle, which an earlier version of this script allowed. Nothing has been sent. Its rehearsal can never be confirmed: the live oracle's role must be kept, and the signer's is one the owner removes before the handover. Return each value a rehearsal left live to the snapshot's baseline by hand (keep the snapshot: it holds the values from before the rehearsal), then move it aside; a fresh forward run then starts from the live state, refuses while a rehearsal value is left, and takes REHEARSAL_ORACLE_ADDRESS naming the address the oracle answers prompts from.`,
+  );
+}
+
 module.exports = {
   isLiveNetwork,
   signerRoleNote,
@@ -81,4 +95,5 @@ module.exports = {
   isPublisher,
   assertOracleIsNotSigner,
   assertSnapshotOracleIsNotSigner,
+  assertResumedOracleIsNotSigner,
 };

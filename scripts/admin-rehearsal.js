@@ -37,6 +37,7 @@ const {
   isPublisher,
   assertOracleIsNotSigner,
   assertSnapshotOracleIsNotSigner,
+  assertResumedOracleIsNotSigner,
 } = require("./rehearsal/oracleRole");
 
 const { ethers } = hre;
@@ -439,7 +440,8 @@ async function decideRun({ plan, contracts, signer, snapshot, log, save }) {
  * What a forward run starts from: the pair, chain, this pair's snapshot and the live state,
  * after every check that needs no decision: two-step ownership, the cache file, the snapshot,
  * the signer's ownership and no transaction pending. On a live network it also says whether
- * the signer holds the oracle role.
+ * the signer holds the oracle role, and refuses a snapshot to resume that watches the signer as
+ * the live oracle.
  */
 async function readForwardStart({
   contracts,
@@ -457,6 +459,13 @@ async function readForwardStart({
   await assertOwnershipMovesInTwoSteps(contracts);
   const loaded = await loadSnapshot({ contracts, snapshotFile, legacySnapshotFile, network, log });
   assertForwardCanUse(loaded.snapshot, snapshotFile);
+  if (checkSignerRole && loaded.snapshot && !loaded.snapshot.confirmed) {
+    assertResumedOracleIsNotSigner({
+      oracle: loaded.snapshot.baseline?.oracle,
+      signer: signer.address,
+      file: snapshotFile,
+    });
+  }
   const live = await readState(contracts);
   log(`Live state: ${show(live)}`);
   if (!contracts.oracleAddress) {
@@ -577,7 +586,7 @@ async function forwardPhase({
   const record = async (id, entry) =>
     save({ ...snapshot, steps: { ...snapshot.steps, [id]: entry } });
   const results = await execute({ plan, decisions, contracts, signer, dryRun, log, record });
-  if (refusal) throw treasuryRefused({ refusal, sent, held, dryRun });
+  if (refusal) throw treasuryRefused({ refusal, sent, held, dryRun, resumedFile: snapshotFile });
   const returnTxs = dryRun ? [] : await buildSafeReturnTxs({ contracts, returnTo: signer.address });
   reportForward({ dryRun, results, returnTxs, log });
 }

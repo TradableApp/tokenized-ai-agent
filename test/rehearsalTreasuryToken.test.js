@@ -16,7 +16,7 @@ const {
 const { scratchDir, removeScratchDirs } = scratchFolders();
 
 // The treasury steps make the Safe the escrow's treasury for a while. A token that moves only to
-// or from listed addresses refuses every payment the escrow sends to an unlisted treasury, so the
+// or from listed addresses refuses every fee a user pays straight to an unlisted treasury, so the
 // rehearsal reads the escrow's token before it starts and refuses while the Safe is not listed.
 describe("the rehearsal's treasury step and the escrow's token", function () {
   after(removeScratchDirs);
