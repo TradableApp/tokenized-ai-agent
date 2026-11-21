@@ -25,38 +25,64 @@ const path = require("node:path");
  * Read from the source, because these lines sit in catch blocks that a unit test rarely reaches
  * (a store that fails while recording a failed retry), and one forgotten line is enough.
  *
- * It covers only the files in GUARDED: the oracle's main module and the modules that talk to the
- * chain and to the oracle's own database. Other modules under src/ are not read by it.
+ * It reads every source file under src/: each JavaScript file, and the TypeScript source of the
+ * ElizaOS plugin (`elizaos/plugins/plugin-senseai/src`), which runs in the same TEE and prints to
+ * the same log. Tests (`__tests__`), installed packages (`node_modules`), build output (`dist`)
+ * and type declarations (`.d.ts`) are skipped, and so is the plugin's build script, which runs
+ * on the machine that builds the image and never in the TEE. A new module is read without being
+ * listed.
  */
 const SRC = path.join(__dirname, "..", "src");
-const GUARDED = [
-  "aiAgentOracle.js",
-  "eventPoller.js",
-  "oracleRoleGate.js",
-  "oracleState/runtime.js",
-  "oracleState/store.js",
-  "oracleState/outageTracker.js",
-];
+const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "__tests__"]);
+const PLUGIN_SOURCE = "elizaos/plugins/plugin-senseai/src/";
+
+/** Every source file under `dir`, relative to it, in a stable order. */
+function sourceFiles(dir, prefix = "") {
+  const files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (!SKIPPED_DIRECTORIES.has(entry.name)) {
+        files.push(...sourceFiles(path.join(dir, entry.name), relative));
+      }
+    } else if (
+      entry.name.endsWith(".js") ||
+      (relative.startsWith(PLUGIN_SOURCE) &&
+        entry.name.endsWith(".ts") &&
+        !entry.name.endsWith(".d.ts"))
+    ) {
+      files.push(relative);
+    }
+  }
+  return files.sort();
+}
+
+const GUARDED = sourceFiles(SRC);
 
 const HELPERS = ["describeError", "describedError", "errorKind", "withoutAddresses"];
 const LOG_METHODS = "log|info|warn|error|debug|trace|fatal|table";
 const STD_WRITE = "process\\s*\\.\\s*std(?:err|out)\\s*\\.\\s*write";
 const SINK = new RegExp(
-  `\\b[\\w$]*(?:console|[Ll]og|[Ll]ogger)\\s*\\.\\s*(?:${LOG_METHODS})\\s*\\(|\\b${STD_WRITE}\\s*\\(|\\b(?:sendAlert|alert)\\s*\\(|\\bthrow\\b`,
+  `\\b[\\w$]*(?:console|[Ll]og|[Ll]ogger)\\s*\\.\\s*(?:${LOG_METHODS})\\s*(?:\\?\\.\\s*)?\\(|\\b${STD_WRITE}\\s*\\(|\\b(?:sendAlert|alert)\\s*\\(|\\bthrow\\b`,
   "g",
 );
-const CATCH_BLOCK = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
-const CATCH_CALLBACK = /\.catch\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/g;
+const CATCH_BLOCK = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)\s*\{/g;
+const CATCH_CALLBACK =
+  /\.catch\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)?\s*=>/g;
 const CATCH_FUNCTION =
-  /\.catch\(\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
+  /\.catch\(\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)\s*\{/g;
+// TypeScript may give the caught name a type (`catch (error: unknown)`, `(e: Error) =>`); the
+// name is still what is read.
 // A sink given as the callback itself, bound or not: it is called with the error whole. The
 // receiver may be any chain of names (`this.logger`, `elizaLogger`).
 const SINK_REFERENCE = `(?:(?:[\\w$]+\\s*\\.\\s*)+(?:${LOG_METHODS})|${STD_WRITE}|sendAlert|alert)\\s*(?:\\.\\s*bind\\s*\\([^()]*\\)\\s*)?`;
 const POINT_FREE_SINK = new RegExp(`\\.catch\\(\\s*${SINK_REFERENCE}\\)`, "g");
 const POINT_FREE_ARGUMENT = new RegExp(`^\\s*${SINK_REFERENCE}$`);
 // The same callbacks as above, read from the start of a `.then` rejection argument.
-const ARROW_HANDLER = /^\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/;
-const FUNCTION_HANDLER = /^\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/;
+const ARROW_HANDLER =
+  /^\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)?\s*=>/;
+const FUNCTION_HANDLER =
+  /^\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)\s*\{/;
 // After these, a "/" starts a regular expression rather than dividing.
 const BEFORE_REGEX = new Set([..."(,=:[!&|?{};+-*%<>~^"]);
 
@@ -368,6 +394,26 @@ const FIXTURES = [
   ["a .then with named handlers", "p.then(task, task);", false],
   ["a named handler of its own", "p.catch(handleFailure);", false],
   ["a point-free call in a comment", "// p.catch(console.error);\np.catch(handleFailure);", false],
+  ["an optional logger call", inCatch("logger.warn?.(`failed: ${error.stack}`);"), true],
+  ["a typed catch name", inCatch("logger.error('failed', error);", "error: unknown"), true],
+  [
+    "a typed catch name described",
+    inCatch("logger.error(describeError(error));", "error: unknown"),
+    false,
+  ],
+  ["a typed .catch callback", "p.catch((e: Error) => console.error('failed', e));", true],
+  [
+    "a typed async .catch callback",
+    "p.catch(async (e: unknown) => {\n  logger.warn(`x ${e}`);\n});",
+    true,
+  ],
+  ["a typed .then rejection", "p.then(ok, (e: unknown) => console.error(e));", true],
+  ["a typed function callback", "p.catch(function (e: unknown) {\n  console.error(e);\n});", true],
+  [
+    "a message cast in a thrown error",
+    inCatch("throw new Error(`x: ${(error as Error).message}`);", "error: unknown"),
+    true,
+  ],
 ];
 
 describe("errors are described before they are handed on", () => {
@@ -375,9 +421,27 @@ describe("errors are described before they are handed on", () => {
     it(`${file} never hands a caught error on whole`, () => {
       const found = offenders(fs.readFileSync(path.join(SRC, file), "utf8"));
 
-      expect(found.map((line) => `${file}:${line}`)).to.deep.equal([]);
+      expect(found.map((line) => `${file}:${line}`).join("\n")).to.equal("");
     });
   }
+
+  it("reads every source file under src, the plugin's TypeScript included", () => {
+    expect(GUARDED).to.include("index.js");
+    expect(GUARDED).to.include("storage/autonomys.js");
+    expect(GUARDED).to.include("elizaos/plugins/plugin-senseai/src/services/brain.ts");
+    expect(GUARDED.some((file) => file.includes("__tests__"))).to.equal(false);
+    expect(GUARDED.some((file) => file.endsWith(".d.ts"))).to.equal(false);
+    expect(GUARDED).to.not.include("elizaos/plugins/plugin-senseai/build.ts");
+  });
+
+  it("fails on a raw print planted in any module it reads", () => {
+    const planted =
+      "\ntry {\n  run();\n} catch (plantedError) {\n  console.error('failed', plantedError);\n}\n";
+    for (const file of GUARDED) {
+      const src = fs.readFileSync(path.join(SRC, file), "utf8");
+      expect(offenders(src + planted).length, file).to.be.greaterThan(offenders(src).length);
+    }
+  });
 
   for (const [form, src, flagged] of FIXTURES) {
     it(`${flagged ? "catches" : "allows"} ${form}`, () => {
