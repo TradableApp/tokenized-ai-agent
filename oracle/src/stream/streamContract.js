@@ -1,0 +1,191 @@
+const crypto = require("crypto");
+
+const { encryptSymmetrically } = require("./frameCrypto");
+
+/**
+ * Live reasoning stream: the oracle's half of the interface contract, version 1.
+ *
+ * The dApp keeps its own copy of these rules (`src/lib/liveReasoning/contract.ts`). The two are
+ * held equal by the shared test vector in `oracle/test/streamContract.test.js`, so any change
+ * here is a change to both repos at once, and to that vector.
+ *
+ * A frame is a small JSON object, sealed with the prompt's session key exactly as the stored
+ * answer file is. The type travels only inside the ciphertext. The stored record is a projection
+ * of these same frames (see `answerStream.js`), which is what makes what is shown live equal to
+ * what is stored.
+ */
+
+const STREAM_CONTRACT_VERSION = 1;
+
+const FRAME_TYPES = Object.freeze({
+  RESET: "reset",
+  SOURCES: "sources",
+  STEP: "step",
+  ATTEMPT: "attempt",
+  ANSWER: "answer",
+  DONE: "done",
+});
+
+const RESET_REASONS = Object.freeze(["start", "retry"]);
+const DONE_OUTCOMES = Object.freeze(["answered", "abandoned", "interrupted"]);
+
+/** Every SSE event has this one name, so a proxy sees only lengths and timing. */
+const SSE_EVENT_NAME = "frame";
+
+const LIMITS = Object.freeze({
+  maxSourcesPerFrame: 20,
+  sourceTitleChars: 300,
+  sourceUrlChars: 2048,
+  stepTitleChars: 120,
+  stepDescriptionChars: 4000,
+  maxStepsPerAttempt: 64,
+  maxAttempts: 4,
+  answerTextBytes: 64 * 1024,
+  framePlaintextBytes: 16 * 1024,
+});
+
+/** The on-chain uint256 in decimal: no sign, no leading zeros, at most 78 digits. */
+const ANSWER_MESSAGE_ID_PATTERN = /^(0|[1-9][0-9]{0,77})$/;
+const RUN_PATTERN = /^[0-9a-f]{16}$/;
+const REPLICA_PATTERN = /^[a-z0-9-]{1,32}$/;
+/** base64url of a 32-byte HMAC, no padding. */
+const PROOF_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const SSE_EVENT_ID_PATTERN = /^([0-9a-f]{16})\.(0|[1-9][0-9]{0,8})$/;
+
+const PROOF_DOMAIN = "senseai-stream:";
+const SESSION_KEY_BYTES = 32;
+const RUN_BYTES = 8;
+const RANDOM_REPLICA_BYTES = 4;
+
+const isAnswerMessageId = (value) => typeof value === "string" && ANSWER_MESSAGE_ID_PATTERN.test(value);
+const isRun = (value) => typeof value === "string" && RUN_PATTERN.test(value);
+const isReplica = (value) => typeof value === "string" && REPLICA_PATTERN.test(value);
+const isSeq = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/** A new run id for every attempt at a job; random so it never repeats across restarts. */
+function newRunId(randomBytes = crypto.randomBytes) {
+  return randomBytes(RUN_BYTES).toString("hex");
+}
+
+/**
+ * `ORACLE_REPLICA_ID` when set, otherwise 8 random hex characters chosen once by the caller at
+ * boot. A value outside the pattern stops start-up; the message describes it without repeating it.
+ */
+function resolveReplicaId(env = process.env, randomBytes = crypto.randomBytes) {
+  const configured = env.ORACLE_REPLICA_ID;
+  if (configured === undefined || configured === "") {
+    return randomBytes(RANDOM_REPLICA_BYTES).toString("hex");
+  }
+  if (!isReplica(configured)) {
+    throw new Error("ORACLE_REPLICA_ID must be 1 to 32 characters of a-z, 0-9 and '-'.");
+  }
+  return configured;
+}
+
+function sseEventId(run, seq) {
+  return `${run}.${seq}`;
+}
+
+/** `{ run, seq }` for a well-formed `<run>.<seq>`, otherwise null. */
+function parseSseEventId(text) {
+  if (typeof text !== "string") return null;
+  const match = SSE_EVENT_ID_PATTERN.exec(text);
+  if (!match) return null;
+  return { run: match[1], seq: Number(match[2]) };
+}
+
+function requireSessionKey(key) {
+  if (!Buffer.isBuffer(key) || key.length !== SESSION_KEY_BYTES) {
+    throw new TypeError(`The session key must be a ${SESSION_KEY_BYTES}-byte Buffer.`);
+  }
+}
+
+/**
+ * Proof of key: base64url(HMAC-SHA256(session key, "senseai-stream:" + answerMessageId)).
+ * Only the user and the oracle can compute it. The oracle hands the stream server this value,
+ * never the key.
+ */
+function streamProof(key, answerMessageId) {
+  requireSessionKey(key);
+  if (!isAnswerMessageId(answerMessageId)) {
+    throw new TypeError("The answer id must be a canonical decimal string.");
+  }
+  return crypto
+    .createHmac("sha256", key)
+    .update(Buffer.from(PROOF_DOMAIN + answerMessageId, "utf-8"))
+    .digest("base64url");
+}
+
+const KNOWN_TYPES = new Set(Object.values(FRAME_TYPES));
+
+/**
+ * The plaintext of one frame, its keys in the contract's order (the shared vector depends on it).
+ * Identities are checked; `data` is the caller's, already shaped and capped.
+ */
+function buildFrame({ answerMessageId, run, seq, replica, type, data }) {
+  if (!isAnswerMessageId(answerMessageId)) throw new TypeError("Bad frame answer id.");
+  if (!isRun(run)) throw new TypeError("Bad frame run.");
+  if (!isSeq(seq)) throw new TypeError("Bad frame seq.");
+  if (!isReplica(replica)) throw new TypeError("Bad frame replica.");
+  if (!KNOWN_TYPES.has(type)) throw new TypeError("Unknown frame type.");
+  return { v: STREAM_CONTRACT_VERSION, answerMessageId, run, seq, replica, type, data };
+}
+
+/** Seals a frame with the session key; the `iv.ciphertext` string a sink receives. */
+function encryptFrame(frame, key, ivSource) {
+  requireSessionKey(key);
+  return encryptSymmetrically(frame, key, ivSource);
+}
+
+/**
+ * Where the answer path sends frames. All three methods are synchronous, must never throw and
+ * never wait on a client:
+ *
+ *   open(answerMessageId, { run, replica, expectedProof })  // replaces any earlier run's buffer
+ *   frame(answerMessageId, { run, seq, ciphertext })        // ciphertext = "iv.ct"
+ *   close(answerMessageId, { run, outcome })                 // after the done frame
+ *
+ * The answer path still guards every call (`answerStream.js`), so a sink that breaks this rule
+ * cannot delay or lose an answer.
+ */
+const SINK_METHODS = Object.freeze(["open", "frame", "close"]);
+
+const noopSink = Object.freeze({
+  open() {},
+  frame() {},
+  close() {},
+});
+
+function isSink(candidate) {
+  return (
+    candidate !== null &&
+    typeof candidate === "object" &&
+    SINK_METHODS.every((method) => typeof candidate[method] === "function")
+  );
+}
+
+module.exports = {
+  STREAM_CONTRACT_VERSION,
+  FRAME_TYPES,
+  RESET_REASONS,
+  DONE_OUTCOMES,
+  SSE_EVENT_NAME,
+  LIMITS,
+  ANSWER_MESSAGE_ID_PATTERN,
+  RUN_PATTERN,
+  REPLICA_PATTERN,
+  PROOF_PATTERN,
+  SINK_METHODS,
+  noopSink,
+  isSink,
+  isAnswerMessageId,
+  isRun,
+  isReplica,
+  newRunId,
+  resolveReplicaId,
+  sseEventId,
+  parseSseEventId,
+  streamProof,
+  buildFrame,
+  encryptFrame,
+};
