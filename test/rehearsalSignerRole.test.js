@@ -213,6 +213,36 @@ describe("the rehearsal and the signer's own oracle role", function () {
       expect(text).to.not.include("withdraws that key");
     });
 
+    // An address is the same address in any letter case: a publisher read or recorded in lower
+    // case is still the signer.
+    it("gives the key note when the publisher is the signer in another letter case", async function () {
+      const { reportSignerRole } = oracleRole();
+      const signer = ethers.Wallet.createRandom().address;
+      const lines = [];
+
+      await reportSignerRole({
+        aiAgent: { isOracle: async () => true },
+        signer,
+        log: (line) => lines.push(String(line)),
+        publisher: signer.toLowerCase(),
+      });
+
+      expectKeyNote(lines.join("\n"), signer);
+    });
+
+    it("takes the publisher for the signer whatever the letter case of either", function () {
+      const { isPublisher } = oracleRole();
+      const signer = ethers.Wallet.createRandom().address;
+      const other = ethers.Wallet.createRandom().address;
+
+      expect(isPublisher(signer.toLowerCase(), signer)).to.equal(true);
+      expect(isPublisher(signer, signer.toLowerCase())).to.equal(true);
+      expect(isPublisher(`0x${signer.slice(2).toUpperCase()}`, signer)).to.equal(true);
+      expect(isPublisher(other.toLowerCase(), signer)).to.equal(false);
+      expect(isPublisher(undefined, signer)).to.equal(false);
+      expect(isPublisher("", signer)).to.equal(false);
+    });
+
     // The publisher is read again for the note. A node failing that read must not replace the
     // refusal with its own error, which can carry the RPC address.
     it("keeps the refusal, with no node error in it, when the publisher cannot be read", async function () {
@@ -254,11 +284,11 @@ describe("the rehearsal and the signer's own oracle role", function () {
   // restores of sets already done, so no rehearsal value is left live, holds every other step,
   // and then refuses, naming what it sent and held.
   describe("a resumed forward run and a snapshot that watches the signer as the oracle", function () {
-    async function resumable(fixture, steps) {
+    async function resumable(fixture, steps, oracle = fixture.deployer.address) {
       const snapshotFile = scratch();
       const baseline = {
         ...fixture.state,
-        oracle: fixture.deployer.address,
+        oracle,
         oracleAuthorized: false,
       };
       fs.writeFileSync(
@@ -275,6 +305,12 @@ describe("the rehearsal and the signer's own oracle role", function () {
     };
     const nonceOf = (fixture) => ethers.provider.getTransactionCount(fixture.deployer.address);
     const stepsIn = (file) => JSON.parse(fs.readFileSync(file, "utf8")).steps;
+    const HOLD_REASON = "skip: held back: the snapshot watches the signer as the oracle";
+    const heldIn = (message) => message.match(/Not sent: ([^.]*)\./)[1].match(/\[[^\]]+\]/g);
+    const AFTER_RESTORES =
+      "After these restores, return any value a rehearsal still leaves live to the snapshot's baseline by hand";
+    const RETURN_NOW =
+      "Return any value a rehearsal still leaves live to the snapshot's baseline by hand";
 
     it("sends the fee restore and nothing else, then refuses saying what it sent and held", async function () {
       const fixture = await loadRehearsal();
@@ -295,6 +331,54 @@ describe("the rehearsal and the signer's own oracle role", function () {
       expect(await aiAgent.isOracle(fixture.safeContractAddress)).to.equal(false);
       expect(await aiAgent.pendingOwner()).to.equal(ethers.ZeroAddress);
       expect(Object.keys(stepsIn(snapshotFile)).sort()).to.deep.equal(["fee-restore", "fee-set"]);
+    });
+
+    // The held steps carry this refusal's reason, not the treasury's, and the advice is worded
+    // for the restores this run sent.
+    it("holds each other step for the snapshot, and says to return values after the restores", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = await resumable(fixture, feeSetDone);
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+
+      const refused = await forward(fixture, { snapshotFile, network: LIVE }).catch((e) => e);
+
+      const holds = fixture.lines.filter((line) => line.includes(HOLD_REASON));
+      expect(heldIn(refused.message)).to.include("[treasury-set]");
+      expect(holds).to.have.length(heldIn(refused.message).length);
+      expect(fixture.lines.join("\n")).to.not.include("the treasury step was refused");
+      expect(refused.message).to.include(AFTER_RESTORES);
+      expect(refused.message).to.not.include(RETURN_NOW);
+      expect(refused.message).to.include("then move it aside");
+      expect(refused.message).to.include("REHEARSAL_ORACLE_ADDRESS naming the address");
+    });
+
+    it("is refused the same when the snapshot names the signer in lower case", async function () {
+      const fixture = await loadRehearsal();
+      const lower = fixture.deployer.address.toLowerCase();
+      const snapshotFile = await resumable(fixture, feeSetDone, lower);
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+
+      const refused = await forward(fixture, { snapshotFile, network: LIVE }).catch((e) => e);
+
+      expect(refused).to.be.an("error");
+      expect(refused.message).to.include("as the live oracle");
+      expect(refused.message).to.match(/Sent: \[fee-restore\][\s\S]*Not sent: \[treasury-set\]/);
+      expect(await fixture.contracts.aiAgent.pendingOwner()).to.equal(ethers.ZeroAddress);
+    });
+
+    it("refuses an oracle address or a snapshot oracle that is the signer in lower case", function () {
+      const { assertOracleIsNotSigner, assertSnapshotOracleIsNotSigner, resumedOracleRefusal } =
+        oracleRole();
+      const signer = ethers.Wallet.createRandom().address;
+      const oracle = signer.toLowerCase();
+
+      expect(() =>
+        assertOracleIsNotSigner({ oracle, signer, source: "REHEARSAL_ORACLE_ADDRESS" }),
+      ).to.throw(/REHEARSAL_ORACLE_ADDRESS is the signer/);
+      expect(() =>
+        assertSnapshotOracleIsNotSigner({ oracle, signer, file: "s.json", accepted: [] }),
+      ).to.throw(/watches the signer/);
+      expect(resumedOracleRefusal({ oracle, signer, file: "s.json" })).to.not.equal(null);
     });
 
     it("predicts that in a dry run, and sends and writes nothing", async function () {
@@ -322,6 +406,11 @@ describe("the rehearsal and the signer's own oracle role", function () {
 
       expect(refused.message).to.match(/as the live oracle[\s\S]*Nothing was sent/);
       expect(refused.message).to.not.include("once these restores are done");
+      expect(refused.message).to.include(RETURN_NOW);
+      expect(refused.message).to.not.include(AFTER_RESTORES);
+      expect(fixture.lines.filter((line) => line.includes(HOLD_REASON))).to.have.length(
+        heldIn(refused.message).length,
+      );
       expect(await nonceOf(fixture)).to.equal(nonce);
       expect(stepsIn(snapshotFile)).to.deep.equal({});
     });

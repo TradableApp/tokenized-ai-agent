@@ -139,6 +139,16 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
       expect(refused.message).to.not.include(
         "or rehearse with a Safe that is listed, then run again",
       );
+      // The way out waits for the restores this run sent, and each held step says why.
+      expect(refused.message).to.include(
+        `move the snapshot at ${snapshotFile} aside once these restores are done (keep it`,
+      );
+      const holds = fixture.lines.filter((line) =>
+        line.includes("skip: held back: the treasury step was refused"),
+      );
+      const held = refused.message.match(/Not sent: ([^.]*)\./)[1].match(/\[[^\]]+\]/g);
+      expect(holds).to.have.length(held.length);
+      expect(fixture.lines.join("\n")).to.not.include("the snapshot watches the signer");
 
       const { escrow, aiAgent } = fixture.contracts;
       expect(await escrow.promptFee()).to.equal(PROMPT_FEE);
