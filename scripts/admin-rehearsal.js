@@ -53,8 +53,10 @@ const ORACLE_ROLE = ethers.id("ORACLE_ROLE");
  * live oracle named by the caller. Its authorization is recorded before the rehearsal and
  * compared afterwards, so a rehearsal that leaves the live oracle without its role is caught.
  *
- * The encryption key clients read from the agent is in the snapshot too, with its publisher:
- * removing the publishing oracle withdraws the key, and clients then cannot submit a prompt.
+ * The encryption key published on the agent is in the snapshot too, with its publisher:
+ * removing the publishing oracle's role withdraws the key, so a rehearsal that changes it is
+ * caught. No client reads that key from the agent today (the dApp encrypts to the key its build
+ * names), so withdrawing it stops no prompt.
  */
 async function readState({ aiAgent, escrow, oracleAddress }) {
   const [agentOwner, escrowOwner, treasury, promptFee, encryption] = await Promise.all([
