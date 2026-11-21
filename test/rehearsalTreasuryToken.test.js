@@ -148,6 +148,43 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
     });
   });
 
+  // A restore that an earlier run sent but did not record is seen on the chain ("observe"). It
+  // has run, so a refused resume still records it and does not report it as held back.
+  describe("holdUnstarted: what a refused resume keeps", function () {
+    const { holdUnstarted } = require("../scripts/rehearsal/token");
+    const decide = (id, action) => ({ step: { id }, action, reason: "" });
+    const actions = (decisions) => Object.fromEntries(decisions.map((d) => [d.step.id, d.action]));
+
+    it("keeps a restore already seen on the chain, and neither sends nor holds it", function () {
+      const { decisions, sent, held } = holdUnstarted([
+        decide("fee-set", "skip"),
+        decide("fee-restore", "observe"),
+        decide("treasury-set", "send"),
+        decide("treasury-restore", "send"),
+      ]);
+
+      expect(actions(decisions)).to.deep.equal({
+        "fee-set": "skip",
+        "fee-restore": "observe",
+        "treasury-set": "skip",
+        "treasury-restore": "skip",
+      });
+      expect(sent).to.deep.equal([]);
+      expect(held).to.deep.equal(["treasury-set", "treasury-restore"]);
+    });
+
+    it("still holds a step seen on the chain that is not a restore of a started set", function () {
+      const { decisions, held } = holdUnstarted([
+        decide("fee-set", "send"),
+        decide("fee-restore", "send"),
+        decide("offer-agent", "observe"),
+      ]);
+
+      expect(actions(decisions)["offer-agent"]).to.equal("skip");
+      expect(held).to.deep.equal(["fee-set", "fee-restore", "offer-agent"]);
+    });
+  });
+
   it("refuses when it cannot tell whether the token keeps a list", async function () {
     const fixture = await loadRehearsal();
     // An address with no code answers every call with nothing, which reads as no answer.
