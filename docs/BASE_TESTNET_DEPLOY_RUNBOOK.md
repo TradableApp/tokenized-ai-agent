@@ -516,6 +516,25 @@ mainnet run can check for it up front instead of rediscovering it.
 - The Safe's part is to accept ownership of both proxies and offer it back. The fee, treasury and oracle changes are sent from the deploy wallet. The rehearsal does not have the Safe send any other owner call, and it rehearses no upgrade: a passing rehearsal shows the Safe can take and return ownership, not that it can do those. Try them from the Safe separately before relying on it for them.
 - On a live network it reports whether the deploy wallet still holds the oracle role, and the confirm phase does not pass while it does. Removing it is the owner's call, made before the handover and only after the oracle's own address holds the role (§1.1). When the deploy wallet also published the encryption key, the note says that removing its role withdraws that key, that nothing reads it today, and that the role is still removed (see the `signerIsOracle` row above).
 
+### Moving prompts to a new agent and escrow: close the old pair first
+
+One oracle answers one pair. Before the oracle is pointed at a new agent and escrow, the owner
+closes new paid actions on the old pair with the dApp's prompts switch and lets the prompts
+already sent settle; otherwise a prompt sent to the old pair after the oracle has moved is paid
+and waits for its one-hour refund.
+
+- The switch is a document every open copy of the dApp listens to, per network and agent
+  (`sense-ai-dapp/docs/decisions/0008-remote-prompts-switch.md`). Closing it stops new prompts,
+  plans, branches and renames in every open tab without a deploy; cancelling, refunds and
+  revoking a plan are never stopped by it.
+- Order: a dApp build that hears the switch is live first; then close the old pair; then wait
+  until every prompt on it is answered, cancelled or refunded; only then move the oracle. The
+  oracle keeps answering the old pair until then.
+- A copy of the dApp from before the switch existed never hears it, so the wait is not
+  optional.
+- The owner writes the switch with the operator script in the harness repository, which also
+  holds the step-by-step procedure.
+
 ### Mainnet pre-flight additions (do before the first mainnet `rofl deploy`)
 
 - [ ] **Refresh the Sapphire-mainnet trust root** (mainnet counterpart of A.1; read-only, no passphrase):
