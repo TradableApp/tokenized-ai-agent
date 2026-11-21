@@ -16,7 +16,7 @@
   contracts in the order of [§1.2](#12-fresh-pair-in-order). Its addresses and the fee token's
   are filled on deploy day.
 - **Cloud SQL:** the oracle reads the **same** warm cache as the social body —
-  instance `sense-ai-app-garrick`, DB `senseai` (verified: same `34.60.147.27`).
+  the Cloud SQL instance (name and address are in the operator's private notes), DB `senseai`.
   Per-deployment mTLS cert `rofl-oracle-base-testnet` (distinct from the social
   body's `rofl-testnet`); minted by the init script.
 
@@ -237,8 +237,8 @@ time. All `bun run` from the **repo root**.
 
 Every signing step below (`rofl update`, `rofl deploy`, `rofl machine …`) prompts for the
 account passphrase on a TTY. **Do not type it and do not stop to ask for it.** The operator keeps
-the passphrases in the macOS login Keychain, one item per CLI account —
-`oasis-passphrase-oasis_testnet` and `oasis-passphrase-oasis_mainnet` — and
+the passphrases in the macOS login Keychain, one item per CLI account — the operator's
+keychain item for the `oasis_testnet` passphrase and the one for the `oasis_mainnet` passphrase — and
 `scripts/oasis-unlock.exp` feeds them to any `oasis` command, answers the terminal probe
 and the y/N confirmations, and never prints the secret:
 
@@ -273,7 +273,7 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
   under `deployments.base-testnet.trust_root` in `rofl.yaml`. (Committed is `27756069`;
   Sapphire-testnet head is ~`32.97M`.) — *me*
 - [ ] **A.2 Cloud SQL wiring — ONE-TIME (you; gcloud auth):** `bun run rofl:init:cloud-sql:base-testnet`.
-  Mints cert `rofl-oracle-base-testnet` on `sense-ai-app-garrick`, pushes the 4 Postgres
+  Mints cert `rofl-oracle-base-testnet` on the Cloud SQL instance (name and address are in the operator's private notes), pushes the 4 Postgres
   secrets to the `base-testnet` deployment, stamps `POSTGRES_HOST`. Idempotent.
 - [ ] **A.3 Build the oracle image (me):** `bun run image:build:base-testnet` (`Dockerfile.oracle`, multi-stage — builds Brain + inner-plugin dists in-image).
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
@@ -294,7 +294,7 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
 ## 5. Phase C — Boot verification (`oasis rofl machine logs --deployment base-testnet` → tmp file; passphrase)
 - [ ] `✓ Project built successfully` (multi-stage re-bundle in the TEE).
 - [ ] Trust root verified — **no light-block loop** (confirms A.1).
-- [ ] `[BrainContext]` — **NOT** `market context disabled`; Cloud SQL mTLS connects to `sense-ai-app-garrick`.
+- [ ] `[BrainContext]` — **NOT** `market context disabled`; Cloud SQL mTLS connects to the Cloud SQL instance (name and address are in the operator's private notes).
 - [ ] Oracle event listener up, polling **Base Sepolia**; ElizaOS + senseai plugin load; MCP registers (if used); no default-agent fallback.
 - [ ] Log-reading note: `oasis rofl machine logs` wraps app stdout as `module":"runtime" level":"warn"`; the app's real level is the text prefix in `msg` — filter on that, not the JSON level.
 
@@ -355,7 +355,7 @@ the oracle; out of scope here.
 3. **Plan setup** — `token.approve(escrow, …)` then `escrow.setSpendingLimit(…, +1 day)` (skips if already active).
 4. **Encrypt** — generates a random 32-byte session key, AES-256-GCM-encrypts the prompt payload (`{promptText, isNewConversation, …}`), and ECIES-encrypts the session key to the oracle's `PUBLIC_KEY` (reusing the oracle's own `src/ecies.js` → wire-format guaranteed to match).
 5. **Submit** — `escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)`; parses `PromptSubmitted` for `answerMessageId`.
-6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**) with `eth_getLogs` walked in contiguous windows of at most `SMOKE_LOGS_BLOCK_RANGE` blocks (default 10 — Alchemy's free-tier cap; the public node allows a few hundred), resuming from a refused window rather than re-widening it and logging the node's own error, up to `SMOKE_TIMEOUT_MS` (5 min). The 2026-11-02 run day lost 6/6 smoke verdicts to a single-request `[submitBlock, head]` poll against an Alchemy endpoint while every answer was on-chain within a minute (`scripts/smoke/answerWait.js`).
+6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**) with `eth_getLogs` walked in contiguous windows of at most `SMOKE_LOGS_BLOCK_RANGE` blocks (default 10 — Alchemy's free-tier cap; the public node allows a few hundred), resuming from a refused window rather than re-widening it and logging the node's own error, up to `SMOKE_TIMEOUT_MS` (5 min). A single request over `[submitBlock, head]` is refused by a capped endpoint, so the wait walks windows instead (`scripts/smoke/answerWait.js`).
 7. **Fetch + decrypt** — fetches the answer `MessageFile` from the storage gateway (Autonomys/Irys, 30-s bounded), AES-decrypts it with the session key.
 8. **Assert** — prints the answer and judges it with `src/answerQuality.js` (burst: `scripts/smoke/burst.js`; injection: `scripts/smoke/injection.js`), then writes the metrics file.
 
