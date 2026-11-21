@@ -19,6 +19,9 @@ const REPO_ROOT = path.join(__dirname, "..", "..");
 const SET_SECRETS = path.join(REPO_ROOT, "scripts", "rofl-set-secrets.sh");
 const INIT_CLOUD_SQL = path.join(REPO_ROOT, "scripts", "rofl-init-cloud-sql.sh");
 const MARKER = "# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===";
+// Documentation addresses (RFC 5737): the one in the env file, and the one gcloud reports.
+const ENV_ADDRESS = "203.0.113.10";
+const GCLOUD_ADDRESS = "203.0.113.9";
 
 /** A throwaway repo root with env files, a compose template, rofl.yaml and PATH shims. */
 function makeWorkspace() {
@@ -35,10 +38,10 @@ function makeWorkspace() {
       "PRIVATE_KEY=0xabc",
       "POSTGRES_CLIENT_CERT=",
       "POSTGRES_PASSWORD=",
+      `POSTGRES_HOST=${ENV_ADDRESS}`,
       MARKER,
       "NETWORK_NAME=baseSepolia",
       "POSTGRES_AGENT_DATABASE=oracle_agent",
-      "POSTGRES_HOST=1.2.3.4",
       "mcp=",
       "",
     ].join("\n"),
@@ -91,7 +94,7 @@ function makeWorkspace() {
       // `client-certs create NAME KEYPATH --instance= --project=`: argv is sql ssl client-certs create NAME KEYPATH, so the key path is $6.
       '  *"client-certs create"*) echo "fake-key" > "$6";;',
       '  *"client-certs describe"*) echo "fake-cert";;',
-      '  *"instances describe"*) echo \'{"ipAddresses":[{"type":"PRIMARY","ipAddress":"10.9.9.9"}]}\';;',
+      `  *"instances describe"*) echo '{"ipAddresses":[{"type":"PRIMARY","ipAddress":"${GCLOUD_ADDRESS}"}]}';;`,
       "esac",
     ].join("\n"),
   );
@@ -161,6 +164,92 @@ describe("ROFL_DEPLOYMENT override", function () {
     });
   });
 
+  describe("POSTGRES_HOST is a secret", function () {
+    const envFilePath = () => path.join(ws.dir, "oracle", ".env.oracle.base-testnet");
+    const writeEnvFile = (lines) => fs.writeFileSync(envFilePath(), [...lines, ""].join("\n"));
+    const readCompose = () => fs.readFileSync(path.join(ws.dir, "compose.base-testnet.yaml"), "utf8");
+
+    describe("rofl-set-secrets.sh", function () {
+      it("pushes the address on-chain and injects it, never writing it into the compose", function () {
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.equal(0);
+        expect(readLog(ws)).to.include("secret set POSTGRES_HOST --deployment base-testnet");
+        const compose = readCompose();
+        expect(compose).to.include("- POSTGRES_HOST=${POSTGRES_HOST:-}");
+        expect(compose).to.not.include(ENV_ADDRESS);
+        expect(out).to.not.include(ENV_ADDRESS);
+      });
+
+      it("refuses an address below the delimiter before writing or pushing anything", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          "POSTGRES_AGENT_DATABASE=oracle_agent",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.include("POSTGRES_HOST");
+        expect(out).to.include("ABOVE the delimiter");
+        expect(out).to.not.include(ENV_ADDRESS);
+        expect(readLog(ws)).to.not.include("secret set");
+        expect(readCompose()).to.include("STALE=1");
+        expect(readCompose()).to.not.include(ENV_ADDRESS);
+      });
+
+      it("accepts a blank POSTGRES_HOST below the delimiter, which writes nothing", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          "POSTGRES_AGENT_DATABASE=oracle_agent",
+          "POSTGRES_HOST=",
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.equal(0);
+        expect(readCompose()).to.not.match(/POSTGRES_HOST=/);
+      });
+    });
+
+    describe("rofl-init-cloud-sql.sh", function () {
+      it("stamps the address without printing it", function () {
+        const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
+        expect(code, out).to.equal(0);
+        expect(fs.readFileSync(envFilePath(), "utf8")).to.include(`POSTGRES_HOST=${GCLOUD_ADDRESS}`);
+        expect(out).to.include("Stamped POSTGRES_HOST");
+        expect(out).to.not.include(GCLOUD_ADDRESS);
+        expect(out).to.not.include("below the delimiter");
+      });
+
+      it("warns when the stamped line sits below the delimiter", function () {
+        writeEnvFile(["PRIVATE_KEY=0xabc", MARKER, "NETWORK_NAME=baseSepolia", `POSTGRES_HOST=${ENV_ADDRESS}`]);
+        const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
+        expect(code, out).to.equal(0);
+        expect(out).to.include("below the delimiter");
+        expect(out).to.not.include(GCLOUD_ADDRESS);
+      });
+
+      it("points to gcloud, not the address, when the env file has no POSTGRES_HOST line", function () {
+        writeEnvFile(["PRIVATE_KEY=0xabc", MARKER, "NETWORK_NAME=baseSepolia"]);
+        const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
+        expect(code, out).to.equal(0);
+        expect(out).to.include("gcloud sql instances describe");
+        expect(out).to.not.include(GCLOUD_ADDRESS);
+      });
+
+      it("points to gcloud, not the address, when the env file is missing", function () {
+        fs.rmSync(envFilePath());
+        const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
+        expect(code, out).to.equal(0);
+        expect(out).to.include("gcloud sql instances describe");
+        expect(out).to.not.include(GCLOUD_ADDRESS);
+      });
+    });
+  });
+
   describe("rofl-init-cloud-sql.sh", function () {
     it("with ROFL_DEPLOYMENT, the cert is named for the deployment, pushed to it, on ENV's instance", function () {
       const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], {
@@ -177,7 +266,7 @@ describe("ROFL_DEPLOYMENT override", function () {
       expect(log).to.not.include("--deployment base-testnet");
       // POSTGRES_HOST is stamped into ENV's env file, which is what rofl:set reads next.
       const envFile = fs.readFileSync(path.join(ws.dir, "oracle", ".env.oracle.base-testnet"), "utf8");
-      expect(envFile).to.include("POSTGRES_HOST=10.9.9.9");
+      expect(envFile).to.include(`POSTGRES_HOST=${GCLOUD_ADDRESS}`);
       // The next-steps hint names the deployment's signing account: the CLI default on an
       // operator machine is the testnet account, which is wrong for base-mainnet.
       expect(out).to.include("oasis rofl update --deployment base-mainnet --account oasis_mainnet");

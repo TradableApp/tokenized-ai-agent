@@ -28,7 +28,7 @@ const MARKER = "# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===";
 const AGENT_DB_LINE = "- POSTGRES_AGENT_DATABASE=oracle_agent";
 
 /** Wraps config lines in enough compose shape to exercise the bounded scan, not a stub. */
-function composeFixture(configLines, { marker = MARKER, omitAgentDb = false } = {}) {
+function composeFixture(configLines, { marker = MARKER, omitAgentDb = false, secretLines = [] } = {}) {
   return [
     "services:",
     "  oracle:",
@@ -36,6 +36,7 @@ function composeFixture(configLines, { marker = MARKER, omitAgentDb = false } = 
     "    environment:",
     "      # === 🔐 ROFL SECRETS ===",
     "      - PRIVATE_KEY=${PRIVATE_KEY:-}",
+    ...secretLines.map((l) => `      ${l}`),
     `      ${marker}`,
     ...(omitAgentDb ? [] : [`      ${AGENT_DB_LINE}`]),
     ...configLines.map((l) => `      ${l}`),
@@ -208,6 +209,75 @@ describe("rofl-preflight.sh", function () {
 
       expect(code).to.equal(1);
       expect(out).to.include("POSTGRES_AGENT_DATABASE");
+    });
+  });
+
+  describe("POSTGRES_HOST is a secret", function () {
+    // The database address must never be written into a tracked compose: this repo is public.
+    // A documentation address (RFC 5737) stands in for a real one.
+    const ADDRESS = "203.0.113.7";
+
+    it("rejects a literal address in the plaintext config, without printing it", function () {
+      const { code, out } = runPreflight(composeFixture([`- POSTGRES_HOST=${ADDRESS}`]));
+
+      expect(code).to.equal(1);
+      expect(out).to.include("POSTGRES_HOST");
+      expect(out).to.include("secret");
+      expect(out).to.not.include(ADDRESS);
+    });
+
+    it("rejects a hostname in the plaintext config too", function () {
+      const { code, out } = runPreflight(composeFixture(["- POSTGRES_HOST=db.example.com"]));
+
+      expect(code).to.equal(1);
+      expect(out).to.not.include("db.example.com");
+    });
+
+    it("passes the injected form in the secrets section", function () {
+      const { code } = runPreflight(
+        composeFixture(["- LOG_LEVEL=warn"], {
+          secretLines: ["- POSTGRES_HOST=${POSTGRES_HOST:-}"],
+        }),
+      );
+
+      expect(code).to.equal(0);
+    });
+  });
+
+  describe("tracked compose files", function () {
+    // The compose files are generated, but they are also committed to a public repo, so a
+    // hand-edit or a regenerate from an old env layout would publish the database address.
+    const composeFiles = fs
+      .readdirSync(REPO_ROOT)
+      .filter((name) => /^compose(\..+)?\.yaml$/.test(name));
+
+    for (const name of ["compose.yaml", "compose.base-testnet.yaml", "compose.base-mainnet.yaml"]) {
+      it(`${name} injects POSTGRES_HOST from the secrets section`, function () {
+        const lines = fs.readFileSync(path.join(REPO_ROOT, name), "utf8").split(/\r?\n/);
+        const markerAt = lines.findIndex((l) => l.trim() === MARKER);
+        const hostAt = lines.findIndex((l) => l.trim() === "- POSTGRES_HOST=${POSTGRES_HOST:-}");
+
+        expect(markerAt, `${name} has no ORC marker`).to.be.greaterThan(-1);
+        expect(hostAt, `${name} does not inject POSTGRES_HOST`).to.be.greaterThan(-1);
+        expect(hostAt, `${name} injects POSTGRES_HOST below the marker`).to.be.lessThan(markerAt);
+      });
+    }
+
+    it("no tracked compose carries a literal POSTGRES_HOST", function () {
+      expect(composeFiles).to.include("compose.base-testnet.yaml");
+      for (const name of composeFiles) {
+        const text = fs.readFileSync(path.join(REPO_ROOT, name), "utf8");
+        const literals = text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => /^-\s*POSTGRES_HOST=/.test(l))
+          .filter((l) => l !== "- POSTGRES_HOST=${POSTGRES_HOST:-}");
+
+        // Reported by count, not content: the failing value is the thing being kept out.
+        expect(literals.length, `${name} has a literal POSTGRES_HOST line`).to.equal(0);
+        const pairsWithIpv4 = /POSTGRES_HOST\s*[=:]\s*["']?\d{1,3}(\.\d{1,3}){3}/.test(text);
+        expect(pairsWithIpv4, `${name} pairs POSTGRES_HOST with an IPv4 address`).to.equal(false);
+      }
     });
   });
 
