@@ -7,6 +7,7 @@ const { ethers } = require("hardhat");
 const { forwardPhase, confirmPhase, readState } = require("../scripts/admin-rehearsal");
 const { publishEncryptionKey } = require("./helpers/encryptionKeyProof");
 const {
+  PROMPT_FEE,
   REHEARSAL_FEE,
   OFFERS_DONE,
   snapshotText,
@@ -196,6 +197,71 @@ describe("the rehearsal and the signer's own oracle role", function () {
       const text = fixture.lines.join("\n");
       expect(text).to.include(plainAdvice);
       expect(text).to.not.include("would withdraw that key");
+    });
+  });
+
+  // A snapshot an earlier version wrote may watch the signer as the live oracle. The confirm
+  // phase can never pass with it, so a resumed forward run refuses it before sending anything,
+  // the restores included, rather than leave a rehearsal that cannot be confirmed.
+  describe("a resumed forward run and a snapshot that watches the signer as the oracle", function () {
+    async function resumable(fixture) {
+      const snapshotFile = scratch();
+      const done = { status: "done", txHash: `0x${"ef".repeat(32)}`, blockNumber: 1 };
+      const baseline = {
+        ...fixture.state,
+        oracle: fixture.deployer.address,
+        oracleAuthorized: false,
+      };
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, baseline, fixture.safeContractAddress, {
+          steps: { "fee-set": done },
+          network: LIVE,
+        }),
+      );
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+      return snapshotFile;
+    }
+
+    for (const dryRun of [false, true]) {
+      it(`refuses on a live network before anything is sent or written (dryRun=${dryRun})`, async function () {
+        const fixture = await loadRehearsal();
+        const snapshotFile = await resumable(fixture);
+        const before = fs.readFileSync(snapshotFile, "utf8");
+        const nonce = await ethers.provider.getTransactionCount(fixture.deployer.address);
+
+        await expect(forward(fixture, { snapshotFile, network: LIVE, dryRun })).to.be.rejectedWith(
+          new RegExp(
+            `watches the signer ${fixture.deployer.address} as the live oracle[\\s\\S]*Nothing has been sent`,
+          ),
+        );
+
+        expect(await ethers.provider.getTransactionCount(fixture.deployer.address)).to.equal(nonce);
+        expect(await fixture.contracts.escrow.promptFee()).to.equal(REHEARSAL_FEE);
+        expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+      });
+    }
+
+    it("resumes on a local network, where the signer is the oracle on purpose", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = scratch();
+      const done = { status: "done", txHash: `0x${"ef".repeat(32)}`, blockNumber: 1 };
+      const baseline = {
+        ...fixture.state,
+        oracle: fixture.deployer.address,
+        oracleAuthorized: false,
+      };
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, baseline, fixture.safeContractAddress, {
+          steps: { "fee-set": done },
+        }),
+      );
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+
+      await forward(fixture, { snapshotFile });
+
+      expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
     });
   });
 });

@@ -59,6 +59,15 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
         /is not on its list[\s\S]*Nothing (was|would be) sent/,
       );
 
+      // The payments that fail are the fees a user pays straight to the treasury; the escrow's
+      // own payment to the treasury still moves, the escrow being listed.
+      const refused = await forward(fixture, { snapshotFile, dryRun }).catch((error) => error);
+      expect(refused.message).to.include("fee for cancelling a prompt");
+      expect(refused.message).to.include("branch");
+      expect(refused.message).to.include("rename or delete");
+      expect(refused.message).to.not.include("every payment the escrow sends to the treasury");
+      expect(refused.message).to.include("rehearse with a Safe that is listed");
+
       expect(fs.existsSync(snapshotFile)).to.equal(false);
       expect(await nonceOf(fixture)).to.equal(nonce);
       expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
@@ -119,8 +128,16 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
       const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
       const snapshotFile = await resumedAfterFeeSet(fixture);
 
-      await expect(forward(fixture, { snapshotFile })).to.be.rejectedWith(
+      const refused = await forward(fixture, { snapshotFile }).catch((error) => error);
+      expect(refused.message).to.match(
         /is not on its list[\s\S]*Sent: \[fee-restore\][\s\S]*Not sent: \[treasury-set\], \[treasury-restore\]/,
+      );
+      // A resume refuses another Safe, so another Safe is only possible after the snapshot is
+      // moved aside.
+      expect(refused.message).to.include(`move the snapshot at ${snapshotFile} aside`);
+      expect(refused.message).to.include("a resumed run refuses another Safe");
+      expect(refused.message).to.not.include(
+        "or rehearse with a Safe that is listed, then run again",
       );
 
       const { escrow, aiAgent } = fixture.contracts;
