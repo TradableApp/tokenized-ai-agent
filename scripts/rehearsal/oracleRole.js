@@ -15,16 +15,22 @@ function isLiveNetwork(network) {
  * deployed, and once ownership is handed over only the new owner can take it away. Removing it
  * is the owner's decision, so the rehearsal names the call and never sends it.
  *
- * When the signer published the encryption key (`publishesKey`), removing its role withdraws
- * the key (the agent's `_revokeRole`) and no prompt can be submitted until an oracle publishes
- * one; and while the signer's key is published, `setOracleEncryptionKey` refuses any other
- * oracle with `EncryptionKeyHeldByAnotherOracle`. The note then gives that order instead.
+ * When the signer is the agent's encryption key publisher (`publishesKey`), removing its role
+ * also withdraws that key (the agent's `_revokeRole`). Nothing reads the key from the chain
+ * today (the dApp encrypts to a key its build names, and no prompt path reads it), and the
+ * oracle does not publish its own key yet, so the note says just that: the role is still
+ * removed, and a snapshot that recorded the key then always differs on it.
  */
 function signerRoleNote(signer, { publishesKey = false } = {}) {
   if (publishesKey) {
-    return `The signer ${signer} holds the oracle role on the agent and published the encryption key clients encrypt prompts to (oracleEncryptionKeyPublisher). Do not simply remove its role: agent.removeOracle(${signer}) would withdraw that key, and no prompt can be submitted until an oracle publishes a key again. The real oracle cannot publish its key first: while the signer's key is published, the agent refuses any other oracle's key with EncryptionKeyHeldByAnotherOracle. So the owner, before the handover, makes sure the real oracle holds the oracle role (agent.addOracle(<oracle>)), removes the signer's role, and has the real oracle publish its key with agent.setOracleEncryptionKey(key, proof) straight after; prompts cannot be submitted between the two, so choose a quiet time. The rehearsal does none of this, and the confirm phase does not pass while the signer holds the role. A snapshot that records the signer's key differs from the chain once the key changes, and the confirm phase then fails on it every time: move that snapshot aside (keep it: it holds the values from before the rehearsal).`;
+    return `The signer ${signer} holds the oracle role on the agent and is the agent's oracleEncryptionKeyPublisher: the encryption key on the agent was published from this wallet. Removing its role (agent.removeOracle(${signer})) withdraws that key: the agent deletes the key when its publisher loses the role. Today that matters only to a client that reads the key from the agent, and none does: the dApp encrypts to the key its build names. The real oracle publishes no key of its own yet (publishing it at start-up is not built yet), so after the removal the agent holds no key. Remove the role all the same: once ownership is handed over, only the new owner can remove it, so the owner removes it before the handover. A snapshot that recorded this key then differs from the chain on the key every time, and the confirm phase fails on it: move that snapshot aside (keep it: it holds the values from before the rehearsal). Never publish an encryption key from the deploy wallet. The rehearsal does not remove the role, and the confirm phase does not pass while it is held.`;
   }
   return `The signer ${signer} holds the oracle role on the agent. Once ownership is handed over, only the new owner can remove it, so the owner removes it before the handover: agent.removeOracle(${signer}). The rehearsal does not remove it, and the confirm phase does not pass while it is held.`;
+}
+
+/** Said with the plain note when the publisher could not be read: the node's error is not shown. */
+function unreadablePublisherNote(signer) {
+  return `The agent's encryption key publisher could not be read, so this does not say whether the signer ${signer} published the key; if it did, removing its role withdraws that key, and a snapshot that recorded the key then differs on it and must be moved aside.`;
 }
 
 /**
@@ -75,17 +81,19 @@ function assertSnapshotOracleIsNotSigner({ oracle, signer, file, accepted }) {
 }
 
 /**
- * Refuses, before a resumed forward run sends anything, a snapshot that watches the signer as
- * the live oracle, which an earlier version of the script allowed. The confirm phase can never
- * pass with it (`assertSnapshotOracleIsNotSigner`), so resuming would only send steps toward a
- * rehearsal that cannot be confirmed. The snapshot is still the one record of the values before
- * the rehearsal, so it is kept and the way out is by hand.
+ * Why a resumed forward run must not go on with this snapshot, or null when it may: the
+ * snapshot watches the signer as the live oracle, which an earlier version of the script
+ * allowed, and the confirm phase can never pass with it (`assertSnapshotOracleIsNotSigner`).
+ * The run still sends the restore of every set already done, so no rehearsal value is left
+ * live, and holds every step not yet started; the advice depends on whether it sent any.
  */
-function assertResumedOracleIsNotSigner({ oracle, signer, file }) {
-  if (!oracle || !sameValue(oracle, signer)) return;
-  throw new RehearsalError(
-    `The snapshot at ${file} watches the signer ${signer} as the live oracle, which an earlier version of this script allowed. Nothing has been sent. Its rehearsal can never be confirmed: the live oracle's role must be kept, and the signer's is one the owner removes before the handover. Return each value a rehearsal left live to the snapshot's baseline by hand (keep the snapshot: it holds the values from before the rehearsal), then move it aside; a fresh forward run then starts from the live state, refuses while a rehearsal value is left, and takes REHEARSAL_ORACLE_ADDRESS naming the address the oracle answers prompts from.`,
-  );
+function resumedOracleRefusal({ oracle, signer, file }) {
+  if (!oracle || !sameValue(oracle, signer)) return null;
+  return {
+    reason: `The snapshot at ${file} watches the signer ${signer} as the live oracle, which an earlier version of this script allowed. Its rehearsal can never be confirmed: the live oracle's role must be kept, and the signer's is one the owner removes before the handover. No new step is sent with it.`,
+    advice: ({ sent }) =>
+      `${sent.length > 0 ? "After these restores, return" : "Return"} any value a rehearsal still leaves live to the snapshot's baseline by hand (keep the snapshot: it holds the values from before the rehearsal), then move it aside; a fresh forward run then starts from the live state, refuses while a rehearsal value is left, and takes REHEARSAL_ORACLE_ADDRESS naming the address the oracle answers prompts from.`,
+  };
 }
 
 module.exports = {
@@ -93,7 +101,8 @@ module.exports = {
   signerRoleNote,
   reportSignerRole,
   isPublisher,
+  unreadablePublisherNote,
   assertOracleIsNotSigner,
   assertSnapshotOracleIsNotSigner,
-  assertResumedOracleIsNotSigner,
+  resumedOracleRefusal,
 };
