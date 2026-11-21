@@ -87,6 +87,52 @@ describe("errorDescription — what an error is, without the address it was sent
     expect(withoutAddresses("https://ai3.storage/v1/not-a-real-key")).to.equal("[address removed]");
   });
 
+  // Node's fetch fails with "fetch failed" and puts what happened in `cause`. Its kind is what
+  // tells a refused connection from a timeout; its message may carry the address.
+  describe("an error with a cause", () => {
+    const refused = () =>
+      Object.assign(new Error("connect ECONNREFUSED https://rpc.example/v2/not-a-real-key"), {
+        code: "ECONNREFUSED",
+      });
+
+    it("is described with its cause's kind and never its cause's message", () => {
+      const text = describeError(new Error("fetch failed", { cause: refused() }));
+
+      expect(text).to.equal("fetch failed (cause: ECONNREFUSED)");
+      expect(describedError(new Error("fetch failed", { cause: refused() })).message).to.equal(
+        text,
+      );
+    });
+
+    it("takes the cause's name where it has no code", () => {
+      expect(describeError(new Error("x", { cause: new TypeError("bad") }))).to.equal(
+        "x (cause: TypeError)",
+      );
+    });
+
+    it("cleans a cause whose code or name carries an address", () => {
+      const cause = { code: "https://rpc.example/v2/not-a-real-key", name: "postgres://u:pw@db/a" };
+
+      const text = describeError(new Error("fetch failed", { cause }));
+
+      expect(text).to.equal("fetch failed (cause: Error)");
+      expect(text).to.not.include("not-a-real-key");
+    });
+
+    it("goes one level down only", () => {
+      const cause = { code: "EAI_AGAIN", cause: { code: "ENOTFOUND" } };
+
+      expect(describeError(new Error("fetch failed", { cause }))).to.equal(
+        "fetch failed (cause: EAI_AGAIN)",
+      );
+    });
+
+    it("adds nothing when there is no cause", () => {
+      expect(describeError(new Error("fetch failed"))).to.equal("fetch failed");
+      expect(describeError(new Error("x", { cause: undefined }))).to.equal("x");
+    });
+  });
+
   describe("a revert", () => {
     const revert = (extra) =>
       ethers.makeError("execution reverted (unknown custom error)", "CALL_EXCEPTION", {
@@ -142,6 +188,35 @@ describe("errorDescription — what an error is, without the address it was sent
 
       expect(error.stack.split("\n").slice(1)).to.deep.equal(original.stack.split("\n").slice(1));
       expect(error.stack).to.not.include("rpc.example");
+    });
+
+    it("removes an address carried by a frame of the original", () => {
+      const original = new Error("fetch failed");
+      original.stack = [
+        "Error: fetch failed",
+        "    at request (https://rpc.example/v2/not-a-real-key:1:20)",
+        "    at poll (/app/src/eventPoller.js:10:5)",
+      ].join("\n");
+
+      const error = describedError(original);
+
+      expect(error.stack).to.not.include("not-a-real-key");
+      expect(error.stack.split("\n")).to.deep.equal([
+        "Error: fetch failed",
+        "    at request ([address removed])",
+        "    at poll (/app/src/eventPoller.js:10:5)",
+      ]);
+    });
+
+    it("removes an address carried by the original's name, from the name and the stack", () => {
+      const original = new Error("fetch failed");
+      original.name = "FetchError https://rpc.example/v2/not-a-real-key";
+
+      const error = describedError(original);
+
+      expect(error.name).to.equal("FetchError [address removed]");
+      expect(error.stack).to.not.include("not-a-real-key");
+      expect(util.inspect(error, { depth: 10 })).to.not.include("not-a-real-key");
     });
 
     it("keeps the code, which callers branch on", () => {
@@ -307,6 +382,25 @@ describe("isTransientProviderError — a provider request that a later attempt m
 
       expect(withoutAddresses("request POST /v2/aB3dE6gH9jK2mN5pQ8sT refused")).to.equal(
         "request POST /v2/[REDACTED] refused",
+      );
+    });
+
+    it("is removed from a host and path written without a scheme", () => {
+      refreshRequestSecrets({ RPC: "https://base.example/v2/aB3dE6gH9jK2mN5pQ8sT" });
+
+      expect(withoutAddresses("to base.example/v2/aB3dE6gH9jK2mN5pQ8sT refused")).to.equal(
+        "to base.example/v2/[REDACTED] refused",
+      );
+    });
+
+    // The documented limit: with no scheme to find and no configured value to match, a host
+    // and path is ordinary text. Taking every word with a dot and a slash for an address would
+    // blank file paths in every stack.
+    it("leaves a host and path without a scheme that nothing configured names", () => {
+      refreshRequestSecrets({});
+
+      expect(withoutAddresses("to other.example/v2/zY9xW8vU7tS6rQ5pO4nM refused")).to.equal(
+        "to other.example/v2/zY9xW8vU7tS6rQ5pO4nM refused",
       );
     });
   });

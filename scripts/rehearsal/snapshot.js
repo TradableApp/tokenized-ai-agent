@@ -12,9 +12,10 @@ const { sameValue, RehearsalError, SnapshotNotDurable } = require("./values");
  * its own file.
  *
  * Version 2 holds: `version`, `network`, `chainId`, `pair` {agent, escrow}, `safe`,
- * `rehearsalPromptFee`, `baseline` {...}, `steps` {id: {status, txHash, blockNumber, observed}},
- * `confirmed` and `updatedAt`. Version 1, from before steps were recorded, held the baseline's
- * values beside `pair`, `safe` and `confirmed`.
+ * `rehearsalPromptFee`, `baseline` {...}, `steps` {id: {status, txHash, nonce, blockNumber,
+ * observed}}, `confirmed` and `updatedAt`. A step recorded as sent holds its hash and nonce; one
+ * recorded done holds its hash and block, or only `observed`. Version 1, from before steps were
+ * recorded, held the baseline's values beside `pair`, `safe` and `confirmed`.
  */
 const SNAPSHOT_VERSION = 2;
 const STATE_FOLDER = "rehearsal-state";

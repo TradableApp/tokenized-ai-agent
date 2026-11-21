@@ -156,6 +156,16 @@ function decidePair(pair, context) {
     : [decision("send", now), decision("send", "after its set")];
 }
 
+/**
+ * An offer recorded done with none open: most often the Safe accepted and offered back, and the
+ * confirm phase accepted, then failed on a value changed since. Nothing here can resume that.
+ */
+function refuseReturned(id, name) {
+  throw new RehearsalError(
+    `[${id}] is recorded done, but no ownership offer is open on the ${name}: the rehearsal was most likely returned, and the confirm phase accepted the ownership back. Nothing was sent. Run the confirm phase to check it; if it fails on a value that was changed on purpose since the rehearsal, move the snapshot aside (keep it: it holds the values from before the rehearsal), then run again.`,
+  );
+}
+
 function decideOffer(id, { steps, live, safe }) {
   // A Safe that already owns the proxy never gets here: the run needs the signer to own both.
   const name = OFFERS[id];
@@ -163,6 +173,7 @@ function decideOffer(id, { steps, live, safe }) {
   const toSafe = sameValue(pending, safe);
   if (isDone(steps[id])) {
     if (toSafe) return decision("skip", "offered in an earlier run");
+    if (sameValue(pending, ethers.ZeroAddress)) refuseReturned(id, name);
     refuse(
       `[${id}] is recorded done, but the ${name}'s pending owner is now ${pending}, not the Safe ${safe}.`,
     );

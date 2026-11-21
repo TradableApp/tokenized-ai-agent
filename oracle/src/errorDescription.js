@@ -10,11 +10,28 @@ const { withoutRequestSecrets } = require("./requestSecrets");
  * described by its code and short message (the HTTP status is part of that), and any address
  * left in any other message is removed.
  *
+ * Two things are kept on purpose. A revert's data is the contract's answer, read from the
+ * chain, and is what tells one custom error from another. A host and path written without a
+ * scheme ("rpc.example/v2/...") is not recognised as an address, since every stack frame's
+ * file path would look like one; the secret parts of every configured address are removed
+ * from it by value all the same (`requestSecrets.js`).
+ *
  * @param {unknown} error
  * @returns {string}
  */
 function describeError(error) {
-  return withoutAddresses(textOf(error));
+  return `${withoutAddresses(textOf(error))}${causeKind(error)}`;
+}
+
+/**
+ * The kind of `error.cause`, one level down, as " (cause: KIND)", or nothing when it has none.
+ * Node's fetch fails with "fetch failed" and keeps what happened (ECONNREFUSED, a timeout) in the
+ * cause. Only the kind: the cause's message can carry the address it was sent to.
+ */
+function causeKind(error) {
+  const cause = readProperty(error, "cause");
+  if (cause === undefined || cause === null) return "";
+  return ` (cause: ${errorKind(cause)})`;
 }
 
 /**
@@ -49,7 +66,8 @@ function describedError(error) {
   const described = new Error(describeError(error));
   if (error === null || typeof error !== "object") return described;
 
-  if (typeof error.name === "string" && error.name) described.name = error.name;
+  // A name is text the thrower chose, and goes out with the stack: cleaned like the message.
+  if (typeof error.name === "string" && error.name) described.name = withoutAddresses(error.name);
   if (typeof error.code === "string" && error.code) described.code = error.code;
 
   const frames =
