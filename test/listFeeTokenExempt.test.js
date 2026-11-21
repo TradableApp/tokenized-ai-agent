@@ -1,7 +1,7 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, artifacts } = require("hardhat");
 
-const { listFeeTokenExempt } = require("../scripts/list-fee-token-exempt");
+const { listFeeTokenExempt, TOKEN_ABI } = require("../scripts/list-fee-token-exempt");
 const {
   loadRehearsal,
   deployRehearsalFixture,
@@ -165,5 +165,14 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
       run(fixture, { networkName: "base", env: { DEPLOY_MAINNET_CONFIRMED: "true" } }),
     ).to.be.rejectedWith(/DEPLOY_MAINNET_CONFIRMED=1/);
     expect(await listed(fixture, fixture.treasury.address)).to.equal(false);
+  });
+
+  it("calls the token only by functions the SENSE token declares", async function () {
+    const sense = new ethers.Interface((await artifacts.readArtifact("SenseToken")).abi);
+    for (const fragment of new ethers.Interface(TOKEN_ABI).fragments) {
+      const declared = sense.getFunction(fragment.format("sighash"));
+      expect(declared, fragment.format("sighash")).to.not.equal(null);
+      expect(declared.format("full")).to.equal(fragment.format("full"));
+    }
   });
 });

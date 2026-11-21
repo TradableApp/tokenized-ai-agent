@@ -167,6 +167,14 @@ bun run deploy:base-testnet
 
 _Copy the `EVMAIAgent` and `EVMAIAgentEscrow` addresses into `oracle/.env.oracle.base-testnet`._
 
+> `DEPLOY_MODE` in the env file says what the deploy does: `fresh` deploys a new pair and refuses
+> while either `AI_AGENT_CONTRACT_ADDRESS` or `AI_AGENT_ESCROW_CONTRACT_ADDRESS` is set;
+> `upgrade` upgrades the pair both name and refuses unless both are set. The mode and the two
+> addresses are read from the env file alone. A fresh pair is read back after the deploy; the
+> oracle hand-over (`authorize-oracle:<network>`) and the fee token listing
+> (`list-fee-token-exempt:<network>`) follow, in the order of
+> [the runbook's "Fresh pair, in order"](docs/BASE_TESTNET_DEPLOY_RUNBOOK.md#12-fresh-pair-in-order).
+
 > **Base mainnet** uses the same script with `.env.base-mainnet`, but `deploy:base-mainnet` refuses
 > to run while any of `TOKEN_CONTRACT_ADDRESS`, `AI_AGENT_CONTRACT_ADDRESS`,
 > `AI_AGENT_ESCROW_CONTRACT_ADDRESS`, `TREASURY_ADDRESS` is a placeholder, and unless

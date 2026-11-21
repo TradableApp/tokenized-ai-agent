@@ -374,6 +374,21 @@ describe("package scripts — ROFL signing goes through the Keychain wrapper", f
     ).to.equal(false);
   });
 
+  it("runs the oracle hand-over and the fee token listing on each Base network with its own env file", function () {
+    const networks = {
+      "base-localnet": "localnet",
+      "base-testnet": "baseSepolia",
+      "base-mainnet": "base",
+    };
+    for (const [env, network] of Object.entries(networks)) {
+      for (const script of ["authorize-oracle", "list-fee-token-exempt"]) {
+        expect(scripts[`${script}:${env}`], `${script}:${env}`).to.equal(
+          `ENV_FILE=.env.${env} HARDHAT_NETWORK=${network} node scripts/${script}.js`,
+        );
+      }
+    }
+  });
+
   it("deploy:base-mainnet still targets --network base from .env.base-mainnet (the guard is in deploy.js)", function () {
     expect(scripts["deploy:base-mainnet"]).to.equal(
       "ENV_FILE=.env.base-mainnet hardhat run scripts/deploy.js --network base",

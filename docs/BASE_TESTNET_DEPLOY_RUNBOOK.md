@@ -151,6 +151,78 @@ Two checks repeat this from outside, and are worth setting:
   does not; an unset one is reported as not checked, never as a pass. It fails on the deploy
   wallet until step 5 is done, so run it after step 5.
 
+### 1.2 Fresh pair, in order
+
+A fresh pair is a new agent and escrow, deployed with `DEPLOY_MODE=fresh`. Do the steps in order,
+and do not go on from a step that did not check out. The scripts named below refuse out of order
+where they can; the rest of the order is this list.
+
+1. **Settings, in the network's `ENV_FILE`** (for example `.env.base-testnet`):
+   `DEPLOY_MODE=fresh`; `AI_AGENT_CONTRACT_ADDRESS` and `AI_AGENT_ESCROW_CONTRACT_ADDRESS` empty;
+   `TOKEN_CONTRACT_ADDRESS`; `TREASURY_ADDRESS`; `EXPECTED_FEE_TOKEN_SYMBOL` (the token's symbol);
+   and `ORACLE_ADDRESS` only when the oracle's signer is already known (local runs and tests). The
+   mode and the two pair addresses are read from `ENV_FILE` alone: the deploy refuses when the
+   root `.env` or the shell sets one the file does not, so a deleted address cannot come back from
+   the root file. `fresh` refuses either pair address; `upgrade` needs both. On a live network a
+   fresh pair needs `TREASURY_ADDRESS` and `EXPECTED_FEE_TOKEN_SYMBOL`; only a local network falls
+   back to the deploy wallet as treasury.
+2. **Deploy:** `bun run deploy:base-testnet` (mainnet: `DEPLOY_MAINNET_CONFIRMED=1 bun run
+   deploy:base-mainnet`). After the deploy it reads the pair back and fails, naming each
+   difference, unless `agent.aiAgentEscrow()` is the new escrow, `escrow.evmAIAgent()` the new
+   agent, `escrow.ableToken()` the token, `escrow.treasury()` the treasury, the deploy wallet owns
+   both, the first oracle holds the role, and `token.symbol()` is `EXPECTED_FEE_TOKEN_SYMBOL`. A
+   failed read-back leaves deployed contracts: point nothing at them, fix the setting, deploy again.
+   With no `ORACLE_ADDRESS` the deploy wallet is the first oracle (the signer is derived from the
+   agent's address, so it cannot exist before the deploy), and the script prints the hand-over
+   commands of step 6.
+3. **Record the pair:** in `ENV_FILE` set the two addresses it printed and `DEPLOY_MODE=upgrade`,
+   so a second run upgrades this pair and never deploys another beside it.
+4. **List the escrow and the treasury on the fee token** (a token that moves only to or from
+   addresses its owner has listed; an ordinary token needs nothing, and the script says so):
+   `bun run list-fee-token-exempt:base-testnet`. It checks that `escrow.ableToken()` is the
+   token, lists whichever of the two is not listed, and reads both back. When the signer is not
+   the token's owner (the Safe owns it on mainnet) it sends nothing and prints the calls as Safe
+   Transaction Builder JSON: save it as a file, load it in the owner Safe's Transaction Builder,
+   simulate, execute. Then `bun run list-fee-token-exempt:base-testnet --check`, which only reads
+   and fails while either is unlisted (run it again on run day).
+5. **Start the oracle on the new pair before the dApp moves to it.** Point the oracle's settings
+   at the new addresses and deploy it (§3). With no stored cursor for a pair the oracle looks back
+   only a few minutes before its first block, so a prompt sent to the new pair long before the
+   oracle starts is not seen. If an old pair is still answered, close and drain it first (see
+   "Moving prompts to a new agent and escrow" under Lessons learned).
+6. **Move the oracle role off the deploy wallet**, in the order of §1.1, with the script:
+   - `ORACLE_ADDRESS=<signer> bun run authorize-oracle:base-testnet grant` adds the oracle's own
+     signer (from its `[OracleKeys] … signer=` start-up line) and checks `isOracle`. It refuses
+     an `ORACLE_ADDRESS` that is the signing wallet, and sends nothing when the role is held.
+   - Send one prompt (the smoke test, §6, with the new pair's `SMOKE_*`) and take its answer's
+     transaction hash (`answerTxHash` in `smoke-metrics.json`).
+   - `ORACLE_ADDRESS=<signer> ANSWER_TX_HASH=<answer tx> bun run authorize-oracle:base-testnet
+     retire-deployer` removes the deploy wallet's role only when `<signer>` holds the role and the
+     hash is a successful `submitAnswer` to this agent sent by `<signer>`; then
+     `isOracle(<deploy wallet>)` must be false and `isOracle(<signer>)` still true.
+   Both phases are owner calls and refuse once the agent's owner is not the signing wallet: after
+   the handover the Safe sends `addOracle` / `removeOracle` itself. On Base mainnet either phase
+   needs `DEPLOY_MAINNET_CONFIRMED=1` before it sends.
+7. **Never call `migrateOracleRole` on a fresh pair.** It is `reinitializer(2)`
+   (`contracts/EVMAIAgent.sol`) and exists only for a pair upgraded from the single-oracle
+   version; on a fresh pair it grants nothing and uses up version 2, which a later upgrade's own
+   `reinitializer(2)` would then be refused. The deploy script calls it only on an upgrade whose
+   agent still stores the old oracle. Never publish an encryption key from the deploy wallet.
+8. **Fees:** change them with the escrow's setters only if the deploy's defaults (or the
+   `INITIAL_*_FEE` settings) are not wanted.
+9. **Point everything else at the new pair:** the subgraph (a deployment of its own: its fee
+   record is one per subgraph), the dApp build's addresses, the smoke test's `SMOKE_*`, and the
+   e2e testnet settings.
+10. **Hand ownership to the Safe last**, once step 6 is done: after it, only the Safe can list on
+    the token (if it owns it), change oracles or fees.
+
+**Exempt-list rules.** On a token that keeps a list, a transfer passes when either end is listed.
+List the escrow and the treasury by name, the treasury even when it is the token's owner. Every
+new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
+the treasury, as the admin rehearsal does) must be listed before it is set: an unlisted treasury
+refuses every fee a user pays straight to it (cancel, branch, rename or delete). The listing
+script and its `--check` cover the escrow and the treasury the escrow names now.
+
 ---
 
 ## 2. Pre-flight (local, no deploy)

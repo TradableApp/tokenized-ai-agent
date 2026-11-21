@@ -1,25 +1,28 @@
 const hre = require("hardhat");
 const dotenv = require("dotenv");
-const path = require("path");
+const fs = require("fs");
 const chalk = require("chalk");
 
-// Load the specific environment file first for precedence.
-if (process.env.ENV_FILE) {
-  dotenv.config({ path: process.env.ENV_FILE });
-}
-// Load the base .env file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, "../.env") });
+const { describeShape, isSet } = require("./lib/settingShape");
+
+// Hardhat's config has already loaded the root .env and then ENV_FILE over it, so the process
+// environment holds both. DEPLOY_MODE and the pair's addresses are read again from ENV_FILE
+// alone (FILE_ONLY_VARS below).
 
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
+
+// Networks the deploy wallet runs on its own. Any other network counts as live, so a network
+// added later is checked rather than skipped.
+const LOCAL_NETWORKS = new Set(["hardhat", "localhost", "localnet"]);
 
 // --- Base mainnet guard -------------------------------------------------------------------
 // `deploy:base-mainnet` reads .env.base-mainnet, which ships with placeholder addresses until
 // the mainnet contracts exist. `ethers` treats a non-address string as an ENS name and defers
 // resolution, so a placeholder would not fail until the first transaction had already cost gas.
-// On `base` every address-shaped variable must be a real address, and the run must be confirmed
-// with DEPLOY_MAINNET_CONFIRMED=1 (exactly "1"), mirroring REHEARSAL_MAINNET_CONFIRMED in
-// scripts/admin-rehearsal.js. Other networks are untouched.
+// Every address-shaped variable that is set must be a real address (on every EVM network), and
+// on `base` the run must be confirmed with DEPLOY_MAINNET_CONFIRMED=1 (exactly "1"), mirroring
+// REHEARSAL_MAINNET_CONFIRMED in scripts/admin-rehearsal.js.
 const MAINNET_NETWORK = "base";
 const CONFIRM_VAR = "DEPLOY_MAINNET_CONFIRMED";
 const ADDRESS_ENV_VARS = [
@@ -27,50 +30,164 @@ const ADDRESS_ENV_VARS = [
   "AI_AGENT_CONTRACT_ADDRESS",
   "AI_AGENT_ESCROW_CONTRACT_ADDRESS",
   "TREASURY_ADDRESS",
+  "ORACLE_ADDRESS",
 ];
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
+// --- Deploy mode --------------------------------------------------------------------------
+// `fresh` deploys a new agent and escrow and refuses while either pair address is set;
+// `upgrade` upgrades the pair both addresses name. Before the mode, an empty address meant a new
+// proxy, so a pair address deleted from ENV_FILE but still in the root .env upgraded the old
+// proxy, and one left out deployed half a pair beside the other half.
+const DEPLOY_MODES = Object.freeze(["fresh", "upgrade"]);
+const PAIR_VARS = Object.freeze(["AI_AGENT_CONTRACT_ADDRESS", "AI_AGENT_ESCROW_CONTRACT_ADDRESS"]);
+const FILE_ONLY_VARS = Object.freeze(["DEPLOY_MODE", ...PAIR_VARS]);
+
+/**
+ * What stops a deploy, given the settings it would run with. `env` is the process environment
+ * with FILE_ONLY_VARS taken from ENV_FILE. The Sapphire path is not checked here.
+ */
 function deployProblems({ networkName, env }) {
-  if (networkName !== MAINNET_NETWORK) return [];
+  if (SAPPHIRE_NETWORKS.has(networkName)) return [];
   const problems = [];
   for (const name of ADDRESS_ENV_VARS) {
     const value = env[name];
-    if (value !== undefined && value !== "" && !ADDRESS_RE.test(value)) {
-      problems.push(`${name} is a placeholder or malformed: ${JSON.stringify(value)}`);
+    if (isSet(value) && !ADDRESS_RE.test(value)) {
+      problems.push(`${name} is a placeholder or not an address (${describeShape(value)})`);
     }
   }
-  if (!env.AI_AGENT_ESCROW_CONTRACT_ADDRESS && !env.TOKEN_CONTRACT_ADDRESS) {
+  problems.push(...modeProblems({ networkName, env }));
+  if (networkName === MAINNET_NETWORK && env[CONFIRM_VAR] !== "1") {
     problems.push(
-      `TOKEN_CONTRACT_ADDRESS is required for a new EVMAIAgentEscrow deployment on ${MAINNET_NETWORK}`,
-    );
-  }
-  // A fresh proxy initialises its treasury from TREASURY_ADDRESS, falling back to the deployer
-  // key — fine on testnet, wrong on mainnet (fees would accrue to the deploy key, not the Safe).
-  const deploysNewProxy = !env.AI_AGENT_CONTRACT_ADDRESS || !env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
-  if (deploysNewProxy && !env.TREASURY_ADDRESS) {
-    problems.push(
-      `TREASURY_ADDRESS must be set explicitly for a new proxy deployment on ${MAINNET_NETWORK} (it is where fees accrue; the deployer-key fallback is testnet-only)`,
-    );
-  }
-  if (env[CONFIRM_VAR] !== "1") {
-    const shown = env[CONFIRM_VAR] === undefined ? "unset" : JSON.stringify(env[CONFIRM_VAR]);
-    problems.push(
-      `${CONFIRM_VAR} is ${shown}; a live deploy to ${MAINNET_NETWORK} needs exactly ${CONFIRM_VAR}=1 bun run deploy:base-mainnet`,
+      `${CONFIRM_VAR} is ${describeShape(env[CONFIRM_VAR])}; a live deploy to ${MAINNET_NETWORK} needs exactly ${CONFIRM_VAR}=1 bun run deploy:base-mainnet`,
     );
   }
   return problems;
 }
 
+function modeProblems({ networkName, env }) {
+  const mode = env.DEPLOY_MODE;
+  if (!DEPLOY_MODES.includes(mode)) {
+    return [
+      `DEPLOY_MODE is ${describeShape(mode)}; set it in ENV_FILE to exactly fresh (deploy a new agent and escrow) or upgrade (upgrade the pair at AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS)`,
+    ];
+  }
+  const problems = [];
+  if (mode === "upgrade") {
+    for (const name of PAIR_VARS.filter((n) => !isSet(env[n]))) {
+      problems.push(
+        `${name} is not set, but DEPLOY_MODE=upgrade upgrades an existing pair and needs both its addresses: set both in ENV_FILE, or use DEPLOY_MODE=fresh with both empty to deploy a new pair`,
+      );
+    }
+    return problems;
+  }
+  for (const name of PAIR_VARS.filter((n) => isSet(env[n]))) {
+    problems.push(
+      `${name} is set, but DEPLOY_MODE=fresh deploys a new pair and never touches an existing one: empty both pair addresses in ENV_FILE for a new pair, or use DEPLOY_MODE=upgrade to upgrade the pair they name`,
+    );
+  }
+  if (!isSet(env.TOKEN_CONTRACT_ADDRESS)) {
+    problems.push(
+      "TOKEN_CONTRACT_ADDRESS is required for a fresh pair: the new escrow takes its fees in that token",
+    );
+  }
+  if (!LOCAL_NETWORKS.has(networkName)) {
+    if (!isSet(env.TREASURY_ADDRESS)) {
+      problems.push(
+        `TREASURY_ADDRESS must be set for a fresh pair on ${networkName}: it is where fees accrue, and the deploy wallet fallback is for local networks only`,
+      );
+    }
+    if (!isSet(env.EXPECTED_FEE_TOKEN_SYMBOL)) {
+      problems.push(
+        `EXPECTED_FEE_TOKEN_SYMBOL must be set for a fresh pair on ${networkName}: the deploy reads the token's symbol back and fails when it differs, so a pair is never left paying in the wrong token`,
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * FILE_ONLY_VARS must come from ENV_FILE: one the file leaves out but the root .env or the shell
+ * sets would otherwise pick the mode or the pair. Values are never printed.
+ */
+function sourceProblems({ envFile, fileEnv, processEnv }) {
+  if (!envFile || !fileEnv) {
+    return [
+      `ENV_FILE is not set: on an EVM network ${FILE_ONLY_VARS.join(", ")} are read from the file it names alone. Run the deploy through its package script (for example bun run deploy:base-testnet)`,
+    ];
+  }
+  const trimmed = (value) => (isSet(value) ? String(value).trim() : undefined);
+  const problems = [];
+  for (const name of FILE_ONLY_VARS) {
+    const inFile = trimmed(fileEnv[name]);
+    const inEnv = trimmed(processEnv[name]);
+    if (inFile === inEnv) continue;
+    problems.push(
+      inFile === undefined
+        ? `${name} is not set in ${envFile} but is set in the root .env or the shell; it is read from ${envFile} alone, so remove it from the root .env and the shell, or set it in ${envFile}`
+        : `${name} in the root .env or the shell differs from ${envFile}; it is read from ${envFile} alone, so remove it from the root .env and the shell`,
+    );
+  }
+  return problems;
+}
+
+function refusal(networkName, problems) {
+  return new Error(`Deployment to ${networkName} refused:\n  - ${problems.join("\n  - ")}`);
+}
+
 function assertDeployAllowed(ctx) {
   const problems = deployProblems(ctx);
   if (problems.length === 0) return;
-  throw new Error(`Deployment to ${ctx.networkName} refused:\n  - ${problems.join("\n  - ")}`);
+  throw refusal(ctx.networkName, problems);
+}
+
+const orNull = (value) => (isSet(value) ? String(value).trim() : null);
+
+/**
+ * The deploy's plan from its settings, or a refusal listing every problem. `fileEnv` is ENV_FILE
+ * parsed on its own (null when ENV_FILE is not set); `processEnv` is the process environment.
+ */
+function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
+  if (SAPPHIRE_NETWORKS.has(networkName)) {
+    return { networkName, isSapphire: true };
+  }
+  const env = { ...processEnv };
+  if (fileEnv) {
+    for (const name of FILE_ONLY_VARS) env[name] = fileEnv[name];
+  }
+  const problems = [
+    ...sourceProblems({ envFile, fileEnv, processEnv }),
+    ...deployProblems({ networkName, env }),
+  ];
+  if (problems.length > 0) throw refusal(networkName, problems);
+  return {
+    networkName,
+    isSapphire: false,
+    envFile,
+    mode: env.DEPLOY_MODE,
+    live: !LOCAL_NETWORKS.has(networkName),
+    domain: env.DOMAIN,
+    token: orNull(env.TOKEN_CONTRACT_ADDRESS),
+    treasury: orNull(env.TREASURY_ADDRESS),
+    oracle: orNull(env.ORACLE_ADDRESS),
+    expectedSymbol: orNull(env.EXPECTED_FEE_TOKEN_SYMBOL),
+    agent: orNull(env.AI_AGENT_CONTRACT_ADDRESS),
+    escrow: orNull(env.AI_AGENT_ESCROW_CONTRACT_ADDRESS),
+    fees: {
+      prompt: orNull(env.INITIAL_PROMPT_FEE),
+      cancellation: orNull(env.INITIAL_CANCELLATION_FEE),
+      metadata: orNull(env.INITIAL_METADATA_FEE),
+      branch: orNull(env.INITIAL_BRANCH_FEE),
+    },
+  };
 }
 
 /**
  * True when an EVMAIAgent proxy still holds the single oracle address of the version before the
  * oracle role. That address sits in storage slot 0, and the migration clears it, so a non-zero
  * slot means the oracle must be carried over to the role in the same transaction as the upgrade.
+ * A freshly deployed proxy has none: never call `migrateOracleRole` on one (it is
+ * `reinitializer(2)` and would use up that version for nothing).
  */
 async function needsOracleRoleMigration(provider, proxyAddress) {
   // Slot 0 is `_legacyOracle`; test/StorageLayout.test.js pins it there.
@@ -82,300 +199,447 @@ function explorerFor(networkName) {
   return networkName === MAINNET_NETWORK ? "https://basescan.org" : "https://sepolia.basescan.org";
 }
 
-async function main() {
-  const networkName = hre.network.name;
-  const isSapphire = SAPPHIRE_NETWORKS.has(networkName);
-  assertDeployAllowed({ networkName, env: process.env });
+// --- sending helpers ------------------------------------------------------------------------
 
-  console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
+async function getSafeFees(provider) {
+  const { ethers } = hre;
+  const fd = await provider.getFeeData();
+  // sensible floors/headroom for busy testnets (adjust if needed)
+  const minPrio = ethers.parseUnits("1.5", "gwei");
+  const minMax = ethers.parseUnits("50", "gwei");
 
-  // Required env
-  const domain = process.env.DOMAIN;
-  const privateKey = process.env.PRIVATE_KEY;
-  if (!domain || !privateKey) {
-    throw new Error("Missing required environment variables. Please check DOMAIN or PRIVATE_KEY.");
+  const maxPriorityFeePerGas =
+    fd.maxPriorityFeePerGas && fd.maxPriorityFeePerGas > minPrio
+      ? fd.maxPriorityFeePerGas
+      : minPrio;
+
+  // add headroom over suggested max (covers base fee spikes)
+  const maxFeePerGas =
+    fd.maxFeePerGas && fd.maxFeePerGas > minMax
+      ? (fd.maxFeePerGas * 12n) / 10n // +20%
+      : minMax;
+
+  return { maxFeePerGas, maxPriorityFeePerGas };
+}
+
+async function sendWithBump(sendFn, args, opts, bumps = [1.2, 1.5]) {
+  try {
+    const tx = await sendFn(...args, opts);
+    return await tx.wait();
+  } catch (e) {
+    if (!/replacement transaction underpriced/i.test(e.message || "")) throw e;
   }
-
-  // Use the idiomatic Hardhat way to get the deployer signer.
-  const [deployer] = await hre.ethers.getSigners();
-
-  // Derive addresses
-  const oracleAddress = deployer.address;
-  const treasuryAddress = process.env.TREASURY_ADDRESS || deployer.address;
-  console.log(`Deploying contracts with the account: ${chalk.yellow(deployer.address)}`);
-  console.log(`This address will be the first authorized Oracle and the default Treasury.`);
-
-  // The roflAppID is not used on-chain for the EVM version but is kept for consistency.
-  const roflAppID = hre.ethers.zeroPadBytes("0x", 21);
-
-  // --- helpers ---
-  async function getSafeFees(provider) {
-    const fd = await provider.getFeeData();
-    // sensible floors/headroom for busy testnets (adjust if needed)
-    const minPrio = hre.ethers.parseUnits("1.5", "gwei");
-    const minMax = hre.ethers.parseUnits("50", "gwei");
-
-    const maxPriorityFeePerGas =
-      fd.maxPriorityFeePerGas && fd.maxPriorityFeePerGas > minPrio
-        ? fd.maxPriorityFeePerGas
-        : minPrio;
-
-    // add headroom over suggested max (covers base fee spikes)
-    const maxFeePerGas =
-      fd.maxFeePerGas && fd.maxFeePerGas > minMax
-        ? (fd.maxFeePerGas * 12n) / 10n // +20%
-        : minMax;
-
-    return { maxFeePerGas, maxPriorityFeePerGas };
-  }
-
-  async function sendWithBump(sendFn, args, opts, bumps = [1.2, 1.5]) {
+  let { maxFeePerGas, maxPriorityFeePerGas } = opts;
+  const { nonce } = opts;
+  for (const f of bumps) {
+    maxFeePerGas = (maxFeePerGas * BigInt(Math.round(f * 100))) / 100n;
+    maxPriorityFeePerGas = (maxPriorityFeePerGas * BigInt(Math.round(f * 100))) / 100n;
     try {
-      const tx = await sendFn(...args, opts);
+      const tx = await sendFn(...args, { nonce, maxFeePerGas, maxPriorityFeePerGas });
       return await tx.wait();
     } catch (e) {
       if (!/replacement transaction underpriced/i.test(e.message || "")) throw e;
     }
-    let { nonce, maxFeePerGas, maxPriorityFeePerGas } = opts;
-    for (const f of bumps) {
-      maxFeePerGas = (maxFeePerGas * BigInt(Math.round(f * 100))) / 100n;
-      maxPriorityFeePerGas = (maxPriorityFeePerGas * BigInt(Math.round(f * 100))) / 100n;
-      try {
-        const tx = await sendFn(...args, { nonce, maxFeePerGas, maxPriorityFeePerGas });
-        return await tx.wait();
-      } catch (e) {
-        if (!/replacement transaction underpriced/i.test(e.message || "")) throw e;
-      }
-    }
-    throw new Error("Could not replace tx with a sufficiently higher fee.");
   }
+  throw new Error("Could not replace tx with a sufficiently higher fee.");
+}
 
-  // Hardhat's ethers provider doesn't implement waitForTransaction; poll receipt instead.
-  async function waitDeployed(contract) {
-    await contract.waitForDeployment();
-    const tx = await contract.deploymentTransaction?.();
-    if (!tx?.hash) return;
-    // poll until we get a receipt
-    let receipt = null;
-    while (!receipt) {
-      receipt = await hre.ethers.provider.getTransactionReceipt(tx.hash);
-      if (!receipt) await new Promise((r) => setTimeout(r, 1000));
-    }
-    // (optional) ensure at least 1 confirmation
-    if (networkName === "localnet" || networkName === "localhost") {
-      console.log("Local network detected, skipping confirmation wait.");
-    } else {
-      while ((await hre.ethers.provider.getBlockNumber()) < (receipt.blockNumber || 0) + 1) {
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    }
+// Hardhat's ethers provider doesn't implement waitForTransaction; poll receipt instead.
+async function waitDeployed(env, contract) {
+  const { ethers } = env;
+  await contract.waitForDeployment();
+  const tx = await contract.deploymentTransaction?.();
+  if (!tx?.hash) return;
+  let receipt = null;
+  while (!receipt) {
+    receipt = await ethers.provider.getTransactionReceipt(tx.hash);
+    if (!receipt) await new Promise((r) => setTimeout(r, 1000));
   }
+  // A local network mines on demand: waiting for the next block would wait forever.
+  if (LOCAL_NETWORKS.has(env.network.name)) return;
+  while ((await ethers.provider.getBlockNumber()) < (receipt.blockNumber || 0) + 1) {
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
 
-  let aiAgent, aiAgentEscrow, aiAgentAddress, aiAgentEscrowAddress;
+/** Sends an owner call: one plain transaction locally, with fee bumping on a live network. */
+async function sendOwnerCall(env, signer, fn, args) {
+  if (LOCAL_NETWORKS.has(env.network.name)) {
+    return (await fn(...args)).wait();
+  }
+  const nonce = await env.ethers.provider.getTransactionCount(signer.address, "pending");
+  const fees = await getSafeFees(env.ethers.provider);
+  return sendWithBump(fn, args, { nonce, ...fees });
+}
 
-  if (isSapphire) {
-    // --- SAPPHIRE DEPLOYMENT (Standard, Non-Upgradable, Two-Step Link) ---
-    console.log("\nDeploying Sapphire contracts...");
+// --- fresh pair -----------------------------------------------------------------------------
 
-    const SapphireAIAgent = await hre.ethers.getContractFactory("SapphireAIAgent", deployer);
-    const SapphireAIAgentEscrow = await hre.ethers.getContractFactory(
-      "SapphireAIAgentEscrow",
-      deployer,
+const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+
+/**
+ * Reads the new pair back and lists every way it differs from the plan: the two links, the
+ * escrow's token and treasury, both owners, who holds the oracle role, and the token's symbol
+ * when the plan names one. An empty list means the pair is as planned.
+ */
+async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer }) {
+  const { ethers } = env;
+  const agentAddress = await aiAgent.getAddress();
+  const escrowAddress = await aiAgentEscrow.getAddress();
+  const problems = [];
+  const expectSame = (actual, expected, what, named) => {
+    if (!same(actual, expected)) problems.push(`${what} is ${actual}, not ${named} ${expected}`);
+  };
+
+  expectSame(
+    await aiAgent.aiAgentEscrow(),
+    escrowAddress,
+    "agent.aiAgentEscrow()",
+    "the new escrow",
+  );
+  expectSame(
+    await aiAgentEscrow.evmAIAgent(),
+    agentAddress,
+    "escrow.evmAIAgent()",
+    "the new agent",
+  );
+  expectSame(
+    await aiAgentEscrow.ableToken(),
+    plan.token,
+    "escrow.ableToken()",
+    "TOKEN_CONTRACT_ADDRESS",
+  );
+  expectSame(
+    await aiAgentEscrow.treasury(),
+    plan.treasury ?? deployer.address,
+    "escrow.treasury()",
+    plan.treasury ? "TREASURY_ADDRESS" : "the deploy wallet",
+  );
+  expectSame(await aiAgent.owner(), deployer.address, "agent.owner()", "the deploy wallet");
+  expectSame(await aiAgentEscrow.owner(), deployer.address, "escrow.owner()", "the deploy wallet");
+
+  const oracle = plan.oracle ?? deployer.address;
+  if (!(await aiAgent.isOracle(oracle))) {
+    problems.push(
+      `agent.isOracle(${oracle}) is false: ${plan.oracle ? "ORACLE_ADDRESS" : "the deploy wallet"} does not hold the oracle role`,
     );
+  }
+  if (plan.oracle && (await aiAgent.isOracle(deployer.address))) {
+    problems.push(
+      `agent.isOracle(${deployer.address}) is true: the deploy wallet holds the oracle role`,
+    );
+  }
 
-    // Step 1: Deploy the AIAgent contract. It does not know about the escrow yet.
-    aiAgent = await SapphireAIAgent.deploy(domain, roflAppID, oracleAddress, deployer.address);
-    await waitDeployed(aiAgent);
-    aiAgentAddress = await aiAgent.getAddress();
-    console.log(`✅ SapphireAIAgent deployed to: ${chalk.cyan(aiAgentAddress)}`);
+  if (plan.expectedSymbol) {
+    problems.push(...(await symbolProblems(ethers, plan)));
+  }
+  return problems;
+}
 
-    // Step 2: Deploy the Escrow contract, passing the agent's address.
-    aiAgentEscrow = await SapphireAIAgentEscrow.deploy(
-      aiAgentAddress,
-      treasuryAddress,
-      oracleAddress,
+async function symbolProblems(ethers, plan) {
+  const token = new ethers.Contract(
+    plan.token,
+    ["function symbol() view returns (string)"],
+    ethers.provider,
+  );
+  let symbol;
+  try {
+    symbol = await token.symbol();
+  } catch {
+    return [`token.symbol() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}`];
+  }
+  if (symbol === plan.expectedSymbol) return [];
+  return [`token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL`];
+}
+
+function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
+  const run = `ENV_FILE=${plan.envFile} HARDHAT_NETWORK=${plan.networkName} node scripts/authorize-oracle.js`;
+  return [
+    chalk.yellow(
+      `The deploy wallet ${deployer} is the agent's first oracle. Move the role to the oracle's own address before the ownership handover, in this order (docs/BASE_TESTNET_DEPLOY_RUNBOOK.md, section 1.1):`,
+    ),
+    `  1. In ${plan.envFile}: AI_AGENT_CONTRACT_ADDRESS=${agentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${escrowAddress}, DEPLOY_MODE=upgrade.`,
+    "  2. Start the oracle on this pair and read the signer= address from its [OracleKeys] start-up line.",
+    `  3. ORACLE_ADDRESS=<signer> ${run} grant`,
+    "  4. See one prompt answered by it, and take that answer's transaction hash.",
+    `  5. ORACLE_ADDRESS=<signer> ANSWER_TX_HASH=<answer tx> ${run} retire-deployer`,
+  ];
+}
+
+/**
+ * Deploys a new agent and escrow, links them, and reads them back. Throws before sending
+ * anything when the plan is not fresh or ORACLE_ADDRESS is the deploy wallet, and after the
+ * deploy when the read-back finds a difference, naming each.
+ */
+async function deployFreshPair(env, plan, { log = console.log, deployer: given } = {}) {
+  const { ethers, upgrades } = env;
+  if (plan.mode !== "fresh") {
+    throw new Error(
+      `deployFreshPair deploys a fresh pair only; this plan is DEPLOY_MODE=${plan.mode}`,
+    );
+  }
+  const deployer = given ?? (await ethers.getSigners())[0];
+  if (plan.oracle && same(plan.oracle, deployer.address)) {
+    throw new Error(
+      `ORACLE_ADDRESS is the deploy wallet ${deployer.address}. It is set so that the deploy key never holds the oracle role: name the address the oracle answers from, or leave it unset (the deploy wallet is then the first oracle, and scripts/authorize-oracle.js moves the role). Nothing was sent.`,
+    );
+  }
+  const oracle = plan.oracle ? ethers.getAddress(plan.oracle) : deployer.address;
+  const treasury = plan.treasury ? ethers.getAddress(plan.treasury) : deployer.address;
+  log(`Deploying a fresh pair with the account: ${chalk.yellow(deployer.address)}`);
+  log(`First oracle: ${oracle}${plan.oracle ? " (ORACLE_ADDRESS)" : " (the deploy wallet)"}`);
+  log(`Treasury: ${treasury}${plan.treasury ? " (TREASURY_ADDRESS)" : " (the deploy wallet)"}`);
+
+  const EVMAIAgent = await ethers.getContractFactory("EVMAIAgent", deployer);
+  const EVMAIAgentEscrow = await ethers.getContractFactory("EVMAIAgentEscrow", deployer);
+
+  log("Deploying EVMAIAgent proxy...");
+  const aiAgent = await upgrades.deployProxy(EVMAIAgent, [plan.domain, oracle, deployer.address], {
+    initializer: "initialize",
+    kind: "uups",
+  });
+  await waitDeployed(env, aiAgent);
+  const agentAddress = await aiAgent.getAddress();
+  log(`✅ EVMAIAgent proxy deployed to: ${chalk.cyan(agentAddress)}`);
+
+  const fee = (value, fallback) => value ?? ethers.parseEther(fallback);
+  log("Deploying EVMAIAgentEscrow proxy...");
+  const aiAgentEscrow = await upgrades.deployProxy(
+    EVMAIAgentEscrow,
+    [
+      plan.token,
+      agentAddress,
+      treasury,
       deployer.address,
+      fee(plan.fees?.prompt, "1"), // Default: 1 token
+      fee(plan.fees?.cancellation, "0.1"), // Default: 0.1 token
+      fee(plan.fees?.metadata, "0.1"), // Default: 0.1 token
+      fee(plan.fees?.branch, "0.5"), // Default: 0.5 token
+    ],
+    { initializer: "initialize", kind: "uups" },
+  );
+  await waitDeployed(env, aiAgentEscrow);
+  const escrowAddress = await aiAgentEscrow.getAddress();
+  log(`✅ EVMAIAgentEscrow proxy deployed to: ${chalk.cyan(escrowAddress)}`);
+
+  // A new agent has no escrow yet. One that has is not the agent just deployed.
+  const currentEscrow = await aiAgent.aiAgentEscrow();
+  if (currentEscrow !== ethers.ZeroAddress) {
+    throw new Error(
+      `The new agent ${agentAddress} already names an escrow (${currentEscrow}), so it was not linked to the new escrow ${escrowAddress}. Point nothing at this pair.`,
     );
-    await waitDeployed(aiAgentEscrow);
-    aiAgentEscrowAddress = await aiAgentEscrow.getAddress();
-    console.log(`✅ SapphireAIAgentEscrow deployed to: ${chalk.cyan(aiAgentEscrowAddress)}`);
+  }
+  log("Linking AI Agent to Escrow contract...");
+  await sendOwnerCall(env, deployer, aiAgent.setAgentEscrow, [escrowAddress]);
+  log("✅ Link successful.");
 
-    // Step 3: Complete the link by calling the setter on the AIAgent.
-    console.log("Linking AI Agent to Escrow contract...");
-    const nonce = await hre.ethers.provider.getTransactionCount(deployer.address, "pending");
-    const fees = await getSafeFees(hre.ethers.provider);
-    await sendWithBump(aiAgent.setAgentEscrow, [aiAgentEscrowAddress], { nonce, ...fees });
-    console.log("✅ Link successful.");
-  } else {
-    // --- PUBLIC EVM DEPLOYMENT (Upgradable Proxies, Two-Step Link) ---
-    console.log("\nDeploying or upgrading upgradable EVM contracts...");
+  const problems = await freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer });
+  if (problems.length > 0) {
+    throw new Error(
+      `Fresh deploy read-back failed:\n  - ${problems.join("\n  - ")}\nThe contracts were deployed, at agent ${agentAddress} and escrow ${escrowAddress}: point nothing at them. Fix the setting and deploy a fresh pair again.`,
+    );
+  }
+  reportFreshPair({ plan, log, oracle, deployer: deployer.address, agentAddress, escrowAddress });
+  return {
+    aiAgent,
+    aiAgentEscrow,
+    aiAgentAddress: agentAddress,
+    aiAgentEscrowAddress: escrowAddress,
+  };
+}
 
-    const EVMAIAgent = await hre.ethers.getContractFactory("EVMAIAgent", deployer);
-    const EVMAIAgentEscrow = await hre.ethers.getContractFactory("EVMAIAgentEscrow", deployer);
+function reportFreshPair({ plan, log, oracle, deployer, agentAddress, escrowAddress }) {
+  const symbolNote = plan.expectedSymbol
+    ? ", and the token's symbol is EXPECTED_FEE_TOKEN_SYMBOL"
+    : "";
+  log(
+    chalk.green(
+      `✅ Read back: the two links, the token, the treasury, both owners and the oracle role are as planned${symbolNote}.`,
+    ),
+  );
+  if (!plan.expectedSymbol) {
+    log(
+      chalk.yellow("EXPECTED_FEE_TOKEN_SYMBOL is not set, so the token's symbol was not checked."),
+    );
+  }
+  if (plan.oracle) {
+    log(`ORACLE_ADDRESS ${oracle} holds the oracle role; the deploy wallet does not.`);
+    return;
+  }
+  for (const line of handOverSteps({ plan, deployer, agentAddress, escrowAddress })) log(line);
+}
 
-    // Read existing proxy addresses from the .env file.
-    const existingAIAgentAddress = process.env.AI_AGENT_CONTRACT_ADDRESS;
-    const existingAIAgentEscrowAddress = process.env.AI_AGENT_ESCROW_CONTRACT_ADDRESS;
+// --- upgrade --------------------------------------------------------------------------------
 
-    // --- Logic for AI Agent Contract ---
-    if (existingAIAgentAddress) {
-      console.log(`Found existing EVMAIAgent at: ${chalk.yellow(existingAIAgentAddress)}`);
-      console.log("Checking for EVMAIAgent upgrade...");
-      // Upgrading from the single-oracle version: carry the stored oracle over to the oracle
-      // role inside the upgrade transaction, so the proxy is never upgraded with no oracle.
-      const migrateOracle = await needsOracleRoleMigration(
-        hre.ethers.provider,
-        existingAIAgentAddress,
-      );
-      if (migrateOracle) {
-        console.log("Legacy oracle address found: migrating it to the oracle role in the upgrade.");
-      }
-      aiAgent = await hre.upgrades.upgradeProxy(
-        existingAIAgentAddress,
-        EVMAIAgent,
-        migrateOracle ? { call: "migrateOracleRole" } : {},
-      );
-      await waitDeployed(aiAgent);
-      aiAgentAddress = await aiAgent.getAddress();
-      console.log(`✅ EVMAIAgent is up-to-date at: ${chalk.cyan(aiAgentAddress)}`);
-    } else {
-      console.log("Deploying EVMAIAgent proxy...");
-      aiAgent = await hre.upgrades.deployProxy(
-        EVMAIAgent,
-        [domain, oracleAddress, deployer.address],
-        { initializer: "initialize", kind: "uups" },
-      );
-      await waitDeployed(aiAgent);
-      aiAgentAddress = await aiAgent.getAddress();
-      console.log(`✅ EVMAIAgent proxy deployed to: ${chalk.cyan(aiAgentAddress)}`);
-    }
+/** Upgrades both proxies the plan names. */
+async function upgradePair(env, plan, { log = console.log } = {}) {
+  const { ethers, upgrades } = env;
+  if (plan.mode !== "upgrade") {
+    throw new Error(`upgradePair upgrades a pair only; this plan is DEPLOY_MODE=${plan.mode}`);
+  }
+  const [deployer] = await ethers.getSigners();
+  const EVMAIAgent = await ethers.getContractFactory("EVMAIAgent", deployer);
+  const EVMAIAgentEscrow = await ethers.getContractFactory("EVMAIAgentEscrow", deployer);
 
-    // --- Logic for AI Agent Escrow Contract ---
-    if (existingAIAgentEscrowAddress) {
-      console.log(
-        `Found existing EVMAIAgentEscrow at: ${chalk.yellow(existingAIAgentEscrowAddress)}`,
-      );
-      console.log("Checking for EVMAIAgentEscrow upgrade...");
-      aiAgentEscrow = await hre.upgrades.upgradeProxy(
-        existingAIAgentEscrowAddress,
-        EVMAIAgentEscrow,
-      );
-      await waitDeployed(aiAgentEscrow);
-      aiAgentEscrowAddress = await aiAgentEscrow.getAddress();
-      console.log(`✅ EVMAIAgentEscrow is up-to-date at: ${chalk.cyan(aiAgentEscrowAddress)}`);
-    } else {
-      console.log("Deploying EVMAIAgentEscrow proxy...");
-      const tokenAddress = process.env.TOKEN_CONTRACT_ADDRESS;
-      if (!tokenAddress)
-        throw new Error("TOKEN_CONTRACT_ADDRESS is required for a new EVM deployment.");
+  log(`Found existing EVMAIAgent at: ${chalk.yellow(plan.agent)}`);
+  log("Checking for EVMAIAgent upgrade...");
+  // Upgrading from the single-oracle version: carry the stored oracle over to the oracle
+  // role inside the upgrade transaction, so the proxy is never upgraded with no oracle.
+  const migrateOracle = await needsOracleRoleMigration(ethers.provider, plan.agent);
+  if (migrateOracle) {
+    log("Legacy oracle address found: migrating it to the oracle role in the upgrade.");
+  }
+  const aiAgent = await upgrades.upgradeProxy(
+    plan.agent,
+    EVMAIAgent,
+    migrateOracle ? { call: "migrateOracleRole" } : {},
+  );
+  await waitDeployed(env, aiAgent);
+  const aiAgentAddress = await aiAgent.getAddress();
+  log(`✅ EVMAIAgent is up-to-date at: ${chalk.cyan(aiAgentAddress)}`);
 
-      // Get initial fee values from .env or use defaults
-      const promptFee = process.env.INITIAL_PROMPT_FEE || hre.ethers.parseEther("1"); // Default: 1 token
-      const cancellationFee = process.env.INITIAL_CANCELLATION_FEE || hre.ethers.parseEther("0.1"); // Default: 0.1 token
-      const metadataUpdateFee = process.env.INITIAL_METADATA_FEE || hre.ethers.parseEther("0.1"); // Default: 0.1 token
-      const branchFee = process.env.INITIAL_BRANCH_FEE || hre.ethers.parseEther("0.5"); // Default: 0.5 token
+  log(`Found existing EVMAIAgentEscrow at: ${chalk.yellow(plan.escrow)}`);
+  log("Checking for EVMAIAgentEscrow upgrade...");
+  const aiAgentEscrow = await upgrades.upgradeProxy(plan.escrow, EVMAIAgentEscrow);
+  await waitDeployed(env, aiAgentEscrow);
+  const aiAgentEscrowAddress = await aiAgentEscrow.getAddress();
+  log(`✅ EVMAIAgentEscrow is up-to-date at: ${chalk.cyan(aiAgentEscrowAddress)}`);
+  return { aiAgent, aiAgentEscrow, aiAgentAddress, aiAgentEscrowAddress };
+}
 
-      aiAgentEscrow = await hre.upgrades.deployProxy(
-        EVMAIAgentEscrow,
-        [
-          tokenAddress,
-          aiAgentAddress,
-          treasuryAddress,
-          deployer.address,
-          promptFee,
-          cancellationFee,
-          metadataUpdateFee,
-          branchFee,
-        ],
-        { initializer: "initialize", kind: "uups" },
-      );
-      await waitDeployed(aiAgentEscrow);
-      aiAgentEscrowAddress = await aiAgentEscrow.getAddress();
-      console.log(`✅ EVMAIAgentEscrow proxy deployed to: ${chalk.cyan(aiAgentEscrowAddress)}`);
+// --- Sapphire -------------------------------------------------------------------------------
 
-      // The linking step only needs to be done once during the initial deployment of the agent.
-      // We check if the agent's escrow address is already set.
-      const currentEscrow = await aiAgent.aiAgentEscrow();
-      if (currentEscrow === hre.ethers.ZeroAddress) {
-        console.log("Linking AI Agent to Escrow contract...");
-        if (networkName === "localnet" || networkName === "localhost") {
-          // For local development, a simple transaction is sufficient and faster.
-          const tx = await aiAgent.setAgentEscrow(aiAgentEscrowAddress);
-          await tx.wait();
-        } else {
-          // For public testnets/mainnet, use the robust fee bumping logic.
-          const nonce = await hre.ethers.provider.getTransactionCount(deployer.address, "pending");
-          const fees = await getSafeFees(hre.ethers.provider);
-          await sendWithBump(aiAgent.setAgentEscrow, [aiAgentEscrowAddress], { nonce, ...fees });
-        }
+/** Standard, non-upgradable contracts with a two-step link. Unchanged by the deploy mode. */
+async function deploySapphire(deployer) {
+  const { ethers } = hre;
+  const oracleAddress = deployer.address;
+  const treasuryAddress = process.env.TREASURY_ADDRESS || deployer.address;
+  console.log(`Deploying contracts with the account: ${chalk.yellow(deployer.address)}`);
+  console.log(`This address will be the first authorized Oracle and the default Treasury.`);
+  // The roflAppID is not used on-chain for the EVM version but is kept for consistency.
+  const roflAppID = ethers.zeroPadBytes("0x", 21);
 
-        console.log("✅ Link successful.");
-      }
+  console.log("\nDeploying Sapphire contracts...");
+  const SapphireAIAgent = await ethers.getContractFactory("SapphireAIAgent", deployer);
+  const SapphireAIAgentEscrow = await ethers.getContractFactory("SapphireAIAgentEscrow", deployer);
+
+  // Step 1: Deploy the AIAgent contract. It does not know about the escrow yet.
+  const aiAgent = await SapphireAIAgent.deploy(
+    process.env.DOMAIN,
+    roflAppID,
+    oracleAddress,
+    deployer.address,
+  );
+  await waitDeployed(hre, aiAgent);
+  const aiAgentAddress = await aiAgent.getAddress();
+  console.log(`✅ SapphireAIAgent deployed to: ${chalk.cyan(aiAgentAddress)}`);
+
+  // Step 2: Deploy the Escrow contract, passing the agent's address.
+  const aiAgentEscrow = await SapphireAIAgentEscrow.deploy(
+    aiAgentAddress,
+    treasuryAddress,
+    oracleAddress,
+    deployer.address,
+  );
+  await waitDeployed(hre, aiAgentEscrow);
+  const aiAgentEscrowAddress = await aiAgentEscrow.getAddress();
+  console.log(`✅ SapphireAIAgentEscrow deployed to: ${chalk.cyan(aiAgentEscrowAddress)}`);
+
+  // Step 3: Complete the link by calling the setter on the AIAgent.
+  console.log("Linking AI Agent to Escrow contract...");
+  const nonce = await ethers.provider.getTransactionCount(deployer.address, "pending");
+  const fees = await getSafeFees(ethers.provider);
+  await sendWithBump(aiAgent.setAgentEscrow, [aiAgentEscrowAddress], { nonce, ...fees });
+  console.log("✅ Link successful.");
+}
+
+// --- verification ---------------------------------------------------------------------------
+
+async function verifyOnExplorer(networkName, addresses) {
+  if (!process.env.ETHERSCAN_API_KEY) {
+    console.warn(
+      chalk.yellow("\n⚠️  Skipping verification: ETHERSCAN_API_KEY not found in .env file."),
+    );
+    return;
+  }
+  console.log(
+    chalk.blue(
+      "\nWaiting for 60 seconds before starting verification to allow for block propagation...",
+    ),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60000));
+  for (const [name, address] of addresses) {
+    try {
+      console.log(`Verifying ${name} proxy on Etherscan...`);
+      await hre.run("verify:verify", { address });
+      console.log(chalk.green(`✅ ${name} verified!`));
+      console.log(chalk.cyan(`   Explorer: ${explorerFor(networkName)}/address/${address}#code`));
+    } catch (error) {
+      console.error(chalk.red("Verification failed:", error.message));
     }
   }
+}
 
-  // --- 4. VERIFY CONTRACT (for public EVM chains only) ---
-  if (
-    !isSapphire &&
-    networkName !== "hardhat" &&
-    networkName !== "localnet" &&
-    networkName !== "localhost"
-  ) {
-    if (!process.env.ETHERSCAN_API_KEY) {
-      console.warn(
-        chalk.yellow("\n⚠️  Skipping verification: ETHERSCAN_API_KEY not found in .env file."),
-      );
-    } else {
-      console.log(
-        chalk.blue(
-          "\nWaiting for 60 seconds before starting verification to allow for block propagation...",
-        ),
-      );
-      await new Promise((resolve) => setTimeout(resolve, 60000));
+/** ENV_FILE parsed on its own, or null when it is not set. */
+function readEnvFile(envFile) {
+  if (!envFile) return null;
+  let text;
+  try {
+    text = fs.readFileSync(envFile);
+  } catch {
+    throw new Error(`ENV_FILE names ${envFile}, which cannot be read`);
+  }
+  return dotenv.parse(text);
+}
 
-      try {
-        console.log(`Verifying EVMAIAgent proxy on Etherscan...`);
-        await hre.run("verify:verify", { address: aiAgentAddress });
-        console.log(chalk.green(`✅ EVMAIAgent verified!`));
-        console.log(
-          chalk.cyan(`   Explorer: ${explorerFor(networkName)}/address/${aiAgentAddress}#code`),
-        ); // Explicit URL
-      } catch (error) {
-        console.error(chalk.red("Verification failed:", error.message));
-      }
+async function main() {
+  const networkName = hre.network.name;
+  const envFile = process.env.ENV_FILE;
+  const isSapphire = SAPPHIRE_NETWORKS.has(networkName);
+  const plan = resolveDeployPlan({
+    networkName,
+    envFile,
+    fileEnv: isSapphire ? null : readEnvFile(envFile),
+    processEnv: process.env,
+  });
 
-      try {
-        console.log(`Verifying EVMAIAgentEscrow proxy on Etherscan...`);
-        await hre.run("verify:verify", { address: aiAgentEscrowAddress });
-        console.log(chalk.green(`✅ EVMAIAgentEscrow verified!`));
-        console.log(
-          chalk.cyan(
-            `   Explorer: ${explorerFor(networkName)}/address/${aiAgentEscrowAddress}#code`,
-          ),
-        ); // Explicit URL
-      } catch (error) {
-        console.error(chalk.red("Verification failed:", error.message));
-      }
-    }
+  console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
+
+  // Required env
+  if (!process.env.DOMAIN || !process.env.PRIVATE_KEY) {
+    throw new Error("Missing required environment variables. Please check DOMAIN or PRIVATE_KEY.");
+  }
+  const [deployer] = await hre.ethers.getSigners();
+
+  if (plan.isSapphire) {
+    await deploySapphire(deployer);
+    console.log("\n--- Deployment Finished ---");
+    return;
+  }
+
+  console.log(`\nDEPLOY_MODE=${plan.mode} (from ${envFile})`);
+  const pair =
+    plan.mode === "fresh"
+      ? await deployFreshPair(hre, plan, { deployer })
+      : await upgradePair(hre, plan);
+
+  if (plan.live) {
+    await verifyOnExplorer(networkName, [
+      ["EVMAIAgent", pair.aiAgentAddress],
+      ["EVMAIAgentEscrow", pair.aiAgentEscrowAddress],
+    ]);
   }
 
   console.log("\n--- Deployment Finished ---");
 }
 
-// Not built yet: the tests in test/deployGuard.test.js and test/freshDeploy.test.js describe them.
-const FILE_ONLY_VARS = Object.freeze([]);
-const notBuilt = (name) => () => {
-  throw new Error(`${name} is not built yet`);
-};
-const resolveDeployPlan = notBuilt("resolveDeployPlan");
-const deployFreshPair = async (...args) => notBuilt("deployFreshPair")(...args);
-const freshPairProblems = async (...args) => notBuilt("freshPairProblems")(...args);
-
 module.exports = {
   FILE_ONLY_VARS,
+  DEPLOY_MODES,
+  LOCAL_NETWORKS,
   resolveDeployPlan,
   deployFreshPair,
   freshPairProblems,
+  upgradePair,
   deployProblems,
   assertDeployAllowed,
   explorerFor,
