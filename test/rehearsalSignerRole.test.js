@@ -149,22 +149,33 @@ describe("the rehearsal and the signer's own oracle role", function () {
     expect(confirmedIn(snapshotFile)).to.equal(true);
   });
 
-  // Revoking the role of the oracle that published the encryption key withdraws the key, and
-  // no prompt can be submitted until an oracle publishes one. Another oracle cannot replace the
-  // signer's key while it is published, so the removal cannot simply be advised.
+  // Revoking the role of the oracle that published the encryption key withdraws the key (the
+  // agent's `_revokeRole`). Nothing reads that key today: the dApp encrypts to the key its build
+  // names, and no prompt path reads it on chain, so removing the role stops nothing. The real
+  // oracle does not publish its own key yet. The role is still removed; a snapshot that recorded
+  // the signer's key then always differs on it.
   describe("when the signer published the encryption key", function () {
     const plainAdvice = "so the owner removes it before the handover";
 
     function expectKeyNote(text, signer) {
       expect(text).to.include(`The signer ${signer} holds the oracle role`);
-      expect(text).to.include("published the encryption key");
-      expect(text).to.include("would withdraw that key");
-      expect(text).to.include("EncryptionKeyHeldByAnotherOracle");
-      expect(text).to.include("agent.setOracleEncryptionKey(");
-      expect(text).to.not.include(plainAdvice);
+      expect(text).to.include("is the agent's oracleEncryptionKeyPublisher");
+      expect(text).to.include(`agent.removeOracle(${signer})`);
+      expect(text).to.include("withdraws that key");
+      expect(text).to.include("none does");
+      expect(text).to.include("not built yet");
+      expect(text).to.include("Remove the role all the same");
+      expect(text).to.include("move that snapshot aside");
+      expect(text).to.include("Never publish an encryption key from the deploy wallet");
+      // Claims that are not true today.
+      expect(text).to.not.include("no prompt can be submitted");
+      expect(text).to.not.match(/stops? prompts/);
+      expect(text).to.not.include("setOracleEncryptionKey(");
+      expect(text).to.not.include("straight after");
+      expect(text).to.not.include("Do not simply remove");
     }
 
-    it("does not advise the removal as is in the forward phase, and says what removing it does", async function () {
+    it("says in the forward phase what removing the role does to the key, and that it is still removed", async function () {
       const fixture = await loadRehearsal();
       await signerPublishesKey(fixture);
 
@@ -178,10 +189,13 @@ describe("the rehearsal and the signer's own oracle role", function () {
       await signerPublishesKey(fixture);
       const snapshotFile = await confirmable(fixture, LIVE, await readState(fixture.contracts));
 
-      await expect(confirm(fixture, snapshotFile, LIVE)).to.be.rejectedWith(
+      const refused = await confirm(fixture, snapshotFile, LIVE).catch((error) => error);
+
+      expect(refused.message).to.match(
         /not been fully returned[\s\S]*published the encryption key/,
       );
-
+      expect(refused.message).to.include("withdraws that key");
+      expect(refused.message).to.not.match(/stops? prompts/);
       expectKeyNote(fixture.lines.join("\n"), fixture.deployer.address);
       expect(confirmedIn(snapshotFile)).to.equal(false);
     });
@@ -196,17 +210,52 @@ describe("the rehearsal and the signer's own oracle role", function () {
 
       const text = fixture.lines.join("\n");
       expect(text).to.include(plainAdvice);
-      expect(text).to.not.include("would withdraw that key");
+      expect(text).to.not.include("withdraws that key");
+    });
+
+    // The publisher is read again for the note. A node failing that read must not replace the
+    // refusal with its own error, which can carry the RPC address.
+    it("keeps the refusal, with no node error in it, when the publisher cannot be read", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = await confirmable(fixture, LIVE);
+      await grantSignerRole(fixture);
+      const failure = Object.assign(
+        new Error("request to https://rpc.example/v2/not-a-real-key failed"),
+        { code: "SERVER_ERROR" },
+      );
+      const aiAgent = new Proxy(fixture.contracts.aiAgent, {
+        get(target, property) {
+          if (property === "oracleEncryptionKeyPublisher") return () => Promise.reject(failure);
+          return Reflect.get(target, property, target);
+        },
+      });
+      fixture.lines = [];
+
+      const refused = await confirmPhase({
+        contracts: { ...fixture.contracts, aiAgent },
+        signer: fixture.deployer,
+        log: (line) => fixture.lines.push(String(line)),
+        snapshotFile,
+        network: LIVE,
+        verify: async () => ({ ok: true, mismatches: [] }),
+      }).catch((error) => error);
+
+      expect(refused.message).to.match(/not been fully returned/);
+      expect(refused.message).to.not.include("not-a-real-key");
+      const text = fixture.lines.join("\n");
+      expect(text).to.include(`agent.removeOracle(${fixture.deployer.address})`);
+      expect(text).to.include("could not be read");
+      expect(text).to.not.include("not-a-real-key");
     });
   });
 
   // A snapshot an earlier version wrote may watch the signer as the live oracle. The confirm
-  // phase can never pass with it, so a resumed forward run refuses it before sending anything,
-  // the restores included, rather than leave a rehearsal that cannot be confirmed.
+  // phase can never pass with it, so a resumed forward run on a live network sends only the
+  // restores of sets already done, so no rehearsal value is left live, holds every other step,
+  // and then refuses, naming what it sent and held.
   describe("a resumed forward run and a snapshot that watches the signer as the oracle", function () {
-    async function resumable(fixture) {
+    async function resumable(fixture, steps) {
       const snapshotFile = scratch();
-      const done = { status: "done", txHash: `0x${"ef".repeat(32)}`, blockNumber: 1 };
       const baseline = {
         ...fixture.state,
         oracle: fixture.deployer.address,
@@ -215,32 +264,82 @@ describe("the rehearsal and the signer's own oracle role", function () {
       fs.writeFileSync(
         snapshotFile,
         await snapshotText(fixture.contracts, baseline, fixture.safeContractAddress, {
-          steps: { "fee-set": done },
+          steps,
           network: LIVE,
         }),
       );
-      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
       return snapshotFile;
     }
+    const feeSetDone = {
+      "fee-set": { status: "done", txHash: `0x${"ef".repeat(32)}`, blockNumber: 1 },
+    };
+    const nonceOf = (fixture) => ethers.provider.getTransactionCount(fixture.deployer.address);
+    const stepsIn = (file) => JSON.parse(fs.readFileSync(file, "utf8")).steps;
 
-    for (const dryRun of [false, true]) {
-      it(`refuses on a live network before anything is sent or written (dryRun=${dryRun})`, async function () {
-        const fixture = await loadRehearsal();
-        const snapshotFile = await resumable(fixture);
-        const before = fs.readFileSync(snapshotFile, "utf8");
-        const nonce = await ethers.provider.getTransactionCount(fixture.deployer.address);
+    it("sends the fee restore and nothing else, then refuses saying what it sent and held", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = await resumable(fixture, feeSetDone);
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+      const nonce = await nonceOf(fixture);
 
-        await expect(forward(fixture, { snapshotFile, network: LIVE, dryRun })).to.be.rejectedWith(
-          new RegExp(
-            `watches the signer ${fixture.deployer.address} as the live oracle[\\s\\S]*Nothing has been sent`,
-          ),
+      const refused = await forward(fixture, { snapshotFile, network: LIVE }).catch((e) => e);
+
+      expect(refused.message).to.match(
+        new RegExp(`watches the signer ${fixture.deployer.address} as the live oracle`),
+      );
+      expect(refused.message).to.match(/Sent: \[fee-restore\][\s\S]*Not sent: \[treasury-set\]/);
+      expect(await nonceOf(fixture)).to.equal(nonce + 1);
+      const { escrow, aiAgent } = fixture.contracts;
+      expect(await escrow.promptFee()).to.equal(PROMPT_FEE);
+      expect(await escrow.treasury()).to.equal(fixture.treasury.address);
+      expect(await aiAgent.isOracle(fixture.safeContractAddress)).to.equal(false);
+      expect(await aiAgent.pendingOwner()).to.equal(ethers.ZeroAddress);
+      expect(Object.keys(stepsIn(snapshotFile)).sort()).to.deep.equal(["fee-restore", "fee-set"]);
+    });
+
+    it("predicts that in a dry run, and sends and writes nothing", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = await resumable(fixture, feeSetDone);
+      await fixture.contracts.escrow.connect(fixture.deployer).setPromptFee(REHEARSAL_FEE);
+      const before = fs.readFileSync(snapshotFile, "utf8");
+      const nonce = await nonceOf(fixture);
+
+      await expect(
+        forward(fixture, { snapshotFile, network: LIVE, dryRun: true }),
+      ).to.be.rejectedWith(/as the live oracle[\s\S]*Would send: \[fee-restore\]/);
+
+      expect(await nonceOf(fixture)).to.equal(nonce);
+      expect(await fixture.contracts.escrow.promptFee()).to.equal(REHEARSAL_FEE);
+      expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
+    });
+
+    it("sends nothing when no set was done", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = await resumable(fixture, {});
+      const nonce = await nonceOf(fixture);
+
+      const refused = await forward(fixture, { snapshotFile, network: LIVE }).catch((e) => e);
+
+      expect(refused.message).to.match(/as the live oracle[\s\S]*Nothing was sent/);
+      expect(refused.message).to.not.include("once these restores are done");
+      expect(await nonceOf(fixture)).to.equal(nonce);
+      expect(stepsIn(snapshotFile)).to.deep.equal({});
+    });
+
+    it("refuses while the wallet has a transaction pending, before deciding anything", async function () {
+      const fixture = await loadRehearsal();
+      const snapshotFile = await resumable(fixture, {});
+      await ethers.provider.send("evm_setAutomine", [false]);
+      try {
+        await fixture.deployer.sendTransaction({ to: fixture.deployer.address, value: 0 });
+        await expect(forward(fixture, { snapshotFile, network: LIVE })).to.be.rejectedWith(
+          /waiting to be mined/,
         );
-
-        expect(await ethers.provider.getTransactionCount(fixture.deployer.address)).to.equal(nonce);
-        expect(await fixture.contracts.escrow.promptFee()).to.equal(REHEARSAL_FEE);
-        expect(fs.readFileSync(snapshotFile, "utf8")).to.equal(before);
-      });
-    }
+      } finally {
+        await ethers.provider.send("evm_setAutomine", [true]);
+        await ethers.provider.send("evm_mine", []);
+      }
+    });
 
     it("resumes on a local network, where the signer is the oracle on purpose", async function () {
       const fixture = await loadRehearsal();

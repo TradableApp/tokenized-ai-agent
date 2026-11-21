@@ -151,6 +151,22 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
       expect(steps).to.not.have.property("treasury-set");
     });
 
+    // With nothing sent, there are no restores to wait for before moving the snapshot.
+    it("does not speak of restores when a resumed run sent none", async function () {
+      const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
+      const snapshotFile = scratch();
+      fs.writeFileSync(
+        snapshotFile,
+        await snapshotText(fixture.contracts, fixture.state, fixture.safeContractAddress),
+      );
+
+      const refused = await forward(fixture, { snapshotFile }).catch((error) => error);
+
+      expect(refused.message).to.match(/is not on its list[\s\S]*Nothing was sent/);
+      expect(refused.message).to.include(`move the snapshot at ${snapshotFile} aside`);
+      expect(refused.message).to.not.include("once these restores are done");
+    });
+
     it("says in a dry run what it would send, and sends nothing", async function () {
       const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
       const snapshotFile = await resumedAfterFeeSet(fixture);
