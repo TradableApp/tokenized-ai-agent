@@ -234,6 +234,36 @@ const FIXTURES = [
   ["a property of that name", inCatch("console.error(result.error, describeError(error));"), false],
   ["a cause in a thrown error", inCatch("throw new Error('x', { cause: error });"), false],
   ["a described .catch callback", "p.catch((e) => console.error('x', describeError(e)));", false],
+  ["a spread of it", inCatch('console.error("failed", { ...error });'), true],
+  ["a spread in an alert", inCatch("await sendAlert({ text: 'down', ...error });"), true],
+  [
+    "a spread in a thrown error",
+    inCatch("throw Object.assign(new Error('x'), { ...error });"),
+    true,
+  ],
+  ["a function callback", "p.catch(function (e) {\n  console.error('failed', e);\n});", true],
+  [
+    "a named async function callback",
+    "p.catch(async function onFail(e) {\n  await sendAlert(`down: ${e.message}`);\n});",
+    true,
+  ],
+  ["a point-free console.error", "p.catch(console.error);", true],
+  ["a point-free console.warn", "p.catch(console.warn);", true],
+  ["a point-free logger call", "p.catch(logger.error);", true],
+  ["a point-free bound console.error", "p.catch(console.error.bind(console));", true],
+  ["a point-free alert", "p.catch(sendAlert);", true],
+  [
+    "a described function callback",
+    "p.catch(function (e) {\n  console.error('x', describeError(e));\n});",
+    false,
+  ],
+  [
+    "a spread of something else",
+    inCatch("console.error('x', { ...context }, describeError(error));"),
+    false,
+  ],
+  ["a named handler of its own", "p.catch(handleFailure);", false],
+  ["a point-free call in a comment", "// p.catch(console.error);\np.catch(handleFailure);", false],
 ];
 
 describe("errors are described before they are handed on", () => {
