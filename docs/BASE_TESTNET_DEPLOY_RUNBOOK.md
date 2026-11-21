@@ -516,6 +516,29 @@ mainnet run can check for it up front instead of rediscovering it.
 - The Safe's part is to accept ownership of both proxies and offer it back. The fee, treasury and oracle changes are sent from the deploy wallet. The rehearsal does not have the Safe send any other owner call, and it rehearses no upgrade: a passing rehearsal shows the Safe can take and return ownership, not that it can do those. Try them from the Safe separately before relying on it for them.
 - On a live network it reports whether the deploy wallet still holds the oracle role, and the confirm phase does not pass while it does. Removing it is the owner's call, made before the handover and only after the oracle's own address holds the role (§1.1). When the deploy wallet also published the encryption key, the note says that removing its role withdraws that key, that nothing reads it today, and that the role is still removed (see the `signerIsOracle` row above).
 
+### Moving prompts to a new agent and escrow: close the old pair first
+
+One oracle answers one pair. Before the oracle is pointed at a new agent and escrow, the owner
+closes new paid actions on the old pair with the dApp's prompts switch and lets the prompts
+already sent settle; otherwise a prompt sent to the old pair after the oracle has moved is paid
+and waits for its one-hour refund.
+
+- The switch is a document every open copy of the dApp listens to, per network and agent
+  (`sense-ai-dapp/docs/decisions/0008-remote-prompts-switch.md`). Closing it stops new prompts,
+  plans, branches and renames in every open tab without a deploy; cancelling, refunds and
+  revoking a plan are never stopped by it.
+- Order: a dApp build that hears the switch is live first; then close the old pair; then wait
+  until every prompt on it is answered, cancelled or refunded (a prompt can be refunded once it
+  is an hour old); only then move the oracle. The oracle keeps answering the old pair until
+  then.
+- A copy of the dApp built before the switch was added never hears it and can still send a
+  prompt to the old pair after it is closed. The wait is for those prompts: skipping it leaves
+  them paid with no oracle to answer. A prompt that still arrives after the oracle has moved can
+  be refunded by anyone once it is an hour old (`processRefund` on the escrow pays the user who
+  sent it), and the operator's procedure has a step for that.
+- The owner writes the switch with the operator script in the harness repository, which also
+  holds the step-by-step procedure.
+
 ### Mainnet pre-flight additions (do before the first mainnet `rofl deploy`)
 
 - [ ] **Refresh the Sapphire-mainnet trust root** (mainnet counterpart of A.1; read-only, no passphrase):
@@ -541,6 +564,7 @@ mainnet run can check for it up front instead of rediscovering it.
 - ROFL deploy = `build → update → deploy`, never `restart`/`release`. **Never `oasis rofl machine release`.**
 - The oracle's own address (made by the ROFL key service, printed at start-up as `signer=`; not the deploy wallet) needs Base Sepolia ETH for **every answer** — if it runs dry, prompts submit but never get answered (smoke times out → exit 1).
 - The oracle's own address must hold the oracle role on the agent: removing the deploy wallet's role before granting the signer's leaves prompts paid and unanswered until the signer is granted it. Follow §1.1.
+- Moving the oracle to a new agent and escrow before the old pair has drained leaves prompts paid and unanswered until their one-hour refund: close the old pair with the prompts switch and wait first (see "Moving prompts to a new agent and escrow").
 - Testnet TEE lives ~1 h (`playground_short`) — run the smoke promptly after boot.
 - Storage math: qcow2 = `storage.size` + 2048 MiB ≤ offer storage, or the app never registers a replica and `machine logs` 404s. Read `machine show` → `net.oasis.error` first.
 - `rofl deploy` without `--term hour` rents monthly.
