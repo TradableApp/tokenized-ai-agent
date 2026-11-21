@@ -44,6 +44,39 @@ const LIMITS = Object.freeze({
   framePlaintextBytes: 16 * 1024,
 });
 
+/**
+ * The HTTP side of the contract (1.4 to 1.7): what a reader asks for and how. Header names are
+ * written as the dApp sends them; Node reads request headers in lower case.
+ */
+const STREAM_HTTP = Object.freeze({
+  streamPathPrefix: "/stream/",
+  healthPath: "/health",
+  proofHeader: "X-SenseAI-Stream-Proof",
+  lastEventIdHeader: "Last-Event-ID",
+  /** `?mode=poll` ends the response after what is buffered, or after the first new frame. */
+  modes: Object.freeze(["sse", "poll"]),
+  /** The SSE `retry:` line: how long a reader waits before reconnecting on its own. */
+  sseRetryMs: 2000,
+  /** The longest a poll waits for a first new frame before ending the response. */
+  pollWaitMs: 20000,
+  preflightMaxAgeSeconds: 600,
+  /** How long a finished, dropped answer is still answered with 410 rather than 404. */
+  tombstoneMs: 10 * 60 * 1000,
+});
+
+/**
+ * Every refusal: its status, the one-word body `{"error": …}`, and the Retry-After (seconds)
+ * when the reader should try again. The dApp acts on the status alone.
+ */
+const STREAM_REFUSALS = Object.freeze({
+  badRequest: Object.freeze({ status: 400, error: "bad-request" }),
+  proof: Object.freeze({ status: 403, error: "proof" }),
+  notOpen: Object.freeze({ status: 404, error: "not-open", retryAfterSeconds: 2 }),
+  finished: Object.freeze({ status: 410, error: "finished" }),
+  busy: Object.freeze({ status: 429, error: "busy", retryAfterSeconds: 5 }),
+  unavailable: Object.freeze({ status: 503, error: "unavailable", retryAfterSeconds: 10 }),
+});
+
 /** The on-chain uint256 in decimal: no sign, no leading zeros, at most 78 digits. */
 const ANSWER_MESSAGE_ID_PATTERN = /^(0|[1-9][0-9]{0,77})$/;
 const RUN_PATTERN = /^[0-9a-f]{16}$/;
@@ -51,6 +84,8 @@ const REPLICA_PATTERN = /^[a-z0-9-]{1,32}$/;
 /** base64url of a 32-byte HMAC, no padding. */
 const PROOF_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SSE_EVENT_ID_PATTERN = /^([0-9a-f]{16})\.(0|[1-9][0-9]{0,8})$/;
+/** A sealed frame as `encryptSymmetrically` writes it: base64 IV, a dot, base64 ciphertext. */
+const SEALED_FRAME_PATTERN = /^[A-Za-z0-9+/]+={0,2}\.[A-Za-z0-9+/]+={0,2}$/;
 
 const PROOF_DOMAIN = "senseai-stream:";
 const SESSION_KEY_BYTES = 32;
@@ -61,6 +96,9 @@ const isAnswerMessageId = (value) => typeof value === "string" && ANSWER_MESSAGE
 const isRun = (value) => typeof value === "string" && RUN_PATTERN.test(value);
 const isReplica = (value) => typeof value === "string" && REPLICA_PATTERN.test(value);
 const isSeq = (value) => Number.isSafeInteger(value) && value >= 0;
+const isProof = (value) => typeof value === "string" && PROOF_PATTERN.test(value);
+/** True for text that can be one SSE `data:` line: the sealed shape, so never a line break. */
+const isSealedFrame = (value) => typeof value === "string" && SEALED_FRAME_PATTERN.test(value);
 
 /** A new run id for every attempt at a job; random so it never repeats across restarts. */
 function newRunId(randomBytes = crypto.randomBytes) {
@@ -183,6 +221,8 @@ module.exports = {
   DONE_OUTCOMES,
   SSE_EVENT_NAME,
   LIMITS,
+  STREAM_HTTP,
+  STREAM_REFUSALS,
   ANSWER_MESSAGE_ID_PATTERN,
   RUN_PATTERN,
   REPLICA_PATTERN,
@@ -193,6 +233,9 @@ module.exports = {
   isAnswerMessageId,
   isRun,
   isReplica,
+  isSeq,
+  isProof,
+  isSealedFrame,
   newRunId,
   resolveReplicaId,
   sseEventId,
