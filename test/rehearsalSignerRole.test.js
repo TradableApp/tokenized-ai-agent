@@ -306,7 +306,10 @@ describe("the rehearsal and the signer's own oracle role", function () {
     const nonceOf = (fixture) => ethers.provider.getTransactionCount(fixture.deployer.address);
     const stepsIn = (file) => JSON.parse(fs.readFileSync(file, "utf8")).steps;
     const HOLD_REASON = "skip: held back: the snapshot watches the signer as the oracle";
-    const heldIn = (message) => message.match(/Not sent: ([^.]*)\./)[1].match(/\[[^\]]+\]/g);
+    const heldIn = (message) => {
+      expect(message).to.match(/Not sent: [^.]*\./);
+      return message.match(/Not sent: ([^.]*)\./)[1].match(/\[[^\]]+\]/g);
+    };
     const AFTER_RESTORES =
       "After these restores, return any value a rehearsal still leaves live to the snapshot's baseline by hand";
     const RETURN_NOW =

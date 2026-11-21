@@ -104,7 +104,8 @@ Before step 2, check the console signs as the owner (an `ENV_FILE` setting overr
      the address the oracle answers from, and that address is made inside the TEE, so it cannot
      be known or granted in advance. From the moment the new image starts until step 2 is mined
      nothing is answered: prompts sent then wait at the oracle's role gate, or can be refunded
-     once an hour old. Do steps 1 to 3 straight after the deploy, at a quiet time.
+     once an hour old. Do steps 1 to 3 straight after the deploy, at a quiet
+     time, then go on with steps 4 and 5 in the same session.
    - **The sender is already the oracle's own address** (`await agent.isOracle("<signer>")`
      prints `true`). Skip step 2: granting again grants nothing and its receipt carries no
      `RoleGranted`. Go on from step 3.

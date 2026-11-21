@@ -146,6 +146,7 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
       const holds = fixture.lines.filter((line) =>
         line.includes("skip: held back: the treasury step was refused"),
       );
+      expect(refused.message).to.match(/Not sent: [^.]*\./);
       const held = refused.message.match(/Not sent: ([^.]*)\./)[1].match(/\[[^\]]+\]/g);
       expect(holds).to.have.length(held.length);
       expect(fixture.lines.join("\n")).to.not.include("the snapshot watches the signer");
