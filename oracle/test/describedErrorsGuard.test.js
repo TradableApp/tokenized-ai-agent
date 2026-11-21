@@ -5,10 +5,12 @@ const path = require("node:path");
 /**
  * A provider's or a database's error message can carry the address it was sent to, access key
  * or password included, and a parse error quotes the text it failed on. In the files below, an
- * error caught in a `catch` block or a `.catch(...)` callback is therefore never handed whole to
- * the console, a logger, an alert or a thrown error: only what `describeError`, `describedError`,
- * `errorKind` or `withoutAddresses` make of it. A bare rethrow (`throw error;`) and `cause:` in
- * a thrown error pass on the error to code that branches on it, and are allowed.
+ * error caught in a `catch` block or a `.catch(...)` callback (an arrow or a `function`) is
+ * therefore never handed whole, nor spread (`{ ...error }`), to the console, a logger, an alert
+ * or a thrown error: only what `describeError`, `describedError`, `errorKind` or
+ * `withoutAddresses` make of it. Nor is a sink itself the callback (`.catch(console.error)`),
+ * which hands it the error whole. A bare rethrow (`throw error;`) and `cause:` in a thrown error
+ * pass on the error to code that branches on it, and are allowed.
  *
  * Read from the source, because these lines sit in catch blocks that a unit test rarely reaches
  * (a store that fails while recording a failed retry), and one forgotten line is enough.
@@ -31,6 +33,11 @@ const SINK =
   /\b(?:console|log|logger)\.(?:log|info|warn|error|debug|trace)\s*\(|\b(?:sendAlert|alert)\s*\(|\bthrow\b/g;
 const CATCH_BLOCK = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
 const CATCH_CALLBACK = /\.catch\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/g;
+const CATCH_FUNCTION =
+  /\.catch\(\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
+// A sink given as the callback itself, bound or not: it is called with the error whole.
+const POINT_FREE_SINK =
+  /\.catch\(\s*(?:(?:console|log|logger)\s*\.\s*(?:log|info|warn|error|debug|trace)|sendAlert|alert)\s*(?:\.\s*bind\s*\([^()]*\)\s*)?\)/g;
 // After these, a "/" starts a regular expression rather than dividing.
 const BEFORE_REGEX = new Set([..."(,=:[!&|?{};+-*%<>~^"]);
 
@@ -133,9 +140,12 @@ function catchBodies(code) {
     const open = match.index + match[0].length - 1;
     bodies.push({ name: match[1], start: open, end: closeOf(code, open) });
   }
-  for (const match of code.matchAll(CATCH_CALLBACK)) {
-    const open = match.index + ".catch".length;
-    bodies.push({ name: match[1], start: match.index + match[0].length, end: closeOf(code, open) });
+  for (const pattern of [CATCH_CALLBACK, CATCH_FUNCTION]) {
+    for (const match of code.matchAll(pattern)) {
+      const open = match.index + ".catch".length;
+      const start = match.index + match[0].length;
+      bodies.push({ name: match[1], start, end: closeOf(code, open) });
+    }
   }
   return bodies;
 }
@@ -170,14 +180,18 @@ function withoutHelperCalls(text) {
   return result;
 }
 
-/** True when `args` hands on `name` whole. A bare rethrow, and `cause:` in a throw, pass. */
+/**
+ * True when `args` hands on `name` whole, or spreads it. A bare rethrow, and `cause:` in a throw,
+ * pass. A property of that name (`result.error`) is not the caught error; a spread (`...error`)
+ * is, though it too follows a dot.
+ */
 function handsOn(name, { throws, text }) {
   if (throws && text.trim() === name) return false;
   // A caught name is an identifier, but every character a pattern reads specially is escaped.
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let rest = withoutHelperCalls(text);
   if (throws) rest = rest.replace(new RegExp(`\\bcause\\s*:\\s*${escaped}(?![\\w$])`, "g"), " ");
-  return new RegExp(`(?<![.\\w$])${escaped}(?![\\w$])`).test(rest);
+  return new RegExp(`(?:(?<=\\.\\.\\.)|(?<![.\\w$]))${escaped}(?![\\w$])`).test(rest);
 }
 
 /** Every place in `src` where a caught error is handed on whole, as "line: source line". */
@@ -185,6 +199,11 @@ function offenders(src) {
   const code = codeView(src);
   const lines = src.split("\n");
   const found = new Set();
+  const lineOf = (index) => code.slice(0, index).split("\n").length;
+  for (const match of code.matchAll(POINT_FREE_SINK)) {
+    const line = lineOf(match.index);
+    found.add(`${line}: ${lines[line - 1].trim()}`);
+  }
   for (const { name, start, end } of catchBodies(code)) {
     const body = code.slice(0, end);
     const sinks = new RegExp(SINK.source, "g");
@@ -192,7 +211,7 @@ function offenders(src) {
     for (let match = sinks.exec(body); match; match = sinks.exec(body)) {
       const args = sinkArguments(code, match.index, match[0], end);
       if (!handsOn(name, args)) continue;
-      const line = code.slice(0, match.index).split("\n").length;
+      const line = lineOf(match.index);
       found.add(`${line}: ${lines[line - 1].trim()}`);
     }
   }
