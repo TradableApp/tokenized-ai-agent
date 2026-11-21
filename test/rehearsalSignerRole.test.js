@@ -452,4 +452,23 @@ describe("the rehearsal and the signer's own oracle role", function () {
       expect(await fixture.contracts.escrow.promptFee()).to.equal(PROMPT_FEE);
     });
   });
+
+  // Removing the deploy wallet's role with no other oracle on the agent leaves prompts paid and
+  // unanswered, so each note that names the removal says what comes first.
+  describe("what the note says comes before the removal", function () {
+    const grantFirst =
+      "only after the address the oracle answers from holds the role and has answered a prompt";
+
+    it("says so when the signer did not publish the key", function () {
+      const signer = ethers.Wallet.createRandom().address;
+
+      expect(oracleRole().signerRoleNote(signer)).to.include(grantFirst);
+    });
+
+    it("says so when the signer published the key", function () {
+      const signer = ethers.Wallet.createRandom().address;
+
+      expect(oracleRole().signerRoleNote(signer, { publishesKey: true })).to.include(grantFirst);
+    });
+  });
 });
