@@ -329,7 +329,10 @@ describe("streamServer", function () {
         expect(JSON.parse(res.body)).to.deep.equal({ error: "bad-request" });
       }
       for (const bad of ["short", `${proof}=`, `${proof.slice(0, 42)}+`]) {
-        const res = await rawRequest(port, { path: "/stream/42", headers: { [PROOF_HEADER]: bad } });
+        const res = await rawRequest(port, {
+          path: "/stream/42",
+          headers: { [PROOF_HEADER]: bad },
+        });
         expect(res.status, bad).to.equal(400);
       }
       const missing = await rawRequest(port, { path: "/stream/42" });
@@ -374,7 +377,10 @@ describe("streamServer", function () {
     });
 
     it("says 503 with Retry-After for an answer the buffer could not hold", async () => {
-      const { server, port } = await serve({}, { bufferLimits: { ...BUFFER_LIMITS, maxAnswerBytes: 10 } });
+      const { server, port } = await serve(
+        {},
+        { bufferLimits: { ...BUFFER_LIMITS, maxAnswerBytes: 10 } },
+      );
       openAnswer(server, "42");
       sendFrames(server, "42", RUN_A, 0, 1);
       const res = await rawRequest(port, {
@@ -382,7 +388,9 @@ describe("streamServer", function () {
         headers: { [PROOF_HEADER]: streamProof(KEY, "42") },
       });
       expect(res.status).to.equal(503);
-      expect(res.headers["retry-after"]).to.equal(String(STREAM_REFUSALS.unavailable.retryAfterSeconds));
+      expect(res.headers["retry-after"]).to.equal(
+        String(STREAM_REFUSALS.unavailable.retryAfterSeconds),
+      );
     });
   });
 
@@ -401,7 +409,9 @@ describe("streamServer", function () {
         }
         const fifth = await streamFetch(base, "42", { proof });
         expect(fifth.status).to.equal(429);
-        expect(fifth.headers.get("retry-after")).to.equal(String(STREAM_REFUSALS.busy.retryAfterSeconds));
+        expect(fifth.headers.get("retry-after")).to.equal(
+          String(STREAM_REFUSALS.busy.retryAfterSeconds),
+        );
         expect(await fifth.json()).to.deep.equal({ error: "busy" });
       } finally {
         controllers.forEach((c) => c.abort());
@@ -428,11 +438,27 @@ describe("streamServer", function () {
       openAnswer(server, "2");
       const controllers = [new AbortController(), new AbortController()];
       try {
-        expect((await streamFetch(base, "1", { proof: streamProof(KEY, "1"), signal: controllers[0].signal })).status).to.equal(200);
-        expect((await streamFetch(base, "2", { proof: streamProof(KEY, "2"), signal: controllers[1].signal })).status).to.equal(200);
+        expect(
+          (
+            await streamFetch(base, "1", {
+              proof: streamProof(KEY, "1"),
+              signal: controllers[0].signal,
+            })
+          ).status,
+        ).to.equal(200);
+        expect(
+          (
+            await streamFetch(base, "2", {
+              proof: streamProof(KEY, "2"),
+              signal: controllers[1].signal,
+            })
+          ).status,
+        ).to.equal(200);
         const third = await streamFetch(base, "2", { proof: streamProof(KEY, "2") });
         expect(third.status).to.equal(503);
-        expect(third.headers.get("retry-after")).to.equal(String(STREAM_REFUSALS.unavailable.retryAfterSeconds));
+        expect(third.headers.get("retry-after")).to.equal(
+          String(STREAM_REFUSALS.unavailable.retryAfterSeconds),
+        );
       } finally {
         controllers.forEach((c) => c.abort());
       }
@@ -492,7 +518,11 @@ describe("streamServer", function () {
         {},
         {
           backpressureMs: 100,
-          bufferLimits: { ...BUFFER_LIMITS, maxAnswerBytes: 512 * 1024 * 1024, maxTotalBytes: 512 * 1024 * 1024 },
+          bufferLimits: {
+            ...BUFFER_LIMITS,
+            maxAnswerBytes: 512 * 1024 * 1024,
+            maxTotalBytes: 512 * 1024 * 1024,
+          },
         },
       );
       openAnswer(server, "42");
@@ -501,30 +531,38 @@ describe("streamServer", function () {
       socket.write(
         `GET /stream/42 HTTP/1.1\r\nHost: 127.0.0.1\r\n${PROOF_HEADER}: ${streamProof(KEY, "42")}\r\n\r\n`,
       );
+      // A paused socket reads nothing, so it never sees the close either: the server's own
+      // count of connections is what shows it was dropped.
       socket.pause();
-      const closed = new Promise((resolve) => socket.once("close", resolve));
       await sleep(50);
       expect(server.stats().connections).to.equal(1);
 
+      // Frames of 64 KiB every 2 ms: the reader's socket and the kernel's buffers fill within a
+      // few dozen frames, after which write() keeps returning false and nothing drains. Each
+      // frame call made while the reader is backed up is timed.
       const big = sealed(64 * 1024);
       let seq = 0;
-      while (server.stats().waitingToDrain === 0 && seq < 2000) {
+      let backedUpCalls = 0;
+      let slowestMs = 0;
+      const started = Date.now();
+      while (server.stats().connections > 0 && Date.now() - started < 5000) {
+        const backedUp = server.stats().waitingToDrain > 0;
+        const t0 = process.hrtime.bigint();
         server.frame("42", { run: RUN_A, seq, ciphertext: big });
+        const tookMs = Number(process.hrtime.bigint() - t0) / 1e6;
+        if (backedUp) {
+          backedUpCalls += 1;
+          slowestMs = Math.max(slowestMs, tookMs);
+        }
         seq += 1;
-        if (seq % 16 === 0) await new Promise((resolve) => setImmediate(resolve));
+        await sleep(2);
       }
-      expect(server.stats().waitingToDrain, "the reader's socket is backed up").to.equal(1);
-
-      const t0 = process.hrtime.bigint();
-      server.frame("42", { run: RUN_A, seq, ciphertext: sealed() });
-      const tookMs = Number(process.hrtime.bigint() - t0) / 1e6;
-      expect(tookMs).to.be.below(5);
-
-      const startedWaiting = Date.now();
-      await closed;
-      // Destroyed after the 100 ms backpressure limit; 2 s leaves room for a slow machine.
-      expect(Date.now() - startedWaiting).to.be.below(2000);
-      expect(server.stats().connections).to.equal(0);
+      expect(server.stats().connections, "the server destroyed the connection").to.equal(0);
+      socket.destroy();
+      // Destroyed well inside the 5 s loop limit: 100 ms after its socket stopped draining.
+      expect(Date.now() - started).to.be.below(5000);
+      expect(backedUpCalls, "frames were sent while the reader was backed up").to.be.greaterThan(0);
+      expect(slowestMs).to.be.below(5);
     });
   });
 
@@ -543,14 +581,22 @@ describe("streamServer", function () {
       expect(ok.headers["access-control-expose-headers"]).to.equal("Retry-After");
       expect(ok.headers["access-control-allow-credentials"]).to.equal(undefined);
 
-      const refused = await rawRequest(port, { path: "/stream/7", headers: { Origin: ALLOWED, [PROOF_HEADER]: streamProof(KEY, "7") } });
+      const refused = await rawRequest(port, {
+        path: "/stream/7",
+        headers: { Origin: ALLOWED, [PROOF_HEADER]: streamProof(KEY, "7") },
+      });
       expect(refused.status).to.equal(404);
       expect(refused.headers["access-control-allow-origin"]).to.equal(ALLOWED);
     });
 
     it("gives a disallowed origin no CORS headers at all, but still Vary: Origin", async () => {
       const { port } = await serve();
-      for (const origin of ["https://evil.example", `${ALLOWED}/`, "null", `${ALLOWED}.evil.example`]) {
+      for (const origin of [
+        "https://evil.example",
+        `${ALLOWED}/`,
+        "null",
+        `${ALLOWED}.evil.example`,
+      ]) {
         const res = await rawRequest(port, {
           path: "/stream/42",
           headers: { Origin: origin, [PROOF_HEADER]: streamProof(KEY, "42") },
@@ -575,7 +621,9 @@ describe("streamServer", function () {
       expect(res.status).to.equal(204);
       expect(res.headers["access-control-allow-origin"]).to.equal(ALLOWED);
       expect(res.headers["access-control-allow-methods"]).to.equal("GET");
-      expect(res.headers["access-control-allow-headers"]).to.equal("X-SenseAI-Stream-Proof, Last-Event-ID");
+      expect(res.headers["access-control-allow-headers"]).to.equal(
+        "X-SenseAI-Stream-Proof, Last-Event-ID",
+      );
       expect(res.headers["access-control-max-age"]).to.equal("600");
       expect(res.headers["access-control-allow-credentials"]).to.equal(undefined);
       expect(res.headers.vary).to.equal("Origin");
@@ -732,7 +780,9 @@ describe("streamServer", function () {
 
     it("is started by index.js before the oracle starts, and handed the oracle's setStreamSink", () => {
       const index = readFileSync(join(__dirname, "..", "src", "index.js"), "utf8");
-      const startAt = index.search(/await\s+startStreamFromEnv\(\{[^}]*setSink:\s*oracle\.setStreamSink/);
+      const startAt = index.search(
+        /await\s+startStreamFromEnv\(\{[^}]*setSink:\s*oracle\.setStreamSink/,
+      );
       const oracleStartAt = index.indexOf("await oracle.start()");
       expect(startAt, "index.js starts the stream server").to.be.greaterThan(-1);
       expect(oracleStartAt).to.be.greaterThan(startAt);

@@ -201,7 +201,8 @@ describe("frameBuffer", () => {
         graceMs: GRACE_MS,
         limits: { ...BUFFER_LIMITS, maxOpenAnswers: 2 },
       });
-      const open = (id) => small.open(id, { run: RUN_A, replica: "deadbeef", expectedProof: PROOF });
+      const open = (id) =>
+        small.open(id, { run: RUN_A, replica: "deadbeef", expectedProof: PROOF });
       expect(open("1")).to.equal(true);
       expect(open("2")).to.equal(true);
       expect(open("3")).to.equal(false);
@@ -258,7 +259,9 @@ describe("frameBuffer", () => {
         throw new Error("boom");
       });
       buffer.subscribe("42", (event) => heard.push(event.kind));
-      expect(() => buffer.append("42", { run: RUN_A, seq: 1, ciphertext: sealed() })).to.not.throw();
+      expect(() =>
+        buffer.append("42", { run: RUN_A, seq: 1, ciphertext: sealed() }),
+      ).to.not.throw();
       expect(heard).to.deep.equal(["frame"]);
     });
 

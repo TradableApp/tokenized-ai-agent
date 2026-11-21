@@ -16,7 +16,8 @@ const { join } = require("node:path");
  */
 const STREAM_DIR = join(__dirname, "..", "src", "stream");
 
-const CALL = /\b(?:console\s*\.\s*(?:log|info|warn|error|debug|trace)|new\s+(?:[A-Z][A-Za-z]*)?Error)\s*\(/g;
+const CALL =
+  /\b(?:console\s*\.\s*(?:log|info|warn|error|debug|trace)|new\s+(?:[A-Z][A-Za-z]*)?Error)\s*\(/g;
 const FORBIDDEN_IN_CALL =
   /\b(?:answerMessageId|answerId|id|ids|headers?|getHeader|rawHeaders|origin|proof|expectedProof|lastEventId|cursor|url|path|req|request|res|response|socket|address|remoteAddress|remotePort)\b/;
 const NEVER_READ = /remoteAddress|remotePort|x-forwarded-for|x-real-ip|forwarded/i;
