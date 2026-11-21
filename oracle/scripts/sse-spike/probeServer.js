@@ -13,8 +13,9 @@
 //                 are present (never a value), plus the request's HTTP version.
 //   OPTIONS *     CORS preflight, answered only for the allowed origins.
 //
-// Settings from the environment: PROBE_PORT (default 8787) and PROBE_ALLOWED_ORIGINS
-// (comma list of exact origins). Logs never carry an address or a header value.
+// Settings from the environment: PROBE_PORT (default 8787), PROBE_HOST (default 0.0.0.0,
+// as the container needs; 127.0.0.1 for a local run) and PROBE_ALLOWED_ORIGINS (comma
+// list of exact origins). Logs never carry an address or a header value.
 const http = require('node:http');
 
 const DEFAULTS = {
@@ -217,8 +218,9 @@ function start() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  const host = process.env.PROBE_HOST || '0.0.0.0';
   const server = createProbeServer({ allowedOrigins });
-  server.listen(port, '0.0.0.0', () => {
+  server.listen(port, host, () => {
     console.log(JSON.stringify({ ev: 'listening', port, allowedOrigins: allowedOrigins.length }));
   });
   process.on('SIGTERM', () => {
