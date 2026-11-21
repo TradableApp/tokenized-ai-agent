@@ -37,7 +37,7 @@ exist and hold funds; only ETH top-up on the test wallet is likely needed.
 | Wallet | Address | Role | Currency it needs | Status / source |
 |---|---|---|---|---|
 | **Oasis testnet** (`oasis_testnet`) | (your oasis CLI account) | **ROFL admin** — signs `rofl:update` / `rofl:deploy` on Sapphire testnet + rents the TEE machine | **Sapphire testnet ROSE (TEST)** — gas + `playground_short` rental (5 TEST/hr) | Top up from the **Oasis testnet faucet** (a few TEST for a couple of hours). |
-| **Tradable Deploy Wallet** | `0x0DEC482E804965F53da3d7094c5E0fd8B3dA9a12` | **Deployed the contracts + token and owns both proxies until the handover**; holds 999.99M ABLE. It does **not** run the oracle on Base Sepolia: there the oracle's signing key and its encryption key both come from the ROFL key service (`oracle/src/oracleKeys.js`; `PRIVATE_KEY` must not be set), and the oracle prints its own address at start-up (`[OracleKeys] mode=rofl … signer=0x…`). The deploy wallet was given the oracle role at deployment; that role is not needed to answer and the owner removes it before the handover (`agent.removeOracle`). Never publish an encryption key from it. | **Base Sepolia ETH** (owner transactions) | Had **0.0493 ETH** on 2026-07-20. It's the ABLE source if the test wallet ever needs more. |
+| **Tradable Deploy Wallet** | `0x0DEC482E804965F53da3d7094c5E0fd8B3dA9a12` | **Deployed the contracts + token and owns both proxies until the handover**; holds 999.99M ABLE. It does **not** run the oracle on Base Sepolia: there the oracle's signing key and its encryption key both come from the ROFL key service (`oracle/src/oracleKeys.js`; `PRIVATE_KEY` must not be set), and the oracle prints its own address at start-up (`[OracleKeys] mode=rofl … signer=0x…`). The deploy wallet was given the oracle role at deployment. Before the handover the owner moves the role to the oracle's own address and only then removes the deploy wallet's, in the order in [§1.1](#11-moving-the-oracle-role-to-the-rofl-signer-in-this-order). Never publish an encryption key from it. | **Base Sepolia ETH** (owner transactions) | Had **0.0493 ETH** on 2026-07-20. It's the ABLE source if the test wallet ever needs more. |
 | **Test / user wallet** — Tradable Test User (MetaMask) | `0x971c5a2058eecEd3D3C177A9bFdA7ddFafDe8057` | **Submits the prompt** — `approve` → `setSpendingLimit` → `initiatePrompt` (3 txs). | **Base Sepolia ETH** (gas ×3) + **ABLE** (prompt fee = **1 ABLE**) | **FUNDED ✅ — 0.0499 ETH + 9,897 ABLE** (no top-up). Export its MetaMask private key for `SMOKE_PRIVATE_KEY` at run time. (Replaces the public hardhat #0 key, whose funds got swept.) |
 
 **Funding status — ALL SORTED (verified 2026-07-20), no top-ups needed:**
@@ -47,7 +47,109 @@ exist and hold funds; only ETH top-up on the test wallet is likely needed.
 
 The **only** run-time input from you: the Test User wallet's **private key** (MetaMask → Account details → Show private key) passed as `SMOKE_PRIVATE_KEY`.
 
-**Do we need the deployment wallet?** Only as the owner (until the handover) and the ABLE treasury. It is not the oracle: the oracle answers from the address the ROFL key service gives it, which is the one that needs Base Sepolia ETH for answer gas. Do not keep the deploy wallet's oracle role for the oracle's sake; it is removed before the handover.
+**Do we need the deployment wallet?** Only as the owner (until the handover) and the ABLE treasury. It is not the oracle: the oracle answers from the address the ROFL key service gives it, which is the one that needs Base Sepolia ETH for answer gas. Do not keep the deploy wallet's oracle role for the oracle's sake; it is removed before the handover, and only after the oracle's own address holds the role (§1.1).
+
+### 1.1 Moving the oracle role to the ROFL signer (in this order)
+
+Every other mention in this runbook of removing the deploy wallet's role points here, and the
+admin rehearsal's own note about the removal names this order. Do the steps in order, and do not go on from a step that did not check out.
+All of them are owner calls or reads on the agent (`EVMAIAgent` above), sent before the
+handover: once ownership is with the Safe, only the Safe can add or remove an oracle.
+
+What the contract allows, and why the order matters:
+
+- **Several addresses can hold the role at once.** `addOracle` does not take the role from
+  anyone, so the signer can be added while the deploy wallet still holds it, and a prompt in
+  flight during the overlap can be answered by either. Adding an address that already holds the
+  role grants nothing and emits no `RoleGranted`; removing one that does not hold it revokes
+  nothing and emits no `RoleRevoked` (that is how a mistyped address shows). Only on a pair
+  upgraded from the single-oracle version: the first `addOracle` also clears that version's
+  stored oracle address. A freshly deployed pair has none.
+- **Only an address with the role can answer** (`submitAnswer` is oracle only). If the deploy
+  wallet's role is removed before the signer's is granted, the agent has no oracle the ROFL
+  oracle can answer as: users' prompts are paid (the fee is held by the escrow) and not
+  answered. The oracle does not send answers that would be refused: it waits at its role gate
+  (`oracle/src/oracleRoleGate.js`), pages "CRITICAL: Oracle Not Authorized" (and hourly "Still
+  Not Authorized"), and answers the prompts it kept once the role is granted. Meanwhile users
+  can still cancel a prompt and claim the refund once it is an hour old (neither needs the
+  oracle). Removing the last oracle is allowed by the contract, so nothing stops this mistake
+  but this order.
+- **The encryption key publisher.** If the deploy wallet is the agent's
+  `oracleEncryptionKeyPublisher` (a key was published from it by hand), removing its role in
+  step 5 also withdraws that key, and while it holds the role and the key no other oracle can
+  publish a different key (`EncryptionKeyHeldByAnotherOracle`). Today neither changes the order:
+  no client reads the key from the agent (the dApp encrypts to the key its build names), and the
+  oracle does not publish a key of its own yet. See the `signerIsOracle` row under Lessons
+  learned for what the rehearsal then says.
+
+The reads and owner calls below use the Hardhat console on the agent's network, which signs with
+the root `PRIVATE_KEY` (the deploy wallet, the same account the admin rehearsal uses):
+
+```bash
+bunx hardhat console --network baseSepolia
+```
+
+```js
+const agent = await ethers.getContractAt("EVMAIAgent", "<agent address>")
+```
+
+Before step 2, check the console signs as the owner (an `ENV_FILE` setting overrides the root
+`PRIVATE_KEY`): `(await ethers.getSigners())[0].address` must equal `await agent.owner()`.
+
+0. **Find who answers today.** If prompts are being answered on this pair, take the latest
+   answer's `submitAnswer` transaction and read its sender. Two cases change what follows:
+   - **The sender is the deploy wallet.** The running oracle image is from before the ROFL
+     keys: it prints no `[OracleKeys]` line and answers from an operator key. Deploying the
+     current image (with no `PRIVATE_KEY` secret; the oracle refuses to start with one) changes
+     the address the oracle answers from, and that address is made inside the TEE, so it cannot
+     be known or granted in advance. From the moment the new image starts until step 2 is mined
+     nothing is answered: prompts sent then wait at the oracle's role gate, or can be refunded
+     once an hour old. Do steps 1 to 3 straight after the deploy, at a quiet
+     time, then go on with steps 4 and 5 in the same session.
+   - **The sender is already the oracle's own address** (`await agent.isOracle("<signer>")`
+     prints `true`). Skip step 2: granting again grants nothing and its receipt carries no
+     `RoleGranted`. Go on from step 3.
+1. **Read the oracle's own address.** From the oracle's start-up line in the machine logs
+   (§5): `[OracleKeys] mode=rofl app=… signer=0x… encryptionKey=0x…`. That `signer=` address is
+   the one the oracle answers from (made by the ROFL key service; not the deploy wallet). Call
+   it `<signer>`. While `<signer>` does not hold the role, the same logs carry "CRITICAL: Oracle
+   Not Authorized" naming the `addOracle` call; that is expected until step 2. The
+   `encryptionKey=` on that line is the key prompts must be encrypted to: if it differs from the
+   key the dApp build names (`VITE_ORACLE_PUBLIC_KEY`) or the smoke test uses
+   (`SMOKE_ORACLE_PUBLIC_KEY`), update both before users prompt. A prompt encrypted to another
+   key is paid and cannot be answered.
+2. **Grant it the role.** `await (await agent.addOracle("<signer>")).wait()` — the receipt
+   carries `RoleGranted` for `<signer>` (none if it already held the role; see step 0).
+3. **Check it holds the role.** `await agent.isOracle("<signer>")` must print `true`. If it does
+   not, stop: do not remove anything.
+4. **See one prompt answered by it.** Send one test prompt (the smoke test, §6, is one) and wait
+   for its answer. The smoke test prints the sender itself, in its line beginning
+   `oracle 0x…: nonces`; that address must be `<signer>`. To read it from the chain instead, take
+   `prompts[0].answerTxHash` from `smoke-metrics.json` (not `submitTxHash`, which is the user's
+   own prompt; `answerTxHash` is empty when the smoke could not read the answer's transaction)
+   and check `(await ethers.provider.getTransaction("<answerTxHash>")).from`. If no answer comes, or it
+   came from another address, stop and find out why before going on.
+5. **Only then remove the deploy wallet's role.**
+   `await (await agent.removeOracle("<deploy wallet>")).wait()` — the receipt carries
+   `RoleRevoked`; none means the address was mistyped. Then
+   `await agent.isOracle("<deploy wallet>")` must print `false`, and
+   `await agent.isOracle("<signer>")` must still print `true`.
+
+Two checks repeat this from outside, and are worth setting:
+
+- **Admin rehearsal:** set `REHEARSAL_ORACLE_ADDRESS=<signer>` and start a forward run only
+  after step 3. The forward run records whether that address holds the role, and on a live
+  network refuses it if it is the account the script signs with. The confirm phase fails if
+  that address's role differs from what the snapshot recorded, and, on a live network, while
+  the signing account (the deploy wallet) still holds its own. A resumed run uses the address in
+  its snapshot, not the setting: an unconfirmed snapshot taken before step 2 recorded `<signer>`
+  without the role, so its confirm phase fails on `oracleAuthorized` once step 2 has landed.
+  Move that snapshot aside (keep it: it holds the values from before the rehearsal).
+- **e2e stack check (`sense-ai-e2e`, `docs/TESTNET_RUN.md`):** set
+  `TESTNET_ORACLE_SIGNER_ADDRESS=<signer>` and `TESTNET_DEPLOY_WALLET_ADDRESS=<deploy wallet>`.
+  The wiring probe then asks the agent that the signer holds the role and that the deploy wallet
+  does not; an unset one is reported as not checked, never as a pass. It fails on the deploy
+  wallet until step 5 is done, so run it after step 5.
 
 ---
 
@@ -401,7 +503,7 @@ mainnet run can check for it up front instead of rediscovering it.
 | Rehearsal refuses: `... the Safe ... is not on its list` | The escrow's token moves only to or from addresses its owner has listed (a transfer passes when either end is), and the Safe is not listed. While the Safe is the treasury, every fee a user pays straight to the treasury would be refused: the cancellation fee, and the branch and metadata (rename or delete) fees. An answered prompt's fee, which the escrow pays the treasury, still moves while the escrow is listed | Have the token's owner list the Safe, or rehearse with a Safe that is listed, then run again. On a fresh run nothing was sent or written. On a resumed run the restore of every set already done was sent first and every other step held back; the message names each. A resume refuses another Safe, so to rehearse with another Safe after a resumed refusal, move the snapshot aside once those restores are done, if any were sent (keep it: it holds the values from before the rehearsal); a fresh run then starts from the live state. A resumed run whose treasury set has already landed is not stopped by this, and sends the treasury restore as usual |
 | Rehearsal refuses: `The snapshot at ... watches the signer ... as the live oracle ...` (forward run) | On a live network, the unconfirmed snapshot a forward run would resume names the deploy wallet as the live oracle, which an earlier version allowed. Its rehearsal can never be confirmed. After the same checks as any run (a pending transaction is refused first), it sends the restore of every set already done, so no rehearsal value is left live, holds every other step, and refuses, naming what it sent and held (the dry run predicts the same). No new step is sent | Return any rehearsal value still live to the snapshot's baseline by hand (ownership through the Safe's own transactions) and keep the snapshot, then move it aside. A fresh forward run starts from the live state, refuses while a rehearsal value is left, and takes `REHEARSAL_ORACLE_ADDRESS` naming the address the oracle answers prompts from |
 | Confirm phase fails on a value that was changed on purpose since the rehearsal (or a forward run then says `no ownership offer is open`) | The confirm phase took the ownership back and compared the chain with the snapshot; a value set deliberately afterwards will never match it | Move the snapshot aside and keep it (it holds the values from before the rehearsal). A later forward run starts from the live state |
-| Confirm phase fails with `signerIsOracle` | On a live network the deploy wallet still holds the oracle role it was given at deployment, and after the handover only the new owner could remove it | The owner (the deploy wallet, before the handover) sends `agent.removeOracle(<deploy wallet>)`, then runs the confirm phase again. The script never sends it. If the deploy wallet is the agent's `oracleEncryptionKeyPublisher` (a key was published from it by hand), the note and the refusal say so: removing its role withdraws that key (the agent deletes it when its publisher loses the role). Today no client reads the key from the agent (the dApp encrypts to the key its build names), so nothing else changes, and the real oracle does not publish a key of its own yet (not built). Remove the role all the same; a snapshot that recorded the key then differs on it every time: move it aside and keep it. Never publish an encryption key from the deploy wallet |
+| Confirm phase fails with `signerIsOracle` | On a live network the deploy wallet still holds the oracle role it was given at deployment, and after the handover only the new owner could remove it | The owner (the deploy wallet, before the handover) moves the role to the oracle's own address and then removes the deploy wallet's, in the order in §1.1 (grant and check the signer, see a prompt answered by it, and only then `agent.removeOracle(<deploy wallet>)`), then runs the confirm phase again. The script never sends either call. If the deploy wallet is the agent's `oracleEncryptionKeyPublisher` (a key was published from it by hand), the note and the refusal say so: removing its role withdraws that key (the agent deletes it when its publisher loses the role). Today no client reads the key from the agent (the dApp encrypts to the key its build names), so nothing else changes, and the real oracle does not publish a key of its own yet (not built). Remove the role all the same; a snapshot that recorded the key then differs on it every time: move it aside and keep it. Never publish an encryption key from the deploy wallet |
 | Safe Transaction Builder loads only a thin ERC1967 proxy ABI for a proxy | The **implementation** is Basescan-verified but **not on Sourcify**; the builder only detects implementations through Sourcify | Verify every implementation on Sourcify (exact match) before the real ownership transfer. Fallback: toggle Custom data and paste the raw calldata. Ownership moves in two steps, so what the Safe sends to take ownership is `acceptOwnership()`: selector `0x79ba5097`, no arguments. (The current owner's offer is `transferOwnership(address)`, selector `0xf2fde38b` + 32-byte padded address; the Safe sends that only to offer ownership on, as the rehearsal does to hand it back) |
 | Builder does not offer "Use the Implementation ABI?" after pasting an address | The address field validates on blur and the ABI box keeps the previous contract's ABI | Click out of the field; if the ABI box still holds the old ABI, clear it and re-paste the address |
 | Builder asks for address-book permission | It is the Safe Apps permission model | Reject. Accepting is harmless and revocable under Settings → Safe Apps |
@@ -412,7 +514,7 @@ mainnet run can check for it up front instead of rediscovering it.
 
 - It runs against the live pair. Between each set and its restore, users see the rehearsal's values: the prompt fee is the rehearsal fee, and the Safe is the treasury the escrow pays fees to. A run stopped halfway leaves them in place until it is resumed. Run it at a quiet time, and resume a stopped run promptly.
 - The Safe's part is to accept ownership of both proxies and offer it back. The fee, treasury and oracle changes are sent from the deploy wallet. The rehearsal does not have the Safe send any other owner call, and it rehearses no upgrade: a passing rehearsal shows the Safe can take and return ownership, not that it can do those. Try them from the Safe separately before relying on it for them.
-- On a live network it reports whether the deploy wallet still holds the oracle role, and the confirm phase does not pass while it does. Removing it is the owner's call, made before the handover. When the deploy wallet also published the encryption key, the note says that removing its role withdraws that key, that nothing reads it today, and that the role is still removed (see the `signerIsOracle` row above).
+- On a live network it reports whether the deploy wallet still holds the oracle role, and the confirm phase does not pass while it does. Removing it is the owner's call, made before the handover and only after the oracle's own address holds the role (§1.1). When the deploy wallet also published the encryption key, the note says that removing its role withdraws that key, that nothing reads it today, and that the role is still removed (see the `signerIsOracle` row above).
 
 ### Mainnet pre-flight additions (do before the first mainnet `rofl deploy`)
 
@@ -427,6 +529,7 @@ mainnet run can check for it up front instead of rediscovering it.
 - [ ] Dedicated RPC endpoint configured for the admin script; rehearse forward + confirm phases against the mainnet Safe with dust values first.
 - [ ] `rehearsal-state/` holds the only record of a rehearsal's baseline until the confirm phase passes. It is git-ignored, so `git clean -fdX` and `git clean -fdx` both remove it (without `-d`, neither touches the folder): do not run either in this checkout while a rehearsal is unconfirmed, and copy the snapshot somewhere safe before any cleanup.
 - [ ] Treat `rehearsal-state/` as you treat the script: the next run restores whatever baseline the file holds, as owner, without asking. The script keeps it to the running user (folder 0700, file 0600); do not edit it by hand, and never take one from someone else. Run one rehearsal at a time, from one machine.
+- [ ] Before the ownership handover, the oracle role is moved to the oracle's own address and the deploy wallet's removed, in the order in §1.1 (never the removal first).
 - [ ] Safe threshold and signer set confirmed; Tenderly simulation green before any batch is sent.
 - [ ] Wait one heartbeat interval before judging boot; read `machine show` → `net.oasis.error` before reading logs.
 - [ ] Payload mirror: `tradable-app-senseai-payloads` applied via Cloud Build on promotion to `prod`; writer key minted and pasted single-line (§9); `payloadMirror.failed` stays 0 across the first heartbeat after the first answered prompt.
@@ -437,6 +540,7 @@ mainnet run can check for it up front instead of rediscovering it.
 - Commit `rofl.yaml` + ALL compose files (`compose.yaml` and the per-env ones). Only the `.orc` is gitignored. `rofl:build:<env>` now runs `scripts/rofl-preflight.sh` first, so a compose carrying placeholder or quoted values cannot be bundled.
 - ROFL deploy = `build → update → deploy`, never `restart`/`release`. **Never `oasis rofl machine release`.**
 - The oracle's own address (made by the ROFL key service, printed at start-up as `signer=`; not the deploy wallet) needs Base Sepolia ETH for **every answer** — if it runs dry, prompts submit but never get answered (smoke times out → exit 1).
+- The oracle's own address must hold the oracle role on the agent: removing the deploy wallet's role before granting the signer's leaves prompts paid and unanswered until the signer is granted it. Follow §1.1.
 - Testnet TEE lives ~1 h (`playground_short`) — run the smoke promptly after boot.
 - Storage math: qcow2 = `storage.size` + 2048 MiB ≤ offer storage, or the app never registers a replica and `machine logs` 404s. Read `machine show` → `net.oasis.error` first.
 - `rofl deploy` without `--term hour` rents monthly.
