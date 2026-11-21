@@ -94,15 +94,16 @@ const SET_OF = {
 
 /**
  * The decisions of a resumed run whose treasury step is refused: every restore whose set is
- * already done (or seen on the chain) is still sent, so no rehearsal value is left live, and
- * every other step is held back. Returns the decisions, and the ids sent and held.
+ * already done (or seen on the chain) is still sent, so no rehearsal value is left live; a
+ * restore that already ran without a record is kept so that its record is written; and every
+ * other step is held back. Returns the decisions, and the ids sent and held.
  */
 function holdUnstarted(decisions) {
   const actionOf = Object.fromEntries(decisions.map((d) => [d.step.id, d.action]));
   const setStarted = (id) => ["skip", "observe"].includes(actionOf[SET_OF[id]]);
   const kept = (d) =>
     d.action === "skip" ||
-    (d.action === "send" && SET_OF[d.step.id] && setStarted(d.step.id)) ||
+    (["send", "observe"].includes(d.action) && SET_OF[d.step.id] && setStarted(d.step.id)) ||
     (d.action === "observe" &&
       Object.entries(SET_OF).some(
         ([restore, set]) => set === d.step.id && actionOf[restore] === "send",
