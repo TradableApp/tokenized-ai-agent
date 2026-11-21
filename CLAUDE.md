@@ -199,6 +199,8 @@ Two sets of env files, one per layer:
 
 Oracle tests use `oracle/.env.oracle.example` (committed, safe values).
 
+Each oracle env file is split by the line `# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===`. `scripts/rofl-set-secrets.sh` pushes the keys above it on-chain as ROFL secrets and injects them into the compose as `${KEY:-}`; the keys below it are written into the tracked compose as plaintext. The database address (`POSTGRES_HOST`) is a secret, because the compose files are public: `rofl-set-secrets.sh` and `rofl-preflight.sh` refuse a non-empty value below the delimiter.
+
 ## Docker
 
 Oracle is deployed as a Docker container inside a ROFL TEE. Relevant files at root:

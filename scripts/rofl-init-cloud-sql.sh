@@ -132,19 +132,32 @@ PUBLIC_IP=$(gcloud sql instances describe "$INSTANCE" \
   --format=json 2>/dev/null \
   | python3 -c "import json,sys; ips=json.load(sys.stdin).get('ipAddresses',[]); print(next((i.get('ipAddress','') for i in ips if i.get('type')=='PRIMARY'), ''))" 2>/dev/null || true)
 
+#
+# POSTGRES_HOST is a secret (the generated compose is tracked in a public repo), so the
+# address is never echoed. Where it cannot be stamped, the operator is given the command
+# that reads it instead.
+READ_HOST_CMD="gcloud sql instances describe $INSTANCE --project=$GCP_PROJECT --format=json | jq -r '.ipAddresses[] | select(.type==\"PRIMARY\") | .ipAddress'"
+SPLIT_DELIMITER="=== 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ==="
+
 if [ -z "$PUBLIC_IP" ]; then
   echo "⚠️  Could not fetch Cloud SQL public IP — leaving $ENV_FILE unchanged."
 elif [ ! -f "$ENV_FILE" ]; then
-  echo "⚠️  $ENV_FILE not found — add manually: POSTGRES_HOST=$PUBLIC_IP"
+  echo "⚠️  $ENV_FILE not found — add POSTGRES_HOST above the delimiter by hand. Read the address with:"
+  echo "     $READ_HOST_CMD"
 elif grep -q "^POSTGRES_HOST=" "$ENV_FILE"; then
   if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
   else
     sed -i "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
   fi
-  echo "📝 Stamped POSTGRES_HOST=$PUBLIC_IP in $ENV_FILE"
+  echo "📝 Stamped POSTGRES_HOST in $ENV_FILE"
+  if awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } below && /^POSTGRES_HOST=/ { found = 1 } END { exit !found }' "$ENV_FILE"; then
+    echo "⚠️  POSTGRES_HOST sits below the delimiter in $ENV_FILE — it would be written into the"
+    echo "   compose as plaintext, and rofl-set-secrets.sh refuses that. Move it above the delimiter."
+  fi
 else
-  echo "⚠️  $ENV_FILE has no POSTGRES_HOST line — add manually: POSTGRES_HOST=$PUBLIC_IP"
+  echo "⚠️  $ENV_FILE has no POSTGRES_HOST line — add one above the delimiter by hand. Read the address with:"
+  echo "     $READ_HOST_CMD"
 fi
 
 echo ""

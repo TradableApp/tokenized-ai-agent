@@ -15,7 +15,9 @@ set -euo pipefail
 #   * each file is split by the delimiter into a 🔒 SECRETS section (pushed
 #     on-chain, injected as ${KEY:-}) and a 📄 CONFIG section (plaintext literal
 #     in the ORC bundle — costs ZERO ROFL secret slots). Put credentials above
-#     the delimiter, everything else below.
+#     the delimiter, everything else below. The database address (POSTGRES_HOST)
+#     is a secret too: the generated compose is tracked in a public repo, so a
+#     non-empty POSTGRES_HOST below the delimiter is refused.
 #   * Cloud-SQL ownership mirrors sense-ai-core:
 #       - CLIENT_CERT / CLIENT_KEY        → rofl-init-cloud-sql.sh (minted cert)
 #       - POSTGRES_PASSWORD / SERVER_CA   → GCP Secret Manager, fetched in PART 3
@@ -106,6 +108,7 @@ CONFIG_YAML=""    # 📄 section body (compose)
 SECRETS_LIST=""   # KEY__SEP__VALUE lines to push on-chain
 SEEN_KEYS=""      # |KEY| dedup registry (env-specific wins)
 KEEP_KEYS=""      # |KEY| the secrets that SHOULD stay on-chain (for orphan purge)
+POSTGRES_HOST_IN_CONFIG=""  # env file that sets POSTGRES_HOST below the delimiter (refused)
 
 is_seen()  { case "$SEEN_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
 mark_seen(){ SEEN_KEYS="${SEEN_KEYS}|$1|"; }
@@ -166,6 +169,10 @@ process_file() {
       if [ "$key" = "mcp" ]; then
         value=$(echo "$remainder" | sed -E 's/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')
         CONFIG_YAML+="      - mcp=$value\n"
+      elif [ "$key" = "POSTGRES_HOST" ] && [ -n "$remainder" ]; then
+        # The database address is a secret: the compose this block lands in is tracked in a
+        # public repo. Not emitted; the preflight below refuses the run, naming only the file.
+        POSTGRES_HOST_IN_CONFIG="$file"
       elif [ -n "$remainder" ]; then
         looks_like_embedded_secret "$remainder" && \
           echo "  ⚠️  '$key' is in the CONFIG section but its value looks like it embeds a credential — move it ABOVE the delimiter."
@@ -249,6 +256,11 @@ while IFS= read -r cfg_line; do
       ;;
   esac
 done <<< "$(printf '%b' "$CONFIG_YAML")"
+
+# The database address is a secret. Unlike the lines above, this one never prints the value.
+if [ -n "$POSTGRES_HOST_IN_CONFIG" ]; then
+  preflight_failures+="  ✗ POSTGRES_HOST is set below the delimiter in ${POSTGRES_HOST_IN_CONFIG}\n      the database address is a secret — move it ABOVE the delimiter so it is injected, not written into the public compose\n"
+fi
 
 if [ -n "$preflight_failures" ]; then
   echo ""

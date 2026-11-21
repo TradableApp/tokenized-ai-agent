@@ -213,13 +213,13 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
   Sapphire-testnet head is ~`32.97M`.) — *me*
 - [ ] **A.2 Cloud SQL wiring — ONE-TIME (you; gcloud auth):** `bun run rofl:init:cloud-sql:base-testnet`.
   Mints cert `rofl-oracle-base-testnet` on `sense-ai-app-garrick`, pushes the 4 Postgres
-  secrets to the `base-testnet` deployment, stamps `POSTGRES_HOST`. Idempotent.
+  secrets to the `base-testnet` deployment, stamps `POSTGRES_HOST` (it sits above the delimiter: the database address is a secret). Idempotent.
 - [ ] **A.3 Build the oracle image (me):** `bun run image:build:base-testnet` (`Dockerfile.oracle`, multi-stage — builds Brain + inner-plugin dists in-image).
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
 - [ ] **A.5 Sync secrets (me; gcloud for any SM keys):** `bun run rofl:set:base-testnet`.
 - [ ] **A.6 Build the ORC (me):** `bun run rofl:build:base-testnet`. Re-verify the trust root survived (re-apply A.1 values if the build rewrote it).
 - [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6`. NOT the `.orc` (gitignored build artifact).
-  **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` remains the last-deployed snapshot; the per-env files are its sources.
+  **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential, and the database address, is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` remains the last-deployed snapshot; the per-env files are its sources.
 - [ ] **A.8 Push on-chain (me; wrapper):** `bun run oasis:unlock rofl update --deployment base-testnet --account oasis_testnet --gas-limit 200000` (not `rofl:update:base-testnet` — that re-runs `rofl:set` and churns every ciphertext).
 - [ ] **A.9 Deploy (me; wrapper, only when Garrick says go — it rents the machine):** `bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
 
