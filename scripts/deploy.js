@@ -362,7 +362,20 @@ async function main() {
   console.log("\n--- Deployment Finished ---");
 }
 
+// Not built yet: the tests in test/deployGuard.test.js and test/freshDeploy.test.js describe them.
+const FILE_ONLY_VARS = Object.freeze([]);
+const notBuilt = (name) => () => {
+  throw new Error(`${name} is not built yet`);
+};
+const resolveDeployPlan = notBuilt("resolveDeployPlan");
+const deployFreshPair = async (...args) => notBuilt("deployFreshPair")(...args);
+const freshPairProblems = async (...args) => notBuilt("freshPairProblems")(...args);
+
 module.exports = {
+  FILE_ONLY_VARS,
+  resolveDeployPlan,
+  deployFreshPair,
+  freshPairProblems,
   deployProblems,
   assertDeployAllowed,
   explorerFor,
