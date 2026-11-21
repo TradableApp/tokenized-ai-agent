@@ -2,6 +2,7 @@ const { ethers } = require("ethers");
 const { withTestKeys } = require("./helpers/oracleTestKeys");
 
 const { expect } = require("chai");
+const { initInboundPrompt } = require("../src/inboundPrompt");
 const proxyquire = require("proxyquire").noCallThru();
 const sinon = require("sinon");
 
@@ -174,6 +175,13 @@ function loadOracleWithBrainConfigured(elizaStub, configured) {
 }
 
 describe("queryElizaOS — provider-composed context", () => {
+  // Thoughts are sanitised before they are recorded (stream/thoughtSanitizer.js): the fence strip
+  // must be ready, and a thought the Brain finds too short to be a step ("t", "after") is dropped.
+  // Fixtures whose reasoning is asserted therefore carry a thought of real length.
+  before(async () => {
+    await initInboundPrompt();
+  });
+
   // The shape ElizaOS ACTUALLY composes: each provider's whole result — `{ ...result,
   // providerName }` — under state.data.providers[name], so the payload sits under `.data`.
   // The first version of this stub matched the parser's assumption instead, which made the test
@@ -303,7 +311,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const oracle = loadOracle(stub);
     await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1").catch(() => {});
 
-    stub.setThoughts([{ thought: "after", action: "GET_ASSET_SENTIMENT" }]);
+    stub.setThoughts([{ thought: "Fetching the asset sentiment now", action: "GET_ASSET_SENTIMENT" }]);
     const result = await oracle.queryElizaOS(history("again"), ROOM_ID, "entity-1");
 
     expect(result.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
@@ -606,7 +614,7 @@ describe("queryElizaOS — provider-composed context", () => {
     // two live runs in one room make soleRunIn() ambiguous, attribution is dropped, and the
     // title degrades to "Step 1".
     stub.ElizaOS.prototype.handleMessage = realHandleMessage;
-    stub.setThoughts([{ thought: "after", action: "GET_ASSET_SENTIMENT" }]);
+    stub.setThoughts([{ thought: "Fetching the asset sentiment now", action: "GET_ASSET_SENTIMENT" }]);
 
     const result = await oracle.queryElizaOS(history("hi2"), ROOM_ID, "entity-1");
     expect(result.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
@@ -621,7 +629,7 @@ describe("queryElizaOS — provider-composed context", () => {
     // So the guard is keyed on the runtime INSTANCE, not on "have we ever registered".
     const stub = makeElizaStub({
       providerData,
-      thoughts: [{ thought: "t", action: "GET_ASSET_SENTIMENT" }],
+      thoughts: [{ thought: "Fetching the asset sentiment now", action: "GET_ASSET_SENTIMENT" }],
     });
     const oracle = loadOracle(stub);
 

@@ -53,7 +53,7 @@ describe("stream single source (static)", () => {
     const builds = ORACLE.match(/const storedExtras = [^;]+;/g) ?? [];
     expect(builds, "one per handler").to.have.length(2);
     for (const build of builds) {
-      expect(build).to.match(/storedExtrasFrom\(stream\.record\(\)/);
+      expect(build).to.match(/storedExtrasFrom\(\s*stream\.record\(\)/);
     }
   });
 

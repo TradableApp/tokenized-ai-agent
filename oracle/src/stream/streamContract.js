@@ -131,6 +131,18 @@ function buildFrame({ answerMessageId, run, seq, replica, type, data }) {
   return { v: STREAM_CONTRACT_VERSION, answerMessageId, run, seq, replica, type, data };
 }
 
+/**
+ * Cuts text to at most `max` UTF-16 units (what `.length` counts on both sides) without leaving
+ * half a surrogate pair at the end. Every text limit in the contract is applied with this, before
+ * the frame is built, so the stored copy is cut identically.
+ */
+function capChars(text, max) {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
 /** Seals a frame with the session key; the `iv.ciphertext` string a sink receives. */
 function encryptFrame(frame, key, ivSource) {
   requireSessionKey(key);
@@ -188,4 +200,5 @@ module.exports = {
   streamProof,
   buildFrame,
   encryptFrame,
+  capChars,
 };

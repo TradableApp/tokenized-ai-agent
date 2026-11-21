@@ -221,4 +221,12 @@ function _resetForTests() {
   loadAttempts = 0;
 }
 
-module.exports = { sanitizeAnswer, _setSanitizerForTests, _resetForTests };
+/**
+ * The Brain's `sanitizeOutboundText`, or null when it cannot be loaded. Shared with the thought
+ * sanitiser (`stream/thoughtSanitizer.js`), so both use the one load, its retry and its test seam.
+ */
+function loadOutboundSanitizer() {
+  return loadSanitizer();
+}
+
+module.exports = { sanitizeAnswer, loadOutboundSanitizer, _setSanitizerForTests, _resetForTests };

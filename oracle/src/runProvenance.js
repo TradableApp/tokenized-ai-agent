@@ -1,4 +1,4 @@
-const { reasoningFromThoughts } = require("./answerProvenance");
+const { stepFromThought } = require("./answerProvenance");
 
 /**
  * Run-correlated provenance collector.
@@ -71,7 +71,7 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     runs.set(runId, {
       roomKey,
       sources: Array.isArray(sources) ? sources : [],
-      thoughts: [],
+      steps: [],
       currentAction: "",
     });
 
@@ -121,22 +121,36 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
   }
 
   /**
-   * Records a thought. `action` wins when supplied; otherwise the action currently in flight
-   * attributes it — ACTION_STARTED tells us what is running, while onResponse delivers the
-   * thought without that attribution, and pairing them is the point of listening to both.
+   * Records a thought and returns the step it became, or null when nothing was recorded.
+   *
+   * `action`, when it is a string, is the attribution, an empty string meaning none: a caller
+   * that records a thought later than it arrived (the live stream sanitises it first) passes the
+   * action that was in flight WHEN IT ARRIVED, read with `currentActionOf`, so a later
+   * ACTION_STARTED cannot retitle it. Left out, the action in flight now attributes it.
    *
    * An event for a run we never saw is IGNORED rather than auto-creating one: a stray or late
    * event must not conjure a run that then leaks.
    */
   function recordThought(runId, thought, action) {
     const run = runs.get(runId);
-    if (!run) return;
+    if (!run) return null;
 
     const text = typeof thought === "string" ? thought.trim() : "";
-    if (!text) return;
+    if (!text) return null;
 
-    const attributed = typeof action === "string" && action.trim() ? action.trim() : run.currentAction;
-    run.thoughts.push(attributed ? { thought: text, action: attributed } : { thought: text });
+    const attributed = typeof action === "string" ? action.trim() : run.currentAction;
+    const step = stepFromThought(
+      attributed ? { thought: text, action: attributed } : { thought: text },
+      run.steps.length,
+    );
+    if (!step) return null;
+    run.steps.push(step);
+    return step;
+  }
+
+  /** The action in flight for a run as far as attribution goes, "" for none or an unknown run. */
+  function currentActionOf(runId) {
+    return runs.get(runId)?.currentAction ?? "";
   }
 
   /**
@@ -152,7 +166,7 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
 
     forget(runId);
     return {
-      reasoning: reasoningFromThoughts(run.thoughts),
+      reasoning: run.steps,
       sources: run.sources,
     };
   }
@@ -162,7 +176,7 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     return runs.size;
   }
 
-  return { begin, actionStarted, actionCompleted, recordThought, finish, size };
+  return { begin, actionStarted, actionCompleted, recordThought, currentActionOf, finish, size };
 }
 
 module.exports = { createRunProvenance, DEFAULT_MAX_RUNS };

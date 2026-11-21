@@ -240,6 +240,7 @@ describe("answer path and live stream", function () {
       });
 
       await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is BTC?"), "0xkey", fakeEvent());
+      await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
       const [stored] = storedAnswer();
@@ -300,6 +301,7 @@ describe("answer path and live stream", function () {
       });
 
       await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is ETH?"), "0xkey", fakeEvent());
+      await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
       const [stored] = storedAnswer();
@@ -343,6 +345,7 @@ describe("answer path and live stream", function () {
         oracle.handlePrompt(USER, 9, 456, 457, promptPayload("alpha"), "0xkey", fakeEvent()),
         oracle.handlePrompt(USER, 9, 458, 459, promptPayload("beta"), "0xkey", fakeEvent()),
       ]);
+      await oracle.flushStreamsForTest();
 
       for (const [id, word] of [
         ["457", "alpha"],
@@ -589,7 +592,7 @@ describe("answer path and live stream", function () {
         scriptFor: () => ({ thoughts: ["Reconsidering the previous answer now."], answer: "A better answer." }),
       });
       const payload = ethers.toUtf8Bytes(
-        encryptForOracle({ promptMessageCID: "bafy-prompt", originalAnswerMessageCID: "bafy-old", instructions: "" }),
+        encryptForOracle({ promptMessageCID: "bafy-prompt", originalAnswerMessageCID: "bafy-old", instructions: "shorter" }),
       );
 
       await oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0xkey", fakeEvent());
