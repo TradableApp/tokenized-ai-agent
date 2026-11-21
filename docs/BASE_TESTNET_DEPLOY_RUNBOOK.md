@@ -23,7 +23,7 @@ run is green.**
   | EVMAIAgentEscrow | `0x36ec08471F2b995024967204D7542713cFaf5Fa4` |
   | ABLE token (ERC-20 payment) | `0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80` |
 - **Cloud SQL:** the oracle reads the **same** warm cache as the social body —
-  instance `sense-ai-app-garrick`, DB `senseai` (verified: same `34.60.147.27`).
+  instance `sense-ai-app-garrick`, DB `senseai` (verified: same address; it is a secret, read it with `gcloud sql instances describe`, never write it here).
   Per-deployment mTLS cert `rofl-oracle-base-testnet` (distinct from the social
   body's `rofl-testnet`); minted by the init script.
 
