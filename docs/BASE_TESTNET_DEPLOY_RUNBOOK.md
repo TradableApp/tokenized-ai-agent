@@ -51,8 +51,8 @@ The **only** run-time input from you: the Test User wallet's **private key** (Me
 
 ### 1.1 Moving the oracle role to the ROFL signer (in this order)
 
-This is the only place the order is written; every other mention of removing the deploy wallet's
-role points here. Do the steps in order, and do not go on from a step that did not check out.
+Every other mention in this runbook of removing the deploy wallet's role points here, and the
+admin rehearsal's own note about the removal names this order. Do the steps in order, and do not go on from a step that did not check out.
 All of them are owner calls or reads on the agent (`EVMAIAgent` above), sent before the
 handover: once ownership is with the Safe, only the Safe can add or remove an oracle.
 
@@ -61,8 +61,10 @@ What the contract allows, and why the order matters:
 - **Several addresses can hold the role at once.** `addOracle` does not take the role from
   anyone, so the signer can be added while the deploy wallet still holds it, and a prompt in
   flight during the overlap can be answered by either. Adding an address that already holds the
-  role changes nothing; removing one that does not hold it changes nothing and emits no
-  `RoleRevoked` (that is how a mistyped address shows).
+  role grants nothing and emits no `RoleGranted`; removing one that does not hold it revokes
+  nothing and emits no `RoleRevoked` (that is how a mistyped address shows). Only on a pair
+  upgraded from the single-oracle version: the first `addOracle` also clears that version's
+  stored oracle address. A freshly deployed pair has none.
 - **Only an address with the role can answer** (`submitAnswer` is oracle only). If the deploy
   wallet's role is removed before the signer's is granted, the agent has no oracle the ROFL
   oracle can answer as: users' prompts are paid (the fee is held by the escrow) and not
@@ -91,19 +93,40 @@ bunx hardhat console --network baseSepolia
 const agent = await ethers.getContractAt("EVMAIAgent", "<agent address>")
 ```
 
+Before step 2, check the console signs as the owner (an `ENV_FILE` setting overrides the root
+`PRIVATE_KEY`): `(await ethers.getSigners())[0].address` must equal `await agent.owner()`.
+
+0. **Find who answers today.** If prompts are being answered on this pair, take the latest
+   answer's `submitAnswer` transaction and read its sender. Two cases change what follows:
+   - **The sender is the deploy wallet.** The running oracle image is from before the ROFL
+     keys: it prints no `[OracleKeys]` line and answers from an operator key. Deploying the
+     current image (with no `PRIVATE_KEY` secret; the oracle refuses to start with one) changes
+     the address the oracle answers from, and that address is made inside the TEE, so it cannot
+     be known or granted in advance. From the moment the new image starts until step 2 is mined
+     nothing is answered: prompts sent then wait at the oracle's role gate, or can be refunded
+     once an hour old. Do steps 1 to 3 straight after the deploy, at a quiet time.
+   - **The sender is already the oracle's own address** (`await agent.isOracle("<signer>")`
+     prints `true`). Skip step 2: granting again grants nothing and its receipt carries no
+     `RoleGranted`. Go on from step 3.
 1. **Read the oracle's own address.** From the oracle's start-up line in the machine logs
-   (§5): `[OracleKeys] mode=rofl app=… signer=0x…`. That `signer=` address is the one the oracle
-   answers from (made by the ROFL key service; not the deploy wallet). Call it `<signer>`. Until
-   step 2 the same logs carry "CRITICAL: Oracle Not Authorized" naming the `addOracle` call;
-   that is expected here.
+   (§5): `[OracleKeys] mode=rofl app=… signer=0x… encryptionKey=0x…`. That `signer=` address is
+   the one the oracle answers from (made by the ROFL key service; not the deploy wallet). Call
+   it `<signer>`. While `<signer>` does not hold the role, the same logs carry "CRITICAL: Oracle
+   Not Authorized" naming the `addOracle` call; that is expected until step 2. The
+   `encryptionKey=` on that line is the key prompts must be encrypted to: if it differs from the
+   key the dApp build names (`VITE_ORACLE_PUBLIC_KEY`) or the smoke test uses
+   (`SMOKE_ORACLE_PUBLIC_KEY`), update both before users prompt. A prompt encrypted to another
+   key is paid and cannot be answered.
 2. **Grant it the role.** `await (await agent.addOracle("<signer>")).wait()` — the receipt
-   carries `RoleGranted` for `<signer>`.
+   carries `RoleGranted` for `<signer>` (none if it already held the role; see step 0).
 3. **Check it holds the role.** `await agent.isOracle("<signer>")` must print `true`. If it does
    not, stop: do not remove anything.
 4. **See one prompt answered by it.** Send one test prompt (the smoke test, §6, is one) and wait
-   for its answer. Take the oracle's `submitAnswer` transaction hash from the metrics file and
-   check its sender is `<signer>`:
-   `(await ethers.provider.getTransaction("<submitAnswer hash>")).from`. If no answer comes, or it
+   for its answer. The smoke test prints the sender itself, in its line beginning
+   `oracle 0x…: nonces`; that address must be `<signer>`. To read it from the chain instead, take
+   `prompts[0].answerTxHash` from `smoke-metrics.json` (not `submitTxHash`, which is the user's
+   own prompt; `answerTxHash` is empty when the smoke could not read the answer's transaction)
+   and check `(await ethers.provider.getTransaction("<answerTxHash>")).from`. If no answer comes, or it
    came from another address, stop and find out why before going on.
 5. **Only then remove the deploy wallet's role.**
    `await (await agent.removeOracle("<deploy wallet>")).wait()` — the receipt carries
@@ -113,15 +136,19 @@ const agent = await ethers.getContractAt("EVMAIAgent", "<agent address>")
 
 Two checks repeat this from outside, and are worth setting:
 
-- **Admin rehearsal:** set `REHEARSAL_ORACLE_ADDRESS=<signer>` after step 3. The forward run
-  records whether that address holds the role and refuses it if it is the deploy wallet; the
-  confirm phase fails if the rehearsal left it without the role, and, on a live network, while
-  the deploy wallet still holds its own. A snapshot taken before step 3 records `<signer>`
-  without the role, so it proves nothing about step 2.
+- **Admin rehearsal:** set `REHEARSAL_ORACLE_ADDRESS=<signer>` and start a forward run only
+  after step 3. The forward run records whether that address holds the role, and on a live
+  network refuses it if it is the account the script signs with. The confirm phase fails if
+  that address's role differs from what the snapshot recorded, and, on a live network, while
+  the signing account (the deploy wallet) still holds its own. A resumed run uses the address in
+  its snapshot, not the setting: an unconfirmed snapshot taken before step 2 recorded `<signer>`
+  without the role, so its confirm phase fails on `oracleAuthorized` once step 2 has landed.
+  Move that snapshot aside (keep it: it holds the values from before the rehearsal).
 - **e2e stack check (`sense-ai-e2e`, `docs/TESTNET_RUN.md`):** set
   `TESTNET_ORACLE_SIGNER_ADDRESS=<signer>` and `TESTNET_DEPLOY_WALLET_ADDRESS=<deploy wallet>`.
   The wiring probe then asks the agent that the signer holds the role and that the deploy wallet
-  does not; an unset one is reported as not checked, never as a pass.
+  does not; an unset one is reported as not checked, never as a pass. It fails on the deploy
+  wallet until step 5 is done, so run it after step 5.
 
 ---
 
