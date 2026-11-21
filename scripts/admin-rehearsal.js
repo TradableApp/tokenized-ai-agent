@@ -34,6 +34,7 @@ const {
   isLiveNetwork,
   signerRoleNote,
   reportSignerRole,
+  isPublisher,
   assertOracleIsNotSigner,
   assertSnapshotOracleIsNotSigner,
 } = require("./rehearsal/oracleRole");
@@ -467,7 +468,12 @@ async function readForwardStart({
   }
   assertSignerOwnsBoth(signer.address, live);
   if (checkSignerRole) {
-    await reportSignerRole({ aiAgent: contracts.aiAgent, signer: signer.address, log });
+    await reportSignerRole({
+      aiAgent: contracts.aiAgent,
+      signer: signer.address,
+      log,
+      publisher: live.encryptionKeyPublisher,
+    });
   }
   await assertNoPendingTransactions({
     provider: ethers.provider,
@@ -629,16 +635,26 @@ async function readReturned({ contracts, state, safe, signer, attempts, verify, 
   return result;
 }
 
-/** Lists what differs from the snapshot, with what to do about the signer's role, and refuses. */
-function refuseNotReturned({ mismatches, signer, log }) {
+/**
+ * Lists what differs from the snapshot, with what to do about the signer's role, and refuses.
+ * When the signer still holds the role, the agent's live encryption key publisher is read, since
+ * removing the publisher's role withdraws the key.
+ */
+async function refuseNotReturned({ mismatches, signer, aiAgent, log }) {
   for (const m of mismatches) {
     log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
   }
+  let publishesKey = false;
   if (mismatches.some((m) => m.field === "signerIsOracle")) {
-    log(chalk.yellow(signerRoleNote(signer)));
+    const { encryptionKeyPublisher } = await readEncryptionKey(aiAgent);
+    publishesKey = isPublisher(encryptionKeyPublisher, signer);
+    log(chalk.yellow(signerRoleNote(signer, { publishesKey })));
   }
+  const keyWarning = publishesKey
+    ? " The signer published the encryption key: read the note above before removing its role, since removing it withdraws the key and stops prompts."
+    : "";
   throw new RehearsalError(
-    "Rehearsal state has not been fully returned: each line above differs from the snapshot. Return each to the snapshot's value and run this phase again. If one differs because it was changed on purpose since the rehearsal, this phase fails on it every time: move the snapshot aside (keep it: it holds the values from before the rehearsal), and a later forward run starts from the live state.",
+    `Rehearsal state has not been fully returned: each line above differs from the snapshot. Return each to the snapshot's value and run this phase again.${keyWarning} If one differs because it was changed on purpose since the rehearsal, this phase fails on it every time: move the snapshot aside (keep it: it holds the values from before the rehearsal), and a later forward run starts from the live state.`,
   );
 }
 
@@ -689,7 +705,14 @@ async function confirmPhase({
     verify,
     sleep,
   });
-  if (!ok) refuseNotReturned({ mismatches, signer: signer.address, log });
+  if (!ok) {
+    await refuseNotReturned({
+      mismatches,
+      signer: signer.address,
+      aiAgent: contracts.aiAgent,
+      log,
+    });
+  }
   // Only now: marked any earlier, a failed confirm would let the next forward run start from
   // the live state and overwrite the one record of the pre-rehearsal values.
   // Written as version 2 whatever it was read as, on the network and chain it was checked on.

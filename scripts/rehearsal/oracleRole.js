@@ -14,20 +14,36 @@ function isLiveNetwork(network) {
  * What to do about the signer's own oracle role. The deploy wallet is given it when the pair is
  * deployed, and once ownership is handed over only the new owner can take it away. Removing it
  * is the owner's decision, so the rehearsal names the call and never sends it.
+ *
+ * When the signer published the encryption key (`publishesKey`), removing its role withdraws
+ * the key (the agent's `_revokeRole`) and no prompt can be submitted until an oracle publishes
+ * one; and while the signer's key is published, `setOracleEncryptionKey` refuses any other
+ * oracle with `EncryptionKeyHeldByAnotherOracle`. The note then gives that order instead.
  */
-function signerRoleNote(signer) {
+function signerRoleNote(signer, { publishesKey = false } = {}) {
+  if (publishesKey) {
+    return `The signer ${signer} holds the oracle role on the agent and published the encryption key clients encrypt prompts to (oracleEncryptionKeyPublisher). Do not simply remove its role: agent.removeOracle(${signer}) would withdraw that key, and no prompt can be submitted until an oracle publishes a key again. The real oracle cannot publish its key first: while the signer's key is published, the agent refuses any other oracle's key with EncryptionKeyHeldByAnotherOracle. So the owner, before the handover, makes sure the real oracle holds the oracle role (agent.addOracle(<oracle>)), removes the signer's role, and has the real oracle publish its key with agent.setOracleEncryptionKey(key, proof) straight after; prompts cannot be submitted between the two, so choose a quiet time. The rehearsal does none of this, and the confirm phase does not pass while the signer holds the role. A snapshot that records the signer's key differs from the chain once the key changes, and the confirm phase then fails on it every time: move that snapshot aside (keep it: it holds the values from before the rehearsal).`;
+  }
   return `The signer ${signer} holds the oracle role on the agent. Once ownership is handed over, only the new owner can remove it, so the owner removes it before the handover: agent.removeOracle(${signer}). The rehearsal does not remove it, and the confirm phase does not pass while it is held.`;
 }
 
-/** Says whether the signer holds the oracle role, and returns it. */
-async function reportSignerRole({ aiAgent, signer, log }) {
+/**
+ * Says whether the signer holds the oracle role, and returns it. `publisher` is the agent's
+ * encryption key publisher as read with the live state (absent on a proxy without the key).
+ */
+async function reportSignerRole({ aiAgent, signer, log, publisher }) {
   const holds = await aiAgent.isOracle(signer);
   log(
     holds
-      ? chalk.yellow(signerRoleNote(signer))
+      ? chalk.yellow(signerRoleNote(signer, { publishesKey: isPublisher(publisher, signer) }))
       : `The signer ${signer} does not hold the oracle role on the agent.`,
   );
   return holds;
+}
+
+/** True when `publisher` is the signer. A missing publisher is no one. */
+function isPublisher(publisher, signer) {
+  return Boolean(publisher) && sameValue(publisher, signer);
 }
 
 /**
@@ -62,6 +78,7 @@ module.exports = {
   isLiveNetwork,
   signerRoleNote,
   reportSignerRole,
+  isPublisher,
   assertOracleIsNotSigner,
   assertSnapshotOracleIsNotSigner,
 };
