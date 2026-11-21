@@ -25,8 +25,9 @@ const path = require("node:path");
  * Read from the source, because these lines sit in catch blocks that a unit test rarely reaches
  * (a store that fails while recording a failed retry), and one forgotten line is enough.
  *
- * It covers only the files in GUARDED: the oracle's main module and the modules that talk to the
- * chain and to the oracle's own database. Other modules under src/ are not read by it.
+ * It covers only the files in GUARDED: the oracle's main module, the modules that talk to the
+ * chain and to the oracle's own database, and the live reasoning stream server, which talks to
+ * any client on the network. Other modules under src/ are not read by it.
  */
 const SRC = path.join(__dirname, "..", "src");
 const GUARDED = [
@@ -36,6 +37,9 @@ const GUARDED = [
   "oracleState/runtime.js",
   "oracleState/store.js",
   "oracleState/outageTracker.js",
+  "stream/streamServer.js",
+  "stream/frameBuffer.js",
+  "stream/streamConfig.js",
 ];
 
 const HELPERS = ["describeError", "describedError", "errorKind", "withoutAddresses"];

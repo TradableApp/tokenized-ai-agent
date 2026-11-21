@@ -661,4 +661,84 @@ describe("startup config validation", () => {
       expect(() => validateConfig(localEnv({ COINGECKO_API_KEY: undefined }))).to.not.throw();
     });
   });
+  // The live reasoning stream's settings. Each is optional (defaults live in code), but a set
+  // value that cannot work stops start-up, naming the setting and never repeating the value: a
+  // value pasted into the wrong setting can be a secret.
+  describe("the stream settings", () => {
+    const refusalFor = (overrides) => {
+      try {
+        validateConfig(baseEnv(overrides));
+      } catch (error) {
+        return error;
+      }
+      return null;
+    };
+
+    it("accepts no stream settings at all: every one has a default", () => {
+      expect(() => validateConfig(baseEnv())).to.not.throw();
+    });
+
+    it("accepts a complete, valid set", () => {
+      expect(() =>
+        validateConfig(
+          baseEnv({
+            STREAM_ENABLED: "true",
+            STREAM_PORT: "8787",
+            STREAM_ALLOWED_ORIGINS: "https://a.example, http://localhost:3002,https://b.example:8443",
+            STREAM_GRACE_MS: "120000",
+            STREAM_HEARTBEAT_MS: "15000",
+            STREAM_MAX_CONN_MS: "240000",
+            STREAM_MAX_CONN_PER_ANSWER: "4",
+            STREAM_MAX_CONN_TOTAL: "200",
+          }),
+        ),
+      ).to.not.throw();
+    });
+
+    const badValues = [
+      ["STREAM_ENABLED", "yes-please-0x5ec7e7"],
+      ["STREAM_PORT", "0"],
+      ["STREAM_PORT", "65536"],
+      ["STREAM_PORT", "87a87"],
+      ["STREAM_GRACE_MS", "-5"],
+      ["STREAM_GRACE_MS", "2m"],
+      ["STREAM_HEARTBEAT_MS", "0"],
+      ["STREAM_MAX_CONN_MS", "99999999999"],
+      ["STREAM_MAX_CONN_PER_ANSWER", "1.5"],
+      ["STREAM_MAX_CONN_TOTAL", "0"],
+      ["STREAM_ALLOWED_ORIGINS", "https://ok.example,http://plain-0x5ec7e7.example"],
+      ["STREAM_ALLOWED_ORIGINS", "https://with-path-0x5ec7e7.example/app"],
+      ["STREAM_ALLOWED_ORIGINS", "https://trailing-0x5ec7e7.example/"],
+      ["STREAM_ALLOWED_ORIGINS", "https://a.example,,https://b.example"],
+      ["STREAM_ALLOWED_ORIGINS", "*"],
+      ["STREAM_ALLOWED_ORIGINS", "ftp://files-0x5ec7e7.example"],
+      ["STREAM_ALLOWED_ORIGINS", "https://user:pw-0x5ec7e7@a.example"],
+    ];
+    for (const [name, value] of badValues) {
+      it(`refuses ${name} set to something unusable, naming it but not its value (${name}=…)`, () => {
+        const error = refusalFor({ [name]: value });
+        expect(error).to.be.instanceOf(ConfigError);
+        expect(error.message).to.include(name);
+        expect(error.message).to.not.include(value);
+        expect(error.message).to.not.include("0x5ec7e7");
+      });
+    }
+
+    it("refuses a heartbeat that is not shorter than the longest connection", () => {
+      const error = refusalFor({ STREAM_HEARTBEAT_MS: "5000", STREAM_MAX_CONN_MS: "5000" });
+      expect(error.message).to.match(/STREAM_HEARTBEAT_MS/);
+      expect(error.message).to.match(/STREAM_MAX_CONN_MS/);
+    });
+
+    it("refuses more connections per answer than in all", () => {
+      const error = refusalFor({ STREAM_MAX_CONN_PER_ANSWER: "10", STREAM_MAX_CONN_TOTAL: "5" });
+      expect(error.message).to.match(/STREAM_MAX_CONN_PER_ANSWER/);
+    });
+
+    it("checks nothing else of the stream when it is switched off", () => {
+      expect(() =>
+        validateConfig(baseEnv({ STREAM_ENABLED: "false", STREAM_PORT: "not-a-port" })),
+      ).to.not.throw();
+    });
+  });
 });
