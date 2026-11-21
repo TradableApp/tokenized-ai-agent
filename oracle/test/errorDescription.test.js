@@ -80,6 +80,86 @@ describe("errorDescription — what an error is, without the address it was sent
     );
   });
 
+  // The pattern is run on any text an error carries, so its cost must grow with the text and no
+  // faster: a long unbroken run of characters a scheme may hold once took tens of seconds on
+  // 200,000 characters, blocking the event loop the whole time.
+  it("costs time in proportion to the text, however it is made", function () {
+    this.timeout(120000);
+    const length = 200000;
+    for (const [name, text] of [
+      ["letters", "a".repeat(length)],
+      ["letters and digits", "a1".repeat(length / 2)],
+      ["digits then letters", "1a".repeat(length / 2)],
+      ["letters and dots", "a.".repeat(length / 2)],
+      ["letters, then a colon and one slash", `${"a".repeat(length)}:/`],
+      ["colons without slashes", "a:".repeat(length / 2)],
+      ["signs then a letter", `${"-".repeat(length)}a`],
+    ]) {
+      const started = process.hrtime.bigint();
+      withoutAddresses(text);
+      const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+      expect(elapsedMs, `${name}: ${elapsedMs.toFixed(0)} ms`).to.be.below(1000);
+    }
+  });
+
+  it("still removes addresses with ordinary schemes, wherever they stand", () => {
+    for (const address of [
+      "https://rpc.example/v2/not-a-real-key",
+      "http://rpc.example:8545/not-a-real-key",
+      "wss://rpc.example/ws/not-a-real-key",
+      "ws://localhost:8546/not-a-real-key",
+      "postgresql://oracle:not-a-real-key@db.example:5432/oracle_agent",
+      "redis://:not-a-real-key@cache.example:6379/0",
+      "mongodb+srv://oracle:not-a-real-key@cluster.example/db",
+      "git+ssh://git@host.example/not-a-real-key.git",
+      "chrome-extension://not-a-real-key/page.html",
+    ]) {
+      for (const text of [
+        `${address}`,
+        `request to ${address} failed`,
+        `(${address})`,
+        `url=${address}`,
+        `"${address}"`,
+        `<${address}>`,
+        `failed:${address}`,
+      ]) {
+        expect(withoutAddresses(text), text).to.not.include("not-a-real-key");
+        expect(withoutAddresses(text), text).to.include("[address removed]");
+      }
+    }
+  });
+
+  // A scheme is matched from the first letter of the run of scheme characters before it, as it
+  // always was; characters before that letter that a scheme cannot start with stay in the text.
+  it("removes an address glued to the characters before it, whatever their length", () => {
+    expect(withoutAddresses("1https://rpc.example/v2/not-a-real-key")).to.equal(
+      "1[address removed]",
+    );
+    expect(withoutAddresses("--https://rpc.example/v2/not-a-real-key")).to.equal(
+      "--[address removed]",
+    );
+    expect(withoutAddresses("see.https://rpc.example/v2/not-a-real-key")).to.equal(
+      "[address removed]",
+    );
+    const glued = `${"a".repeat(40)}https://rpc.example/v2/not-a-real-key`;
+    expect(withoutAddresses(glued)).to.equal("[address removed]");
+    expect(withoutAddresses(`x ${"7".repeat(40)}wss://rpc.example/not-a-real-key y`)).to.equal(
+      `x ${"7".repeat(40)}[address removed] y`,
+    );
+  });
+
+  it("keeps text that holds no address", () => {
+    for (const text of [
+      "a".repeat(1000),
+      "time: 12:30:45",
+      "ratio 3:/4",
+      "path C:/data/file",
+      "a:/b",
+    ]) {
+      expect(withoutAddresses(text), text).to.equal(text);
+    }
+  });
+
   it("keeps the public address an alert sends the operator to", () => {
     const text = "Please top up the account at https://ai3.storage/";
     expect(withoutAddresses(text)).to.equal(text);

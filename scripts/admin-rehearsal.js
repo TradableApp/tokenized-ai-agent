@@ -29,13 +29,16 @@ const {
   verifyGetter,
   runPlan,
 } = require("./rehearsal/steps");
-const { treasuryRefusal, holdUnstarted, treasuryRefused } = require("./rehearsal/token");
+const { treasuryRefusal, holdUnstarted, refusedRun } = require("./rehearsal/token");
 const {
   isLiveNetwork,
   signerRoleNote,
   reportSignerRole,
+  isPublisher,
+  unreadablePublisherNote,
   assertOracleIsNotSigner,
   assertSnapshotOracleIsNotSigner,
+  resumedOracleRefusal,
 } = require("./rehearsal/oracleRole");
 
 const { ethers } = hre;
@@ -467,7 +470,12 @@ async function readForwardStart({
   }
   assertSignerOwnsBoth(signer.address, live);
   if (checkSignerRole) {
-    await reportSignerRole({ aiAgent: contracts.aiAgent, signer: signer.address, log });
+    await reportSignerRole({
+      aiAgent: contracts.aiAgent,
+      signer: signer.address,
+      log,
+      publisher: live.encryptionKeyPublisher,
+    });
   }
   await assertNoPendingTransactions({
     provider: ethers.provider,
@@ -545,16 +553,28 @@ async function forwardPhase({
     log(`Resuming: ${snapshotFile} stays the restore baseline: ${show(snapshot.baseline)}`);
   const plan = buildPlan({ state: snapshot.baseline, safeAddress, rehearsalPromptFee });
   await assertSafeHasCode(snapshot.safe);
-  // A fresh run refuses here, before anything is written; a resumed one restores first.
-  const refusal = willSetTreasury(snapshot, live)
-    ? await treasuryRefusal({
-        escrow: contracts.escrow,
-        safe: snapshot.safe,
-        runner: ethers.provider,
-        log,
-      })
-    : null;
-  if (refusal && !resuming) throw treasuryRefused({ refusal, dryRun });
+  // A fresh run refuses here, before anything is written; a resumed one restores first. On a
+  // live network a resumed snapshot that watches the signer as the oracle is refused the same
+  // way, after the pending-transaction check, and its treasury step need not be asked about.
+  const oracleRefusal =
+    resuming && checkSignerRole
+      ? resumedOracleRefusal({
+          oracle: snapshot.baseline.oracle,
+          signer: signer.address,
+          file: snapshotFile,
+        })
+      : null;
+  const refusal =
+    oracleRefusal ??
+    (willSetTreasury(snapshot, live)
+      ? await treasuryRefusal({
+          escrow: contracts.escrow,
+          safe: snapshot.safe,
+          runner: ethers.provider,
+          log,
+        })
+      : null);
+  if (refusal && !resuming) throw refusedRun({ refusal, dryRun });
 
   const save = (next) => {
     snapshot = next;
@@ -565,13 +585,18 @@ async function forwardPhase({
     if (!dryRun) log(`Pre-rehearsal state saved to ${snapshotFile} before any transaction is sent`);
   }
   const decided = await decideRun({ plan, contracts, signer, snapshot, log, save });
-  const { decisions, sent, held } = refusal ? holdUnstarted(decided.decisions) : decided;
+  const holdReason = oracleRefusal
+    ? "held back: the snapshot watches the signer as the oracle"
+    : undefined;
+  const { decisions, sent, held } = refusal
+    ? holdUnstarted(decided.decisions, holdReason)
+    : decided;
   // A step's record is on disk before the next step is sent, so a restore is sent only after
   // its set's "done" record is written.
   const record = async (id, entry) =>
     save({ ...snapshot, steps: { ...snapshot.steps, [id]: entry } });
   const results = await execute({ plan, decisions, contracts, signer, dryRun, log, record });
-  if (refusal) throw treasuryRefused({ refusal, sent, held, dryRun });
+  if (refusal) throw refusedRun({ refusal, sent, held, dryRun, resumedFile: snapshotFile });
   const returnTxs = dryRun ? [] : await buildSafeReturnTxs({ contracts, returnTo: signer.address });
   reportForward({ dryRun, results, returnTxs, log });
 }
@@ -629,16 +654,34 @@ async function readReturned({ contracts, state, safe, signer, attempts, verify, 
   return result;
 }
 
-/** Lists what differs from the snapshot, with what to do about the signer's role, and refuses. */
-function refuseNotReturned({ mismatches, signer, log }) {
+/**
+ * Lists what differs from the snapshot, with what to do about the signer's role, and refuses.
+ * When the signer still holds the role, the agent's live encryption key publisher is read, since
+ * removing the publisher's role withdraws the key.
+ */
+async function refuseNotReturned({ mismatches, signer, aiAgent, log }) {
   for (const m of mismatches) {
     log(chalk.red(`  ${m.field}: expected ${m.expected}, actual ${m.actual}`));
   }
+  let publishesKey = false;
   if (mismatches.some((m) => m.field === "signerIsOracle")) {
-    log(chalk.yellow(signerRoleNote(signer)));
+    // A failed read must not replace this refusal with the node's error, which can carry the
+    // RPC address: the plain note is given, saying the publisher could not be read.
+    let unreadable = false;
+    try {
+      const { encryptionKeyPublisher } = await readEncryptionKey(aiAgent);
+      publishesKey = isPublisher(encryptionKeyPublisher, signer);
+    } catch {
+      unreadable = true;
+    }
+    log(chalk.yellow(signerRoleNote(signer, { publishesKey })));
+    if (unreadable) log(chalk.yellow(unreadablePublisherNote(signer)));
   }
+  const keyWarning = publishesKey
+    ? " The signer published the encryption key on the agent: removing its role withdraws that key, and a snapshot that recorded it then differs on the key; read the note above."
+    : "";
   throw new RehearsalError(
-    "Rehearsal state has not been fully returned: each line above differs from the snapshot. Return each to the snapshot's value and run this phase again. If one differs because it was changed on purpose since the rehearsal, this phase fails on it every time: move the snapshot aside (keep it: it holds the values from before the rehearsal), and a later forward run starts from the live state.",
+    `Rehearsal state has not been fully returned: each line above differs from the snapshot. Return each to the snapshot's value and run this phase again.${keyWarning} If one differs because it was changed on purpose since the rehearsal, this phase fails on it every time: move the snapshot aside (keep it: it holds the values from before the rehearsal), and a later forward run starts from the live state.`,
   );
 }
 
@@ -689,7 +732,14 @@ async function confirmPhase({
     verify,
     sleep,
   });
-  if (!ok) refuseNotReturned({ mismatches, signer: signer.address, log });
+  if (!ok) {
+    await refuseNotReturned({
+      mismatches,
+      signer: signer.address,
+      aiAgent: contracts.aiAgent,
+      log,
+    });
+  }
   // Only now: marked any earlier, a failed confirm would let the next forward run start from
   // the live state and overwrite the one record of the pre-rehearsal values.
   // Written as version 2 whatever it was read as, on the network and chain it was checked on.

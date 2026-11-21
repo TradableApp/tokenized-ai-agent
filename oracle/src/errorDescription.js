@@ -42,8 +42,10 @@ function causeKind(error) {
  * @returns {string}
  */
 function withoutAddresses(text) {
-  const withoutWholeAddresses = String(text).replace(ADDRESS, (address) =>
-    PUBLIC_ADDRESSES.has(address) ? address : "[address removed]",
+  const withoutWholeAddresses = String(text).replace(
+    ADDRESS,
+    (match, lead, address) =>
+      `${lead}${PUBLIC_ADDRESSES.has(address) ? address : "[address removed]"}`,
   );
 
   // A request described in parts ("POST /v2/<key>") has no address to find, only the key.
@@ -120,7 +122,14 @@ function plainKind(value) {
 // space, quote or closing parenthesis goes, trailing punctuation included. Stopping at a dot or
 // a colon would stop inside the host name and leave the path behind, which is where a provider
 // puts the access key; stopping at a square bracket would stop inside an IPv6 host.
-const ADDRESS = /[a-z][a-z0-9+.-]*:(?:\\?\/){2}[^\s"'<>)]+/gi;
+//
+// A match may begin only where a run of the characters a scheme holds begins (the look-behind).
+// Without that, every position of a long run without "://" was tried and scanned to the run's
+// end: quadratic time, tens of seconds on 200,000 characters. With it, a run is scanned once.
+// The scheme still starts at the run's first letter, as before: the characters a scheme cannot
+// start with that come before it (`lead`) are matched and put back. The scheme's length is not
+// capped: a cap would leave an address glued to a longer run unremoved.
+const ADDRESS = /(?<![a-z0-9+.-])([0-9+.-]*)([a-z][a-z0-9+.-]*:(?:\\?\/){2}[^\s"'<>)]+)/gi;
 
 // Addresses an alert shows on purpose: where the operator goes to act on it. Matched whole, so
 // anything longer that starts the same way is removed like any other address.

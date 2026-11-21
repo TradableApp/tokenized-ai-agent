@@ -5,10 +5,22 @@ const path = require("node:path");
 /**
  * A provider's or a database's error message can carry the address it was sent to, access key
  * or password included, and a parse error quotes the text it failed on. In the files below, an
- * error caught in a `catch` block or a `.catch(...)` callback is therefore never handed whole to
- * the console, a logger, an alert or a thrown error: only what `describeError`, `describedError`,
- * `errorKind` or `withoutAddresses` make of it. A bare rethrow (`throw error;`) and `cause:` in
- * a thrown error pass on the error to code that branches on it, and are allowed.
+ * error caught in a `catch` block, a `.catch(...)` callback or the second (rejection) argument
+ * of `.then(...)`, as an arrow or a `function`, is therefore never handed whole, nor spread
+ * (`{ ...error }`), to the console, a logger (any receiver ending in `console`, `log` or
+ * `logger`, `this.logger` and `elizaLogger` included; `log`, `info`, `warn`, `error`, `debug`,
+ * `trace`, `fatal`, `table`), `process.stderr.write` / `process.stdout.write`, an alert or a
+ * thrown error: only what `describeError`, `describedError`, `errorKind` or `withoutAddresses`
+ * make of it. Nor is a sink itself the callback (`.catch(console.error)`,
+ * `.catch(this.logger.error)`, `.then(ok, console.error)`), which hands it the error whole. A
+ * bare rethrow (`throw error;`) and `cause:` in a thrown error pass on the error to code that
+ * branches on it, and are allowed.
+ *
+ * What it does not see: the error copied to another name first (`const e2 = error`); a
+ * destructured parameter (`catch ({ message })`, `.catch(({ message }) => …)`); a named handler
+ * defined elsewhere (`.catch(handleFailure)`, `.then(task, task)`); a sink not listed above.
+ * `Sentry.captureException(error)` is not a sink on purpose: the Sentry scrubber removes
+ * addresses from every event it sends.
  *
  * Read from the source, because these lines sit in catch blocks that a unit test rarely reaches
  * (a store that fails while recording a failed retry), and one forgotten line is enough.
@@ -27,10 +39,24 @@ const GUARDED = [
 ];
 
 const HELPERS = ["describeError", "describedError", "errorKind", "withoutAddresses"];
-const SINK =
-  /\b(?:console|log|logger)\.(?:log|info|warn|error|debug|trace)\s*\(|\b(?:sendAlert|alert)\s*\(|\bthrow\b/g;
+const LOG_METHODS = "log|info|warn|error|debug|trace|fatal|table";
+const STD_WRITE = "process\\s*\\.\\s*std(?:err|out)\\s*\\.\\s*write";
+const SINK = new RegExp(
+  `\\b[\\w$]*(?:console|[Ll]og|[Ll]ogger)\\s*\\.\\s*(?:${LOG_METHODS})\\s*\\(|\\b${STD_WRITE}\\s*\\(|\\b(?:sendAlert|alert)\\s*\\(|\\bthrow\\b`,
+  "g",
+);
 const CATCH_BLOCK = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
 const CATCH_CALLBACK = /\.catch\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/g;
+const CATCH_FUNCTION =
+  /\.catch\(\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
+// A sink given as the callback itself, bound or not: it is called with the error whole. The
+// receiver may be any chain of names (`this.logger`, `elizaLogger`).
+const SINK_REFERENCE = `(?:(?:[\\w$]+\\s*\\.\\s*)+(?:${LOG_METHODS})|${STD_WRITE}|sendAlert|alert)\\s*(?:\\.\\s*bind\\s*\\([^()]*\\)\\s*)?`;
+const POINT_FREE_SINK = new RegExp(`\\.catch\\(\\s*${SINK_REFERENCE}\\)`, "g");
+const POINT_FREE_ARGUMENT = new RegExp(`^\\s*${SINK_REFERENCE}$`);
+// The same callbacks as above, read from the start of a `.then` rejection argument.
+const ARROW_HANDLER = /^\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/;
+const FUNCTION_HANDLER = /^\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/;
 // After these, a "/" starts a regular expression rather than dividing.
 const BEFORE_REGEX = new Set([..."(,=:[!&|?{};+-*%<>~^"]);
 
@@ -126,6 +152,47 @@ function closeOf(code, open) {
   return code.length;
 }
 
+/** The start and end of each argument of the call whose parenthesis opens at `open`. */
+function callArguments(code, open) {
+  const close = closeOf(code, open) - 1;
+  const args = [];
+  let start = open + 1;
+  let level = 0;
+  for (let i = open + 1; i < close; i += 1) {
+    if ("([{".includes(code[i])) level += 1;
+    else if (")]}".includes(code[i])) level -= 1;
+    else if (code[i] === "," && level === 0) {
+      args.push({ start, end: i });
+      start = i + 1;
+    }
+  }
+  args.push({ start, end: close });
+  return args;
+}
+
+/**
+ * The second argument of each `.then(...)` call: a handler, with its body and the name the
+ * rejection is given (`bodies`), or a sink passed point-free (`pointFree`, its index).
+ */
+function thenRejections(code) {
+  const bodies = [];
+  const pointFree = [];
+  for (const match of code.matchAll(/\.then\(/g)) {
+    const rejection = callArguments(code, match.index + ".then".length)[1];
+    if (!rejection) continue;
+    const text = code.slice(rejection.start, rejection.end);
+    const handler = text.match(ARROW_HANDLER) ?? text.match(FUNCTION_HANDLER);
+    if (handler) {
+      bodies.push({
+        name: handler[1],
+        start: rejection.start + handler[0].length,
+        end: rejection.end,
+      });
+    } else if (POINT_FREE_ARGUMENT.test(text)) pointFree.push(rejection.start);
+  }
+  return { bodies, pointFree };
+}
+
 /** Each catch body in `code`, with the name its error is caught under. */
 function catchBodies(code) {
   const bodies = [];
@@ -133,11 +200,14 @@ function catchBodies(code) {
     const open = match.index + match[0].length - 1;
     bodies.push({ name: match[1], start: open, end: closeOf(code, open) });
   }
-  for (const match of code.matchAll(CATCH_CALLBACK)) {
-    const open = match.index + ".catch".length;
-    bodies.push({ name: match[1], start: match.index + match[0].length, end: closeOf(code, open) });
+  for (const pattern of [CATCH_CALLBACK, CATCH_FUNCTION]) {
+    for (const match of code.matchAll(pattern)) {
+      const open = match.index + ".catch".length;
+      const start = match.index + match[0].length;
+      bodies.push({ name: match[1], start, end: closeOf(code, open) });
+    }
   }
-  return bodies;
+  return [...bodies, ...thenRejections(code).bodies];
 }
 
 /** What a sink at `at` hands on: a call's arguments, or a throw's expression. */
@@ -170,14 +240,18 @@ function withoutHelperCalls(text) {
   return result;
 }
 
-/** True when `args` hands on `name` whole. A bare rethrow, and `cause:` in a throw, pass. */
+/**
+ * True when `args` hands on `name` whole, or spreads it. A bare rethrow, and `cause:` in a throw,
+ * pass. A property of that name (`result.error`) is not the caught error; a spread (`...error`)
+ * is, though it too follows a dot.
+ */
 function handsOn(name, { throws, text }) {
   if (throws && text.trim() === name) return false;
   // A caught name is an identifier, but every character a pattern reads specially is escaped.
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let rest = withoutHelperCalls(text);
   if (throws) rest = rest.replace(new RegExp(`\\bcause\\s*:\\s*${escaped}(?![\\w$])`, "g"), " ");
-  return new RegExp(`(?<![.\\w$])${escaped}(?![\\w$])`).test(rest);
+  return new RegExp(`(?:(?<=\\.\\.\\.)|(?<![.\\w$]))${escaped}(?![\\w$])`).test(rest);
 }
 
 /** Every place in `src` where a caught error is handed on whole, as "line: source line". */
@@ -185,6 +259,15 @@ function offenders(src) {
   const code = codeView(src);
   const lines = src.split("\n");
   const found = new Set();
+  const lineOf = (index) => code.slice(0, index).split("\n").length;
+  const pointFree = [
+    ...[...code.matchAll(POINT_FREE_SINK)].map((match) => match.index),
+    ...thenRejections(code).pointFree,
+  ];
+  for (const index of pointFree) {
+    const line = lineOf(index);
+    found.add(`${line}: ${lines[line - 1].trim()}`);
+  }
   for (const { name, start, end } of catchBodies(code)) {
     const body = code.slice(0, end);
     const sinks = new RegExp(SINK.source, "g");
@@ -192,7 +275,7 @@ function offenders(src) {
     for (let match = sinks.exec(body); match; match = sinks.exec(body)) {
       const args = sinkArguments(code, match.index, match[0], end);
       if (!handsOn(name, args)) continue;
-      const line = code.slice(0, match.index).split("\n").length;
+      const line = lineOf(match.index);
       found.add(`${line}: ${lines[line - 1].trim()}`);
     }
   }
@@ -234,6 +317,57 @@ const FIXTURES = [
   ["a property of that name", inCatch("console.error(result.error, describeError(error));"), false],
   ["a cause in a thrown error", inCatch("throw new Error('x', { cause: error });"), false],
   ["a described .catch callback", "p.catch((e) => console.error('x', describeError(e)));", false],
+  ["a spread of it", inCatch('console.error("failed", { ...error });'), true],
+  ["a spread in an alert", inCatch("await sendAlert({ text: 'down', ...error });"), true],
+  [
+    "a spread in a thrown error",
+    inCatch("throw Object.assign(new Error('x'), { ...error });"),
+    true,
+  ],
+  ["a function callback", "p.catch(function (e) {\n  console.error('failed', e);\n});", true],
+  [
+    "a named async function callback",
+    "p.catch(async function onFail(e) {\n  await sendAlert(`down: ${e.message}`);\n});",
+    true,
+  ],
+  ["a point-free console.error", "p.catch(console.error);", true],
+  ["a point-free console.warn", "p.catch(console.warn);", true],
+  ["a point-free logger call", "p.catch(logger.error);", true],
+  ["a point-free bound console.error", "p.catch(console.error.bind(console));", true],
+  ["a point-free alert", "p.catch(sendAlert);", true],
+  [
+    "a described function callback",
+    "p.catch(function (e) {\n  console.error('x', describeError(e));\n});",
+    false,
+  ],
+  [
+    "a spread of something else",
+    inCatch("console.error('x', { ...context }, describeError(error));"),
+    false,
+  ],
+  ["a .then rejection arrow", "p.then(ok, (e) => console.error('failed', e));", true],
+  [
+    "a .then rejection function",
+    "p.then(function (v) {\n  use(v);\n}, function (e) {\n  console.error(e);\n});",
+    true,
+  ],
+  ["a point-free .then rejection", "p.then(ok, console.error);", true],
+  ["a point-free sink on a longer receiver", "p.catch(this.logger.error);", true],
+  ["a point-free framework logger", "p.catch(elizaLogger.error);", true],
+  ["a framework logger in a catch block", inCatch('elizaLogger.error("failed", error);'), true],
+  ["a logger on this", inCatch('this.logger.warn("failed", error);'), true],
+  ["logger.fatal", inCatch("logger.fatal(error);"), true],
+  ["console.table", inCatch("console.table(error);"), true],
+  ["process.stderr.write", inCatch("process.stderr.write(String(error));"), true],
+  [
+    "a described .then rejection",
+    "p.then(ok, (e) => console.error('x', describeError(e)));",
+    false,
+  ],
+  ["a .then fulfilment logged", "p.then((value) => console.log('got', value));", false],
+  ["a .then with named handlers", "p.then(task, task);", false],
+  ["a named handler of its own", "p.catch(handleFailure);", false],
+  ["a point-free call in a comment", "// p.catch(console.error);\np.catch(handleFailure);", false],
 ];
 
 describe("errors are described before they are handed on", () => {
