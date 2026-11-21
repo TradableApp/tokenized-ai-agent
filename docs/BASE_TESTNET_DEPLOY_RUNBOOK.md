@@ -236,6 +236,45 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
 - [ ] `[BrainContext]` — **NOT** `market context disabled`; Cloud SQL mTLS connects to `sense-ai-app-garrick`.
 - [ ] Oracle event listener up, polling **Base Sepolia**; ElizaOS + senseai plugin load; MCP registers (if used); no default-agent fallback.
 - [ ] Log-reading note: `oasis rofl machine logs` wraps app stdout as `module":"runtime" level":"warn"`; the app's real level is the text prefix in `msg` — filter on that, not the JSON level.
+- [ ] `[Stream] Serving live reasoning on port 8787.` (absent only when `STREAM_ENABLED=false`; `[Stream] The live reasoning stream could not start (…)` means the oracle answers without it).
+
+### 5.1 The live reasoning stream port (8787)
+
+The oracle serves each answer's sealed reasoning frames to the dApp over HTTP on port **8787**
+(`oracle/src/stream/streamServer.js`). It is the only port the compose files publish
+(`"8787:8787"`, pinned by `oracle/test/composePorts.test.js`); ElizaOS and everything else in
+the container stay unreachable from outside. The server speaks plain HTTP: TLS is the ROFL
+proxy's. A reader must send a proof that only the conversation's key can make, and gets
+ciphertext only.
+
+- **Read the stream URL.** `oasis rofl machine show --deployment base-testnet` (passphrase, as
+  above) prints what the machine publishes; the address the proxy gives port 8787 is the value of
+  the dApp's `VITE_REASONING_STREAM_URL` (origin only, no trailing slash). Which field holds it,
+  whether TLS ends at the proxy, and whether the URL survives a restart are measured in Phase 0
+  and recorded here then. The compose files carry no proxy annotation yet: its exact key is to be
+  read from the Oasis docs and cited by that measurement.
+- **Check the stream answers.** With `STREAM=<that origin>`:
+  - `curl -sS -w ' %{http_code}\n' "$STREAM/health"` → `{"ok":true} 200`
+  - `curl -sS -w ' %{http_code}\n' "$STREAM/stream/1"` → `{"error":"bad-request"} 400` (no proof: it
+    is the oracle's server answering, and nothing was opened)
+  - `curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$STREAM/health"` → `404`
+- **Check only 8787 is reachable.** From outside the machine, against the machine's host, each
+  of these must fail to connect or time out: `nc -vz -w 5 <host> 3000` (ElizaOS's default
+  server port), `nc -vz -w 5 <host> 8080`, `nc -vz -w 5 <host> 5432`, and `nc -vz -w 5 <host> 22`.
+  A connection on any of them is a deploy blocker: compose publishes nothing but 8787.
+- **CORS.** Only the network's allowed origins can read it from a browser (`baseSepolia`:
+  `https://sense-ai-app-garrick.web.app`, `https://sense-ai-app-garrick.firebaseapp.com`;
+  `base`: `https://senseai.tradable.app`, `https://sense-ai-app.web.app`; or
+  `STREAM_ALLOWED_ORIGINS`). `curl -sS -D - -o /dev/null -H 'Origin: https://sense-ai-app-garrick.web.app' "$STREAM/stream/1"`
+  shows `Access-Control-Allow-Origin` echoed; any other `Origin` gets no such header.
+- **Settings** (all optional; defaults in code, so no env file needs them): `STREAM_ENABLED`
+  (`true`), `STREAM_PORT` (8787; the compose files publish 8787, so leave it), `STREAM_ALLOWED_ORIGINS`,
+  `STREAM_GRACE_MS` (120000), `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (240000),
+  `STREAM_MAX_CONN_PER_ANSWER` (4), `STREAM_MAX_CONN_TOTAL` (200). Heartbeat, maximum connection
+  time and the total cap are set from the Phase 0 measurement. A value that cannot work stops
+  the boot naming the setting.
+- **Nothing about readers is logged**: no address, header, proof or answer id. A quiet log is
+  normal; the dApp's own reports say whether it is reading.
 
 ---
 
