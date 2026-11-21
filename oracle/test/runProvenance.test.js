@@ -230,3 +230,48 @@ describe("finish is idempotent", () => {
     expect(provenance.size(), "and the run stays released").to.equal(0);
   });
 });
+
+describe("the live tap", () => {
+  it("recordThought returns the step it recorded, converted as finish() stores it", () => {
+    const p = createRunProvenance();
+    const run = p.begin("room-A");
+
+    const first = p.recordThought(run, "Read the headlines.", "GET_NEWS");
+    const second = p.recordThought(run, "Weighed them.");
+
+    expect(first).to.deep.equal({ title: "GET_NEWS", description: "Read the headlines." });
+    expect(second).to.deep.equal({ title: "Step 2", description: "Weighed them." });
+    expect(p.finish(run).reasoning).to.deep.equal([first, second]);
+  });
+
+  it("recordThought returns null for nothing recorded", () => {
+    const p = createRunProvenance();
+    const run = p.begin("room-A");
+
+    expect(p.recordThought(run, "   ")).to.equal(null);
+    expect(p.recordThought("never-began", "orphan")).to.equal(null);
+  });
+
+  it("tells which action is in flight for a run, so a thought can keep the action it arrived under", () => {
+    const p = createRunProvenance();
+    const run = p.begin("room-A");
+
+    expect(p.currentActionOf(run)).to.equal("");
+    p.actionStarted("room-A", "GET_NEWS");
+    expect(p.currentActionOf(run)).to.equal("GET_NEWS");
+    p.actionCompleted("room-A", "GET_NEWS");
+    expect(p.currentActionOf(run)).to.equal("");
+    expect(p.currentActionOf("never-began")).to.equal("");
+  });
+
+  it("an explicit empty action means none, even when another action is now in flight", () => {
+    const p = createRunProvenance();
+    const run = p.begin("room-A");
+
+    p.actionStarted("room-A", "LATER_ACTION");
+    const step = p.recordThought(run, "Arrived before that action began.", "");
+
+    expect(step).to.deep.equal({ title: "Step 1", description: "Arrived before that action began." });
+  });
+});
+
