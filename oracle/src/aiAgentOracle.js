@@ -56,11 +56,17 @@ const {
 const { describeError, describedError, errorKind } = require("./errorDescription");
 
 // The plugin logs to the same place as the oracle: it describes its errors with the oracle's own
-// describer, which knows the secret parts of every configured address. A build without the seam
-// still logs safely: the plugin then gives an error's kind alone.
-if (typeof senseaiPluginModule.setErrorDescriber === "function") {
-  senseaiPluginModule.setErrorDescriber(describeError);
+// describer, which knows the secret parts of every configured address. Handed over here, when the
+// plugin is loaded, so it is in place before the agent and its actions are built in `start`.
+// Without it the plugin gives an error's kind alone, and a failed action's result would lose its
+// cause; a build without the seam is a stale build, so the oracle refuses to load it.
+if (typeof senseaiPluginModule.setErrorDescriber !== "function") {
+  throw new Error(
+    "setErrorDescriber missing from the plugin build — rebuild plugin-senseai (bun run build) " +
+      "from this source before starting the oracle.",
+  );
 }
+senseaiPluginModule.setErrorDescriber(describeError);
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");

@@ -139,7 +139,7 @@ function loadOracle(elizaStub, extraStubs = {}) {
       ChannelType: { DM: "DM", WORLD: "WORLD" },
       EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
     },
-    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {}, setErrorDescriber: () => {} },
     "./elizaos/character.js": {},
     ...extraStubs,
   }));
@@ -164,7 +164,7 @@ function loadOracleWithBrainConfigured(elizaStub, configured) {
       EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
     },
     // No setBrainAccessor on the module — the stale-build scenario.
-    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {}, setErrorDescriber: () => {} },
     "./elizaos/character.js": {},
     "./brainContext": {
       getHandles: async () => null,

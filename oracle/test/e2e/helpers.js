@@ -118,7 +118,7 @@ function createStubs(sessionKey) {
       createUniqueUuid: (_ns, s) => s,
       ChannelType: { DM: "DM", WORLD: "WORLD" },
     },
-    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {}, setErrorDescriber: () => {} },
     "./elizaos/character.js": {},
     "@sentry/node": {
       init: sinon.stub(),

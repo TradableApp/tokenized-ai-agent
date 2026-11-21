@@ -100,7 +100,7 @@ function loadOracle(framework, extraStubs = {}) {
         ChannelType: { DM: "DM", WORLD: "WORLD" },
         EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
       },
-      "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+      "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {}, setErrorDescriber: () => {} },
       "./elizaos/character.js": CHARACTER,
       // The watch of the tool service is not what these tests are about, and left real it would
       // keep looking for a service the stand-in does not have.
