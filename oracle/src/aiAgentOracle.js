@@ -54,6 +54,13 @@ const {
   createPollBackoff,
 } = require("./pollBackoff");
 const { describeError, describedError, errorKind } = require("./errorDescription");
+
+// The plugin logs to the same place as the oracle: it describes its errors with the oracle's own
+// describer, which knows the secret parts of every configured address. A build without the seam
+// still logs safely: the plugin then gives an error's kind alone.
+if (typeof senseaiPluginModule.setErrorDescriber === "function") {
+  senseaiPluginModule.setErrorDescriber(describeError);
+}
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
@@ -2634,7 +2641,7 @@ async function loadEventForRetry(job) {
   }
   if (!match) {
     throw new Error(
-      `Could not re-parse event '${job.eventName}' from transaction receipt.${parseError ? ` Parse error: ${parseError.message}` : ""}`,
+      `Could not re-parse event '${job.eventName}' from transaction receipt.${parseError ? ` Parse error: ${describeError(parseError)}` : ""}`,
       parseError ? { cause: parseError } : undefined,
     );
   }

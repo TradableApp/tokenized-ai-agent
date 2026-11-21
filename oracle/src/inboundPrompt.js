@@ -46,6 +46,8 @@
  * below. A fence strip living there would inherit the wrong failure mode.
  */
 
+const { describeError } = require("./errorDescription");
+
 /**
  * The Brain's `stripFenceTags`, resolved once.
  *
@@ -77,8 +79,8 @@ async function initInboundPrompt(overrides = {}) {
     brain = await loadBrain();
   } catch (error) {
     throw new Error(
-      `Could not load the Brain to install the inbound prompt fence strip: ${String(
-        error?.message ?? error,
+      `Could not load the Brain to install the inbound prompt fence strip: ${describeError(
+        error,
       )}. Refusing to start — an unstripped prompt can close the fence around it and reach the ` +
         `instruction region, and nothing downstream would look different.`,
       { cause: error },

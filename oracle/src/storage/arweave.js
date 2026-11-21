@@ -124,9 +124,9 @@ async function uploadData(dataBuffer, tags = []) {
 
     return receipt.id;
   } catch (e) {
-    const errorMessage = `Upload to Irys failed critically. Error: ${e.message}`;
+    const errorMessage = `Upload to Irys failed critically. Error: ${describeError(e)}`;
 
-    console.error(errorMessage, e);
+    console.error(errorMessage, describedError(e));
 
     await sendAlert("CRITICAL: Irys Upload Failed", errorMessage);
 
@@ -233,7 +233,7 @@ async function queryTransactionByTags(tags) {
     }
     return null;
   } catch (error) {
-    console.error("Error querying Irys GQL for tags:", error);
+    console.error("Error querying Irys GQL for tags:", describeError(error));
     throw error;
   }
 }

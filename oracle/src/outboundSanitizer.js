@@ -27,6 +27,8 @@
  * cache happens to be unavailable.
  */
 
+const { describeError, errorKind } = require("./errorDescription");
+
 /** Resolves to the Brain's `sanitizeOutboundText`, or null when the Brain cannot be loaded. */
 let sanitizerPromise = null;
 
@@ -85,7 +87,7 @@ function loadSanitizer() {
         const retriable = loadAttempts < MAX_LOAD_ATTEMPTS;
         console.error(
           "[outboundSanitizer] Could not load the Brain — answers will be stored unsanitised. " +
-            `Reason: ${error?.message ?? error}. ` +
+            `Reason: ${describeError(error)}. ` +
             (retriable
               ? "Will retry once on the next answer, in case the container was still warming."
               : "Giving up for this process; every later answer is stored unsanitised."),
@@ -119,10 +121,9 @@ async function sanitizeAnswer(answer) {
     // Logged at ERROR because that is the only level that survives to where anyone will see it:
     // `oasis rofl machine logs` surfaces warn and error, so an INFO line inside the TEE is
     // invisible in practice.
+    // The kind only: the sanitiser works on the answer, and its error can quote it.
     console.error(
-      `[outboundSanitizer] Sanitiser threw; storing the answer unsanitised. Reason: ${
-        error?.message ?? error
-      }`,
+      `[outboundSanitizer] Sanitiser threw; storing the answer unsanitised (${errorKind(error)}).`,
     );
     return answer;
   }

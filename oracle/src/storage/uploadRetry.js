@@ -11,6 +11,7 @@
  * the attempts run out (a RetryableError, so the event is queued rather than declared fatal).
  */
 
+const { describeError } = require("../errorDescription");
 const { RetryableError } = require("../errors");
 
 /** Attempts per upload, including the first. Three covers a blip without stalling the prompt. */
@@ -82,7 +83,7 @@ async function uploadWithRetry(attempt, options = {}) {
   }
 
   throw new RetryableError(
-    `Autonomys upload failed after ${attempts} attempts: ${lastError.message}`,
+    `Autonomys upload failed after ${attempts} attempts: ${describeError(lastError)}`,
     { cause: lastError },
   );
 }

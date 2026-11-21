@@ -18,6 +18,8 @@
 
 const { randomUUID } = require("node:crypto");
 
+const { describeError, describedError } = require("./errorDescription");
+
 /** 15 minutes. Overridable per environment — testnet TEEs are short-lived, mainnet is not. */
 const DEFAULT_INTERVAL_MS = 900000;
 
@@ -78,10 +80,9 @@ function startHeartbeat({ recordActivity, ctx, collect, intervalMs, logger = con
     } catch (error) {
       // Stack included, not just the message. `oasis rofl machine logs` is the ONLY debugging
       // window into a running TEE, and "connection reset" without a frame does not say whether
-      // it came from the RPC, Auto-Drive, or the Postgres write — three different fixes.
-      logger.warn?.(
-        `[Heartbeat] Beat failed: ${String(error?.stack ?? error?.message ?? error)}`,
-      );
+      // it came from the RPC, Auto-Drive, or the Postgres write — three different fixes. The
+      // described error keeps the frames and drops any address from the message.
+      logger.warn?.(`[Heartbeat] Beat failed: ${describedError(error).stack}`);
     }
   }
 
@@ -142,9 +143,7 @@ async function startOracleHeartbeat(opts = {}) {
   // would otherwise log "not configured" and look like an intentional localnet run, hiding a real
   // fault behind a reassuring message.
   const handles = await getHandles().catch((error) => {
-    logger.warn?.(
-      `[Heartbeat] Brain handles failed to resolve: ${String(error?.message ?? error)}`,
-    );
+    logger.warn?.(`[Heartbeat] Brain handles failed to resolve: ${describeError(error)}`);
 
     return null;
   });

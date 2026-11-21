@@ -1,5 +1,6 @@
 const { z } = require("zod");
 const { BadInputError } = require("./errors");
+const { errorKind } = require("./errorDescription");
 
 // --- Global Constants (Aligned with Frontend) ---
 const MAX_PROMPT_LENGTH = 5000; // Matches Chat.jsx
@@ -75,7 +76,9 @@ function validatePayload(input, eventName) {
   } catch (error) {
     // TYPED so handleAndRecord can detect it without matching on message text. A schema mismatch
     // is the one case where dropping the event permanently is correct.
-    throw new BadInputError(`Validation Failed for ${eventName}: ${error.message}`, {
+    // The kind only: a schema or parse error's message describes, and can quote, the user's
+    // decrypted payload.
+    throw new BadInputError(`Validation Failed for ${eventName} (${errorKind(error)}).`, {
       cause: error,
     });
   }

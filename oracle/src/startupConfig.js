@@ -25,7 +25,11 @@ const { keyModeFor } = require("./oracleKeys");
 const { DEFAULT_POLL_BACKOFF_CAP_MS, DEFAULT_POLL_INTERVAL_MS } = require("./pollBackoff");
 const { REQUIRED_BASE_KEYS, CERT_KEY_PAIRS } = require("./postgresBootstrap");
 
-/** Thrown when the process must not continue. Typed so callers can distinguish it from bugs. */
+/**
+ * Thrown when the process must not continue. Typed so callers can distinguish it from bugs.
+ * Each problem names the setting and never its value: a value pasted into the wrong setting can
+ * be a key or an address that carries one, and this message is printed to the TEE's log.
+ */
 class ConfigError extends Error {
   constructor(problems) {
     super(
@@ -141,11 +145,10 @@ function validateConfig(env = process.env) {
   // Raw, like the key and the address: everything after this reads the name as written, so a
   // padded name accepted here would be a different network there.
   if (!isBlank(network) && network !== network.trim()) {
-    problems.push(`NETWORK_NAME "${network}" has spaces around it`);
+    problems.push("NETWORK_NAME has spaces around it");
   } else if (!isBlank(network) && !SUPPORTED_NETWORKS.includes(network.trim())) {
     problems.push(
-      `NETWORK_NAME "${network.trim()}" is not a supported network — expected one of: ` +
-        SUPPORTED_NETWORKS.join(", "),
+      "NETWORK_NAME is not a supported network — expected one of: " + SUPPORTED_NETWORKS.join(", "),
     );
   }
 
@@ -178,7 +181,7 @@ function validateConfig(env = process.env) {
     // thing.
     if (PLAIN_PLACEHOLDER.test(privateKey.trim())) {
       problems.push(
-        `PRIVATE_KEY is still the example-file placeholder "${privateKey.trim()}" — replace it ` +
+        `PRIVATE_KEY is still the example-file placeholder — replace it ` +
           `with a real 32-byte hex private key`,
       );
     } else if (!PRIVATE_KEY_HEX.test(privateKey)) {
@@ -199,12 +202,12 @@ function validateConfig(env = process.env) {
   if (!isBlank(address)) {
     if (PLACEHOLDER.test(address.trim())) {
       problems.push(
-        `AI_AGENT_CONTRACT_ADDRESS is still the placeholder "${address.trim()}" — ethers would ` +
+        `AI_AGENT_CONTRACT_ADDRESS is still the placeholder — ethers would ` +
           `accept this and fail later with "contract runner does not support name resolution"`,
       );
     } else if (!ADDRESS.test(address)) {
       problems.push(
-        `AI_AGENT_CONTRACT_ADDRESS "${address}" is not a valid address (0x + 40 hex characters, ` +
+        `AI_AGENT_CONTRACT_ADDRESS is not a valid address (0x + 40 hex characters, ` +
           `no surrounding whitespace) — ethers treats a non-address as an ENS name and fails ` +
           `asynchronously on first call`,
       );
@@ -246,7 +249,7 @@ function validateConfig(env = process.env) {
     // live connection attempt against a database that does not exist.
     if (PLAIN_PLACEHOLDER.test(agentDb.trim())) {
       problems.push(
-        `POSTGRES_AGENT_DATABASE is still the placeholder "${agentDb.trim()}" — plugin-sql ` +
+        `POSTGRES_AGENT_DATABASE is still the placeholder — plugin-sql ` +
           `would be pointed at a database nobody created, and the boot fails on connect`,
       );
     } else {
@@ -259,7 +262,7 @@ function validateConfig(env = process.env) {
       }
       if (missing.length > 0) {
         problems.push(
-          `POSTGRES_AGENT_DATABASE is set to "${agentDb.trim()}" but the Postgres connection ` +
+          `POSTGRES_AGENT_DATABASE is set but the Postgres connection ` +
             `config is incomplete — missing: ${missing.join(", ")}. A database name alone is not ` +
             `enough to connect, and the oracle will not fall back`,
         );
@@ -286,12 +289,15 @@ function validateConfig(env = process.env) {
   const usesRemoteStorage = env.USE_MOCK_STORAGE !== "true" && isBlank(env.LOCAL_IPFS_API_URL);
   if (usesRemoteStorage) {
     const provider = (env.STORAGE_PROVIDER || "").trim().toLowerCase();
-    const describe = provider ? `STORAGE_PROVIDER is "${provider}"` : "STORAGE_PROVIDER is unset";
+    // Only a value this module knows is named; anything else is described, not quoted.
+    let describe = "STORAGE_PROVIDER is unset";
+    if (provider === "irys") describe = 'STORAGE_PROVIDER is "irys"';
+    else if (provider) describe = "STORAGE_PROVIDER names a provider other than irys";
     for (const credential of requiredStorageCredentials(provider)) {
       if (isMissingOrPlaceholder(env[credential])) {
         const state = isBlank(env[credential])
           ? "is missing or empty"
-          : `is still the example-file placeholder "${env[credential].trim()}"`;
+          : "is still the example-file placeholder";
         problems.push(
           `${credential} ${state}, but ${describe} — this is read at upload time, so it would ` +
             `fail AFTER the user has paid for the answer`,
@@ -329,7 +335,7 @@ function validatePollSettings(env, problems) {
     if (isBlank(env[name])) return fallback;
     const value = env[name].trim();
     if (/^\d+$/.test(value) && Number(value) > 0) return Number(value);
-    problems.push(`${name} "${value}" is not a positive whole number`);
+    problems.push(`${name} is not a positive whole number`);
 
     return null;
   };

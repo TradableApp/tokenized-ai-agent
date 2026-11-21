@@ -13,6 +13,7 @@ import type { NewsSearchHit } from "@tradableapp/sense-ai-brain";
 
 import type { BrainService } from "../services/brain";
 import { handleChainSynthesis } from "../utils/actionChainHelper";
+import { describeError } from "../utils/errorDescription";
 import { withTimeoutOrNull } from "../utils/withTimeout";
 
 /**
@@ -346,7 +347,9 @@ No significant records found for query "${intent.query || intent.tickers?.join("
 
       return actionResult;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      // Described: the result's `error` is logged by the runtime and kept with the action's
+      // result, so it must carry no request address either.
+      const errorMessage = describeError(error);
       elizaLogger.error("[GetNewsDetails] Critical Failure:", errorMessage);
 
       return {
