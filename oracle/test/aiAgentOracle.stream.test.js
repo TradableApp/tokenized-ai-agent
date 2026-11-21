@@ -170,7 +170,11 @@ function loadOracle({ scriptFor = () => ({ thoughts: [], answer: "An answer." })
       ChannelType: { DM: "DM", WORLD: "WORLD" },
       EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
     },
-    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    // The oracle hands the plugin its error describer at load and refuses a build without it.
+    "./elizaos/plugins/plugin-senseai/dist/index.js": {
+      default: {},
+      setErrorDescriber: () => {},
+    },
     "./elizaos/character.js": {},
     "@sentry/node": {
       init() {},
