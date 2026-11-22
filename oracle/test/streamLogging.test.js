@@ -12,14 +12,15 @@ const { join } = require("node:path");
  * reaches, and one forgotten line is enough. The check looks at the code inside each log call
  * and each `new …Error(` (string literals blanked, `${…}` expressions kept), and fails on a
  * name that carries one of those values. A reader's address is not read anywhere in these
- * modules at all.
+ * modules at all. An error's `message` and `stack` are forbidden there too: they can carry an
+ * address or the text that failed to parse, so a failure is described by `errorKind` only.
  */
 const STREAM_DIR = join(__dirname, "..", "src", "stream");
 
 const CALL =
   /\b(?:console\s*\.\s*(?:log|info|warn|error|debug|trace)|new\s+(?:[A-Z][A-Za-z]*)?Error)\s*\(/g;
 const FORBIDDEN_IN_CALL =
-  /\b(?:answerMessageId|answerId|id|ids|headers?|getHeader|rawHeaders|origin|proof|expectedProof|lastEventId|cursor|url|path|req|request|res|response|socket|address|remoteAddress|remotePort)\b/;
+  /\b(?:answerMessageId|answerId|id|ids|headers?|getHeader|rawHeaders|origin|proof|expectedProof|lastEventId|cursor|url|path|req|request|res|response|socket|address|remoteAddress|remotePort|message|stack)\b/;
 const NEVER_READ = /remoteAddress|remotePort|x-forwarded-for|x-real-ip|forwarded/i;
 
 /** The text from `open` (just after a "(") to its matching ")", quotes respected. */
