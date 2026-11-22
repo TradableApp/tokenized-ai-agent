@@ -202,6 +202,12 @@ const orNull = (value) => (isSet(value) ? String(value).trim() : null);
  */
 function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
   if (SAPPHIRE_NETWORKS.has(networkName)) {
+    // The Sapphire deploy has no dry run: going on would send a real deploy.
+    if (processEnv.DRY_RUN === "1") {
+      throw refusal(networkName, [
+        "DRY_RUN=1 is set, but the dry run exists only for a fresh pair on an EVM network; the Sapphire deploy has none. Unset DRY_RUN to deploy. Nothing was sent.",
+      ]);
+    }
     return { networkName, isSapphire: true };
   }
   const env = withFileValues(processEnv, fileEnv, fileOnlyNames({ networkName, fileEnv }));
