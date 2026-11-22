@@ -483,6 +483,38 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
     });
   });
 
+  it("refuses DRY_RUN=1 on a Sapphire network, whose deploy has no dry run, before anything is sent", function () {
+    for (const networkName of ["sapphire", "sapphire-testnet", "sapphire-localnet"]) {
+      expect(
+        () =>
+          resolveDeployPlan({
+            networkName,
+            envFile: undefined,
+            fileEnv: null,
+            processEnv: { DRY_RUN: "1" },
+          }),
+        networkName,
+      )
+        .to.throw(Error)
+        .with.property("message")
+        .that.includes("DRY_RUN=1")
+        .and.includes("fresh pair on an EVM network")
+        .and.includes("Nothing was sent");
+    }
+  });
+
+  it("leaves the Sapphire path as it was without DRY_RUN=1", function () {
+    for (const DRY_RUN of [undefined, "", "true"]) {
+      const p = resolveDeployPlan({
+        networkName: "sapphire-testnet",
+        envFile: undefined,
+        fileEnv: null,
+        processEnv: { DRY_RUN },
+      });
+      expect(p.isSapphire, JSON.stringify(DRY_RUN)).to.equal(true);
+    }
+  });
+
   it("gives the Sapphire path no mode", function () {
     const p = resolveDeployPlan({
       networkName: "sapphire-testnet",
