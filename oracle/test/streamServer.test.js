@@ -13,7 +13,11 @@ const {
   isSink,
   streamProof,
 } = require("../src/stream/streamContract");
-const { createStreamServer, startStreamFromEnv } = require("../src/stream/streamServer");
+const {
+  createStreamServer,
+  startStreamFromEnv,
+  httpLimitsFor,
+} = require("../src/stream/streamServer");
 const { readStreamConfig } = require("../src/stream/streamConfig");
 const { BUFFER_LIMITS } = require("../src/stream/frameBuffer");
 
@@ -506,6 +510,147 @@ describe("streamServer", function () {
       } finally {
         controllers.forEach((c) => c.abort());
       }
+    });
+  });
+
+  describe("socket limits for callers without a proof", () => {
+    /** A raw socket that has connected; `closed` resolves when the server closes it. */
+    async function rawSocket(port) {
+      const socket = net.connect(port, "127.0.0.1");
+      socket.setEncoding("utf8");
+      socket.text = "";
+      socket.on("data", (chunk) => {
+        socket.text += chunk;
+      });
+      socket.on("error", () => undefined);
+      socket.closed = new Promise((resolve) => socket.once("close", () => resolve(true)));
+      await new Promise((resolve) => socket.once("connect", resolve));
+      return socket;
+    }
+
+    const within = (promise, ms) =>
+      Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(false), ms))]);
+
+    it("derives Node's own socket limits from the stream settings", () => {
+      const config = testConfig();
+      const limits = httpLimitsFor(config);
+      // The reader cap (200 by default) plus a quarter of it for preflights and refusals.
+      expect(limits.maxConnections).to.equal(config.maxConnTotal + config.maxConnTotal / 4);
+      expect(limits.maxConnections).to.equal(250);
+      // One preflight and the polls of one preflight lifetime: 600 s / 20 s + 1.
+      expect(limits.maxRequestsPerSocket).to.equal(31);
+      // The SSE retry (2 s) plus a second; Node then adds its 1 s buffer.
+      expect(limits.keepAliveTimeoutMs).to.equal(STREAM_HTTP.sseRetryMs + 1000);
+      expect(limits.keepAliveTimeoutBufferMs).to.equal(1000);
+      // A socket that has not sent its headers is closed within 11 s, not Node's 10 + 30 s.
+      expect(limits.headersTimeoutMs + limits.connectionsCheckingIntervalMs).to.be.at.most(11000);
+      expect(limits.requestTimeoutMs).to.be.at.least(limits.headersTimeoutMs);
+    });
+
+    it("sets those limits on the server it creates", () => {
+      const createServer = sinon.spy(http, "createServer");
+      const config = testConfig();
+      createStreamServer({ config });
+      const server = createServer.firstCall.returnValue;
+      const limits = httpLimitsFor(config);
+      expect(server.maxConnections).to.equal(limits.maxConnections);
+      expect(server.maxRequestsPerSocket).to.equal(limits.maxRequestsPerSocket);
+      expect(server.keepAliveTimeout).to.equal(limits.keepAliveTimeoutMs);
+      expect(server.keepAliveTimeoutBuffer).to.equal(limits.keepAliveTimeoutBufferMs);
+      expect(server.headersTimeout).to.equal(limits.headersTimeoutMs);
+      expect(server.requestTimeout).to.equal(limits.requestTimeoutMs);
+      expect(server.connectionsCheckingInterval).to.equal(limits.connectionsCheckingIntervalMs);
+    });
+
+    it("closes sockets past the cap at once and keeps serving the readers it has", async () => {
+      // Reader cap 4: maxConnections is 4 + 1. Four readers hold four sockets, one more socket
+      // fits, and each of the other nineteen of a flood of twenty is closed on arrival, before
+      // a byte of it is parsed.
+      const { server, port } = await serve({ maxConnTotal: 4, maxConnPerAnswer: 4 });
+      openAnswer(server, "42");
+      const readers = [];
+      for (let i = 0; i < 4; i += 1) {
+        const socket = await rawSocket(port);
+        socket.write(
+          `GET /stream/42 HTTP/1.1\r\nHost: 127.0.0.1\r\n${PROOF_HEADER}: ${streamProof(KEY, "42")}\r\n\r\n`,
+        );
+        readers.push(socket);
+      }
+      const started = Date.now();
+      while (server.stats().connections < 4 && Date.now() - started < 1000) await sleep(10);
+      expect(server.stats().connections).to.equal(4);
+
+      const flood = [];
+      try {
+        for (let i = 0; i < 20; i += 1) flood.push(await rawSocket(port));
+        const closed = await Promise.all(flood.map((socket) => within(socket.closed, 1000)));
+        expect(closed.filter(Boolean)).to.have.length(19);
+        expect(server.stats().refusedSockets).to.equal(19);
+
+        sendFrames(server, "42", RUN_A, 0, 1);
+        const waitedFrom = Date.now();
+        while (
+          !readers.every((socket) => socket.text.includes(`id: ${RUN_A}.0`)) &&
+          Date.now() - waitedFrom < 1000
+        ) {
+          await sleep(10);
+        }
+        for (const socket of readers) expect(socket.text).to.include(`id: ${RUN_A}.0`);
+        expect(server.stats().connections).to.equal(4);
+      } finally {
+        [...readers, ...flood].forEach((socket) => socket.destroy());
+      }
+    });
+
+    it("closes a socket that sends its headers too slowly within the headers bound", async () => {
+      // Headers within 200 ms, checked every 50 ms: the socket is closed by about 250 ms; one
+      // second leaves room for a slow machine and is far below Node's own 30 s check.
+      const { port } = await serve(
+        {},
+        {
+          httpLimits: {
+            headersTimeoutMs: 200,
+            requestTimeoutMs: 200,
+            connectionsCheckingIntervalMs: 50,
+          },
+        },
+      );
+      const socket = await rawSocket(port);
+      socket.write("GET /stream/42 HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+      const drip = setInterval(() => socket.write("X-Slow: 1\r\n"), 40);
+      try {
+        expect(await within(socket.closed, 1000), "closed within the bound").to.equal(true);
+      } finally {
+        clearInterval(drip);
+        socket.destroy();
+      }
+    });
+
+    it("leaves a live event stream open past the header, request and keep-alive timeouts", async () => {
+      // Every socket timeout at 100 ms or less, checked every 20 ms; the reader is still served
+      // 700 ms later. Node checks the header and request timeouts only until a request is
+      // complete, and the keep-alive timeout only after a response has finished.
+      const { server, base } = await serve(
+        {},
+        {
+          httpLimits: {
+            headersTimeoutMs: 100,
+            requestTimeoutMs: 100,
+            connectionsCheckingIntervalMs: 20,
+            keepAliveTimeoutMs: 50,
+            keepAliveTimeoutBufferMs: 0,
+          },
+        },
+      );
+      openAnswer(server, "42");
+      const res = await streamFetch(base, "42", { proof: streamProof(KEY, "42") });
+      expect(res.status).to.equal(200);
+      const reading = readUntil(res, { until: (t) => t.includes(`${RUN_A}.0`), timeoutMs: 3000 });
+      await sleep(700);
+      sendFrames(server, "42", RUN_A, 0, 1);
+      const { text, ended } = await reading;
+      expect(parseSse(text).events.map((e) => e.id)).to.deep.equal([`${RUN_A}.0`]);
+      expect(ended).to.equal(false);
     });
   });
 
