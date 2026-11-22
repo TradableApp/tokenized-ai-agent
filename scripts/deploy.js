@@ -13,7 +13,6 @@ const { LOCAL_NETWORKS } = require("./lib/networks");
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
 
-
 // --- Base mainnet guard -------------------------------------------------------------------
 // `deploy:base-mainnet` reads .env.base-mainnet, which ships with placeholder addresses until
 // the mainnet contracts exist. `ethers` treats a non-address string as an ENS name and defers
@@ -487,13 +486,18 @@ async function symbolProblems(ethers, plan) {
   return [`token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL`];
 }
 
+/** The line that records the new pair, so a second run upgrades it rather than deploying another. */
+function recordPairLine({ plan, agentAddress, escrowAddress }) {
+  return `In ${plan.envFile}: AI_AGENT_CONTRACT_ADDRESS=${agentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${escrowAddress}, DEPLOY_MODE=upgrade.`;
+}
+
 function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
   const run = `ENV_FILE=${plan.envFile} HARDHAT_NETWORK=${plan.networkName} node scripts/authorize-oracle.js`;
   return [
     chalk.yellow(
       `The deploy wallet ${deployer} is the agent's first oracle. Move the role to the oracle's own address before the ownership handover, in this order (docs/BASE_TESTNET_DEPLOY_RUNBOOK.md, section 1.1):`,
     ),
-    `  1. In ${plan.envFile}: AI_AGENT_CONTRACT_ADDRESS=${agentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${escrowAddress}, DEPLOY_MODE=upgrade.`,
+    `  1. ${recordPairLine({ plan, agentAddress, escrowAddress })}`,
     "  2. Start the oracle on this pair and read the signer= address from its [OracleKeys] start-up line.",
     `  3. ORACLE_ADDRESS=<signer> ${run} grant`,
     "  4. See one prompt answered by it, and take that answer's transaction hash.",
@@ -630,6 +634,11 @@ function reportFreshPair({ plan, log, oracle, deployer, agentAddress, escrowAddr
   }
   if (plan.oracle) {
     log(`ORACLE_ADDRESS ${oracle} holds the oracle role; the deploy wallet does not.`);
+    log(
+      chalk.yellow(
+        `Record the pair now, so that a second run upgrades it rather than deploying another. ${recordPairLine({ plan, agentAddress, escrowAddress })}`,
+      ),
+    );
     return;
   }
   for (const line of handOverSteps({ plan, deployer, agentAddress, escrowAddress })) log(line);
@@ -806,7 +815,8 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(error);
+    // The stack (message and frames) only: an ethers error object also carries the request.
+    console.error(chalk.red(error?.stack ?? String(error)));
     process.exitCode = 1;
   });
 }

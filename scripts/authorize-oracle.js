@@ -273,7 +273,7 @@ module.exports = { PHASES, runHandover, resolveHandoverTarget, targetLines, Hand
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(chalk.red(error instanceof HandoverError ? error.message : error?.stack));
+    console.error(chalk.red(error instanceof HandoverError ? error.message : error?.stack ?? String(error)));
     process.exitCode = 1;
   });
 }
