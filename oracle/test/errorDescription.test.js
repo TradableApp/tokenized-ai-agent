@@ -4,9 +4,13 @@ const { ethers } = require("ethers");
 const {
   describeError,
   describedError,
+  describedText,
   errorKind,
   withoutAddresses,
+  MAX_DESCRIBED_LENGTH,
 } = require("../src/errorDescription");
+// What stands where a network peer was (networkPeers.js).
+const PEER_REMOVED = "[peer removed]";
 const { isTransientProviderError } = require("../src/errors");
 const { refusedByProvider } = require("./helpers/refusedByProvider");
 
@@ -288,15 +292,37 @@ describe("errorDescription — what an error is, without the address it was sent
       ]);
     });
 
-    it("removes an address carried by the original's name, from the name and the stack", () => {
+    it("keeps the original's name only when it is one short word, in the name and the stack", () => {
       const original = new Error("fetch failed");
       original.name = "FetchError https://rpc.example/v2/not-a-real-key";
 
       const error = describedError(original);
 
-      expect(error.name).to.equal("FetchError [address removed]");
+      expect(error.name).to.equal("Error");
       expect(error.stack).to.not.include("not-a-real-key");
       expect(util.inspect(error, { depth: 10 })).to.not.include("not-a-real-key");
+      expect(describedError(new TypeError("x")).name).to.equal("TypeError");
+    });
+
+    it("keeps no network peer field of the original", () => {
+      const original = Object.assign(new Error("connect ECONNREFUSED 192.0.2.10:5432"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+        address: "192.0.2.10",
+        port: 5432,
+        hostname: "db.example.com",
+        host: "db.example.com",
+      });
+
+      const error = describedError(original);
+
+      expect(error.code).to.equal("ECONNREFUSED");
+      for (const field of ["address", "port", "hostname", "host"]) {
+        expect(error, field).to.not.have.property(field);
+      }
+      const shown = util.inspect(error, { depth: 10 });
+      expect(shown).to.not.include("192.0.2.10");
+      expect(shown).to.not.include("db.example.com");
     });
 
     it("keeps the code, which callers branch on", () => {
@@ -483,5 +509,206 @@ describe("isTransientProviderError — a provider request that a later attempt m
         "to other.example/v2/zY9xW8vU7tS6rQ5pO4nM refused",
       );
     });
+  });
+});
+
+describe("describeError — one line of text, with nothing a reader outside the TEE may not see", () => {
+  const { refreshRequestSecrets } = require("../src/requestSecrets");
+
+  afterEach(() => refreshRequestSecrets(process.env));
+
+  describe("a failed connection", () => {
+    it("keeps the code and the call, and never the peer", () => {
+      const error = Object.assign(new Error("connect ECONNREFUSED 192.0.2.10:5432"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+        address: "192.0.2.10",
+        port: 5432,
+      });
+
+      expect(describeError(error)).to.equal(`connect ECONNREFUSED ${PEER_REMOVED}`);
+    });
+
+    it("keeps no peer from a name that does not resolve", () => {
+      const error = Object.assign(new Error("getaddrinfo ENOTFOUND db.example.com"), {
+        code: "ENOTFOUND",
+        hostname: "db.example.com",
+      });
+
+      expect(describeError(error)).to.equal(`getaddrinfo ENOTFOUND ${PEER_REMOVED}`);
+    });
+
+    it("keeps only the code of a connection tried at several addresses", () => {
+      const error = new AggregateError(
+        [new Error("connect ECONNREFUSED 2001:db8::10:5432")],
+        "",
+      );
+      error.code = "ECONNREFUSED";
+
+      expect(describeError(error)).to.equal("ECONNREFUSED");
+    });
+
+    it("keeps no peer from a cause or from a peer named outside a known shape", () => {
+      const cause = Object.assign(new Error("connect ETIMEDOUT 198.51.100.7:5432"), {
+        code: "ETIMEDOUT",
+      });
+
+      expect(describeError(new Error("fetch failed", { cause }))).to.equal(
+        "fetch failed (cause: ETIMEDOUT)",
+      );
+      expect(describeError("cannot reach 203.0.113.9")).to.equal(`cannot reach ${PEER_REMOVED}`);
+    });
+
+    it("keeps no host from a TLS error", () => {
+      const error = Object.assign(
+        new Error(
+          "Hostname/IP does not match certificate's altnames: Host: db.example.com. is not in the cert's altnames: DNS:*.example.net",
+        ),
+        { code: "ERR_TLS_CERT_ALTNAME_INVALID", host: "db.example.com" },
+      );
+
+      const text = describeError(error);
+
+      expect(text).to.include("ERR_TLS_CERT_ALTNAME_INVALID");
+      expect(text).to.not.include("example.com");
+      expect(text).to.not.include("example.net");
+    });
+  });
+
+  it("is the first line only", () => {
+    expect(describeError(new Error("line one\nline two\nline three"))).to.equal("line one");
+    expect(describeError(new Error("line one\r\nline two"))).to.equal("line one");
+  });
+
+  it("is capped, after it is cleaned", () => {
+    expect(describeError(new Error("x ".repeat(5000))).length).to.be.at.most(
+      MAX_DESCRIBED_LENGTH,
+    );
+    expect(describeError(new Error("x".repeat(5000))).length).to.be.at.most(MAX_DESCRIBED_LENGTH);
+    expect(MAX_DESCRIBED_LENGTH).to.be.within(100, 500);
+  });
+
+  it("never leaves part of a configured secret where the cap falls", () => {
+    const secret = "Kq7Lm2Np9Rs4Tv6Wx8Yz3Ab5Cd";
+    refreshRequestSecrets({ SOME_API_KEY: secret });
+
+    for (let lead = MAX_DESCRIBED_LENGTH - 30; lead < MAX_DESCRIBED_LENGTH + 5; lead += 1) {
+      const text = describeError(new Error(`${"a".repeat(lead)} ${secret} tail`));
+
+      expect(text, String(lead)).to.not.include(secret.slice(0, 6));
+    }
+  });
+
+  it("keeps the fact and the code of a failed query, never its text or its values", () => {
+    // The message the query builder gives, with the database's error as its cause.
+    const cause = Object.assign(new Error("duplicate key value violates unique constraint"), {
+      code: "23505",
+      detail: "Key (wallet)=(0x1111111111111111111111111111111111111111) already exists.",
+      where: "SQL statement",
+    });
+    const query = "insert into activity (wallet, prompt) values ($1, $2)";
+    const params = ["0x1111111111111111111111111111111111111111", "should I sell my coins"];
+    const error = new Error(`Failed query: ${query}\nparams: ${params}`, { cause });
+
+    const text = describeError(error);
+
+    expect(text).to.equal("Failed query (cause: 23505)");
+    expect(describedText(`Failed query: ${query} params: ${params}`)).to.equal("Failed query");
+  });
+
+  it("names the code of a database error and drops the values it quotes", () => {
+    const quoted = Object.assign(
+      new Error('invalid input syntax for type json: "my secret prompt about buying"'),
+      { code: "22P02" },
+    );
+    const user = Object.assign(new Error('password authentication failed for user "oracle"'), {
+      code: "28P01",
+    });
+
+    const quotedText = describeError(quoted);
+    const userText = describeError(user);
+
+    expect(quotedText).to.match(/^22P02: invalid input syntax for type json: /);
+    expect(quotedText).to.not.include("secret prompt");
+    expect(userText).to.match(/^28P01: password authentication failed for user /);
+    expect(userText).to.not.include("oracle");
+  });
+
+  it("drops a quoted file path, and keeps an apostrophe in a word", () => {
+    const text = describeError(
+      Object.assign(new Error("ENOENT: no such file or directory, open '/home/u/keys/k.pem'"), {
+        code: "ENOENT",
+      }),
+    );
+
+    expect(text).to.match(/^ENOENT: no such file or directory, open /);
+    expect(text).to.not.include("/home/u");
+    expect(describeError(new Error("can't reach the store"))).to.equal("can't reach the store");
+  });
+
+  it("never echoes the request or the response of a model provider", () => {
+    const error = Object.assign(
+      new Error("Invalid JSON payload received at 'contents[0]': user said: how do I short it"),
+      {
+        name: "AI_APICallError",
+        url: "https://models.example.com/v1/generate?key=Kq7Lm2Np9Rs4Tv6Wx8Yz",
+        requestBodyValues: { prompt: "how do I short it" },
+        responseBody: '{"error":"how do I short it"}',
+        statusCode: 400,
+      },
+    );
+
+    const text = describeError(error);
+
+    expect(text).to.equal("AI_APICallError (status 400)");
+    expect(describeError(Object.assign(new Error("x"), { name: "AI_RetryError" }))).to.equal(
+      "AI_RetryError",
+    );
+  });
+
+  it("removes a bearer token, a JWT and a long base64 run", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJlLXRoYXQtaXMtbG9uZw";
+    const base64 = "QWxhZGRpbjpvcGVuIHNlc2FtZSBhbmQgbW9yZSBieXRlcw2";
+
+    expect(describeError(new Error(`Authorization: Bearer ${jwt}`))).to.not.include("eyJ");
+    expect(describeError(new Error(`Authorization: Bearer abc.def-123_x`))).to.not.include(
+      "abc.def-123_x",
+    );
+    expect(describeError(new Error(`token ${jwt} expired`))).to.not.include("eyJ");
+    expect(describeError(new Error(`bad blob ${base64} here`))).to.equal(
+      "bad blob [value removed] here",
+    );
+  });
+
+  it("removes a wallet address and long hex from the message, and keeps revert data", () => {
+    const wallet = "0xAbCdEf0123456789abcdef0123456789ABCDEF01";
+
+    expect(describeError(new Error(`no plan for ${wallet}`))).to.equal(
+      "no plan for [value removed]",
+    );
+    expect(describeError(new Error(`blob ${"ab12".repeat(8)} bad`))).to.equal(
+      "blob [value removed] bad",
+    );
+    // A four-byte selector names the error and is kept.
+    expect(describeError(new Error("reverted with 0x82b42900"))).to.equal(
+      "reverted with 0x82b42900",
+    );
+    const revert = ethers.makeError("execution reverted (unknown custom error)", "CALL_EXCEPTION", {
+      data: `0x82b42900${"0".repeat(24)}${"11".repeat(20)}`,
+    });
+    expect(describeError(revert)).to.include(`(revert data 0x82b42900`);
+  });
+
+  it("removes an address whatever the case of its scheme", () => {
+    expect(describeError(new Error("GET HTTPS://RPC.EXAMPLE/v2/NOTAREALKEY failed"))).to.equal(
+      "GET [address removed] failed",
+    );
+  });
+
+  it("describes any text the same way, for text that is not an error's", () => {
+    expect(describedText("connect ECONNREFUSED 192.0.2.10:5432\nparams: x")).to.equal(
+      `connect ECONNREFUSED ${PEER_REMOVED}`,
+    );
+    expect(describedText(undefined)).to.equal("undefined");
   });
 });

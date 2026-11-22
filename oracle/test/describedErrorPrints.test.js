@@ -248,6 +248,44 @@ describe("errors printed by the oracle carry no access key", () => {
       expect(text).to.include("AI_AGENT_CONTRACT_ADDRESS");
       expect(text).to.not.include(KEY);
     });
+
+    // The last line printed before the process ends. A peer address from the documentation
+    // range stands in for a database the oracle could not reach.
+    const PEER = "192.0.2.10";
+    const crashError = () =>
+      Object.assign(new Error(`connect ECONNREFUSED ${PEER}:5432 via ${LEAKY_URL}`), {
+        code: "ECONNREFUSED",
+        address: PEER,
+        port: 5432,
+      });
+
+    /** The handlers index registers on the process, by event name. */
+    function crashHandlers() {
+      sinon.stub(process, "exit");
+      const on = sinon.stub(process, "on");
+      proxyquire("../src/index", {
+        "./sentryInit": { initSentry: () => {} },
+        "@sentry/node": { captureException: () => {}, flush: async () => {} },
+        "./oracleKeys": { obtainOracleKeys: () => new Promise(() => {}) },
+        "./secretValues": { wrapConsole: () => {} },
+        "./startupConfig": { ConfigError: class extends Error {}, validateConfig: () => {} },
+      });
+      return Object.fromEntries(on.getCalls().map((call) => [call.args[0], call.args[1]]));
+    }
+
+    for (const event of ["unhandledRejection", "uncaughtException"]) {
+      it(`describes what reaches the ${event} handler`, async () => {
+        const handlers = crashHandlers();
+        expect(handlers[event], event).to.be.a("function");
+
+        const { text } = await printedBy(() => handlers[event](crashError()));
+
+        expect(text).to.include("[Fatal]");
+        expect(text).to.include("ECONNREFUSED");
+        expect(text).to.not.include(KEY);
+        expect(text).to.not.include(PEER);
+      });
+    }
   });
 
   describe("startupConfig", () => {
