@@ -21,7 +21,7 @@ set -euo pipefail
 #     value: a non-empty POSTGRES_HOST or POSTGRES_URL (or any postgres address)
 #     below the delimiter; a setting below the delimiter whose value holds the
 #     POSTGRES_HOST value; a key that is not upper-case snake case (`mcp` aside),
-#     such as `export KEY=` or `postgres_host=`; and database settings with no
+#     such as `export KEY=` or `postgres_host=`, named by its line number; and database settings with no
 #     non-empty POSTGRES_HOST above the delimiter, which would boot an oracle with
 #     an empty host.
 #   * Cloud-SQL ownership mirrors sense-ai-core:
@@ -117,7 +117,7 @@ KEEP_KEYS=""      # |KEY| the secrets that SHOULD stay on-chain (for orphan purg
 POSTGRES_HOST_IN_CONFIG=""  # env file that sets POSTGRES_HOST below the delimiter (refused)
 POSTGRES_HOST_VALUE=""      # the POSTGRES_HOST secret, compared by value, never printed
 DATABASE_URL_IN_CONFIG=""   # "KEY in FILE" lines: a postgres address below the delimiter (refused)
-MALFORMED_KEYS=""           # "KEY in FILE" lines: not upper-case snake case (refused)
+MALFORMED_KEYS=""           # "LINE in FILE" lines: a key that is not upper-case snake case (refused)
 HAS_DATABASE_CONFIG=0       # a non-empty POSTGRES_* setting below the delimiter
 
 is_seen()  { case "$SEEN_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
@@ -126,8 +126,9 @@ is_kept()  { case "$KEEP_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
 keep_key() { KEEP_KEYS="${KEEP_KEYS}|$1|"; }
 
 process_file() {
-  local file="$1" is_config=0 line key remainder value
+  local file="$1" is_config=0 line key remainder value lineno=0
   while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
     # delimiter → switch to config section (no compose output; banners added once, later)
     if [[ "$line" == *"$SPLIT_DELIMITER"* ]]; then is_config=1; continue; fi
     # drop comments / blanks (compose is a clean generated artifact)
@@ -138,10 +139,12 @@ process_file() {
     key=$(echo "$line" | cut -d= -f1 | tr -d '[:space:]')
     remainder=$(echo "$line" | cut -d= -f2- | sed 's/[[:space:]]*$//')
     # A key compose and the oracle would read as something else (`export KEY=`, `key=`) is
-    # refused, named and never valued: its value would land in the compose under a name
-    # nothing checks. `mcp` is lower-case on purpose (see the preflight below).
+    # refused: its value would land in the compose under a name nothing checks. It is named by
+    # its line number, never by its text: a wrapped value's continuation line holds "=" too,
+    # and what reads as its key is part of a secret. `mcp` is lower-case on purpose (see the
+    # preflight below).
     if [ "$key" != "mcp" ] && ! [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
-      MALFORMED_KEYS+="${key} in ${file}\n"
+      MALFORMED_KEYS+="${lineno} in ${file}\n"
       continue
     fi
     is_seen "$key" && continue
@@ -290,7 +293,7 @@ while IFS= read -r entry; do
 done <<< "$(printf '%b' "$DATABASE_URL_IN_CONFIG")"
 while IFS= read -r entry; do
   [ -z "$entry" ] && continue
-  preflight_failures+="  ✗ '${entry%% in *}' in ${entry#* in } is not an upper-case snake case key\n      write KEY=value with no prefix (no 'export'), in upper case — compose would pass it on under a name nothing checks\n"
+  preflight_failures+="  ✗ line ${entry%% in *} of ${entry#* in } has a key that is not upper-case snake case (text not shown)\n      write KEY=value with no prefix (no 'export'), in upper case, each value on one line — compose would pass it on under a name nothing checks\n"
 done <<< "$(printf '%b' "$MALFORMED_KEYS")"
 # Any other setting below the delimiter whose value holds the address, compared by value. A
 # loopback host is the same everywhere and says nothing, so it is not compared.
