@@ -42,6 +42,31 @@ const MAX_SETTING_MS = 24 * 60 * 60 * 1000;
 const MAX_CONNECTIONS = 10000;
 const MAX_PORT = 65535;
 
+/**
+ * THE SOCKET BUDGET: how many sockets the stream server may hold at once, readers and callers
+ * without a proof together. It protects the descriptors of the process that answers paid
+ * prompts; it is not a reader limit (that is STREAM_MAX_CONN_TOTAL, checked after the proof).
+ *
+ * The container's descriptor limit is not set or recorded anywhere in this repo (rofl.yaml and
+ * the compose files set no ulimit), so the budget assumes the common soft default of 1024 and
+ * is to be measured in the Phase 0 load check (`ulimit -n` in the machine's container). Of
+ * that, ORACLE_DESCRIPTOR_RESERVE is kept for the oracle itself: its Postgres pools (state,
+ * ElizaOS and the Brain, a few dozen connections), keep-alive sockets to the chain RPC, the
+ * model providers (Gemini, ChainGPT, the Tradable assistant), storage (Autonomys, Irys, the GCS
+ * mirror), Sentry and alerting, the tool servers, and Node's own files and pipes; about 120 at
+ * peak by that count, doubled for margin. What is left, 768, is almost four times the default
+ * reader cap.
+ */
+const ASSUMED_DESCRIPTOR_LIMIT = 1024;
+const ORACLE_DESCRIPTOR_RESERVE = 256;
+const SOCKET_BUDGET = ASSUMED_DESCRIPTOR_LIMIT - ORACLE_DESCRIPTOR_RESERVE;
+/**
+ * The reader cap may be at most this share of the socket budget, so callers without a proof
+ * must fill at least twice the readers' sockets before a key holder is refused at the socket.
+ */
+const SOCKETS_PER_READER = 3;
+const MAX_READERS_IN_BUDGET = Math.floor(SOCKET_BUDGET / SOCKETS_PER_READER);
+
 const isBlank = (value) => typeof value !== "string" || !value.trim();
 
 /**
@@ -145,6 +170,12 @@ function parseStreamConfig(env = process.env) {
   ) {
     problems.push("STREAM_MAX_CONN_PER_ANSWER is above STREAM_MAX_CONN_TOTAL");
   }
+  if (config.maxConnTotal !== null && config.maxConnTotal > MAX_READERS_IN_BUDGET) {
+    problems.push(
+      `STREAM_MAX_CONN_TOTAL is above ${MAX_READERS_IN_BUDGET}, a third of the stream server's ` +
+        `socket budget of ${SOCKET_BUDGET}: callers without a proof could then fill the rest`,
+    );
+  }
   return { config, problems };
 }
 
@@ -165,6 +196,7 @@ function readStreamConfig(env = process.env) {
 module.exports = {
   STREAM_SETTING_DEFAULTS,
   DEFAULT_ALLOWED_ORIGINS,
+  SOCKET_BUDGET,
   streamConfigProblems,
   readStreamConfig,
 };

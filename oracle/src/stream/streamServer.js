@@ -13,7 +13,7 @@ const {
   sseEventId,
 } = require("./streamContract");
 const { createFrameBuffer, BUFFER_LIMITS } = require("./frameBuffer");
-const { readStreamConfig } = require("./streamConfig");
+const { readStreamConfig, SOCKET_BUDGET } = require("./streamConfig");
 const { errorKind } = require("../errorDescription");
 
 /**
@@ -41,8 +41,8 @@ const { errorKind } = require("../errorDescription");
  * described by kind only (`errorKind`).
  *
  * WHAT IT DOES NOT DO (by plan): TLS (the ROFL proxy's job, measured in Phase 0), per-address
- * rate limits (no address the proxy vouches for is known yet), and a relay for when the proxy
- * cannot carry a stream.
+ * rate limits (the reader's address is never read, and behind the proxy every caller may share
+ * one; see `httpLimitsFor`), and a relay for when the proxy cannot carry a stream.
  */
 
 /** A reader whose socket has not drained this long after a refused write is destroyed. */
@@ -52,8 +52,12 @@ const MAX_REQUEST_TARGET_CHARS = 128;
 /** Request line and headers together; a browser's GET with these headers is far below it. */
 const MAX_HEADER_BYTES = 8192;
 const MAX_HEADERS_COUNT = 50;
-/** The time a socket has to send its request line and headers; a browser sends both at once. */
-const HEADERS_TIMEOUT_MS = 10000;
+/**
+ * The time a socket has to send its request line and headers, counted from when it connected
+ * (a socket that sends nothing at all is closed by it too). A browser, or the proxy in front of
+ * the server, sends both at once; 5 s keeps a place held without a proof short.
+ */
+const HEADERS_TIMEOUT_MS = 5000;
 /**
  * A request with a body is refused, so a request we serve is complete with its headers. Node
  * requires requestTimeout >= headersTimeout. Neither applies once the request is complete: Node's
@@ -62,11 +66,11 @@ const HEADERS_TIMEOUT_MS = 10000;
  */
 const REQUEST_TIMEOUT_MS = HEADERS_TIMEOUT_MS;
 /**
- * How often Node checks the two timeouts above. Its default, 30 s, let a socket that never
- * finishes its headers live up to 10 + 30 s; at 1 s it is closed within 11 s. Each check walks
+ * How often Node checks the two timeouts above. Its default, 30 s, would let a socket that never
+ * finishes its headers live up to 5 + 30 s; at 0.5 s it is closed within 5.5 s. Each check walks
  * only the connections still receiving a request, which are at most `maxConnections`.
  */
-const CONNECTIONS_CHECK_MS = 1000;
+const CONNECTIONS_CHECK_MS = 500;
 /**
  * A reader reconnects `sseRetryMs` (2 s) after a stream ends, and a 404 tells it to retry after
  * 2 s too. A keep-alive socket idle a second longer than that is not about to be reused.
@@ -77,12 +81,6 @@ const KEEP_ALIVE_HEADROOM_MS = 1000;
  * its default here so the bound is written down: an idle socket lives at most 2 + 1 + 1 = 4 s.
  */
 const KEEP_ALIVE_BUFFER_MS = 1000;
-/**
- * Sockets allowed above the reader cap, as a share of it: room for preflights and for the
- * refusals (404, 429, 503) of readers reconnecting while every place is taken. A quarter: 50
- * sockets at the default cap of 200, so 250 in all.
- */
-const REFUSAL_HEADROOM_DIVISOR = 4;
 const MS_PER_SECOND = 1000;
 /** A kind of server failure is logged again at most this often; every one is counted. */
 const FAILURE_LOG_INTERVAL_MS = 60 * 60 * 1000;
@@ -95,6 +93,7 @@ const PROOF_HEADER = STREAM_HTTP.proofHeader.toLowerCase();
 const LAST_EVENT_ID_HEADER = STREAM_HTTP.lastEventIdHeader.toLowerCase();
 const PREFLIGHT_ALLOWED_HEADERS = `${STREAM_HTTP.proofHeader}, ${STREAM_HTTP.lastEventIdHeader}`;
 const MODE_QUERY_PREFIX = "mode=";
+const CLOSE = Object.freeze({ Connection: "close" });
 const PING = ": ping\n\n";
 
 function proofMatches(given, expected) {
@@ -153,21 +152,27 @@ function readerQueueCap(bufferLimits) {
 }
 
 /**
- * Node's own socket limits, derived from the stream settings. They bound what a caller without a
- * proof can hold in the process that answers paid prompts: sockets (so descriptors), requests on
- * one socket, idle keep-alive time and time to send headers. A socket past `maxConnections` is
- * closed by `net` on arrival, before the HTTP layer allocates a parser for it, so it costs no
- * parsing. Nothing here reads a caller's address: the limits are per process, not per client.
+ * Node's own socket limits. They bound what a caller without a proof can hold in the process
+ * that answers paid prompts: sockets (so descriptors), requests on one socket, idle keep-alive
+ * time and time to send headers. A socket past `maxConnections` is closed by `net` on arrival,
+ * before the HTTP layer allocates a parser for it, so it costs no parsing.
+ *
+ * The socket cap is the descriptor budget (SOCKET_BUDGET in streamConfig.js, 768), not the
+ * reader cap: the reader cap (STREAM_MAX_CONN_TOTAL, at most a third of the budget) is checked
+ * after the proof, and every answer but an admitted stream closes its socket, so a caller
+ * without a proof holds a place for at most the headers bound (5.5 s) and must keep reopening
+ * sockets faster than that to keep key holders out. There is deliberately no limit per source
+ * address: the reader's address is never read (oracle/test/streamLogging.test.js guards it),
+ * and behind the ROFL proxy every caller may arrive from the proxy's one address anyway.
  *
  * Node's documented behaviour (v24, read 2026-11-21): nodejs.org/docs/latest-v24.x/api/http.html
  * (headersTimeout, requestTimeout, connectionsCheckingInterval, keepAliveTimeout,
  * keepAliveTimeoutBuffer, maxRequestsPerSocket) and .../api/net.html (maxConnections, 'drop').
- *
- * @param {{ maxConnTotal: number }} config
+ * Checked on Node 24: headersTimeout also closes a socket that connects and sends nothing.
  */
-function httpLimitsFor(config) {
+function httpLimitsFor() {
   return Object.freeze({
-    maxConnections: config.maxConnTotal + Math.ceil(config.maxConnTotal / REFUSAL_HEADROOM_DIVISOR),
+    maxConnections: SOCKET_BUDGET,
     // One preflight, then the polls of one preflight lifetime (600 s / 20 s = 30): a polling
     // reader's socket is replaced about once per preflight, and one socket cannot carry an
     // unbounded run of pipelined requests (past the limit Node answers 503).
@@ -198,7 +203,7 @@ function createStreamServer({
   httpLimits = {},
   now = () => Date.now(),
 }) {
-  const limits = { ...httpLimitsFor(config), ...httpLimits };
+  const limits = { ...httpLimitsFor(), ...httpLimits };
   const buffer = createFrameBuffer({ graceMs: config.graceMs, limits: bufferLimits });
   const allowedOrigins = new Set(config.allowedOrigins);
   const maxQueuedBytes = readerQueueCap(bufferLimits);
@@ -240,27 +245,46 @@ function createStreamServer({
     return headers;
   }
 
-  function refuse(req, res, refusal, { closeConnection = false } = {}) {
+  // Every answer but an admitted stream carries CLOSE: Node then destroys the socket once the
+  // response is written, so a request without a valid proof never keeps a place in the socket
+  // pool. A reader that is refused and retries opens a new socket.
+  function refuse(req, res, refusal) {
     const body = JSON.stringify({ error: refusal.error });
     const headers = {
       ...corsHeaders(req),
+      ...CLOSE,
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "Content-Length": Buffer.byteLength(body),
     };
     if (refusal.retryAfterSeconds) headers["Retry-After"] = String(refusal.retryAfterSeconds);
-    if (closeConnection) headers.Connection = "close";
     res.writeHead(refusal.status, headers);
     res.end(body);
   }
 
   function notFound(req, res) {
-    res.writeHead(404, { ...corsHeaders(req), "Content-Length": 0 });
+    res.writeHead(404, { ...corsHeaders(req), ...CLOSE, "Content-Length": 0 });
     res.end();
   }
 
+  /**
+   * Liveness for a person or the localnet harness (which asks it once at bring-up). No deployed
+   * healthcheck uses it: the compose files define none and restart only on exit, so a full
+   * socket pool cannot get the oracle restarted. A healthcheck added later must not use this
+   * public port.
+   */
+  function health(res) {
+    const body = JSON.stringify({ ok: true });
+    res.writeHead(200, {
+      ...CLOSE,
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(body),
+    });
+    res.end(body);
+  }
+
   function preflight(req, res) {
-    const headers = corsHeaders(req);
+    const headers = { ...corsHeaders(req), ...CLOSE };
     if (headers["Access-Control-Allow-Origin"]) {
       headers["Access-Control-Allow-Methods"] = "GET";
       headers["Access-Control-Allow-Headers"] = PREFLIGHT_ALLOWED_HEADERS;
@@ -387,19 +411,14 @@ function createStreamServer({
     const target = typeof req.url === "string" ? req.url : "";
     // Refused before anything is parsed or read, and the connection is not kept.
     if (target.length > MAX_REQUEST_TARGET_CHARS || hasBody(req)) {
-      return refuse(req, res, STREAM_REFUSALS.badRequest, { closeConnection: true });
+      return refuse(req, res, STREAM_REFUSALS.badRequest);
     }
     const queryAt = target.indexOf("?");
     const pathname = queryAt === -1 ? target : target.slice(0, queryAt);
     const query = queryAt === -1 ? "" : target.slice(queryAt + 1);
 
     if (pathname === STREAM_HTTP.healthPath && query === "" && req.method === "GET") {
-      const body = JSON.stringify({ ok: true });
-      res.writeHead(200, {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      });
-      return res.end(body);
+      return health(res);
     }
     if (!pathname.startsWith(STREAM_HTTP.streamPathPrefix)) return notFound(req, res);
     if (req.method === "OPTIONS") return preflight(req, res);
@@ -420,8 +439,7 @@ function createStreamServer({
         route(req, res);
       } catch (error) {
         noteFailure(error);
-        if (!res.headersSent)
-          refuse(req, res, STREAM_REFUSALS.unavailable, { closeConnection: true });
+        if (!res.headersSent) refuse(req, res, STREAM_REFUSALS.unavailable);
         else res.destroy();
       }
     },
