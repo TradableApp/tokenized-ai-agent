@@ -90,6 +90,25 @@ describe("frameBuffer", () => {
       expect(buffer.lookup("7").state).to.equal("unknown");
     });
 
+    it("counts what it refused: frames it did not keep and runs it had no room to open", () => {
+      const small = createFrameBuffer({
+        graceMs: GRACE_MS,
+        limits: { ...BUFFER_LIMITS, maxOpenAnswers: 1 },
+      });
+      try {
+        openWithFrames(small, "1", RUN_A, 1);
+        expect(small.open("2", { run: RUN_A, replica: "deadbeef", expectedProof: PROOF })).to.equal(
+          false,
+        );
+        small.append("1", { run: RUN_B, seq: 1, ciphertext: sealed() }); // another run
+        small.append("1", { run: RUN_A, seq: 3, ciphertext: sealed() }); // a gap
+        small.append("9", { run: RUN_A, seq: 0, ciphertext: sealed() }); // never opened
+        expect(small.stats()).to.include({ refusedOpens: 1, refusedAppends: 3 });
+      } finally {
+        small.dispose();
+      }
+    });
+
     it("refuses a frame after its run was closed", () => {
       openWithFrames(buffer, "42", RUN_A, 1);
       buffer.close("42", { run: RUN_A, outcome: "answered" });

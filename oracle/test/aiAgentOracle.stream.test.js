@@ -609,4 +609,36 @@ describe("answer path and live stream", function () {
       expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(projection(frames));
     });
   });
+
+  describe("the heartbeat's stream block", () => {
+    const quietSink = (extra = {}) => ({ open() {}, frame() {}, close() {}, ...extra });
+
+    it("carries the answer path's counts and the server's stats, and null for a sink without them", () => {
+      const { oracle } = loadOracle();
+      const serverStats = { connections: 3, failures: 1, refusedAppends: 2 };
+      oracle.setStreamSink(quietSink({ stats: () => serverStats }));
+      const withServer = oracle.streamHeartbeatSnapshot();
+      expect(withServer).to.have.all.keys("framesBuilt", "sinkFailures", "server");
+      expect(withServer.server).to.deep.equal(serverStats);
+
+      oracle.setStreamSink(quietSink());
+      expect(oracle.streamHeartbeatSnapshot().server).to.equal(null);
+
+      oracle.setStreamSink(
+        quietSink({
+          stats() {
+            throw new Error("stats broke");
+          },
+        }),
+      );
+      const broken = oracle.streamHeartbeatSnapshot();
+      expect(broken.server).to.equal(null);
+      expect(broken.framesBuilt).to.be.a("number");
+    });
+
+    it("is what the oracle hands the heartbeat", () => {
+      const source = require("node:fs").readFileSync(require.resolve("../src/aiAgentOracle"), "utf8");
+      expect(source).to.match(/streamSnapshot:\s*(?:\(\)\s*=>\s*)?streamHeartbeatSnapshot\b/);
+    });
+  });
 });

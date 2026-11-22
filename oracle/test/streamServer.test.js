@@ -812,6 +812,52 @@ describe("streamServer", function () {
     });
   });
 
+  describe("what it counts", () => {
+    /** Sink info whose `run` throws an error of the given code when the server reads it. */
+    const throwingInfo = (code) => ({
+      get run() {
+        const error = new Error("unreadable");
+        error.code = code;
+        throw error;
+      },
+    });
+    const HOUR_MS = 60 * 60 * 1000;
+
+    it("counts every failure and logs each kind at most once an hour, by kind only", async () => {
+      let nowMs = 1000000;
+      const logged = sinon.stub(console, "error");
+      const { server } = await serve({}, { now: () => nowMs });
+
+      server.frame("42", throwingInfo("EONE"));
+      server.frame("42", throwingInfo("EONE"));
+      expect(server.stats().failures).to.equal(2);
+      expect(logged.callCount, "the second of a kind within the hour is not logged").to.equal(1);
+      expect(logged.firstCall.args.join(" ")).to.include("EONE");
+      expect(logged.firstCall.args.join(" ")).to.not.include("unreadable");
+
+      server.frame("42", throwingInfo("ETWO"));
+      expect(logged.callCount, "another kind is logged").to.equal(2);
+
+      nowMs += HOUR_MS - 1;
+      server.frame("42", throwingInfo("EONE"));
+      expect(logged.callCount, "still within the hour").to.equal(2);
+      nowMs += 1;
+      server.frame("42", throwingInfo("EONE"));
+      expect(logged.callCount, "an hour after it was last logged").to.equal(3);
+      expect(server.stats().failures).to.equal(5);
+    });
+
+    it("carries the opens and frames the buffer refused in its stats", async () => {
+      const { server } = await serve({}, { bufferLimits: { ...BUFFER_LIMITS, maxOpenAnswers: 1 } });
+      openAnswer(server, "1");
+      openAnswer(server, "2"); // no room for a second answer
+      sendFrames(server, "1", RUN_A, 0, 1);
+      server.frame("1", { run: RUN_A, seq: 5, ciphertext: sealed() }); // a gap
+      server.frame("2", { run: RUN_A, seq: 0, ciphertext: sealed() }); // never opened
+      expect(server.stats()).to.include({ refusedOpens: 1, refusedAppends: 2, failures: 0 });
+    });
+  });
+
   describe("CORS", () => {
     it("echoes an allowed origin on a stream response and on a refusal, with Vary and Retry-After exposed", async () => {
       const { server, port } = await serve();
