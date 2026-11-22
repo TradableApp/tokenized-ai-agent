@@ -514,7 +514,7 @@ describe("streamServer", function () {
   });
 
   describe("socket limits for callers without a proof", () => {
-    /** A raw socket that has connected; `closed` resolves when the server closes it. */
+    /** A raw socket that has connected; `whenClosed` resolves when the server closes it. */
     async function rawSocket(port) {
       const socket = net.connect(port, "127.0.0.1");
       socket.setEncoding("utf8");
@@ -523,7 +523,7 @@ describe("streamServer", function () {
         socket.text += chunk;
       });
       socket.on("error", () => undefined);
-      socket.closed = new Promise((resolve) => socket.once("close", () => resolve(true)));
+      socket.whenClosed = new Promise((resolve) => socket.once("close", () => resolve(true)));
       await new Promise((resolve) => socket.once("connect", resolve));
       return socket;
     }
@@ -583,7 +583,7 @@ describe("streamServer", function () {
       const flood = [];
       try {
         for (let i = 0; i < 20; i += 1) flood.push(await rawSocket(port));
-        const closed = await Promise.all(flood.map((socket) => within(socket.closed, 1000)));
+        const closed = await Promise.all(flood.map((socket) => within(socket.whenClosed, 1000)));
         expect(closed.filter(Boolean)).to.have.length(19);
         expect(server.stats().refusedSockets).to.equal(19);
 
@@ -619,7 +619,7 @@ describe("streamServer", function () {
       socket.write("GET /stream/42 HTTP/1.1\r\nHost: 127.0.0.1\r\n");
       const drip = setInterval(() => socket.write("X-Slow: 1\r\n"), 40);
       try {
-        expect(await within(socket.closed, 1000), "closed within the bound").to.equal(true);
+        expect(await within(socket.whenClosed, 1000), "closed within the bound").to.equal(true);
       } finally {
         clearInterval(drip);
         socket.destroy();
