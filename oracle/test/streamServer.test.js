@@ -764,7 +764,7 @@ describe("streamServer", function () {
       const cap = readerQueueCap(BUFFER_LIMITS);
       // Room for a whole answer's replay with its SSE lines, the retry line and a few pings.
       expect(cap).to.be.at.least(BUFFER_LIMITS.maxAnswerBytes + maxFrames * 50);
-      // About 1.02 MiB, where it was 2 MiB: 200 readers hold at most about 204 MiB.
+      // About 1.015 MiB, where it was 2 MiB: 200 readers hold at most about 203 MiB.
       expect(cap).to.be.below(BUFFER_LIMITS.maxAnswerBytes * 1.05);
     });
 

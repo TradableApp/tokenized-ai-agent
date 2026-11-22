@@ -2,6 +2,7 @@ const http = require("node:http");
 const crypto = require("node:crypto");
 
 const {
+  LIMITS,
   STREAM_HTTP,
   STREAM_REFUSALS,
   SSE_EVENT_NAME,
@@ -31,8 +32,8 @@ const { errorKind } = require("../errorDescription");
  * WHY NOTHING HERE CAN SLOW AN ANSWER. The sink methods are synchronous and guarded: a frame is
  * appended to memory and written to each reader's socket with a non-blocking write. A reader
  * whose socket has not drained `backpressureMs` after a write was refused is destroyed, and one
- * that falls more than two answers' worth of bytes behind is destroyed at once, so a slow or
- * hostile reader costs bounded memory and never time on the answer path.
+ * that has more than one run's worth of bytes queued (`readerQueueCap`) is destroyed at once, so
+ * a slow or hostile reader costs bounded memory and never time on the answer path.
  *
  * WHY IT LOGS SO LITTLE. This is a network surface inside the TEE and the machine's logs are
  * kept. No request is logged; nothing a reader sent (its address, its headers, the answer id it
@@ -106,6 +107,47 @@ function eventText(frame) {
   return `id: ${sseEventId(frame.run, frame.seq)}\nevent: ${SSE_EVENT_NAME}\ndata: ${frame.ciphertext}\n\n`;
 }
 
+const RETRY_LINE = `retry: ${STREAM_HTTP.sseRetryMs}\n\n`;
+/** The SSE lines around one frame's ciphertext at their longest (a 16-digit seq): 59 bytes. */
+const EVENT_OVERHEAD_BYTES = eventText({
+  run: "0".repeat(16),
+  seq: Number.MAX_SAFE_INTEGER,
+  ciphertext: "",
+}).length;
+/**
+ * The most frames one run sends (contract limits): a reset; per attempt an attempt frame, a
+ * sources frame and up to `maxStepsPerAttempt` steps; then the answer and done. 267 today.
+ */
+const MAX_FRAMES_PER_RUN = 1 + LIMITS.maxAttempts * (2 + LIMITS.maxStepsPerAttempt) + 2;
+/**
+ * Pings a backed-up reader may be sent before the drain timer ends it: one per heartbeat, and the
+ * heartbeat is longer than the drain wait by default. A few more allowed for other settings.
+ */
+const PINGS_ALLOWED = 8;
+
+/**
+ * The most bytes one reader may have queued (written, not yet taken by the kernel) before it is
+ * destroyed: the longest run's whole replay with its SSE lines, the retry line and a few pings,
+ * so a reader that joins a full finished answer is never refused for the replay itself. About
+ * 1 MiB + 267 x 59 B + 77 B = 1,064,406 B (about 1.015 MiB) with the default 1 MiB answer cap.
+ *
+ * WORST CASE. Every reader at the cap at once: `maxConnTotal` x this, about 203 MiB at the
+ * default 200 readers, for at most `backpressureMs` (10 s) each, on top of the buffer's own
+ * 64 MiB. It was twice the answer cap per reader (about 400 MiB). A reader still taking in one
+ * run when the next run starts on its response may pass the cap and is then destroyed; it
+ * reconnects and replays the new run.
+ *
+ * @param {{ maxAnswerBytes: number }} bufferLimits
+ */
+function readerQueueCap(bufferLimits) {
+  return (
+    bufferLimits.maxAnswerBytes +
+    MAX_FRAMES_PER_RUN * EVENT_OVERHEAD_BYTES +
+    RETRY_LINE.length +
+    PINGS_ALLOWED * PING.length
+  );
+}
+
 /**
  * Node's own socket limits, derived from the stream settings. They bound what a caller without a
  * proof can hold in the process that answers paid prompts: sockets (so descriptors), requests on
@@ -153,7 +195,7 @@ function createStreamServer({
   const limits = { ...httpLimitsFor(config), ...httpLimits };
   const buffer = createFrameBuffer({ graceMs: config.graceMs, limits: bufferLimits });
   const allowedOrigins = new Set(config.allowedOrigins);
-  const maxQueuedBytes = 2 * bufferLimits.maxAnswerBytes;
+  const maxQueuedBytes = readerQueueCap(bufferLimits);
   const connections = new Set();
   const readersPerAnswer = new Map();
   let waitingToDrain = 0;
@@ -269,7 +311,7 @@ function createStreamServer({
     readersPerAnswer.set(id, (readersPerAnswer.get(id) ?? 0) + 1);
     res.on("close", () => release(reader));
 
-    write(reader, `retry: ${STREAM_HTTP.sseRetryMs}\n\n`);
+    write(reader, RETRY_LINE);
     const replay = buffer.framesAfter(id, parseSseEventId(req.headers[LAST_EVENT_ID_HEADER]));
     for (const frame of replay) write(reader, eventText(frame));
     if (finished || (mode === "poll" && replay.length > 0)) {
@@ -507,4 +549,10 @@ async function startStreamFromEnv({
   return server;
 }
 
-module.exports = { createStreamServer, startStreamFromEnv, httpLimitsFor, BACKPRESSURE_MS };
+module.exports = {
+  createStreamServer,
+  startStreamFromEnv,
+  httpLimitsFor,
+  readerQueueCap,
+  BACKPRESSURE_MS,
+};
