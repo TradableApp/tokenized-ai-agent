@@ -1,5 +1,3 @@
-const { stepFromThought } = require("./answerProvenance");
-
 /**
  * Run-correlated provenance collector.
  *
@@ -71,7 +69,6 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     runs.set(runId, {
       roomKey,
       sources: Array.isArray(sources) ? sources : [],
-      steps: [],
       currentAction: "",
     });
 
@@ -120,55 +117,25 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     runs.get(runId).currentAction = "";
   }
 
-  /**
-   * Records a thought and returns the step it became, or null when nothing was recorded.
-   *
-   * `action`, when it is a string, is the attribution, an empty string meaning none: a caller
-   * that records a thought later than it arrived (the live stream sanitises it first) passes the
-   * action that was in flight WHEN IT ARRIVED, read with `currentActionOf`, so a later
-   * ACTION_STARTED cannot retitle it. Left out, the action in flight now attributes it.
-   *
-   * An event for a run we never saw is IGNORED rather than auto-creating one: a stray or late
-   * event must not conjure a run that then leaks.
-   */
-  function recordThought(runId, thought, action) {
-    const run = runs.get(runId);
-    if (!run) return null;
-
-    const text = typeof thought === "string" ? thought.trim() : "";
-    if (!text) return null;
-
-    const attributed = typeof action === "string" ? action.trim() : run.currentAction;
-    const step = stepFromThought(
-      attributed ? { thought: text, action: attributed } : { thought: text },
-      run.steps.length,
-    );
-    if (!step) return null;
-    run.steps.push(step);
-    return step;
-  }
-
   /** The action in flight for a run as far as attribution goes, "" for none or an unknown run. */
   function currentActionOf(runId) {
     return runs.get(runId)?.currentAction ?? "";
   }
 
   /**
-   * Ends a run and returns its provenance, forgetting it.
+   * Ends a run and returns its sources, forgetting it.
    *
-   * Used for RUN_ENDED and RUN_TIMEOUT alike: a timed-out run must still surrender the partial
-   * reasoning it gathered rather than discarding it silently. An unknown key yields the empty
-   * shape, so the answer path never has to branch on whether tracking happened.
+   * Used for RUN_ENDED and RUN_TIMEOUT alike. An unknown key yields the empty shape, so the
+   * answer path never has to branch on whether tracking happened. The run's reasoning is not
+   * here: a thought becomes a step in the live stream (`stream/answerStream.js`), from the
+   * thought and the action read with `currentActionOf` when it arrived.
    */
   function finish(runId) {
     const run = runs.get(runId);
-    if (!run) return { reasoning: [], sources: [] };
+    if (!run) return { sources: [] };
 
     forget(runId);
-    return {
-      reasoning: run.steps,
-      sources: run.sources,
-    };
+    return { sources: run.sources };
   }
 
   /** Tracked run count — exposed so leak safety can be asserted rather than assumed. */
@@ -176,7 +143,7 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     return runs.size;
   }
 
-  return { begin, actionStarted, actionCompleted, recordThought, currentActionOf, finish, size };
+  return { begin, actionStarted, actionCompleted, currentActionOf, finish, size };
 }
 
 module.exports = { createRunProvenance, DEFAULT_MAX_RUNS };
