@@ -1,7 +1,7 @@
 "use strict";
 
 const { withoutNetworkPeers } = require("./networkPeers");
-const { withoutRequestSecrets } = require("./requestSecrets");
+const { isConfiguredName, withoutRequestSecrets } = require("./requestSecrets");
 
 /**
  * A one-line description of an error that is safe to log, to put in an alert, to store and to
@@ -49,8 +49,9 @@ const CUT = "…";
  * taken; a failed query's text and values are dropped ("Failed query: <sql> params: <values>" is
  * "Failed query"); addresses, configured secrets and network peers are removed
  * (`withoutAddresses`); quoted values (a database quotes back the value it refused, a user name,
- * a file path), bearer tokens, JWTs, long base64 runs, wallet addresses and other long hex are
- * removed; and only then is it capped at `MAX_DESCRIBED_LENGTH`, so that a cut can never leave
+ * a file path) are removed, except a database identifier quoted right after the word that names
+ * it (`relation "failed_jobs"`, see `quotedValue`); bearer tokens, JWTs, long base64 runs, wallet
+ * addresses and other long hex are removed, from a kept identifier too; and only then is it capped at `MAX_DESCRIBED_LENGTH`, so that a cut can never leave
  * part of a secret where a pattern would have found it whole. A four-byte selector (0x and eight
  * hex digits) names an error and is kept. For text that is not an error's: an exception's
  * message in a report, a framework's line.
@@ -104,8 +105,49 @@ function withoutQueryDetail(text) {
   return before(withoutQuery, "params:").trimEnd();
 }
 
-// A value in double quotes, or in single quotes that do not sit inside a word (so "can't" stays).
-const QUOTED = /"[^"\n]*"|(?<!\w)'[^'\n]*'(?!\w)/g;
+// A value in double quotes (with a second one after a dot, as a name qualified by its schema is
+// written: "a"."b"), or in single quotes that do not sit inside a word (so "can't" stays). No run
+// can cross the quote that ends it, so nothing is rescanned.
+const QUOTED = /"[^"\n]*"(?:\."[^"\n]*")?|(?<!\w)'[^'\n]*'(?!\w)/g;
+
+// A database identifier is kept: the schema is public, and an error that does not say which
+// table, column or constraint it is about cannot be acted on. Only a plain lower-case name of at
+// most 63 characters (Postgres's limit), qualified by its schema or not, quoted right after the
+// word that says what it names. Postgres quotes nothing else after these words.
+const NAME = "[a-z_][a-z0-9_]{0,62}";
+const IDENTIFIER = new RegExp(`^"${NAME}(?:"\\."${NAME}|\\.${NAME})?"$`);
+const IDENTIFIER_WORDS = [
+  "relation",
+  "column",
+  "table",
+  "constraint",
+  "index",
+  "type",
+  "function",
+  "schema",
+  "sequence",
+  "view",
+];
+// Run only on the few characters before the quote: the longest word, eight spaces and the one
+// character before the word that the look-behind reads.
+const NAMED_BY = new RegExp(`(?<!\\w)(?:${IDENTIFIER_WORDS.join("|")})[ \\t]{1,8}$`, "i");
+const NAMED_BY_REACH = Math.max(...IDENTIFIER_WORDS.map((word) => word.length)) + 8 + 1;
+
+/**
+ * A quoted value as it stands in a described line: kept when it is a database identifier named
+ * by the word before it and is not a configured value (a secret, the database host); otherwise
+ * removed. A kept one still goes through the removals after this one (long hex, base64 runs).
+ */
+function quotedValue(quoted, offset, text) {
+  const isIdentifier =
+    IDENTIFIER.test(quoted) &&
+    NAMED_BY.test(text.slice(Math.max(0, offset - NAMED_BY_REACH), offset));
+  if (!isIdentifier) return VALUE_REMOVED;
+  const names = quoted.split(/[".]+/).filter(Boolean);
+  const isConfigured = [quoted.replace(/"/g, ""), ...names].some(isConfiguredName);
+
+  return isConfigured ? VALUE_REMOVED : quoted;
+}
 // Every pattern below starts only where its run starts (a word boundary or a look-behind on the
 // run's own characters) and has no quantified run before a literal it could backtrack over.
 const BEARER = /\b(Bearer)[ \t]{1,8}[^\s,;]+/gi;
@@ -118,7 +160,7 @@ const BASE64_RUN = /(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{32,}={0,2}(?![A-Za-z0-9
 
 function withoutValues(text) {
   return text
-    .replace(QUOTED, VALUE_REMOVED)
+    .replace(QUOTED, quotedValue)
     .replace(BEARER, `$1 ${VALUE_REMOVED}`)
     .replace(JWT, VALUE_REMOVED)
     .replace(LONG_HEX, VALUE_REMOVED)

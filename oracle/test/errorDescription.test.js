@@ -778,12 +778,12 @@ describe("describeError — one line of text, with nothing a reader outside the 
     });
 
     it("keeps a name of 63 characters and removes a longer one", () => {
-      const longest = `a${"b".repeat(62)}`;
+      const longest = `n${"m".repeat(62)}`;
 
       expect(describedText(`relation "${longest}" missing`)).to.equal(
         `relation "${longest}" missing`,
       );
-      expect(describedText(`relation "${longest}b" missing`)).to.equal(
+      expect(describedText(`relation "${longest}m" missing`)).to.equal(
         "relation [value removed] missing",
       );
     });
