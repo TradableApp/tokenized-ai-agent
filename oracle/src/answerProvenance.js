@@ -105,7 +105,7 @@ function reasoningFromThoughts(thoughts) {
 /**
  * One thought as one reasoning step, or null when it has no text.
  *
- * The ONE conversion: the live stream (through runProvenance.recordThought) and the stored
+ * The ONE conversion: the live stream (from each sanitised thought) and the stored
  * record (reasoningFromThoughts) both use it, so a step cannot be titled one way live and another
  * way in storage.
  *

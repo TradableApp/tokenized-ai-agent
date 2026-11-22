@@ -1,13 +1,15 @@
 const crypto = require("crypto");
 
-const { encryptSymmetrically } = require("./frameCrypto");
+const { encryptSymmetrically, GCM_IV_BYTES, GCM_AUTH_TAG_BYTES } = require("./frameCrypto");
 
 /**
  * Live reasoning stream: the oracle's half of the interface contract, version 1.
  *
  * The dApp keeps its own copy of these rules (`src/lib/liveReasoning/contract.ts`). The two are
- * held equal by the shared test vector in `oracle/test/streamContract.test.js`, so any change
- * here is a change to both repos at once, and to that vector.
+ * held equal by the shared test vectors in `oracle/test/streamContract.test.js` (one per frame
+ * type; the dApp holds the same in `vector.testdata.ts`), and both repos pin the same SHA-256 of
+ * their canonical form, so any change here is a change to both repos at once, to the vectors and
+ * to the pinned hash.
  *
  * A frame is a small JSON object, sealed with the prompt's session key exactly as the stored
  * answer file is. The type travels only inside the ciphertext. The stored record is a projection
@@ -35,13 +37,24 @@ const SSE_EVENT_NAME = "frame";
 /**
  * Every limit is applied before a frame is built, so the stored copy is cut the same way.
  *
- * `framePlaintextBytes` holds for every frame but one: the `answer` frame. Its text is the exact
- * stored answer and is limited only by `answerTextBytes` (64 KiB of UTF-8; over it the frame is
- * left out and the dApp waits for the stored answer). JSON escaping can grow that text up to six
- * times, since a control character is written `\u00XX` (a quote or backslash doubles, a lone
- * surrogate is 6 bytes for 3), so the answer frame's plaintext is at most 6 x 64 KiB = 384 KiB
- * plus its other fields (the ids, the CID and the duration: well under 1 KiB). A stream server
- * must accept a frame of that size, or the answer frame is lost and `done` waits behind its gap.
+ * `framePlaintextBytes` holds for every frame but one: the `answer` frame, whose limit is
+ * `answerFramePlaintextBytes`. Its text is the exact stored answer and is limited only by
+ * `answerTextBytes` (64 KiB of UTF-8; over it the frame is left out and the dApp waits for the
+ * stored answer). JSON escaping can grow that text up to six times, since a control character is
+ * written `\u00XX` (a quote or backslash doubles, a lone surrogate is 6 bytes for 3), so the text
+ * takes at most 6 x 64 KiB = 384 KiB of the plaintext. The rest of the frame (the identities at
+ * their longest, a content id of `answerCidChars`, the longest finite duration) is at most 429
+ * bytes, so 1 KiB more bounds the whole frame with room to spare.
+ *
+ * `answerCidChars` bounds the content id an answer frame carries, and it may hold only the
+ * characters of an id the storage paths produce (`ANSWER_CID_PATTERN`). The longest today is 59
+ * (an Autonomys or local IPFS CIDv1 in base32; a legacy Arweave or Irys id is 43 or 44, a mock id
+ * 25); 128 also holds a base32 CIDv1 with a 512-bit hash (113). An answer whose id is over it, or
+ * not an id, is sent without its answer frame, as an over-long text is.
+ *
+ * The oracle never builds a frame over its limit; the dApp refuses one, before decrypting when
+ * the sealed text is longer than `MAX_SEALED_FRAME_CHARS` and before parsing when the plaintext
+ * is over the limit. A stream server must carry a frame of `MAX_SEALED_FRAME_CHARS`.
  */
 const LIMITS = Object.freeze({
   maxSourcesPerFrame: 20,
@@ -53,7 +66,22 @@ const LIMITS = Object.freeze({
   maxAttempts: 4,
   answerTextBytes: 64 * 1024,
   framePlaintextBytes: 16 * 1024,
+  answerFramePlaintextBytes: 6 * 64 * 1024 + 1024,
+  answerCidChars: 128,
 });
+
+/**
+ * The characters of a sealed frame whose plaintext is `plaintextBytes` long, as
+ * `encryptSymmetrically` writes it: base64 of the 12-byte IV (16), a dot, then base64 of the
+ * ciphertext with its 16-byte tag (GCM adds no padding).
+ */
+function sealedFrameChars(plaintextBytes) {
+  const base64Chars = (bytes) => 4 * Math.ceil(bytes / 3);
+  return base64Chars(GCM_IV_BYTES) + 1 + base64Chars(plaintextBytes + GCM_AUTH_TAG_BYTES);
+}
+
+/** The longest sealed frame the contract allows (an answer frame at its limit): 525,693. */
+const MAX_SEALED_FRAME_CHARS = sealedFrameChars(LIMITS.answerFramePlaintextBytes);
 
 /**
  * The HTTP side of the contract (1.4 to 1.7): what a reader asks for and how. Header names are
@@ -97,6 +125,8 @@ const PROOF_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SSE_EVENT_ID_PATTERN = /^([0-9a-f]{16})\.(0|[1-9][0-9]{0,8})$/;
 /** A sealed frame as `encryptSymmetrically` writes it: base64 IV, a dot, base64 ciphertext. */
 const SEALED_FRAME_PATTERN = /^[A-Za-z0-9+/]+={0,2}\.[A-Za-z0-9+/]+={0,2}$/;
+/** A content id: the base32 and base64url characters the storage ids use, `answerCidChars` at most. */
+const ANSWER_CID_PATTERN = new RegExp(`^[A-Za-z0-9_-]{1,${LIMITS.answerCidChars}}$`);
 
 const PROOF_DOMAIN = "senseai-stream:";
 const SESSION_KEY_BYTES = 32;
@@ -110,6 +140,7 @@ const isSeq = (value) => Number.isSafeInteger(value) && value >= 0;
 const isProof = (value) => typeof value === "string" && PROOF_PATTERN.test(value);
 /** True for text that can be one SSE `data:` line: the sealed shape, so never a line break. */
 const isSealedFrame = (value) => typeof value === "string" && SEALED_FRAME_PATTERN.test(value);
+const isAnswerCid = (value) => typeof value === "string" && ANSWER_CID_PATTERN.test(value);
 
 /** A new run id for every attempt at a job; random so it never repeats across restarts. */
 function newRunId(randomBytes = crypto.randomBytes) {
@@ -234,7 +265,9 @@ module.exports = {
   LIMITS,
   STREAM_HTTP,
   STREAM_REFUSALS,
+  MAX_SEALED_FRAME_CHARS,
   ANSWER_MESSAGE_ID_PATTERN,
+  ANSWER_CID_PATTERN,
   RUN_PATTERN,
   REPLICA_PATTERN,
   PROOF_PATTERN,
@@ -247,6 +280,8 @@ module.exports = {
   isSeq,
   isProof,
   isSealedFrame,
+  isAnswerCid,
+  sealedFrameChars,
   newRunId,
   resolveReplicaId,
   sseEventId,

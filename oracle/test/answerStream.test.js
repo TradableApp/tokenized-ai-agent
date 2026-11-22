@@ -1,7 +1,14 @@
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const { expect } = require("chai");
 
-const { streamProof, LIMITS, parseSseEventId } = require("../src/stream/streamContract");
+const {
+  streamProof,
+  LIMITS,
+  parseSseEventId,
+  MAX_SEALED_FRAME_CHARS,
+} = require("../src/stream/streamContract");
 const {
   createAnswerStream,
   createOfflineStream,
@@ -354,6 +361,40 @@ describe("answer stream", () => {
       await stream.flush();
 
       expect(sink.frames().map((f) => f.type)).to.deep.equal(["reset", "done"]);
+    });
+
+    it("omits the answer frame when its content id is over the limit or not an id", async () => {
+      for (const cid of ["x".repeat(LIMITS.answerCidChars + 1), "bafy/../x", "", "bafy x"]) {
+        const { stream, sink } = newStream();
+
+        stream.answer({ text: "Fine.", answerMessageCID: cid });
+        stream.done("answered");
+        await stream.flush();
+
+        expect(sink.frames().map((f) => f.type), cid).to.deep.equal(["reset", "done"]);
+      }
+    });
+
+    it("sends the largest legal answer, within the answer frame limit once sealed", async () => {
+      const { stream, sink } = newStream();
+      const cid = "A".repeat(LIMITS.answerCidChars);
+
+      stream.answer({ text: "\x01".repeat(LIMITS.answerTextBytes), answerMessageCID: cid, reasoningDuration: 1 });
+      await stream.flush();
+
+      const sent = sink.calls.filter((c) => c.method === "frame").at(-1).info.ciphertext;
+      const frame = decryptFrame(sent, KEY);
+      expect(frame.type).to.equal("answer");
+      expect(frame.data.answerMessageCID).to.equal(cid);
+      expect(Buffer.byteLength(JSON.stringify(frame), "utf-8")).to.be.at.most(LIMITS.answerFramePlaintextBytes);
+      expect(sent.length).to.be.at.most(MAX_SEALED_FRAME_CHARS);
+    });
+
+    it("builds the answer frame against the answer frame limit, never unbounded", () => {
+      const source = fs.readFileSync(path.join(__dirname, "../src/stream/answerStream.js"), "utf-8");
+
+      expect(source).to.match(/emit\(FRAME_TYPES\.ANSWER, data, LIMITS\.answerFramePlaintextBytes\)/);
+      expect(source).to.not.match(/Infinity/);
     });
 
     it("sends done exactly once and nothing after it", async () => {

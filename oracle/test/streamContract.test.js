@@ -6,26 +6,168 @@ const { encryptSymmetrically } = require("../src/stream/frameCrypto");
 const { decryptFrame } = require("./helpers/frameDecrypt");
 
 // The interface the oracle and the dApp both build from (live reasoning streaming, contract
-// version 1). The dApp has its own copy of these rules; the shared test vector below is what
-// keeps the two byte-for-byte equal, so it must never be edited on one side only.
+// version 1). The dApp has its own copy of these rules; the shared test vectors below are what
+// keep the two byte-for-byte equal, so they must never be edited on one side only.
+//
+// One vector per frame type, each with the fixed key, its own fixed IV and a fixed plaintext.
+// The dApp holds the same data in `src/lib/liveReasoning/vector.testdata.ts`, and both repos pin
+// the same SHA-256 of it (STREAM_VECTORS_SHA256). The hash is of the canonical form: JSON with
+// the keys of every object sorted (JavaScript's default sort, by UTF-16 code unit), arrays kept in
+// order, no whitespace, strings and numbers as JSON.stringify writes them; SHA-256 of its UTF-8,
+// in lower-case hex (`canonicalJson` below; the dApp's is the same function). If a vector changes
+// here, update the hash here, then copy the vectors and the same hash into the dApp: a change on
+// one side only fails that side's pin, or leaves the two hashes different.
 
-const VECTOR = {
+const STREAM_VECTORS = {
   keyHex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-  ivHex: "a0a1a2a3a4a5a6a7a8a9aaab",
-  plaintext:
-    '{"v":1,"answerMessageId":"42","run":"0123456789abcdef","seq":1,"replica":"deadbeef","type":"step","data":{"attempt":1,"title":"Reading market context","description":"Checked recent sentiment for BTC."}}',
-  frame:
-    "oKGio6Slpqeoqaqr.nToKD3/6Lp0DC/SkYgiNuwPfOHf3/iZOpiwStF2HV3OnGGXFjRJiD2yoMf4+QrqYJXgiLQTyNlwyO3p8nkGpksbZ9QNZxoXCzsCbfe6qrt+obYmI57XgCotXBLjC7ijkragJz2La7rmkoCQx8fyIRVQkQ5TvGblIRruywZZv0B+gcNQWvSWgelYrle5mavK55q3IE8ry1q6ZqM6W3a5EX693cZOMSAN+52lARwvyxIQUQ5PsIhXLUPbrG1wy9j8xW0RsizSSlc+OIA1DLZj99YCZs7Q2y6k2OjY=",
-  proof: "zmsj4OksK8D2N9JMs__j2qRCsgSGomdTiRR9Dl6UUb4",
-  proofHex: "ce6b23e0e92c2bc0f637d24cb3ffe3daa442b20486a2675389147d0e5e9451be",
+  proof: {
+    answerMessageId: "42",
+    proof: "zmsj4OksK8D2N9JMs__j2qRCsgSGomdTiRR9Dl6UUb4",
+    proofHex: "ce6b23e0e92c2bc0f637d24cb3ffe3daa442b20486a2675389147d0e5e9451be",
+  },
+  frames: [
+    {
+      type: "reset",
+      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa0",
+      plaintext:
+        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":0,\"replica\":\"deadbeef\",\"type\":\"reset\",\"data\":{\"reason\":\"start\"}}",
+      frame:
+        "oKGio6Slpqeoqaqg.MAXSTkX0PpEacqE6/56G9pqRvxRGSQw8PmnFcCCTVoAw/oLbdBqpGVcejtoyCQ5eOihWDIikzkCexSkKs9dbpowf9fSqFlVZjf4etreUu90D0I0Of/+WGaZB7+NoPMaKuNFF3E7u1NMRVefT/e46Cya1GLNzg1Psd6GXCkbGs+W2QtfFteqCpsHrvD01",
+    },
+    {
+      type: "step",
+      ivHex: "a0a1a2a3a4a5a6a7a8a9aaab",
+      plaintext:
+        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":1,\"replica\":\"deadbeef\",\"type\":\"step\",\"data\":{\"attempt\":1,\"title\":\"Reading market context\",\"description\":\"Checked recent sentiment for BTC.\"}}",
+      frame:
+        "oKGio6Slpqeoqaqr.nToKD3/6Lp0DC/SkYgiNuwPfOHf3/iZOpiwStF2HV3OnGGXFjRJiD2yoMf4+QrqYJXgiLQTyNlwyO3p8nkGpksbZ9QNZxoXCzsCbfe6qrt+obYmI57XgCotXBLjC7ijkragJz2La7rmkoCQx8fyIRVQkQ5TvGblIRruywZZv0B+gcNQWvSWgelYrle5mavK55q3IE8ry1q6ZqM6W3a5EX693cZOMSAN+52lARwvyxIQUQ5PsIhXLUPbrG1wy9j8xW0RsizSSlc+OIA1DLZj99YCZs7Q2y6k2OjY=",
+    },
+    {
+      type: "attempt",
+      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa2",
+      plaintext:
+        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":2,\"replica\":\"deadbeef\",\"type\":\"attempt\",\"data\":{\"attempt\":2}}",
+      frame:
+        "oKGio6Slpqeoqaqi.EJsWt3u0EoWaB3hgTAjtHtmid1WT58VYmfzn6Q6TbGdmFFIywdoRYLdhYz4JVXOCkg0ngLV3rgwxLnnG8YGRZSEnqrayn5gmv6KS6bH3tXbKm/JsC2UXlgdo04a1hb5/jmFp7h48WY/3DXYXBN+PkTuZti4iwnUTyLQ7OWKiUchcq5e/Zot+1qSU",
+    },
+    {
+      type: "sources",
+      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa3",
+      plaintext:
+        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":3,\"replica\":\"deadbeef\",\"type\":\"sources\",\"data\":{\"attempt\":2,\"sources\":[{\"title\":\"BTC holds its range\",\"url\":\"https://news.example/markets/btc\"},{\"title\":\"Fear & Greed «index» — 72\",\"url\":\"https://data.example/fng/?q=a&b=c\"}]}}",
+      frame:
+        "oKGio6Slpqeoqaqj.QgAkyJonTqMZ72ijXGcRqrO3t477rLeFZ9gBRZe6JauTVgRQDVtc9zNvPiMD6lC/dzfa5beCEiBVEkaUzAfpCyKU0ORpuZZCRq2zSEgTIbEb1BsCi817tNjYKlX15PPKCXOUOVlEy2gsSSWtl3twiD96ofI4PItPFozC2R7qTprHUkftyG2SHgOaoTmsfYCX5v7mWPINSum0+6hnwBZU8VzuIxqzgMOACNCYlFnVu6vgt7awFTngZ22skfAhebR2Eh268rn7RRD6bVYwVhfcOJFsg9fViCR/ttUHg/Wg82qe6mRdHLsGSMsH48Ym1wTkA6bTP1m4mwZsw/MhfqbZGHzJI9axgKV9yj7vvoa17nX3t1t5mwqNfNaHHuSuBROzauNSNx/3PP3E3LROTG9twZKMjQ==",
+    },
+    {
+      type: "answer",
+      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa4",
+      plaintext:
+        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":4,\"replica\":\"deadbeef\",\"type\":\"answer\",\"data\":{\"text\":\"BTC looks steady.\\nSentiment: \\\"greed\\\" (72) — é ✓\",\"answerMessageCID\":\"bafkr6iabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst\",\"reasoningDuration\":4.25}}",
+      frame:
+        "oKGio6Slpqeoqaqk.o06gSe+dwu8KIC72vXRAW31SGUbEvp81u6odzlRWYXrfortfg4QWGAwh3JRxiWYcFpwRiyAm5VNjF+yYTI6IWTHd+HBmo8BUgMKl6Q8Z0+s4UrKysTWT+XnzGb43tpcWuzP4nTxdnTSVmwSPCrk+Fq1akJ+/mxZ+bvz4njnDmkpKg2PiMzjwBwrMd02OMCCOHwhN1Q+4T5OFsWG/ykw+dxk1MRzSoJ30/dKH+It4Ea8dJfSEpN00icJR6Jc3elNgZzetM0fEAHRwnAKjdDBf4E6Z/wgZvdNWqjEckA4N7r3r9+y2/aapvbXJ8y0L30NIfw7aIJlPvrZN9ewzuxZuuUvAVgLeDVHnPq9JwDmy1EMtFfG1XIUGFDSqCtssXcBVAJPsAIJJhJQ=",
+    },
+    {
+      type: "done",
+      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa5",
+      plaintext:
+        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":5,\"replica\":\"deadbeef\",\"type\":\"done\",\"data\":{\"outcome\":\"answered\"}}",
+      frame:
+        "oKGio6Slpqeoqaql.T9yp/qfgN73cJKsKqvHnHWhSTVnR6xS9SnkRscyVCE0ASehTYUPKyirJjH9GsPDkjOKjEUBrx4rCG7q8MZgJDVMfrVE+IVAbRF4NXSeXOx0dSV5AkfmpLadvSkZB0VYm1XqwPFw01Wvw865UeblEAR9BXOtldlwSwcCw5geyvp3d3gwbr9q1fTIsOjL18bTQ",
+    },
+  ],
 };
 
-const vectorKey = () => Buffer.from(VECTOR.keyHex, "hex");
-const vectorIv = () => Buffer.from(VECTOR.ivHex, "hex");
+const STREAM_VECTORS_SHA256 = "e09ee75f9b768d739b145956a61e8702919f33040d70ff50a9ce9195dca3deba";
+
+/** The canonical form the pinned hash is taken of (defined identically in the dApp). */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+const vectorKey = () => Buffer.from(STREAM_VECTORS.keyHex, "hex");
+const stepVector = () => STREAM_VECTORS.frames.find((v) => v.type === "step");
+
+const isAttempt = (n) => Number.isInteger(n) && n >= 1 && n <= contract.LIMITS.maxAttempts;
+const isText = (text, max) => typeof text === "string" && text.length >= 1 && text.length <= max;
+const isWebUrl = (url) => {
+  try {
+    return ["http:", "https:"].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+};
+
+/** Whether a decoded frame meets the contract: identities, its type's data and its size. */
+function meetsContract(frame) {
+  const { LIMITS } = contract;
+  contract.buildFrame(frame); // throws on a bad identity or type
+  const { data } = frame;
+  const bytes = Buffer.byteLength(JSON.stringify(frame), "utf-8");
+  switch (frame.type) {
+    case "reset":
+      return frame.seq === 0 && contract.RESET_REASONS.includes(data.reason) && bytes <= LIMITS.framePlaintextBytes;
+    case "step":
+      return (
+        isAttempt(data.attempt) &&
+        isText(data.title, LIMITS.stepTitleChars) &&
+        isText(data.description, LIMITS.stepDescriptionChars) &&
+        bytes <= LIMITS.framePlaintextBytes
+      );
+    case "attempt":
+      return isAttempt(data.attempt) && data.attempt >= 2 && bytes <= LIMITS.framePlaintextBytes;
+    case "sources":
+      return (
+        isAttempt(data.attempt) &&
+        data.sources.length <= LIMITS.maxSourcesPerFrame &&
+        data.sources.every(
+          (s) => isText(s.title, LIMITS.sourceTitleChars) && isText(s.url, LIMITS.sourceUrlChars) && isWebUrl(s.url),
+        ) &&
+        bytes <= LIMITS.framePlaintextBytes
+      );
+    case "answer":
+      return (
+        Buffer.byteLength(data.text, "utf-8") <= LIMITS.answerTextBytes &&
+        contract.isAnswerCid(data.answerMessageCID) &&
+        (data.reasoningDuration === undefined || Number.isFinite(data.reasoningDuration)) &&
+        bytes <= LIMITS.answerFramePlaintextBytes
+      );
+    case "done":
+      return contract.DONE_OUTCOMES.includes(data.outcome) && bytes <= LIMITS.framePlaintextBytes;
+    default:
+      return false;
+  }
+}
 
 describe("stream contract (version 1)", () => {
-  describe("shared test vector", () => {
-    it("builds the vector's plaintext, key order included, from the frame fields", () => {
+  describe("shared test vectors", () => {
+    it("holds one vector for every frame type the contract defines, each with its own IV", () => {
+      const types = STREAM_VECTORS.frames.map((v) => v.type);
+      const ivs = STREAM_VECTORS.frames.map((v) => v.ivHex);
+
+      expect([...types].sort()).to.deep.equal(Object.values(contract.FRAME_TYPES).sort());
+      expect(new Set(ivs).size).to.equal(ivs.length);
+    });
+
+    it("pins the SHA-256 of the canonical vector data, the same hash the dApp pins", () => {
+      const digest = crypto.createHash("sha256").update(canonicalJson(STREAM_VECTORS), "utf-8").digest("hex");
+
+      expect(digest).to.equal(STREAM_VECTORS_SHA256);
+    });
+
+    it("serialises canonically: keys sorted at every level, arrays in order, no whitespace", () => {
+      expect(canonicalJson({ b: 1, a: [{ d: 2.5, c: "é\n" }, null, true] })).to.equal(
+        '{"a":[{"c":"é\\n","d":2.5},null,true],"b":1}',
+      );
+    });
+
+    it("builds the step vector's plaintext, key order included, from the frame fields", () => {
       const frame = contract.buildFrame({
         answerMessageId: "42",
         run: "0123456789abcdef",
@@ -35,27 +177,49 @@ describe("stream contract (version 1)", () => {
         data: { attempt: 1, title: "Reading market context", description: "Checked recent sentiment for BTC." },
       });
 
-      expect(JSON.stringify(frame)).to.equal(VECTOR.plaintext);
+      expect(JSON.stringify(frame)).to.equal(stepVector().plaintext);
     });
 
-    it("encrypts the plaintext to the vector's frame with the vector's key and IV", () => {
-      const frame = JSON.parse(VECTOR.plaintext);
+    for (const type of Object.values(contract.FRAME_TYPES)) {
+      describe(`the ${type} vector`, () => {
+        const vector = () => STREAM_VECTORS.frames.find((v) => v.type === type);
 
-      const ciphertext = contract.encryptFrame(frame, vectorKey(), () => vectorIv());
+        it("exists", () => {
+          expect(vector(), type).to.not.equal(undefined);
+        });
 
-      expect(ciphertext).to.equal(VECTOR.frame);
-    });
+        it("rebuilds its plaintext, key order included, through the frame builder", () => {
+          const parsed = JSON.parse(vector().plaintext);
 
-    it("decrypts the vector's frame back to the plaintext", () => {
-      expect(JSON.stringify(decryptFrame(VECTOR.frame, vectorKey()))).to.equal(VECTOR.plaintext);
-    });
+          expect(parsed.type).to.equal(type);
+          expect(JSON.stringify(contract.buildFrame(parsed))).to.equal(vector().plaintext);
+        });
 
-    it("gives the vector's proof for answer 42", () => {
-      const proof = contract.streamProof(vectorKey(), "42");
+        it("encrypts its plaintext to its frame, byte for byte, with the fixed key and IV", () => {
+          const iv = Buffer.from(vector().ivHex, "hex");
 
-      expect(proof).to.equal(VECTOR.proof);
+          const sealed = contract.encryptFrame(JSON.parse(vector().plaintext), vectorKey(), () => iv);
+
+          expect(sealed).to.equal(vector().frame);
+        });
+
+        it("decrypts its frame to its plaintext, and the frame meets the contract", () => {
+          const frame = decryptFrame(vector().frame, vectorKey());
+
+          expect(JSON.stringify(frame)).to.equal(vector().plaintext);
+          expect(meetsContract(frame)).to.equal(true);
+          expect(vector().frame.length).to.be.at.most(contract.MAX_SEALED_FRAME_CHARS);
+        });
+      });
+    }
+
+    it("gives the vectors' proof for answer 42", () => {
+      const { proof: expected, proofHex, answerMessageId } = STREAM_VECTORS.proof;
+      const proof = contract.streamProof(vectorKey(), answerMessageId);
+
+      expect(proof).to.equal(expected);
       expect(proof).to.have.length(43);
-      expect(Buffer.from(proof, "base64url").toString("hex")).to.equal(VECTOR.proofHex);
+      expect(Buffer.from(proof, "base64url").toString("hex")).to.equal(proofHex);
       expect(contract.PROOF_PATTERN.test(proof)).to.equal(true);
     });
   });
@@ -86,7 +250,7 @@ describe("stream contract (version 1)", () => {
 
   describe("proof of key", () => {
     it("differs per answer id, so one answer's proof opens no other", () => {
-      expect(contract.streamProof(vectorKey(), "43")).to.not.equal(VECTOR.proof);
+      expect(contract.streamProof(vectorKey(), "43")).to.not.equal(STREAM_VECTORS.proof.proof);
     });
 
     it("refuses an answer id that is not the canonical decimal form", () => {
@@ -181,6 +345,8 @@ describe("stream contract (version 1)", () => {
         maxAttempts: 4,
         answerTextBytes: 64 * 1024,
         framePlaintextBytes: 16 * 1024,
+        answerFramePlaintextBytes: 6 * 64 * 1024 + 1024,
+        answerCidChars: 128,
       });
       expect(Object.isFrozen(contract.LIMITS)).to.equal(true);
     });
@@ -194,6 +360,61 @@ describe("stream contract (version 1)", () => {
       expect(() => contract.buildFrame({ ...base, seq: -1 })).to.throw(TypeError);
       expect(() => contract.buildFrame({ ...base, seq: 1.5 })).to.throw(TypeError);
       expect(() => contract.buildFrame({ ...base, replica: "Bad Replica" })).to.throw(TypeError);
+    });
+  });
+
+  describe("frame sizes and content ids", () => {
+    const AUTONOMYS = `bafkr6i${"a".repeat(52)}`;
+
+    it("accepts the content ids the storage paths produce, up to the limit, and nothing else", () => {
+      const good = [
+        AUTONOMYS, // Autonomys Auto Drive: 59
+        `bafybei${"b".repeat(52)}`, // local IPFS, CIDv1 base32: 59
+        "A".repeat(43), // legacy Arweave id
+        `${"a_-".repeat(14)}Zz`, // legacy Irys id: 44
+        `mock_${"0".repeat(20)}`, // mock storage
+        "x".repeat(128),
+      ];
+      const bad = ["", "x".repeat(129), "bafy.x", "bafy/x", "bafy x", "bafyé", "a+b", "a=b", null, 42];
+
+      for (const cid of good) expect(contract.isAnswerCid(cid), cid).to.equal(true);
+      for (const cid of bad) expect(contract.isAnswerCid(cid), String(cid)).to.equal(false);
+      expect(contract.LIMITS.answerCidChars).to.equal(128);
+      expect(contract.ANSWER_CID_PATTERN.test("x".repeat(128))).to.equal(true);
+    });
+
+    it("gives the answer frame room for the largest answer it may carry", () => {
+      // The largest legal answer frame: every identity at its longest, 64 KiB of text that JSON
+      // writes six bytes per byte, the longest content id and the longest finite duration.
+      const worst = contract.buildFrame({
+        answerMessageId: "9".repeat(78),
+        run: "f".repeat(16),
+        seq: Number.MAX_SAFE_INTEGER,
+        replica: "r".repeat(32),
+        type: "answer",
+        data: {
+          text: "\x01".repeat(contract.LIMITS.answerTextBytes),
+          answerMessageCID: "A".repeat(contract.LIMITS.answerCidChars),
+          reasoningDuration: -2.2250738585072014e-308,
+        },
+      });
+      const bytes = Buffer.byteLength(JSON.stringify(worst), "utf-8");
+
+      expect(bytes).to.equal(393645);
+      expect(bytes).to.be.at.most(contract.LIMITS.answerFramePlaintextBytes);
+      expect(contract.LIMITS.framePlaintextBytes).to.be.below(contract.LIMITS.answerFramePlaintextBytes);
+    });
+
+    it("counts a sealed frame's characters exactly as the encryptor writes them", () => {
+      for (const n of [0, 1, 2, 3, 100, 16 * 1024]) {
+        const sealed = encryptSymmetrically("x".repeat(n), vectorKey());
+        // JSON.stringify of a string adds its two quotes.
+        expect(sealed.length, String(n)).to.equal(contract.sealedFrameChars(n + 2));
+      }
+      expect(contract.MAX_SEALED_FRAME_CHARS).to.equal(
+        contract.sealedFrameChars(contract.LIMITS.answerFramePlaintextBytes),
+      );
+      expect(contract.MAX_SEALED_FRAME_CHARS).to.equal(525693);
     });
   });
 
@@ -220,6 +441,6 @@ describe("stream contract (version 1)", () => {
 
   it("keeps the vector's HMAC equal to Node's own computation (guards the vector itself)", () => {
     const expected = crypto.createHmac("sha256", vectorKey()).update("senseai-stream:42").digest("base64url");
-    expect(expected).to.equal(VECTOR.proof);
+    expect(expected).to.equal(STREAM_VECTORS.proof.proof);
   });
 });
