@@ -85,3 +85,63 @@ describe("compose files publish only the stream port", () => {
     });
   }
 });
+
+/**
+ * The stream settings are plain configuration, never secrets: in the settings template and in
+ * each generated compose file they sit below the plaintext delimiter (above it is what is pushed
+ * on-chain as an encrypted ROFL secret). A testnet compose file and its mainnet twin list the
+ * same stream settings, so a setting added on one network is not missing on the other.
+ */
+const PLAINTEXT_MARKER = "# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===";
+const STREAM_SETTING = /^STREAM_[A-Z_]+=/;
+const KNOWN_STREAM_SETTINGS = new Set([
+  ...Object.keys(STREAM_SETTING_DEFAULTS),
+  "STREAM_ALLOWED_ORIGINS",
+]);
+const COMPOSE_TWINS = [
+  ["compose.testnet.yaml", "compose.mainnet.yaml"],
+  ["compose.base-testnet.yaml", "compose.base-mainnet.yaml"],
+];
+
+/** Each stream setting in `lines` (a leading `- ` dropped) and whether it is below the marker. */
+function streamSettings(lines) {
+  const markerAt = lines.findIndex((line) => line.trim() === PLAINTEXT_MARKER);
+  return lines
+    .map((line, index) => ({ text: line.trim().replace(/^- /, ""), index }))
+    .filter(({ text }) => STREAM_SETTING.test(text))
+    .map(({ text, index }) => ({
+      name: text.slice(0, text.indexOf("=")),
+      belowMarker: markerAt !== -1 && index > markerAt,
+    }));
+}
+
+describe("stream settings are plain configuration, the same on each network's twins", () => {
+  it("finds the stream settings below the marker and flags one above it (the check itself)", () => {
+    const below = streamSettings(["SECRET=1", PLAINTEXT_MARKER, "STREAM_ENABLED=true"]);
+    expect(below).to.deep.equal([{ name: "STREAM_ENABLED", belowMarker: true }]);
+    const above = streamSettings(["STREAM_ENABLED=true", PLAINTEXT_MARKER]);
+    expect(above).to.deep.equal([{ name: "STREAM_ENABLED", belowMarker: false }]);
+    expect(streamSettings(["      - STREAM_PORT=8787"])[0].belowMarker).to.equal(false);
+  });
+
+  it("keeps every stream setting in the settings template below the plaintext delimiter", () => {
+    const lines = readFileSync(join(__dirname, "..", ".env.oracle.example"), "utf8").split("\n");
+    const settings = streamSettings(lines);
+    expect(settings.map((s) => s.name)).to.include("STREAM_ENABLED");
+    for (const { name, belowMarker } of settings) {
+      expect(belowMarker, `${name} sits below the plaintext delimiter`).to.equal(true);
+      expect(KNOWN_STREAM_SETTINGS.has(name), `${name} is a stream setting`).to.equal(true);
+    }
+  });
+
+  for (const [testnet, mainnet] of COMPOSE_TWINS) {
+    it(`${testnet} and ${mainnet} list the same stream settings, below the delimiter`, () => {
+      const read = (file) => streamSettings(readFileSync(join(ROOT, file), "utf8").split("\n"));
+      const [a, b] = [read(testnet), read(mainnet)];
+      expect(a.map((s) => s.name).sort()).to.deep.equal(b.map((s) => s.name).sort());
+      for (const { name, belowMarker } of [...a, ...b]) {
+        expect(belowMarker, `${name} sits below the plaintext delimiter`).to.equal(true);
+      }
+    });
+  }
+});
