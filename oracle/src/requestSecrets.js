@@ -9,7 +9,8 @@
  * separately ("POST /v2/<key>", a query string), and a part has no scheme in front for that to
  * find. So the secret parts themselves are collected here, from every configured value that
  * holds an address and from every setting named as a credential, and removed by value from
- * whatever text they turn up in.
+ * whatever text they turn up in. The database's host is one of them however short it is: the
+ * value of POSTGRES_HOST and the host of every postgres address.
  *
  * This is the second line. The first is not recording requests at all (sentryInit.js) and
  * describing errors before they are printed (errorDescription.js).
@@ -30,6 +31,20 @@ const CREDENTIAL_PARAMETER = /key|token|secret|auth|password|passwd|signature|cr
 const CREDENTIAL_SETTING = /(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_KEY)$/i;
 // A project or account number is an id, not a key.
 const ONLY_DIGITS = /^\d+$/;
+// The database's address is a secret (a ROFL secret, never written into the public compose)
+// whatever its length: an IPv4 address can be shorter than any credential. So the value of the
+// setting that holds it, and the host of every database address, are collected whole.
+// A loopback host is the same on every machine and says nothing, and removing "localhost" from
+// every line would blank ordinary text, so it is left out.
+const HOST_SETTING = /^POSTGRES(?:_[A-Z0-9]+)*_HOST$/i;
+const DATABASE_SCHEME = /^postgres(?:ql)?:$/i;
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i;
+
+/** The database host as written and, for an IPv6 host, without its brackets; nothing for loopback. */
+function databaseHost(host) {
+  if (!host || /\s/.test(host) || LOOPBACK.test(host)) return [];
+  return [...new Set([host, host.replace(/^\[|\]$/g, "")])];
+}
 
 function escapeForPattern(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -47,6 +62,8 @@ function decoded(text) {
 function secretsOfAddress(address) {
   const found = [];
   const long = (value) => value.length >= MIN_LENGTH && !ONLY_DIGITS.test(value);
+
+  if (DATABASE_SCHEME.test(address.protocol)) found.push(...databaseHost(address.hostname));
 
   if (address.password.length >= MIN_PASSWORD_LENGTH) found.push(address.password);
   // A key given as the user name, with no password after it.
@@ -92,6 +109,7 @@ function requestSecretsIn(env) {
     }
     // A credential set on its own, not inside an address: a database password, an API key.
     const bare = raw.trim().replace(/^["']+|["']+$/g, "");
+    if (HOST_SETTING.test(name)) databaseHost(bare).forEach((host) => secrets.add(host));
     if (
       !heldAnAddress &&
       CREDENTIAL_SETTING.test(name) &&

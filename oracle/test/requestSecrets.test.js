@@ -123,6 +123,12 @@ describe("request secrets", () => {
       expect(secrets).to.include("2001:db8::8");
     });
 
+    it("is not a loopback host, which is the same on every machine", () => {
+      for (const host of ["localhost", "127.0.0.1", "::1", "[::1]"]) {
+        expect(requestSecretsIn({ POSTGRES_HOST: host }), host).to.deep.equal([]);
+      }
+    });
+
     it("is not the host of an address that is not a database's", () => {
       expect(requestSecretsIn({ RPC: "https://198.51.100.2/v1" })).to.deep.equal([]);
     });
