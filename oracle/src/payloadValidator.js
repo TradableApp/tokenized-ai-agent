@@ -104,7 +104,8 @@ function issuesOf(error) {
         path
           .map((part) => (Number.isInteger(part) || FIELD.test(String(part)) ? String(part) : "…"))
           .join(".") || "(payload)";
-      const code = typeof issue?.code === "string" && ISSUE_CODE.test(issue.code) ? issue.code : "invalid";
+      const code =
+        typeof issue?.code === "string" && ISSUE_CODE.test(issue.code) ? issue.code : "invalid";
       return `${field} ${code}`;
     })
     .join(", ");

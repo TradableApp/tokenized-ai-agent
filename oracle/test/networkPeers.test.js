@@ -62,12 +62,8 @@ describe("networkPeers — network peer details are never kept", () => {
   });
 
   it("removes a host name with a port", () => {
-    expect(withoutNetworkPeers("db.example.com:5432 refused")).to.equal(
-      `${PEER_REMOVED} refused`,
-    );
-    expect(withoutNetworkPeers("to localhost:5432 refused")).to.equal(
-      `to ${PEER_REMOVED} refused`,
-    );
+    expect(withoutNetworkPeers("db.example.com:5432 refused")).to.equal(`${PEER_REMOVED} refused`);
+    expect(withoutNetworkPeers("to localhost:5432 refused")).to.equal(`to ${PEER_REMOVED} refused`);
   });
 
   it("removes the host and the certificate names a TLS error gives", () => {

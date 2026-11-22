@@ -359,7 +359,10 @@ describe("queryElizaOS — provider-composed context", () => {
     await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
 
     elizaLogger.warn(
-      { src: "plugin:sql", error: "Failed query: insert into memories values ($1)\nparams: a-users-question" },
+      {
+        src: "plugin:sql",
+        error: "Failed query: insert into memories values ($1)\nparams: a-users-question",
+      },
       "Could not write",
     );
     elizaLogger.fatal("connect ECONNREFUSED 192.0.2.10:5432");

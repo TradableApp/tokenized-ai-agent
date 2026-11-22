@@ -87,7 +87,11 @@ function cleanedArgument(arg) {
   return Object.fromEntries(
     Object.entries(arg).map(([key, value]) => [
       key,
-      typeof value === "string" ? cleanedText(value) : value instanceof Error ? describeError(value) : value,
+      typeof value === "string"
+        ? cleanedText(value)
+        : value instanceof Error
+          ? describeError(value)
+          : value,
     ]),
   );
 }

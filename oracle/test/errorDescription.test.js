@@ -539,10 +539,7 @@ describe("describeError — one line of text, with nothing a reader outside the 
     });
 
     it("keeps only the code of a connection tried at several addresses", () => {
-      const error = new AggregateError(
-        [new Error("connect ECONNREFUSED 2001:db8::10:5432")],
-        "",
-      );
+      const error = new AggregateError([new Error("connect ECONNREFUSED 2001:db8::10:5432")], "");
       error.code = "ECONNREFUSED";
 
       expect(describeError(error)).to.equal("ECONNREFUSED");
@@ -581,9 +578,7 @@ describe("describeError — one line of text, with nothing a reader outside the 
   });
 
   it("is capped, after it is cleaned", () => {
-    expect(describeError(new Error("x ".repeat(5000))).length).to.be.at.most(
-      MAX_DESCRIBED_LENGTH,
-    );
+    expect(describeError(new Error("x ".repeat(5000))).length).to.be.at.most(MAX_DESCRIBED_LENGTH);
     expect(describeError(new Error("x".repeat(5000))).length).to.be.at.most(MAX_DESCRIBED_LENGTH);
     expect(MAX_DESCRIBED_LENGTH).to.be.within(100, 500);
   });

@@ -204,7 +204,10 @@ function scrubbedEvent(event) {
   const values = scrubbed?.exception?.values;
   if (!Array.isArray(values)) return scrubbed;
 
-  return { ...scrubbed, exception: { ...scrubbed.exception, values: values.map(describedException) } };
+  return {
+    ...scrubbed,
+    exception: { ...scrubbed.exception, values: values.map(describedException) },
+  };
 }
 
 /**

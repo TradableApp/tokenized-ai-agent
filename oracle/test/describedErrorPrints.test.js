@@ -351,7 +351,9 @@ describe("errors printed by the oracle carry no access key", () => {
         thrown = error;
       }
 
-      expect(thrown?.message).to.include('STORAGE_PROVIDER names a provider other than irys (did you mean "irys"?)');
+      expect(thrown?.message).to.include(
+        'STORAGE_PROVIDER names a provider other than irys (did you mean "irys"?)',
+      );
       expect(thrown.message).to.not.include('"iris"');
     });
   });
