@@ -63,6 +63,34 @@ const FRESH_LIVE_FILE_ONLY_VARS = Object.freeze([
   "DOMAIN",
 ]);
 
+// What a local fresh pair charges when a fee is not set, in whole tokens of the fee token.
+const DEFAULT_FEES_IN_TOKENS = Object.freeze({
+  prompt: "1",
+  cancellation: "0.1",
+  metadata: "0.1",
+  branch: "0.5",
+});
+// The escrow's getter for each fee, and the label the plan prints.
+const FEE_GETTERS = Object.freeze({
+  prompt: "promptFee",
+  cancellation: "cancellationFee",
+  metadata: "metadataUpdateFee",
+  branch: "branchFee",
+});
+const FEE_LABELS = Object.freeze({
+  prompt: "Prompt fee",
+  cancellation: "Cancellation fee",
+  metadata: "Metadata fee",
+  branch: "Branch fee",
+});
+const WHOLE_WEI_RE = /^[0-9]+$/;
+
+/** Why a fee setting cannot be used, or null. The value is described by shape only. */
+function feeValueProblem(name, value) {
+  if (!isSet(value) || WHOLE_WEI_RE.test(String(value).trim())) return null;
+  return `${name} is not a whole number of wei (${describeShape(value)}): write the fee in wei, in decimal digits only, with no sign, point, exponent, separator or 0x (one token of 18 decimals is 1000000000000000000)`;
+}
+
 /** The settings read from ENV_FILE alone for this network and the mode the file names. */
 function fileOnlyNames({ networkName, fileEnv }) {
   const fresh = String(fileEnv?.DEPLOY_MODE ?? "").trim() === "fresh";
@@ -117,6 +145,15 @@ function modeProblems({ networkName, env }) {
     problems.push(
       "TOKEN_CONTRACT_ADDRESS is required for a fresh pair: the new escrow takes its fees in that token",
     );
+  }
+  for (const name of Object.values(FEE_VARS)) {
+    const problem = feeValueProblem(name, env[name]);
+    if (problem) problems.push(problem);
+    if (!isSet(env[name]) && !LOCAL_NETWORKS.has(networkName)) {
+      problems.push(
+        `${name} must be set for a fresh pair on ${networkName}: it is the fee in wei that users pay, and the default is for local networks only`,
+      );
+    }
   }
   if (!LOCAL_NETWORKS.has(networkName)) {
     if (!isSet(env.TREASURY_ADDRESS)) {
@@ -344,10 +381,96 @@ async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer }
     );
   }
 
+  problems.push(...(await feeProblems(ethers, { plan, aiAgentEscrow })));
+
   if (plan.expectedSymbol) {
     problems.push(...(await symbolProblems(ethers, plan)));
   }
   return problems;
+}
+
+/** Each fee the escrow holds that is not the planned one. */
+async function feeProblems(ethers, { plan, aiAgentEscrow }) {
+  let decimals;
+  try {
+    decimals = await readDecimals(ethers, plan.token);
+  } catch {
+    return [
+      `token.decimals() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}, so the fees were not compared`,
+    ];
+  }
+  const planned = plannedFees(ethers, plan, decimals);
+  const problems = [];
+  for (const [key, getter] of Object.entries(FEE_GETTERS)) {
+    const actual = await aiAgentEscrow[getter]();
+    const { wei, isDefault } = planned[key];
+    if (actual !== wei) {
+      problems.push(
+        `escrow.${getter}() is ${actual}, not ${isDefault ? `the default for ${FEE_VARS[key]}` : FEE_VARS[key]} ${wei}`,
+      );
+    }
+  }
+  return problems;
+}
+
+const ERC20_READS = Object.freeze([
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+]);
+
+async function readDecimals(ethers, tokenAddress) {
+  const token = new ethers.Contract(tokenAddress, ERC20_READS, ethers.provider);
+  return Number(await token.decimals());
+}
+
+/**
+ * Each fee in wei, with whether it is the local default. The settings have been checked to be
+ * whole numbers of wei; the defaults are whole tokens, so they take the token's decimals.
+ */
+function plannedFees(ethers, plan, decimals) {
+  const fees = {};
+  for (const key of Object.keys(FEE_VARS)) {
+    const value = plan.fees?.[key];
+    fees[key] = isSet(value)
+      ? { wei: BigInt(String(value).trim()), isDefault: false }
+      : { wei: ethers.parseUnits(DEFAULT_FEES_IN_TOKENS[key], decimals), isDefault: true };
+  }
+  return fees;
+}
+
+/**
+ * What the token is, read before anything is sent: whether there is a contract at the address,
+ * its symbol (against EXPECTED_FEE_TOKEN_SYMBOL when the plan names one) and its decimals, which
+ * the plan's fees are shown in.
+ */
+async function readFeeToken(ethers, plan) {
+  const problems = [];
+  if ((await ethers.provider.getCode(plan.token)) === "0x") {
+    return {
+      problems: [`there is no contract at TOKEN_CONTRACT_ADDRESS ${plan.token}`],
+    };
+  }
+  const token = new ethers.Contract(plan.token, ERC20_READS, ethers.provider);
+  let symbol = null;
+  try {
+    symbol = await token.symbol();
+  } catch {
+    problems.push(`token.symbol() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}`);
+  }
+  if (symbol !== null && plan.expectedSymbol && symbol !== plan.expectedSymbol) {
+    problems.push(
+      `token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL`,
+    );
+  }
+  let decimals = null;
+  try {
+    decimals = await readDecimals(ethers, plan.token);
+  } catch {
+    problems.push(
+      `token.decimals() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}, so the fees cannot be shown in whole tokens`,
+    );
+  }
+  return { problems, symbol, decimals };
 }
 
 async function symbolProblems(ethers, plan) {
@@ -398,11 +521,20 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
       `ORACLE_ADDRESS is the deploy wallet ${deployer.address}. It is set so that the deploy key never holds the oracle role: name the address the oracle answers from, or leave it unset (the deploy wallet is then the first oracle, and scripts/authorize-oracle.js moves the role). Nothing was sent.`,
     );
   }
+  const feeSettingProblems = Object.entries(FEE_VARS)
+    .map(([key, name]) => feeValueProblem(name, plan.fees?.[key]))
+    .filter(Boolean);
+  const token = await readFeeToken(ethers, plan);
+  const before = [...feeSettingProblems, ...token.problems];
+  if (before.length > 0) {
+    throw new Error(`Fresh deploy refused:\n  - ${before.join("\n  - ")}\nNothing was sent.`);
+  }
   const oracle = plan.oracle ? ethers.getAddress(plan.oracle) : deployer.address;
   const treasury = plan.treasury ? ethers.getAddress(plan.treasury) : deployer.address;
-  log(`Deploying a fresh pair with the account: ${chalk.yellow(deployer.address)}`);
-  log(`First oracle: ${oracle}${plan.oracle ? " (ORACLE_ADDRESS)" : " (the deploy wallet)"}`);
-  log(`Treasury: ${treasury}${plan.treasury ? " (TREASURY_ADDRESS)" : " (the deploy wallet)"}`);
+  const fees = plannedFees(ethers, plan, token.decimals);
+  for (const line of planLines({ plan, deployer, oracle, treasury, token, fees, ethers })) {
+    log(line);
+  }
 
   const EVMAIAgent = await ethers.getContractFactory("EVMAIAgent", deployer);
   const EVMAIAgentEscrow = await ethers.getContractFactory("EVMAIAgentEscrow", deployer);
@@ -416,7 +548,6 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
   const agentAddress = await aiAgent.getAddress();
   log(`✅ EVMAIAgent proxy deployed to: ${chalk.cyan(agentAddress)}`);
 
-  const fee = (value, fallback) => value ?? ethers.parseEther(fallback);
   log("Deploying EVMAIAgentEscrow proxy...");
   const aiAgentEscrow = await upgrades.deployProxy(
     EVMAIAgentEscrow,
@@ -425,10 +556,10 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
       agentAddress,
       treasury,
       deployer.address,
-      fee(plan.fees?.prompt, "1"), // Default: 1 token
-      fee(plan.fees?.cancellation, "0.1"), // Default: 0.1 token
-      fee(plan.fees?.metadata, "0.1"), // Default: 0.1 token
-      fee(plan.fees?.branch, "0.5"), // Default: 0.5 token
+      fees.prompt.wei,
+      fees.cancellation.wei,
+      fees.metadata.wei,
+      fees.branch.wei,
     ],
     { initializer: "initialize", kind: "uups" },
   );
@@ -462,13 +593,36 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
   };
 }
 
+/**
+ * The plan as the operator reads it before anything is sent: who deploys, the token, the
+ * treasury, the first oracle and each fee in wei and in whole tokens. No fee is refused for its
+ * size: each is printed so that a fee off by a power of ten is seen here.
+ */
+function planLines({ plan, deployer, oracle, treasury, token, fees, ethers }) {
+  const lines = [
+    chalk.bold(`Fresh pair on ${plan.networkName}. Check every line before anything is sent:`),
+    `  Deploy wallet: ${deployer.address}`,
+    `  Fee token: ${plan.token} (symbol ${JSON.stringify(token.symbol)}, ${token.decimals} decimals)`,
+    `  Treasury: ${treasury}${plan.treasury ? " (TREASURY_ADDRESS)" : " (the deploy wallet)"}`,
+    `  First oracle: ${oracle}${plan.oracle ? " (ORACLE_ADDRESS)" : " (the deploy wallet)"}`,
+    `  Domain: ${plan.domain}`,
+  ];
+  for (const [key, name] of Object.entries(FEE_VARS)) {
+    const { wei, isDefault } = fees[key];
+    const tokens = ethers.formatUnits(wei, token.decimals);
+    const note = isDefault ? ` (default: ${name} is not set)` : "";
+    lines.push(`  ${FEE_LABELS[key]} (${name}): ${wei} wei = ${tokens} ${token.symbol}${note}`);
+  }
+  return lines;
+}
+
 function reportFreshPair({ plan, log, oracle, deployer, agentAddress, escrowAddress }) {
   const symbolNote = plan.expectedSymbol
     ? ", and the token's symbol is EXPECTED_FEE_TOKEN_SYMBOL"
     : "";
   log(
     chalk.green(
-      `✅ Read back: the two links, the token, the treasury, both owners and the oracle role are as planned${symbolNote}.`,
+      `✅ Read back: the two links, the token, the treasury, both owners, the oracle role and the four fees are as planned${symbolNote}.`,
     ),
   );
   if (!plan.expectedSymbol) {
