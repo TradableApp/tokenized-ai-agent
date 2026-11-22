@@ -144,17 +144,25 @@ if [ -z "$PUBLIC_IP" ]; then
 elif [ ! -f "$ENV_FILE" ]; then
   echo "⚠️  $ENV_FILE not found — add POSTGRES_HOST above the delimiter by hand. Read the address with:"
   echo "     $READ_HOST_CMD"
-elif grep -q "^POSTGRES_HOST=" "$ENV_FILE"; then
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
-  else
-    sed -i "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
-  fi
+elif awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } !below && /^POSTGRES_HOST=/ { found = 1 } END { exit !found }' "$ENV_FILE"; then
+  # Only the line ABOVE the delimiter is stamped: a line below it is written into the compose
+  # as plaintext, so stamping a blank one there would recreate what rofl-set-secrets.sh refuses.
+  STAMPED_ENV=$(mktemp)
+  awk -v d="$SPLIT_DELIMITER" -v ip="$PUBLIC_IP" \
+    'index($0, d) { below = 1 } !below && /^POSTGRES_HOST=/ { print "POSTGRES_HOST=" ip; next } { print }' \
+    "$ENV_FILE" > "$STAMPED_ENV"
+  cat "$STAMPED_ENV" > "$ENV_FILE"   # cat, not mv: the env file keeps its own permissions
+  rm -f "$STAMPED_ENV"
   echo "📝 Stamped POSTGRES_HOST in $ENV_FILE"
-  if awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } below && /^POSTGRES_HOST=/ { found = 1 } END { exit !found }' "$ENV_FILE"; then
-    echo "⚠️  POSTGRES_HOST sits below the delimiter in $ENV_FILE — it would be written into the"
-    echo "   compose as plaintext, and rofl-set-secrets.sh refuses that. Move it above the delimiter."
+  if awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } below && /^POSTGRES_HOST=./ { found = 1 } END { exit !found }' "$ENV_FILE"; then
+    echo "⚠️  POSTGRES_HOST also has a value below the delimiter in $ENV_FILE — it would be written"
+    echo "   into the compose as plaintext, and rofl-set-secrets.sh refuses that. Remove that line."
   fi
+elif awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } below && /^POSTGRES_HOST=/ { found = 1 } END { exit !found }' "$ENV_FILE"; then
+  echo "⚠️  POSTGRES_HOST sits only below the delimiter in $ENV_FILE — not stamped. It would be"
+  echo "   written into the compose as plaintext, and rofl-set-secrets.sh refuses that. Move the line"
+  echo "   ABOVE the delimiter and set it there. Read the address with:"
+  echo "     $READ_HOST_CMD"
 else
   echo "⚠️  $ENV_FILE has no POSTGRES_HOST line — add one above the delimiter by hand. Read the address with:"
   echo "     $READ_HOST_CMD"
