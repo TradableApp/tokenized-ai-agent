@@ -107,9 +107,7 @@ describe("request secrets", () => {
   describe("the database host", () => {
     it("is POSTGRES_HOST, however short", () => {
       expect(requestSecretsIn({ POSTGRES_HOST: "192.0.2.7" })).to.include("192.0.2.7");
-      expect(requestSecretsIn({ POSTGRES_HOST: " db.example.com " })).to.include(
-        "db.example.com",
-      );
+      expect(requestSecretsIn({ POSTGRES_HOST: " db.example.com " })).to.include("db.example.com");
       expect(requestSecretsIn({ POSTGRES_HOST: "" })).to.deep.equal([]);
     });
 

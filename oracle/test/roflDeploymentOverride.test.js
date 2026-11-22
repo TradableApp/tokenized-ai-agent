@@ -248,10 +248,7 @@ describe("ROFL_DEPLOYMENT override", function () {
         expect(readCompose()).to.not.include("198.51.100.20");
       });
 
-      for (const line of [
-        `export POSTGRES_HOST=${ENV_ADDRESS}`,
-        `postgres_host=${ENV_ADDRESS}`,
-      ]) {
+      for (const line of [`export POSTGRES_HOST=${ENV_ADDRESS}`, `postgres_host=${ENV_ADDRESS}`]) {
         it(`refuses a key that is not upper-case snake case (${line.split("=")[0]})`, function () {
           writeEnvFile([
             "PRIVATE_KEY=0xabc",
@@ -308,14 +305,21 @@ describe("ROFL_DEPLOYMENT override", function () {
       it("stamps the address without printing it", function () {
         const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
         expect(code, out).to.equal(0);
-        expect(fs.readFileSync(envFilePath(), "utf8")).to.include(`POSTGRES_HOST=${GCLOUD_ADDRESS}`);
+        expect(fs.readFileSync(envFilePath(), "utf8")).to.include(
+          `POSTGRES_HOST=${GCLOUD_ADDRESS}`,
+        );
         expect(out).to.include("Stamped POSTGRES_HOST");
         expect(out).to.not.include(GCLOUD_ADDRESS);
         expect(out).to.not.include("below the delimiter");
       });
 
       it("does not stamp a line below the delimiter, and says where it belongs", function () {
-        writeEnvFile(["PRIVATE_KEY=0xabc", MARKER, "NETWORK_NAME=baseSepolia", `POSTGRES_HOST=${ENV_ADDRESS}`]);
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+        ]);
         const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
         expect(code, out).to.equal(0);
         expect(out).to.include("below the delimiter");
