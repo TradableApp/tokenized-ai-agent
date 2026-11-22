@@ -637,7 +637,10 @@ describe("answer path and live stream", function () {
     });
 
     it("is what the oracle hands the heartbeat", () => {
-      const source = require("node:fs").readFileSync(require.resolve("../src/aiAgentOracle"), "utf8");
+      const source = require("node:fs").readFileSync(
+        require.resolve("../src/aiAgentOracle"),
+        "utf8",
+      );
       expect(source).to.match(/streamSnapshot:\s*(?:\(\)\s*=>\s*)?streamHeartbeatSnapshot\b/);
     });
   });
