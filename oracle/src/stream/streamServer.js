@@ -51,8 +51,38 @@ const MAX_REQUEST_TARGET_CHARS = 128;
 /** Request line and headers together; a browser's GET with these headers is far below it. */
 const MAX_HEADER_BYTES = 8192;
 const MAX_HEADERS_COUNT = 50;
+/** How long a socket may take to send its request line and headers; a browser sends them at once. */
 const HEADERS_TIMEOUT_MS = 10000;
-const REQUEST_TIMEOUT_MS = 15000;
+/**
+ * A request with a body is refused, so a request we serve is complete with its headers. Node
+ * requires requestTimeout >= headersTimeout. Neither applies once the request is complete: Node's
+ * parser leaves the list these timeouts are checked against when the message completes, so a
+ * long event stream is never cut by them.
+ */
+const REQUEST_TIMEOUT_MS = HEADERS_TIMEOUT_MS;
+/**
+ * How often Node checks the two timeouts above. Its default, 30 s, let a socket that never
+ * finishes its headers live up to 10 + 30 s; at 1 s it is closed within 11 s. Each check walks
+ * only the connections still receiving a request, which are at most `maxConnections`.
+ */
+const CONNECTIONS_CHECK_MS = 1000;
+/**
+ * A reader reconnects `sseRetryMs` (2 s) after a stream ends, and a 404 tells it to retry after
+ * 2 s too. A keep-alive socket idle a second longer than that is not about to be reused.
+ */
+const KEEP_ALIVE_HEADROOM_MS = 1000;
+/**
+ * What Node (24.6 and later) adds to keepAliveTimeout before it destroys an idle socket; set to
+ * its default here so the bound is written down: an idle socket lives at most 2 + 1 + 1 = 4 s.
+ */
+const KEEP_ALIVE_BUFFER_MS = 1000;
+/**
+ * Sockets allowed above the reader cap, as a share of it: room for preflights and for the
+ * refusals (404, 429, 503) of readers reconnecting while every place is taken. A quarter: 50
+ * sockets at the default cap of 200, so 250 in all.
+ */
+const REFUSAL_HEADROOM_DIVISOR = 4;
+const MS_PER_SECOND = 1000;
 /** How long shutdown waits for responses to finish before closing every socket. */
 const SHUTDOWN_GRACE_MS = 2000;
 
@@ -77,24 +107,57 @@ function eventText(frame) {
 }
 
 /**
+ * Node's own socket limits, derived from the stream settings. They bound what a caller without a
+ * proof can hold in the process that answers paid prompts: sockets (so descriptors), requests on
+ * one socket, idle keep-alive time and time to send headers. A socket past `maxConnections` is
+ * closed by `net` on arrival, before the HTTP layer allocates a parser for it, so it costs no
+ * parsing. Nothing here reads a caller's address: the limits are per process, not per client.
+ *
+ * Node's documented behaviour (v24, read 2026-11-21): nodejs.org/docs/latest-v24.x/api/http.html
+ * (headersTimeout, requestTimeout, connectionsCheckingInterval, keepAliveTimeout,
+ * keepAliveTimeoutBuffer, maxRequestsPerSocket) and .../api/net.html (maxConnections, 'drop').
+ *
+ * @param {{ maxConnTotal: number }} config
+ */
+function httpLimitsFor(config) {
+  return Object.freeze({
+    maxConnections: config.maxConnTotal + Math.ceil(config.maxConnTotal / REFUSAL_HEADROOM_DIVISOR),
+    // One preflight, then the polls of one preflight lifetime (600 s / 20 s = 30): a polling
+    // reader's socket is replaced about once per preflight, and one socket cannot carry an
+    // unbounded run of pipelined requests (past the limit Node answers 503).
+    maxRequestsPerSocket:
+      Math.ceil((STREAM_HTTP.preflightMaxAgeSeconds * MS_PER_SECOND) / STREAM_HTTP.pollWaitMs) + 1,
+    keepAliveTimeoutMs: STREAM_HTTP.sseRetryMs + KEEP_ALIVE_HEADROOM_MS,
+    keepAliveTimeoutBufferMs: KEEP_ALIVE_BUFFER_MS,
+    headersTimeoutMs: HEADERS_TIMEOUT_MS,
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    connectionsCheckingIntervalMs: CONNECTIONS_CHECK_MS,
+  });
+}
+
+/**
  * @param {object} options
  * @param {ReturnType<typeof readStreamConfig>} options.config an enabled configuration
  * @param {typeof BUFFER_LIMITS} [options.bufferLimits]
  * @param {number} [options.backpressureMs]
  * @param {number} [options.pollWaitMs]
+ * @param {Partial<ReturnType<typeof httpLimitsFor>>} [options.httpLimits] overrides, for tests
  */
 function createStreamServer({
   config,
   bufferLimits = BUFFER_LIMITS,
   backpressureMs = BACKPRESSURE_MS,
   pollWaitMs = STREAM_HTTP.pollWaitMs,
+  httpLimits = {},
 }) {
+  const limits = { ...httpLimitsFor(config), ...httpLimits };
   const buffer = createFrameBuffer({ graceMs: config.graceMs, limits: bufferLimits });
   const allowedOrigins = new Set(config.allowedOrigins);
   const maxQueuedBytes = 2 * bufferLimits.maxAnswerBytes;
   const connections = new Set();
   const readersPerAnswer = new Map();
   let waitingToDrain = 0;
+  let refusedSockets = 0;
   let shuttingDown = null;
   let failureLogged = false;
 
@@ -286,8 +349,10 @@ function createStreamServer({
   const server = http.createServer(
     {
       maxHeaderSize: MAX_HEADER_BYTES,
-      headersTimeout: HEADERS_TIMEOUT_MS,
-      requestTimeout: REQUEST_TIMEOUT_MS,
+      headersTimeout: limits.headersTimeoutMs,
+      requestTimeout: limits.requestTimeoutMs,
+      keepAliveTimeout: limits.keepAliveTimeoutMs,
+      connectionsCheckingInterval: limits.connectionsCheckingIntervalMs,
     },
     (req, res) => {
       try {
@@ -301,6 +366,13 @@ function createStreamServer({
     },
   );
   server.maxHeadersCount = MAX_HEADERS_COUNT;
+  server.maxConnections = limits.maxConnections;
+  server.maxRequestsPerSocket = limits.maxRequestsPerSocket;
+  server.keepAliveTimeoutBuffer = limits.keepAliveTimeoutBufferMs;
+  // A socket closed for being past maxConnections is counted; what Node passes about it is not read.
+  server.on("drop", () => {
+    refusedSockets += 1;
+  });
 
   /** Guards a sink call: it must never throw into the answer path. */
   function guarded(work) {
@@ -349,7 +421,7 @@ function createStreamServer({
       return server.address();
     },
     stats() {
-      return { connections: connections.size, waitingToDrain };
+      return { connections: connections.size, waitingToDrain, refusedSockets };
     },
     /** Ends every reader's response, stops listening and drops the buffer. Never rejects. */
     shutdown() {
@@ -435,4 +507,4 @@ async function startStreamFromEnv({
   return server;
 }
 
-module.exports = { createStreamServer, startStreamFromEnv, BACKPRESSURE_MS };
+module.exports = { createStreamServer, startStreamFromEnv, httpLimitsFor, BACKPRESSURE_MS };
