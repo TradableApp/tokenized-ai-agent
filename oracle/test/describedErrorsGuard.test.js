@@ -9,18 +9,31 @@ const path = require("node:path");
  * of `.then(...)`, as an arrow or a `function`, is therefore never handed whole, nor spread
  * (`{ ...error }`), to the console, a logger (any receiver ending in `console`, `log` or
  * `logger`, `this.logger` and `elizaLogger` included; `log`, `info`, `warn`, `error`, `debug`,
- * `trace`, `fatal`, `table`), `process.stderr.write` / `process.stdout.write`, an alert or a
- * thrown error: only what `describeError`, `describedError`, `errorKind` or `withoutAddresses`
- * make of it. Nor is a sink itself the callback (`.catch(console.error)`,
- * `.catch(this.logger.error)`, `.then(ok, console.error)`), which hands it the error whole. A
- * bare rethrow (`throw error;`) and `cause:` in a thrown error pass on the error to code that
- * branches on it, and are allowed.
+ * `trace`, `fatal`, `table`, `dir`, `assert`, `group`, `groupCollapsed`, `success`, `verbose`,
+ * `progress`; called with `.`, `?.` or a name in brackets), `process.stderr.write` /
+ * `process.stdout.write`, an alert or a thrown error: only what `describeError`,
+ * `describedError`, `errorKind` or `withoutAddresses` make of it. Nor is a sink itself the
+ * callback (`.catch(console.error)`, `.catch(this.logger.error)`, `.then(ok, console.error)`),
+ * which hands it the error whole. A bare rethrow (`throw error;`) and `cause:` in a thrown error
+ * pass on the error to code that branches on it, and are allowed; `cause:` anywhere else is
+ * handed on whole like any other field.
  *
- * What it does not see: the error copied to another name first (`const e2 = error`); a
- * destructured parameter (`catch ({ message })`, `.catch(({ message }) => …)`); a named handler
- * defined elsewhere (`.catch(handleFailure)`, `.then(task, task)`); a sink not listed above.
- * `Sentry.captureException(error)` is not a sink on purpose: the Sentry scrubber removes
- * addresses from every event it sends.
+ * The same holds for an error that arrives as an ordinary parameter: the first parameter of a
+ * handler for an event whose name speaks of an error, a rejection or an exception (`.on`,
+ * `.once`, `.addListener`, `.prependListener`; the process's crash handlers among them), and of
+ * a hook given as a property whose name starts with `on` and ends in what speaks of a failure
+ * (`onRetry`, `onError`, `onAlert`, `onLost`, `onUnavailable`, `onFailure`, …), as an arrow or a
+ * `function`, with or without more parameters after it. And a
+ * settled promise's `.reason` is never handed to a sink other than a throw, wherever it is.
+ *
+ * What it does not see: the error copied to another name first (`const e2 = error`); an error
+ * wrapped in a new one held in a variable and thrown later (`const wrapped = new Error(
+ * error.message); throw wrapped;`); a destructured parameter (`catch ({ message })`,
+ * `.catch(({ message }) => …)`); a named handler defined elsewhere (`.catch(handleFailure)`,
+ * `.then(task, task)`, `.on("error", onError)`); the console under another name (`const out =
+ * console`); a sink not listed above. `Sentry.captureException(error)` is not a sink on purpose:
+ * every event is cleaned before it is sent (sentryInit.js), an exception's message to one
+ * described line.
  *
  * Read from the source, because these lines sit in catch blocks that a unit test rarely reaches
  * (a store that fails while recording a failed retry), and one forgotten line is enough.
@@ -60,10 +73,20 @@ function sourceFiles(dir, prefix = "") {
 const GUARDED = sourceFiles(SRC);
 
 const HELPERS = ["describeError", "describedError", "errorKind", "withoutAddresses"];
-const LOG_METHODS = "log|info|warn|error|debug|trace|fatal|table";
+const LOG_METHODS =
+  "log|info|warn|error|debug|trace|fatal|table|dir|assert|groupCollapsed|group|success|verbose|progress";
 const STD_WRITE = "process\\s*\\.\\s*std(?:err|out)\\s*\\.\\s*write";
+const LOGGER = "\\b[\\w$]*(?:console|[Ll]og|[Ll]ogger)\\s*";
+const OPTIONAL_CALL = "\\s*(?:\\?\\.\\s*)?\\(";
+// The method's name in brackets is literal text, blanked in the code view: any name counts.
 const SINK = new RegExp(
-  `\\b[\\w$]*(?:console|[Ll]og|[Ll]ogger)\\s*\\.\\s*(?:${LOG_METHODS})\\s*(?:\\?\\.\\s*)?\\(|\\b${STD_WRITE}\\s*\\(|\\b(?:sendAlert|alert)\\s*\\(|\\bthrow\\b`,
+  [
+    `${LOGGER}(?:\\?\\.|\\.)\\s*(?:${LOG_METHODS})${OPTIONAL_CALL}`,
+    `${LOGGER}(?:\\?\\.\\s*)?\\[\\s*["'\`][^"'\`\\n]*["'\`]\\s*\\]${OPTIONAL_CALL}`,
+    `\\b${STD_WRITE}\\s*\\(`,
+    "\\b(?:sendAlert|alert)\\s*\\(",
+    "\\bthrow\\b",
+  ].join("|"),
   "g",
 );
 const CATCH_BLOCK = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)\s*\{/g;
@@ -236,6 +259,78 @@ function catchBodies(code) {
   return [...bodies, ...thenRejections(code).bodies];
 }
 
+// A handler for an event whose name speaks of an error: its first parameter is one.
+const EVENT_HANDLER = /\.(?:on|once|addListener|prependListener)\(\s*["'`]/g;
+const ERROR_EVENT = /error|rejection|exception/i;
+// A hook given as a property whose name speaks of an error, a retry, a failure, an alert, a loss
+// or an outage: `onRetry: (error) => …`, `onLost: async function (error) {…}`. Other hooks
+// (`onResponse`, `onProgress`) are handed something else first.
+const HOOK_PROPERTY =
+  /(?<![\w$.])on(?=[A-Z])[\w$]*?(?:Error|Retry|Fail|Failure|Failed|Alert|Lost|Unavailable|Reject|Rejected|Rejection|Exception|Crash)\s*:\s*/g;
+const IDENTIFIER = /^\s*([A-Za-z_$][\w$]*)/;
+
+/**
+ * The first parameter and the body of a handler that starts at `start` (an arrow or a
+ * `function`, with any number of parameters), or null when it is neither or its first
+ * parameter is destructured.
+ */
+function handlerAt(code, start, limit) {
+  const text = code.slice(start, limit);
+  const single = text.match(/^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/);
+  let name;
+  let after;
+  if (single) {
+    name = single[1];
+    after = start + single[0].length;
+  } else {
+    const head = text.match(/^\s*(?:async\s*)?(function\b\s*[\w$]*\s*)?\(/);
+    if (!head) return null;
+    const open = start + head[0].length - 1;
+    const close = closeOf(code, open);
+    const first = code.slice(open + 1, close - 1).match(IDENTIFIER);
+    if (!first) return null;
+    name = first[1];
+    const rest = code.slice(close, limit);
+    const arrow = head[1] ? rest.match(/^\s*(?=\{)/) : rest.match(/^\s*(?::[^=]*?)?=>/);
+    if (!arrow) return null;
+    after = close + arrow[0].length;
+  }
+  const bodyStart = after + (code.slice(after).match(/^\s*/)?.[0].length ?? 0);
+  if (code[bodyStart] === "{") return { name, start: bodyStart, end: closeOf(code, bodyStart) };
+  // A concise arrow body ends at a comma, a semicolon or a bracket it did not open.
+  let level = 0;
+  let end = bodyStart;
+  for (; end < limit; end += 1) {
+    if ("([{".includes(code[end])) level += 1;
+    else if (")]}".includes(code[end])) {
+      if (level === 0) break;
+      level -= 1;
+    } else if ((code[end] === "," || code[end] === ";") && level === 0) break;
+  }
+  return { name, start: bodyStart, end };
+}
+
+/** Each handler for an error event, and each hook property, with its first parameter's name. */
+function parameterBodies(code, src) {
+  const bodies = [];
+  for (const match of code.matchAll(EVENT_HANDLER)) {
+    const open = match.index + match[0].indexOf("(");
+    const args = callArguments(code, open);
+    // The event's name is literal text: read from the source, which has the same offsets.
+    if (args.length < 2 || !ERROR_EVENT.test(src.slice(args[0].start, args[0].end))) continue;
+    const handler = handlerAt(code, args[1].start, args[1].end);
+    if (handler) bodies.push(handler);
+  }
+  for (const match of code.matchAll(HOOK_PROPERTY)) {
+    const handler = handlerAt(code, match.index + match[0].length, code.length);
+    if (handler) bodies.push(handler);
+  }
+  return bodies;
+}
+
+// A settled promise's reason (`result.reason`), outside a description.
+const SETTLED_REASON = /[\w$)\]]\s*\??\.\s*reason(?![\w$])/;
+
 /** What a sink at `at` hands on: a call's arguments, or a throw's expression. */
 function sinkArguments(code, at, sink, end) {
   if (sink.startsWith("throw")) {
@@ -294,7 +389,14 @@ function offenders(src) {
     const line = lineOf(index);
     found.add(`${line}: ${lines[line - 1].trim()}`);
   }
-  for (const { name, start, end } of catchBodies(code)) {
+  const sinks = new RegExp(SINK.source, "g");
+  for (let match = sinks.exec(code); match; match = sinks.exec(code)) {
+    const args = sinkArguments(code, match.index, match[0], code.length);
+    if (args.throws || !SETTLED_REASON.test(withoutHelperCalls(args.text))) continue;
+    const line = lineOf(match.index);
+    found.add(`${line}: ${lines[line - 1].trim()}`);
+  }
+  for (const { name, start, end } of [...catchBodies(code), ...parameterBodies(code, src)]) {
     const body = code.slice(0, end);
     const sinks = new RegExp(SINK.source, "g");
     sinks.lastIndex = start;
