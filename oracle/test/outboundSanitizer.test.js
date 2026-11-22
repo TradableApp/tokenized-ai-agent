@@ -153,6 +153,31 @@ describe("outboundSanitizer", () => {
     expect(await sanitizeAnswer(answer)).to.equal(answer);
   });
 
+  it("says, when the Brain cannot be loaded, that thoughts are dropped while answers are stored unsanitised", async () => {
+    // The load is shared with the thought sanitiser, which drops a thought it cannot sanitise.
+    // A line that said only "stored unsanitised" would send whoever reads it after the wrong
+    // thing for the reasoning.
+    _setSanitizerForTests(null, { loadFails: true });
+    const error = sinon.stub(console, "error");
+
+    await sanitizeAnswer("Bitcoin is consolidating near $61k.");
+
+    const logged = error.getCalls().map((c) => c.args[0]).join("\n");
+    expect(logged).to.match(/answers will be stored unsanitised/);
+    expect(logged).to.match(/reasoning thoughts are dropped/);
+  });
+
+  it("says the same when the Brain loads without the sanitiser", async () => {
+    _setSanitizerForTests(null, { loader: sinon.stub().resolves({ somethingElse: () => "x" }) });
+    const error = sinon.stub(console, "error");
+
+    await sanitizeAnswer("Bitcoin is consolidating near $61k.");
+
+    const logged = error.getCalls().map((c) => c.args[0]).join("\n");
+    expect(logged).to.match(/answers will be stored UNSANITISED/);
+    expect(logged).to.match(/reasoning thoughts are dropped/);
+  });
+
   it("passes null and empty answers straight through", async () => {
     // selectAnswer already returns null when nothing usable was emitted; this module must not
     // turn that into a different failure shape for the caller to handle twice.

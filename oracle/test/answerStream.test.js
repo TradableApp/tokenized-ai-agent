@@ -6,7 +6,14 @@ const {
   createAnswerStream,
   createOfflineStream,
   streamCounters,
+  noteThoughtDropped,
+  setThoughtDropListener,
+  THOUGHT_DROP_KINDS,
+  DEFAULT_TASK_TIMEOUT_MS,
+  DEFAULT_FLUSH_TIMEOUT_MS,
+  FLUSH_MARGIN_MS,
 } = require("../src/stream/answerStream");
+const { THOUGHT_SANITIZE_TIMEOUT_MS } = require("../src/stream/thoughtSanitizer");
 const { decryptFrame } = require("./helpers/frameDecrypt");
 
 // The answer stream builds the frames for one run of one answer, hands their ciphertext to a
@@ -565,7 +572,187 @@ describe("answer stream", () => {
 
       const after = streamCounters.snapshot();
       expect(after.framesBuilt - before.framesBuilt).to.equal(2);
-      expect(Object.keys(after).sort()).to.deep.equal(["framesBuilt", "sinkFailures"]);
+      expect(Object.keys(after).sort()).to.deep.equal([
+        "framesBuilt",
+        "sealFailures",
+        "sinkFailures",
+        "thoughtsDropped",
+      ]);
+      expect(Object.keys(after.thoughtsDropped).sort()).to.deep.equal([...THOUGHT_DROP_KINDS].sort());
+    });
+
+    it("counts a dropped thought by its kind only, and hands the kind to the listener", () => {
+      const heard = [];
+      setThoughtDropListener((kind) => heard.push(kind));
+      try {
+        const before = streamCounters.snapshot().thoughtsDropped;
+        noteThoughtDropped("timeout");
+        noteThoughtDropped("unavailable");
+        noteThoughtDropped("not-a-kind");
+        const after = streamCounters.snapshot().thoughtsDropped;
+
+        expect(after.timeout - before.timeout).to.equal(1);
+        expect(after.unavailable - before.unavailable).to.equal(1);
+        expect(Object.keys(after)).to.not.include("not-a-kind");
+        expect(heard).to.deep.equal(["timeout", "unavailable"]);
+      } finally {
+        setThoughtDropListener(null);
+      }
+    });
+
+    it("is not hurt by a listener that throws", () => {
+      setThoughtDropListener(() => {
+        throw new Error("alert broke");
+      });
+      try {
+        expect(() => noteThoughtDropped("timeout")).to.not.throw();
+      } finally {
+        setThoughtDropListener(null);
+      }
+    });
+
+    it("hands out a copy, so a reader cannot change the counts", () => {
+      const snapshot = streamCounters.snapshot();
+      snapshot.thoughtsDropped.timeout += 1000;
+
+      expect(streamCounters.snapshot().thoughtsDropped.timeout).to.not.equal(snapshot.thoughtsDropped.timeout);
+    });
+  });
+
+  describe("work queued for a run", () => {
+    it("starts each piece of work when it is queued, so slow work does not hold back the work behind it", async () => {
+      const { stream } = newStream();
+      const started = [];
+      const work = (name) => () => {
+        started.push(name);
+        return new Promise((resolve) => setTimeout(() => resolve(step(name, `${name} step.`)), 20));
+      };
+
+      stream.step(work("One"));
+      stream.step(work("Two"));
+      stream.step(work("Three"));
+      await Promise.resolve();
+
+      expect(started).to.deep.equal(["One", "Two", "Three"]);
+      await stream.flush();
+      expect(stream.record().reasoning.map((s) => s.title)).to.deep.equal(["One", "Two", "Three"]);
+    });
+
+    it("derives the flush bound from the task bound, which outlasts the thought sanitiser's own limit", () => {
+      // Every piece of work is settled (applied or cut off) within the task bound of being queued,
+      // so a flush waits at most that long for the work queued before it, plus a margin.
+      expect(DEFAULT_FLUSH_TIMEOUT_MS).to.equal(DEFAULT_TASK_TIMEOUT_MS + FLUSH_MARGIN_MS);
+      expect(DEFAULT_TASK_TIMEOUT_MS).to.be.greaterThan(THOUGHT_SANITIZE_TIMEOUT_MS);
+    });
+
+    it("waits for slow work queued before it, however many pieces are queued", async () => {
+      const { stream } = newStream({ taskTimeoutMs: 200, flushTimeoutMs: 300 });
+      const slow = (name) => () => new Promise((resolve) => setTimeout(() => resolve(step(name, `${name} step.`)), 150));
+
+      // Run one after the other these would need 600 ms; started when queued they need 150.
+      for (const name of ["A", "B", "C", "D"]) stream.step(slow(name));
+      await stream.flush();
+
+      expect(stream.record().reasoning.map((s) => s.title)).to.deep.equal(["A", "B", "C", "D"]);
+    });
+
+    it("numbers a step by its place in the attempt when its work gives a function of that number", async () => {
+      const { stream, sink } = newStream();
+      const later = (ms, description) => () =>
+        new Promise((resolve) => setTimeout(() => resolve((index) => step(`Step ${index + 1}`, description)), ms));
+
+      stream.step(later(30, "Arrived first, finished last."));
+      stream.step(() => null);
+      stream.step(later(1, "Arrived third, finished first."));
+      stream.attempt();
+      stream.step(later(1, "The next attempt counts again."));
+      await stream.flush();
+
+      expect(sink.frames().filter((f) => f.type === "step").map((f) => f.data.title)).to.deep.equal([
+        "Step 1",
+        "Step 2",
+        "Step 1",
+      ]);
+    });
+
+    it("counts a step whose work finishes after the record was read, and neither streams nor stores it", async () => {
+      const { stream, sink } = newStream();
+      const before = streamCounters.snapshot().thoughtsDropped.late;
+
+      stream.step(() => new Promise((resolve) => setTimeout(() => resolve(step("Late", "Finished too late.")), 30)));
+      const record = stream.record();
+      await stream.flush();
+
+      expect(streamCounters.snapshot().thoughtsDropped.late - before).to.equal(1);
+      expect(sink.frames().filter((f) => f.type === "step")).to.have.length(0);
+      expect(record.reasoning).to.deep.equal([]);
+      expect(stream.record()).to.deep.equal(record);
+    });
+
+    it("counts a step whose work is cut off and then gives a step", async () => {
+      const { stream } = newStream({ taskTimeoutMs: 20 });
+      const before = streamCounters.snapshot().thoughtsDropped.late;
+
+      stream.step(() => new Promise((resolve) => setTimeout(() => resolve(step("Late", "Too late.")), 60)));
+      stream.step(() => new Promise((resolve) => setTimeout(() => resolve(null), 60)));
+      await stream.flush();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      expect(streamCounters.snapshot().thoughtsDropped.late - before).to.equal(1);
+    });
+  });
+
+  describe("sealing", () => {
+    it("seals every frame of a run with its own IV, across every frame type", async () => {
+      const { stream, sink } = newStream();
+
+      stream.sources([source("A", "https://a.test")]);
+      stream.step(step("One", "First."));
+      stream.attempt();
+      stream.step(step("Two", "Second."));
+      stream.answer({ text: "The answer.", answerMessageCID: "bafy" });
+      stream.done("answered");
+      await stream.flush();
+
+      const calls = sink.calls.filter((c) => c.method === "frame");
+      expect(sink.frames().map((f) => f.type)).to.deep.equal([
+        "reset",
+        "sources",
+        "step",
+        "attempt",
+        "step",
+        "answer",
+        "done",
+      ]);
+      const ivs = calls.map((c) => c.info.ciphertext.split(".")[0]);
+      expect(new Set(ivs).size).to.equal(ivs.length);
+      for (const iv of ivs) expect(Buffer.from(iv, "base64")).to.have.length(12);
+    });
+
+    it("takes no sequence number for a frame it could not seal, so the frames after it leave no gap", async () => {
+      let calls = 0;
+      const ivSource = () => {
+        calls += 1;
+        if (calls === 3) throw new Error("no randomness");
+        return crypto.randomBytes(12);
+      };
+      const before = streamCounters.snapshot();
+      const { stream, sink } = newStream({ ivSource });
+
+      stream.step(step("One", "Sealed."));
+      stream.step(step("Two", "Not sealed."));
+      stream.step(step("Three", "Sealed again."));
+      stream.done("answered");
+      await stream.flush();
+
+      const frames = sink.frames();
+      expect(frames.map((f) => f.seq)).to.deep.equal([0, 1, 2, 3]);
+      expect(sink.calls.filter((c) => c.method === "frame").map((c) => c.info.seq)).to.deep.equal([0, 1, 2, 3]);
+      expect(frames.filter((f) => f.type === "step").map((f) => f.data.title)).to.deep.equal(["One", "Three"]);
+      expect(stream.record().reasoning.map((s) => s.title)).to.deep.equal(["One", "Three"]);
+      const after = streamCounters.snapshot();
+      expect(after.sealFailures - before.sealFailures).to.equal(1);
+      expect(after.sinkFailures - before.sinkFailures).to.equal(0);
     });
   });
 });

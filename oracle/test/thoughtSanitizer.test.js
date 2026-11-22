@@ -4,9 +4,19 @@ const { initInboundPrompt } = require("../src/inboundPrompt");
 const outbound = require("../src/outboundSanitizer");
 const {
   sanitizeThought,
+  warmThoughtSanitizer,
   THOUGHT_SANITIZE_TIMEOUT_MS,
   THOUGHT_MAX_CHARS,
+  THOUGHT_SANITIZE_INPUT_MAX_CHARS,
 } = require("../src/stream/thoughtSanitizer");
+const { streamCounters } = require("../src/stream/answerStream");
+
+const dropped = () => streamCounters.snapshot().thoughtsDropped;
+const droppedSince = (before) => {
+  const now = dropped();
+  return Object.fromEntries(Object.keys(now).map((kind) => [kind, now[kind] - before[kind]]));
+};
+const none = { timeout: 0, unavailable: 0, refused: 0, failed: 0, late: 0 };
 
 // A thought is shown live and stored with the answer for good, so it is cleaned ONCE, here,
 // before either. Unlike the answer, a thought is not what the user paid for: anything doubtful is
@@ -117,6 +127,127 @@ describe("thought sanitiser", () => {
     expect(cleaned).to.equal(null);
     expect(Date.now() - started).to.be.lessThan(1000);
     expect(THOUGHT_SANITIZE_TIMEOUT_MS).to.equal(2000);
+  });
+
+  describe("counts what it drops, by kind only", () => {
+    it("counts a sanitiser that cannot be loaded as unavailable", async () => {
+      outbound._setSanitizerForTests(null, { loadFails: true });
+      const before = dropped();
+
+      await sanitizeThought("Checked recent sentiment for BTC.");
+
+      expect(droppedSince(before)).to.deep.equal({ ...none, unavailable: 1 });
+    });
+
+    it("counts a sanitiser that does not answer in time as timeout", async () => {
+      outbound._setSanitizerForTests(null, { loader: () => new Promise(() => {}) });
+      const before = dropped();
+
+      await sanitizeThought("Checked recent sentiment for BTC.", { timeoutMs: 20 });
+
+      expect(droppedSince(before)).to.deep.equal({ ...none, timeout: 1 });
+    });
+
+    it("counts what the Brain rejects as refused", async () => {
+      const before = dropped();
+
+      await sanitizeThought("ok");
+
+      expect(droppedSince(before)).to.deep.equal({ ...none, refused: 1 });
+    });
+
+    it("counts a sanitiser that throws, or answers with something other than text, as failed", async () => {
+      outbound._setSanitizerForTests(() => {
+        throw new Error("boom");
+      });
+      const before = dropped();
+      await sanitizeThought("Checked recent sentiment for BTC.");
+      outbound._setSanitizerForTests(() => Promise.resolve("later"));
+      await sanitizeThought("Checked recent sentiment for BTC.");
+
+      expect(droppedSince(before)).to.deep.equal({ ...none, failed: 2 });
+    });
+
+    it("does not count what it drops by design, or what it keeps", async () => {
+      const before = dropped();
+
+      await sanitizeThought('{"tool":"get_simple_price","args":{"ids":"bitcoin"}}');
+      await sanitizeThought("   ");
+      await sanitizeThought(null);
+      await sanitizeThought("Checked recent sentiment for BTC.");
+
+      expect(droppedSince(before)).to.deep.equal(none);
+    });
+  });
+
+  describe("bounds the text it hands the Brain", () => {
+    it("cuts a thought far over the bound before the Brain sees it, then caps the result", async () => {
+      const seen = [];
+      outbound._setSanitizerForTests((text) => {
+        seen.push(text.length);
+        return text;
+      });
+
+      const cleaned = await sanitizeThought(`Reading the market. ${"<post>a".repeat(100000)}`);
+
+      expect(THOUGHT_SANITIZE_INPUT_MAX_CHARS).to.equal(32 * 1024);
+      expect(seen).to.have.length(1);
+      expect(seen[0]).to.be.at.most(THOUGHT_SANITIZE_INPUT_MAX_CHARS);
+      expect(cleaned).to.have.length(THOUGHT_MAX_CHARS);
+    });
+
+    it("hands an ordinary thought to the Brain whole", async () => {
+      const seen = [];
+      outbound._setSanitizerForTests((text) => {
+        seen.push(text);
+        return text;
+      });
+      const thought = `Weighing the macro backdrop. ${"b".repeat(THOUGHT_MAX_CHARS * 3)}`;
+
+      await sanitizeThought(thought);
+
+      expect(seen).to.deep.equal([thought]);
+    });
+  });
+
+  describe("warm-up at start-up", () => {
+    it("loads the sanitiser once, so the first thought does not wait for the load", async () => {
+      let loads = 0;
+      outbound._setSanitizerForTests(null, {
+        loader: async () => {
+          loads += 1;
+          return { sanitizeOutboundText: (text) => text };
+        },
+      });
+
+      expect(await warmThoughtSanitizer()).to.equal(true);
+      expect(await sanitizeThought("Checked recent sentiment for BTC.")).to.equal(
+        "Checked recent sentiment for BTC.",
+      );
+      expect(loads).to.equal(1);
+    });
+
+    it("never throws when the load fails, and says so by kind with nothing of the error's text", async () => {
+      outbound._setSanitizerForTests(null, { loadFails: true });
+      const warned = [];
+      const originalWarn = console.warn;
+      const originalError = console.error;
+      console.warn = (...args) => warned.push(args.join(" "));
+      console.error = () => {};
+      let ready;
+      try {
+        ready = await warmThoughtSanitizer();
+      } finally {
+        console.warn = originalWarn;
+        console.error = originalError;
+      }
+
+      expect(ready).to.equal(false);
+      const line = warned.find((w) => w.includes("[Stream]"));
+      expect(line).to.match(/unavailable/);
+      expect(line).to.match(/thoughts are dropped/);
+      expect(line).to.not.include("Cannot find module");
+    });
   });
 
   it("never throws, even when the fence strip is not ready", async () => {
