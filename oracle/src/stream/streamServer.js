@@ -84,6 +84,10 @@ const KEEP_ALIVE_BUFFER_MS = 1000;
  */
 const REFUSAL_HEADROOM_DIVISOR = 4;
 const MS_PER_SECOND = 1000;
+/** A kind of server failure is logged again at most this often; every one is counted. */
+const FAILURE_LOG_INTERVAL_MS = 60 * 60 * 1000;
+/** The kinds whose last log time is remembered; errorKind gives a short word, so few occur. */
+const MAX_FAILURE_KINDS = 32;
 /** How long shutdown waits for responses to finish before closing every socket. */
 const SHUTDOWN_GRACE_MS = 2000;
 
@@ -184,6 +188,7 @@ function httpLimitsFor(config) {
  * @param {number} [options.backpressureMs]
  * @param {number} [options.pollWaitMs]
  * @param {Partial<ReturnType<typeof httpLimitsFor>>} [options.httpLimits] overrides, for tests
+ * @param {() => number} [options.now] the clock that spaces failure log lines
  */
 function createStreamServer({
   config,
@@ -191,6 +196,7 @@ function createStreamServer({
   backpressureMs = BACKPRESSURE_MS,
   pollWaitMs = STREAM_HTTP.pollWaitMs,
   httpLimits = {},
+  now = () => Date.now(),
 }) {
   const limits = { ...httpLimitsFor(config), ...httpLimits };
   const buffer = createFrameBuffer({ graceMs: config.graceMs, limits: bufferLimits });
@@ -200,15 +206,28 @@ function createStreamServer({
   const readersPerAnswer = new Map();
   let waitingToDrain = 0;
   let refusedSockets = 0;
+  let failures = 0;
   let shuttingDown = null;
-  let failureLogged = false;
+  /** errorKind → when it was last logged; insertion order is the order last logged. */
+  const failureLoggedAt = new Map();
 
+  /**
+   * Every failure is counted (the heartbeat carries the count); each kind is logged at most once
+   * per `FAILURE_LOG_INTERVAL_MS`, by kind only, so a fault that lasts shows again each hour
+   * without a line per frame.
+   */
   function noteFailure(error) {
-    if (failureLogged) return;
-    failureLogged = true;
-    console.error(
-      `[Stream] The stream server hit an error (${errorKind(error)}); answers are not affected.`,
-    );
+    failures += 1;
+    const kind = errorKind(error);
+    const at = now();
+    const last = failureLoggedAt.get(kind);
+    if (last !== undefined && at - last < FAILURE_LOG_INTERVAL_MS) return;
+    failureLoggedAt.delete(kind);
+    failureLoggedAt.set(kind, at);
+    while (failureLoggedAt.size > MAX_FAILURE_KINDS) {
+      failureLoggedAt.delete(failureLoggedAt.keys().next().value);
+    }
+    console.error(`[Stream] The stream server hit an error (${kind}); answers are not affected.`);
   }
 
   function corsHeaders(req) {
@@ -453,7 +472,7 @@ function createStreamServer({
         server.once("error", onError);
         server.listen(port, host, () => {
           server.removeListener("error", onError);
-          // From here on a server error is described once and the answers carry on.
+          // From here on a server error is counted and described by kind; the answers carry on.
           server.on("error", noteFailure);
           resolve(server.address());
         });
@@ -462,8 +481,19 @@ function createStreamServer({
     address() {
       return server.address();
     },
+    /** Counts for the heartbeat's stream block; never an id, an address or a header. */
     stats() {
-      return { connections: connections.size, waitingToDrain, refusedSockets };
+      const held = buffer.stats();
+      return {
+        connections: connections.size,
+        waitingToDrain,
+        refusedSockets,
+        failures,
+        answers: held.answers,
+        bufferedBytes: held.bytes,
+        refusedOpens: held.refusedOpens,
+        refusedAppends: held.refusedAppends,
+      };
     },
     /** Ends every reader's response, stops listening and drops the buffer. Never rejects. */
     shutdown() {

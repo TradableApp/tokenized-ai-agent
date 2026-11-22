@@ -1510,6 +1510,20 @@ function setStreamSink(sink) {
 }
 
 /**
+ * The heartbeat's `stream` block: the answer path's counts, and the stream server's own stats
+ * (`server`, null when the sink has none or they cannot be read). Never an id.
+ */
+function streamHeartbeatSnapshot() {
+  let server = null;
+  try {
+    if (typeof streamSink?.stats === "function") server = streamSink.stats() ?? null;
+  } catch {
+    server = null;
+  }
+  return { ...streamCounters.snapshot(), server };
+}
+
+/**
  * Opens the live stream for one run of an answer. Never throws (see createAnswerStream). The
  * reset says "retry" when this process has opened a run for this answer before.
  */
@@ -3246,7 +3260,7 @@ async function start() {
     fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
     mirrorSnapshot: () => require("./storage/mirror").snapshot(),
     observeToolServers: () => toolServerWatch.observe(),
-    streamSnapshot: () => streamCounters.snapshot(),
+    streamSnapshot: () => streamHeartbeatSnapshot(),
     diskPath: path.dirname(STATE_FILE_PATH),
   });
 
@@ -3342,6 +3356,7 @@ module.exports = {
   parseMockStepMs,
   hasMockRerunSentinel,
   setStreamSink,
+  streamHeartbeatSnapshot,
   flushStreamsForTest,
   shouldInitializeConversation,
   getSessionKey,

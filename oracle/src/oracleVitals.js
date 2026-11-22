@@ -197,8 +197,10 @@ async function collectVitals(deps = {}) {
     // means answers are being written without live market data.
     toolServers: readSnapshot(observeToolServers),
 
-    // Cumulative live reasoning stream counts ({ framesBuilt, sinkFailures }), never an id.
-    // `sinkFailures` climbing means frames are built and stored but not reaching viewers.
+    // Cumulative live reasoning stream counts ({ framesBuilt, sinkFailures, server }), never an
+    // id. `sinkFailures` climbing means frames are built and stored but not reaching viewers;
+    // `server` is the stream server's stats (readers, refused sockets, failures, refused
+    // frames and opens), null when no server runs.
     stream: readSnapshot(streamSnapshot),
   };
 }

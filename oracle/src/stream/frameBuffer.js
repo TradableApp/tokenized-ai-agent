@@ -54,6 +54,10 @@ function createFrameBuffer({
   /** id → expiry time; refused at open for want of room (503) until it opens or expires. */
   const refused = new Map();
   let totalBytes = 0;
+  // Counts for the heartbeat, never an id: a climbing count means live views lose frames (a
+  // frame out of sequence refuses the rest of its run) or answers find no room.
+  let refusedAppends = 0;
+  let refusedOpens = 0;
 
   function notify(entry, event) {
     for (const listener of [...entry.listeners]) {
@@ -103,6 +107,30 @@ function createFrameBuffer({
     notify(entry, { kind: "end" });
   }
 
+  /** Keeps the next frame of the current run; false when it is not kept. */
+  function keepFrame(id, { run, seq, ciphertext }) {
+    const entry = answers.get(id);
+    if (!entry || entry.state !== "open" || run !== entry.run) return false;
+    if (!isSeq(seq) || seq !== entry.frames.length || !isSealedFrame(ciphertext)) return false;
+    const size = ciphertext.length;
+    if (entry.bytes + size > limits.maxAnswerBytes) {
+      markUnavailable(entry);
+      return false;
+    }
+    while (totalBytes + size > limits.maxTotalBytes) {
+      if (!dropOldestFinished()) {
+        markUnavailable(entry);
+        return false;
+      }
+    }
+    const frame = { run, seq, ciphertext };
+    entry.frames.push(frame);
+    entry.bytes += size;
+    totalBytes += size;
+    notify(entry, { kind: "frame", frame });
+    return true;
+  }
+
   /** Drops the oldest finished answer; false when there is none. */
   function dropOldestFinished() {
     for (const [id, entry] of answers) {
@@ -133,6 +161,7 @@ function createFrameBuffer({
       while (answers.size >= limits.maxOpenAnswers) {
         if (!dropOldestFinished()) {
           remember(refused, id);
+          refusedOpens += 1;
           return false;
         }
       }
@@ -151,28 +180,11 @@ function createFrameBuffer({
       return true;
     },
 
-    /** The next frame of the current run. False when it is not kept. */
-    append(id, { run, seq, ciphertext }) {
-      const entry = answers.get(id);
-      if (!entry || entry.state !== "open" || run !== entry.run) return false;
-      if (!isSeq(seq) || seq !== entry.frames.length || !isSealedFrame(ciphertext)) return false;
-      const size = ciphertext.length;
-      if (entry.bytes + size > limits.maxAnswerBytes) {
-        markUnavailable(entry);
-        return false;
-      }
-      while (totalBytes + size > limits.maxTotalBytes) {
-        if (!dropOldestFinished()) {
-          markUnavailable(entry);
-          return false;
-        }
-      }
-      const frame = { run, seq, ciphertext };
-      entry.frames.push(frame);
-      entry.bytes += size;
-      totalBytes += size;
-      notify(entry, { kind: "frame", frame });
-      return true;
+    /** The next frame of the current run. False when it is not kept, and then counted. */
+    append(id, frame) {
+      const kept = keepFrame(id, frame);
+      if (!kept) refusedAppends += 1;
+      return kept;
     },
 
     /** The current run ended. Its frames stay for the grace period. */
@@ -219,7 +231,13 @@ function createFrameBuffer({
     },
 
     stats() {
-      return { answers: answers.size, bytes: totalBytes, tombstones: tombstones.size };
+      return {
+        answers: answers.size,
+        bytes: totalBytes,
+        tombstones: tombstones.size,
+        refusedOpens,
+        refusedAppends,
+      };
     },
 
     /** Drops everything and its timers; readers hear an end. */
