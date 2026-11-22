@@ -7,7 +7,8 @@ const { STREAM_HTTP, isSealedFrame, isSeq } = require("./streamContract");
  *
  * Lifecycle of one answer:
  *   open   a run starts; any earlier run's frames are dropped (its first frame is a reset)
- *   append frames in seq order; anything out of order or of another run is ignored
+ *   append frames in seq order; anything out of order, of another run, or not a sealed frame
+ *          no longer than the contract's largest (`isSealedFrame`) is ignored
  *   close  the run ended; the frames stay for `graceMs`, for a second device that finds the
  *          answer late, then are dropped. An answered or abandoned run leaves a tombstone for
  *          `tombstoneMs`, so a late reader is told the answer is finished (410) rather than not

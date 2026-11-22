@@ -138,8 +138,12 @@ const isRun = (value) => typeof value === "string" && RUN_PATTERN.test(value);
 const isReplica = (value) => typeof value === "string" && REPLICA_PATTERN.test(value);
 const isSeq = (value) => Number.isSafeInteger(value) && value >= 0;
 const isProof = (value) => typeof value === "string" && PROOF_PATTERN.test(value);
-/** True for text that can be one SSE `data:` line: the sealed shape, so never a line break. */
-const isSealedFrame = (value) => typeof value === "string" && SEALED_FRAME_PATTERN.test(value);
+/**
+ * True for text that can be one SSE `data:` line of a frame: the sealed shape, so never a line
+ * break, and no longer than the largest frame the contract allows (`MAX_SEALED_FRAME_CHARS`).
+ */
+const isSealedFrame = (value) =>
+  typeof value === "string" && value.length <= MAX_SEALED_FRAME_CHARS && SEALED_FRAME_PATTERN.test(value);
 const isAnswerCid = (value) => typeof value === "string" && ANSWER_CID_PATTERN.test(value);
 
 /** A new run id for every attempt at a job; random so it never repeats across restarts. */
