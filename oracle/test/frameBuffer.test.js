@@ -1,7 +1,7 @@
 const { expect } = require("chai");
 const sinon = require("sinon");
 
-const { STREAM_HTTP } = require("../src/stream/streamContract");
+const { STREAM_HTTP, MAX_SEALED_FRAME_CHARS } = require("../src/stream/streamContract");
 const { createFrameBuffer, BUFFER_LIMITS } = require("../src/stream/frameBuffer");
 
 /**
@@ -123,6 +123,35 @@ describe("frameBuffer", () => {
           false,
         );
       }
+    });
+  });
+
+  describe("frame size", () => {
+    // A sealed frame of exactly `chars` characters (16 for the IV, a dot, the rest ciphertext).
+    const sealedOf = (chars) => `oKGio6Slpqeoqaqr.${"A".repeat(chars - 17)}`;
+
+    it("keeps the largest frame the contract allows, with the answer cap's default room", () => {
+      buffer.open("42", { run: RUN_A, replica: "deadbeef", expectedProof: PROOF });
+
+      expect(buffer.append("42", { run: RUN_A, seq: 0, ciphertext: sealed() })).to.equal(true);
+      expect(buffer.append("42", { run: RUN_A, seq: 1, ciphertext: sealedOf(MAX_SEALED_FRAME_CHARS) })).to.equal(true);
+      expect(buffer.append("42", { run: RUN_A, seq: 2, ciphertext: sealed() })).to.equal(true);
+      expect(buffer.framesAfter("42", null).map((f) => f.seq)).to.deep.equal([0, 1, 2]);
+    });
+
+    it("refuses a frame longer than the contract allows, and counts it", () => {
+      buffer.open("42", { run: RUN_A, replica: "deadbeef", expectedProof: PROOF });
+
+      const kept = buffer.append("42", { run: RUN_A, seq: 0, ciphertext: sealedOf(MAX_SEALED_FRAME_CHARS + 1) });
+
+      expect(kept).to.equal(false);
+      expect(buffer.framesAfter("42", null)).to.deep.equal([]);
+      expect(buffer.stats()).to.include({ refusedAppends: 1 });
+    });
+
+    it("leaves room in the per-answer cap for the largest frame beside a reset and a done", () => {
+      // A reset, the largest answer frame and done always fit: the cap is not what loses them.
+      expect(BUFFER_LIMITS.maxAnswerBytes).to.be.at.least(MAX_SEALED_FRAME_CHARS + 2 * 1024);
     });
   });
 
