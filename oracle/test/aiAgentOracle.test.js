@@ -340,7 +340,9 @@ describe("aiAgentOracle", function () {
 
         expect(queryFilterStub.called, "start-up went on to the catch-up").to.equal(true);
         const lines = warn.getCalls().map((c) => c.args.join(" "));
-        expect(lines.some((line) => /sanitiser warm-up/i.test(line) && /unavailable/.test(line))).to.equal(true);
+        expect(
+          lines.some((line) => /sanitiser warm-up/i.test(line) && /unavailable/.test(line)),
+        ).to.equal(true);
       });
     });
 

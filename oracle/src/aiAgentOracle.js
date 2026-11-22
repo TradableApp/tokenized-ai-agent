@@ -295,8 +295,11 @@ const {
   createAnswerStream,
   createOfflineStream,
   streamCounters,
+  noteThoughtDropped,
+  setThoughtDropListener,
 } = require("./stream/answerStream");
-const { sanitizeThought } = require("./stream/thoughtSanitizer");
+const { sanitizeThought, warmThoughtSanitizer } = require("./stream/thoughtSanitizer");
+const { createThoughtDropAlerter } = require("./stream/thoughtDropAlert");
 const { createRunProvenance } = require("./runProvenance");
 const {
   selectAnswer,
@@ -495,6 +498,9 @@ const answersRun = new LRUCache({ max: 10000 });
 // it never keeps a finished run's frames alive; read by nothing else.
 const RECENT_STREAMS_KEPT = 64;
 const recentStreams = [];
+// A dropped thought leaves an answer with less reasoning and nothing else to show for it: alert by
+// kind, once and then at most hourly (stream/thoughtDropAlert.js). The heartbeat has the counts.
+setThoughtDropListener(createThoughtDropAlerter({ alert: sendAlert }));
 
 // The Postgres url the agent schema — and with it the oracle-state tables — was migrated on;
 // null where the oracle runs without Postgres. Set by initializeEliza, read by start().
@@ -1269,6 +1275,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
     // earlier run stored an apology). Callback ordering must not decide what a user is
     // charged for.
     const emittedTexts = [];
+    // False once the run has ended by any exit; a thought after that is not a step of it.
+    let runOpen = true;
 
     try {
       await elizaOS.handleMessage(
@@ -1310,16 +1318,27 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
             // reasoning, which is stored with the answer for good.
             const failureKind = toolFailureKind(content.thought);
             if (content.thought && !failureKind) {
-              // Sanitised ONCE, before it is either streamed or stored, in the stream's queue so
-              // steps keep the order thoughts arrived in. The action in flight NOW titles it: by
-              // the time the queue reaches it, ACTION_COMPLETED may have cleared it. A dropped
-              // thought is neither streamed nor stored. See stream/thoughtSanitizer.js.
+              // Sanitised ONCE, before it is either streamed or stored. The stream starts the
+              // work now and applies it in the order thoughts arrived. The action in flight NOW
+              // titles it: by the time it is applied, ACTION_COMPLETED may have cleared it. The
+              // step is made from the thought itself, not from the run's record, so it is kept
+              // however late its sanitising finishes, as long as the stream is still taking
+              // steps; an untitled one is numbered when it is applied. A dropped thought is
+              // neither streamed nor stored, and is counted. See stream/thoughtSanitizer.js.
               const thought = content.thought;
-              const action = runProvenance.currentActionOf(runId);
-              stream.step(async () => {
-                const clean = await sanitizeThought(thought);
-                return clean ? runProvenance.recordThought(runId, clean, action) : null;
-              });
+              if (!runOpen) {
+                // The run has ended: its steps were the steps of an attempt now over, and
+                // another provider may be answering under the next attempt.
+                noteThoughtDropped("late");
+              } else {
+                const action = runProvenance.currentActionOf(runId);
+                stream.step(async () => {
+                  const clean = await sanitizeThought(thought);
+                  if (!clean) return null;
+                  const entry = action ? { thought: clean, action } : { thought: clean };
+                  return (index) => stepFromThought(entry, index);
+                });
+              }
             }
 
             // Keep the ATTRIBUTION, not just the text. Every emitter tags its callback with the
@@ -1337,15 +1356,17 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
           },
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
+            runOpen = false;
             console.error("[ElizaOS] Runtime Error during handleMessage:", describedError(error));
-            // The steps already given are kept (a fallback tier's record holds them as an earlier
-            // attempt), so their sanitising finishes before the run is released. Bounded.
-            await stream.flush();
+            // The steps already given are kept, under this attempt: the stream applies them
+            // before the next tier's attempt frame. Nothing waits for them here; the handler's
+            // flush before it reads the record does.
             runProvenance.finish(runId); // release the run; a rejected answer still frees it
             reject(error);
           },
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
           onComplete: async () => {
+            runOpen = false;
             console.log("[ElizaOS] Processing complete signal received.");
             // WHY THIS WHOLE BODY IS WRAPPED. `onComplete` is an async callback whose promise
             // nothing awaits — the `new Promise(async (resolve, reject) => …)` executor does not
@@ -1359,8 +1380,10 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
             // change, which is what made the hazard reachable at all: `onError` and the outer
             // catch already release the run, and this exit was the only one that could not.
             try {
-              // Every thought of this run sanitised and recorded before it is read. Bounded.
-              await stream.flush();
+              // The steps of this run are not waited for here: they are made from the thoughts
+              // themselves, so the handler's one bounded flush before it reads the stream's
+              // record (handlePrompt, handleRegeneration) is what keeps a late one.
+              //
               // A tool step failed and nothing answered without it: what is left is an apology
               // and an acknowledgement, and storing either would charge the user for it.
               // Rejecting hands the prompt to another provider. See queryAIModel for which.
@@ -1379,12 +1402,13 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
               // encrypted into an immutable MessageFile. See outboundSanitizer.js.
               const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
               if (finalResponseText) {
-                // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
-                // thought steps from the runtime + the warm-cache sources injected above.
-                const { reasoning, sources } = runProvenance.finish(runId);
+                // What is stored comes from the stream's record, never from here: the steps went
+                // to the stream as the thoughts arrived, so `reasoning` is empty, as on every
+                // other tier (asAnswer). `sources` is what this run composed.
+                const { sources } = runProvenance.finish(runId);
                 resolve({
                   text: finalResponseText.trim(),
-                  reasoning,
+                  reasoning: [],
                   sources,
                   reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
                 });
@@ -1409,7 +1433,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
       // handleMessage can throw SYNCHRONOUSLY, before onError ever runs — the two other exits
       // release the run, and this one silently did not, stranding it until cap eviction weeks
       // later inside a long-lived TEE process. Caught in review; a stub that throws now covers it.
-      await stream.flush();
+      runOpen = false;
       runProvenance.finish(runId);
       reject(err);
     }
@@ -1610,7 +1634,8 @@ function shouldInitializeConversation({
  *          answer returned here.
  * @returns {Promise<{text: string, reasoning: Array<{title: string, description: string}>, sources: Array<{title: string, url: string}>, reasoningDuration?: number}>}
  *          The normalized answer object (CU-86d3cfa41) — string-only provider
- *          paths carry empty reasoning/sources.
+ *          paths carry empty reasoning/sources, and the ElizaOS path empty reasoning (its steps
+ *          go to the live stream as they arrive).
  */
 function asAnswer(text) {
   return { text, reasoning: [], sources: [] };
@@ -3193,6 +3218,11 @@ async function start() {
   // through unstripped with one log line as the only signal — the same call aiAgentOracle already
   // makes for degraded market context.
   await initInboundPrompt();
+
+  // The Brain's sanitiser, loaded now so the first prompt's thoughts do not wait on the import
+  // and time out. Not awaited, and it never rejects: a failed load is logged by kind and the
+  // oracle starts all the same (thoughts are then dropped and counted).
+  void warmThoughtSanitizer();
 
   // Initialize the connection to the decentralised storage provider.
   await initializeStorage();

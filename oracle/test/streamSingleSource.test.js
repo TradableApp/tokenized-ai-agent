@@ -42,7 +42,10 @@ function functionParts(code, name) {
     else if (code[i] === "}") depth -= 1;
     i += 1;
   }
-  return { params: head[1].replace(/\s+/g, " ").trim(), body: code.slice(head.index + head[0].length, i - 1) };
+  return {
+    params: head[1].replace(/\s+/g, " ").trim(),
+    body: code.slice(head.index + head[0].length, i - 1),
+  };
 }
 
 describe("stream single source (static)", () => {
@@ -77,7 +80,9 @@ describe("stream single source (static)", () => {
   });
 
   it("never takes reasoning or sources out of an answer by destructuring, indexing or spreading it", () => {
-    expect(ORACLE).to.not.match(/\{[^{}]*\b(reasoning|sources)\b[^{}]*\}\s*=\s*(await\s+)?answer\b/);
+    expect(ORACLE).to.not.match(
+      /\{[^{}]*\b(reasoning|sources)\b[^{}]*\}\s*=\s*(await\s+)?answer\b/,
+    );
     expect(ORACLE).to.not.match(/answer\s*\[\s*["'`](reasoning|sources)["'`]\s*\]/);
     for (const call of assistantCalls) {
       expect(call, call).to.not.match(/\.\.\.\s*answer\b/);
@@ -88,7 +93,14 @@ describe("stream single source (static)", () => {
     const parts = functionParts(ORACLE, "storedExtrasFrom");
     expect(parts, "storedExtrasFrom exists").to.not.equal(null);
     expect(parts.params).to.equal("{ reasoning, sources }, reasoningDuration");
-    const allowed = new Set(["return", "reasoning", "sources", "reasoningDuration", "length", "undefined"]);
+    const allowed = new Set([
+      "return",
+      "reasoning",
+      "sources",
+      "reasoningDuration",
+      "length",
+      "undefined",
+    ]);
     const names = parts.body.match(/[A-Za-z_$][\w$]*/g) ?? [];
     expect(names.filter((name) => !allowed.has(name))).to.deep.equal([]);
   });
@@ -104,11 +116,14 @@ describe("stream single source (static)", () => {
     expect(ORACLE).to.not.match(/realAnswerExtras/);
   });
 
-  it("sanitises a thought before it is recorded, in the one place thoughts arrive", () => {
-    const recordCalls = ORACLE.match(/runProvenance\.recordThought\([^)]*\)/g) ?? [];
-    expect(recordCalls).to.have.length(1);
-    expect(recordCalls[0]).to.match(/recordThought\(runId, clean, action\)/);
-    expect(ORACLE).to.match(/await sanitizeThought\(/);
+  it("sanitises a thought before it becomes a step, in the one place thoughts arrive", () => {
+    // The step is made from the sanitised thought itself, never from the run's record, which a
+    // finished run no longer has.
+    expect(ORACLE).to.not.match(/runProvenance\.recordThought\(/);
+    expect(ORACLE.match(/await sanitizeThought\(thought\)/g) ?? []).to.have.length(1);
+    expect(ORACLE).to.match(
+      /const entry = action \? \{ thought: clean, action \} : \{ thought: clean \};\s*return \(index\) => stepFromThought\(entry, index\);/,
+    );
   });
 
   it("gives the answer frame the same text binding the stored file gets", () => {

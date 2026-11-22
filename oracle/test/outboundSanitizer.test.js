@@ -162,7 +162,10 @@ describe("outboundSanitizer", () => {
 
     await sanitizeAnswer("Bitcoin is consolidating near $61k.");
 
-    const logged = error.getCalls().map((c) => c.args[0]).join("\n");
+    const logged = error
+      .getCalls()
+      .map((c) => c.args[0])
+      .join("\n");
     expect(logged).to.match(/answers will be stored unsanitised/);
     expect(logged).to.match(/reasoning thoughts are dropped/);
   });
@@ -173,7 +176,10 @@ describe("outboundSanitizer", () => {
 
     await sanitizeAnswer("Bitcoin is consolidating near $61k.");
 
-    const logged = error.getCalls().map((c) => c.args[0]).join("\n");
+    const logged = error
+      .getCalls()
+      .map((c) => c.args[0])
+      .join("\n");
     expect(logged).to.match(/answers will be stored UNSANITISED/);
     expect(logged).to.match(/reasoning thoughts are dropped/);
   });

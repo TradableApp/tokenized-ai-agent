@@ -260,16 +260,27 @@ describe("answer path and live stream", function () {
         scriptFor: () => ({ thoughts: THOUGHTS, answer: "An answer here." }),
       });
 
-      await oracle.handlePrompt(USER, 9, 458, 459, promptPayload("How is BTC?"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(
+        USER,
+        9,
+        458,
+        459,
+        promptPayload("How is BTC?"),
+        "0xkey",
+        fakeEvent(),
+      );
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("459");
       const [stored] = storedAnswer();
       const storedSteps = stored.file.reasoning ?? [];
-      expect({ reasoning: storedSteps, sources: stored.file.sources ?? [] }).to.deep.equal(projection(frames));
-      expect(storedSteps.length + droppedSince(before), "every thought is stored or counted as dropped").to.equal(
-        THOUGHTS.length,
+      expect({ reasoning: storedSteps, sources: stored.file.sources ?? [] }).to.deep.equal(
+        projection(frames),
       );
+      expect(
+        storedSteps.length + droppedSince(before),
+        "every thought is stored or counted as dropped",
+      ).to.equal(THOUGHTS.length);
     });
 
     it("waits for steps whose sanitising finishes after the run completed, and stores them", async () => {
@@ -278,14 +289,23 @@ describe("answer path and live stream", function () {
         scriptFor: () => ({ thoughts: THOUGHTS, answer: "An answer here." }),
       });
 
-      await oracle.handlePrompt(USER, 9, 460, 461, promptPayload("How is BTC?"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(
+        USER,
+        9,
+        460,
+        461,
+        promptPayload("How is BTC?"),
+        "0xkey",
+        fakeEvent(),
+      );
 
       const [stored] = storedAnswer();
       expect(stored.file.reasoning.map((s) => s.description)).to.deep.equal(THOUGHTS);
       await oracle.flushStreamsForTest();
-      expect({ reasoning: stored.file.reasoning, sources: stored.file.sources ?? [] }).to.deep.equal(
-        projection(sink.frames("461")),
-      );
+      expect({
+        reasoning: stored.file.reasoning,
+        sources: stored.file.sources ?? [],
+      }).to.deep.equal(projection(sink.frames("461")));
     });
 
     it("neither streams nor stores a thought that arrives after a failed run ended, and counts it", async () => {
@@ -300,7 +320,15 @@ describe("answer path and live stream", function () {
         }),
       });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is ETH?"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(
+        USER,
+        9,
+        456,
+        457,
+        promptPayload("How is ETH?"),
+        "0xkey",
+        fakeEvent(),
+      );
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -309,7 +337,9 @@ describe("answer path and live stream", function () {
         ["Reading the latest market headlines.", 1],
         ["Checking the funding rates now.", 1],
       ]);
-      expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(projection(frames));
+      expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(
+        projection(frames),
+      );
       expect(streamCounters.snapshot().thoughtsDropped?.late - (before?.late ?? 0)).to.equal(1);
     });
 
@@ -317,13 +347,18 @@ describe("answer path and live stream", function () {
       outbound._setSanitizerForTests(null, { loadFails: true });
       sinon.stub(console, "error");
       const { oracle, stubs } = loadOracle({
-        scriptFor: () => ({ thoughts: ["Reading the latest market headlines."], answer: "An answer." }),
+        scriptFor: () => ({
+          thoughts: ["Reading the latest market headlines."],
+          answer: "An answer.",
+        }),
       });
 
       await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("One"), "0xkey", fakeEvent());
       await oracle.handlePrompt(USER, 9, 458, 459, promptPayload("Two"), "0xkey", fakeEvent());
 
-      const alerts = stubs["./alerting"].sendAlert.getCalls().filter((c) => /thought/i.test(c.args[0]));
+      const alerts = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((c) => /thought/i.test(c.args[0]));
       expect(alerts).to.have.length(1);
       expect(alerts[0].args[1]).to.include("kind: unavailable");
     });
