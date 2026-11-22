@@ -1,13 +1,13 @@
 const hre = require("hardhat");
-const dotenv = require("dotenv");
-const fs = require("fs");
 const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
+const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
 
 // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so the process
 // environment holds both. DEPLOY_MODE and the pair's addresses are read again from ENV_FILE
-// alone (FILE_ONLY_VARS below).
+// alone on every EVM network (FILE_ONLY_VARS below), and so is every setting that wires a fresh
+// pair on a live network (FRESH_LIVE_FILE_ONLY_VARS).
 
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
@@ -42,6 +42,33 @@ const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const DEPLOY_MODES = Object.freeze(["fresh", "upgrade"]);
 const PAIR_VARS = Object.freeze(["AI_AGENT_CONTRACT_ADDRESS", "AI_AGENT_ESCROW_CONTRACT_ADDRESS"]);
 const FILE_ONLY_VARS = Object.freeze(["DEPLOY_MODE", ...PAIR_VARS]);
+// The fees a fresh escrow starts with, in wei of the fee token, by the plan's name for each.
+const FEE_VARS = Object.freeze({
+  prompt: "INITIAL_PROMPT_FEE",
+  cancellation: "INITIAL_CANCELLATION_FEE",
+  metadata: "INITIAL_METADATA_FEE",
+  branch: "INITIAL_BRANCH_FEE",
+});
+// Everything a fresh pair on a live network is wired with. One left out of ENV_FILE but set in
+// the root .env would otherwise be used, and the read-back would pass, since it compares the
+// chain with that same value. An upgrade reads none of them; a local network keeps the merged
+// environment, since the e2e bring-up writes only the token, the symbol, the mode and the pair
+// to the file and lets the rest fall back to the deploy wallet and the default fees.
+const FRESH_LIVE_FILE_ONLY_VARS = Object.freeze([
+  "TOKEN_CONTRACT_ADDRESS",
+  "TREASURY_ADDRESS",
+  "ORACLE_ADDRESS",
+  "EXPECTED_FEE_TOKEN_SYMBOL",
+  ...Object.values(FEE_VARS),
+  "DOMAIN",
+]);
+
+/** The settings read from ENV_FILE alone for this network and the mode the file names. */
+function fileOnlyNames({ networkName, fileEnv }) {
+  const fresh = String(fileEnv?.DEPLOY_MODE ?? "").trim() === "fresh";
+  if (!fresh || LOCAL_NETWORKS.has(networkName)) return FILE_ONLY_VARS;
+  return [...FILE_ONLY_VARS, ...FRESH_LIVE_FILE_ONLY_VARS];
+}
 
 /**
  * What stops a deploy, given the settings it would run with. `env` is the process environment
@@ -107,28 +134,19 @@ function modeProblems({ networkName, env }) {
 }
 
 /**
- * FILE_ONLY_VARS must come from ENV_FILE: one the file leaves out but the root .env or the shell
- * sets would otherwise pick the mode or the pair. Values are never printed.
+ * The settings `fileOnlyNames` lists must come from ENV_FILE: one the file leaves out but the root
+ * .env or the shell sets would otherwise pick the mode, the pair or its wiring. Values are never
+ * printed.
  */
-function sourceProblems({ envFile, fileEnv, processEnv }) {
-  if (!envFile || !fileEnv) {
-    return [
-      `ENV_FILE is not set: on an EVM network ${FILE_ONLY_VARS.join(", ")} are read from the file it names alone. Run the deploy through its package script (for example bun run deploy:base-testnet)`,
-    ];
-  }
-  const trimmed = (value) => (isSet(value) ? String(value).trim() : undefined);
-  const problems = [];
-  for (const name of FILE_ONLY_VARS) {
-    const inFile = trimmed(fileEnv[name]);
-    const inEnv = trimmed(processEnv[name]);
-    if (inFile === inEnv) continue;
-    problems.push(
-      inFile === undefined
-        ? `${name} is not set in ${envFile} but is set in the root .env or the shell; it is read from ${envFile} alone, so remove it from the root .env and the shell, or set it in ${envFile}`
-        : `${name} in the root .env or the shell differs from ${envFile}; it is read from ${envFile} alone, so remove it from the root .env and the shell`,
-    );
-  }
-  return problems;
+function sourceProblems({ networkName, envFile, fileEnv, processEnv }) {
+  return fileOnlyProblems({
+    names: fileEnv ? fileOnlyNames({ networkName, fileEnv }) : FILE_ONLY_VARS,
+    envFile,
+    fileEnv,
+    processEnv,
+    howToRun:
+      "On an EVM network run the deploy through its package script (for example bun run deploy:base-testnet)",
+  });
 }
 
 function refusal(networkName, problems) {
@@ -151,12 +169,9 @@ function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
   if (SAPPHIRE_NETWORKS.has(networkName)) {
     return { networkName, isSapphire: true };
   }
-  const env = { ...processEnv };
-  if (fileEnv) {
-    for (const name of FILE_ONLY_VARS) env[name] = fileEnv[name];
-  }
+  const env = withFileValues(processEnv, fileEnv, fileOnlyNames({ networkName, fileEnv }));
   const problems = [
-    ...sourceProblems({ envFile, fileEnv, processEnv }),
+    ...sourceProblems({ networkName, envFile, fileEnv, processEnv }),
     ...deployProblems({ networkName, env }),
   ];
   if (problems.length > 0) throw refusal(networkName, problems);
@@ -166,7 +181,7 @@ function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
     envFile,
     mode: env.DEPLOY_MODE,
     live: !LOCAL_NETWORKS.has(networkName),
-    domain: env.DOMAIN,
+    domain: orNull(env.DOMAIN),
     token: orNull(env.TOKEN_CONTRACT_ADDRESS),
     treasury: orNull(env.TREASURY_ADDRESS),
     oracle: orNull(env.ORACLE_ADDRESS),
@@ -579,18 +594,6 @@ async function verifyOnExplorer(networkName, addresses) {
   }
 }
 
-/** ENV_FILE parsed on its own, or null when it is not set. */
-function readEnvFile(envFile) {
-  if (!envFile) return null;
-  let text;
-  try {
-    text = fs.readFileSync(envFile);
-  } catch {
-    throw new Error(`ENV_FILE names ${envFile}, which cannot be read`);
-  }
-  return dotenv.parse(text);
-}
-
 async function main() {
   const networkName = hre.network.name;
   const envFile = process.env.ENV_FILE;
@@ -634,6 +637,7 @@ async function main() {
 
 module.exports = {
   FILE_ONLY_VARS,
+  FRESH_LIVE_FILE_ONLY_VARS,
   DEPLOY_MODES,
   LOCAL_NETWORKS,
   resolveDeployPlan,
