@@ -270,8 +270,9 @@ ciphertext only.
 - **Settings** (all optional; defaults in code, so no env file needs them): `STREAM_ENABLED`
   (`true`), `STREAM_PORT` (8787; the compose files publish 8787, so leave it), `STREAM_ALLOWED_ORIGINS`,
   `STREAM_GRACE_MS` (120000), `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (240000),
-  `STREAM_MAX_CONN_PER_ANSWER` (4), `STREAM_MAX_CONN_TOTAL` (200). Heartbeat, maximum connection
-  time and the total cap are set from the Phase 0 measurement. A value that cannot work stops
+  `STREAM_MAX_CONN_PER_ANSWER` (4), `STREAM_MAX_CONN_TOTAL` (200, at most 256: a third of the
+  server's socket budget of 768). Heartbeat, maximum connection time and the total cap are set
+  from the Phase 0 measurement. A value that cannot work stops
   the boot naming the setting.
 - **Nothing about readers is logged**: no address, header, proof or answer id. A quiet log is
   normal; the dApp's own reports say whether it is reading. The heartbeat's `stream.server`
@@ -283,20 +284,42 @@ ciphertext only.
 
 The stream server runs in the oracle's own process, beside the work that answers paid prompts,
 and anyone can connect to it without a proof. It bounds what such a caller can hold with Node's
-own limits (`httpLimitsFor` in `streamServer.js`): at most the reader cap plus a quarter (250
-sockets by default; the rest are closed on arrival, before any parsing), 31 requests per socket,
-4 s for an idle keep-alive socket, and 11 s at most for a socket to send its headers. What the
-ROFL proxy in front of it limits (sockets, request rate, slow clients) is not known. So the
-Phase 0 load check must include, against the real proxy URL:
+own limits (`httpLimitsFor` in `streamServer.js`, `SOCKET_BUDGET` in `streamConfig.js`):
 
-- [ ] A flood of connections well past 250 (and of idle and half-sent requests) while prompts
-      are answered: prompt answer times and the heartbeat's `blockLag` stay as without the
-      flood, existing readers keep receiving frames, and `stream.server.refusedSockets` climbs.
+- a socket budget of 768 for readers and everyone else together (an assumed descriptor limit of
+  1024 less 256 kept for the oracle's own sockets and files); sockets past it are closed on
+  arrival, before any parsing, and counted (`refusedSockets`). Readers are capped separately,
+  after the proof, at `STREAM_MAX_CONN_TOTAL` (200; at most 256);
+- every answer but an admitted stream (refusals, preflight, `/health`, unknown paths) closes its
+  socket, and a socket that has not sent complete headers, nothing at all included, is closed
+  within 5.5 s; so a caller without a proof holds a place for at most about 5.5 s and must keep
+  reopening sockets to hold many;
+- 31 requests per socket and 4 s for an idle keep-alive socket after an admitted stream ends.
+
+There is no per-address limit, on purpose: the reader's address is never read, and behind the
+proxy every caller may share one address. Nothing that uses this port decides the oracle's
+liveness: no compose file has a healthcheck (they restart only on exit), so a full pool cannot
+get the oracle restarted mid-answer. A healthcheck added later must not use the public port.
+
+Two numbers this rests on are not known yet and are measured here: the container's descriptor
+limit, and what the ROFL proxy in front of the server limits (connections per client and in all,
+request rate, how long it keeps a slow or idle client), since the proxy decides how much of this
+an outside caller can reach. The Phase 0 load check must include, against the real proxy URL:
+
+- [ ] `ulimit -n` inside the oracle's container. If it is below 1024, or far above it, change
+      `ASSUMED_DESCRIPTOR_LIMIT` in `streamConfig.js` to match.
+- [ ] The proxy's own connection limits: how many connections it opens to port 8787 at once, from
+      one client and in all, whether it queues or refuses past that, and whether it closes idle
+      and half-sent clients itself. Record them here.
+- [ ] A flood of connections well past 768 (idle ones, half-sent requests, and requests with a
+      wrong proof) while prompts are answered: prompt answer times and the heartbeat's
+      `blockLag` stay as without the flood, existing readers keep receiving frames, a reader with
+      a valid proof gets in within a few seconds of the flood easing, and
+      `stream.server.refusedSockets` climbs.
 - [ ] The oracle's descriptor use stays well below the container's limit throughout (no
       `EMFILE` in the log; the RPC and database connections keep working).
 - [ ] If prompt handling slows, record it: the next step is moving the server off the
-      oracle's event loop (a worker thread), not a per-address limit, since the reader's
-      address is deliberately never read.
+      oracle's event loop (a worker thread), not a per-address limit.
 
 ---
 
