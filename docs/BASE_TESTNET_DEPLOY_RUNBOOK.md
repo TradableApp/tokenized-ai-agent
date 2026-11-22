@@ -160,27 +160,46 @@ where they can; the rest of the order is this list.
 1. **Settings, in the network's `ENV_FILE`** (for example `.env.base-testnet`):
    `DEPLOY_MODE=fresh`; `AI_AGENT_CONTRACT_ADDRESS` and `AI_AGENT_ESCROW_CONTRACT_ADDRESS` empty;
    `TOKEN_CONTRACT_ADDRESS`; `TREASURY_ADDRESS`; `EXPECTED_FEE_TOKEN_SYMBOL` (the token's symbol);
-   and `ORACLE_ADDRESS` only when the oracle's signer is already known (local runs and tests). The
-   mode and the two pair addresses are read from `ENV_FILE` alone: the deploy refuses when the
-   root `.env` or the shell sets one the file does not, so a deleted address cannot come back from
-   the root file. `fresh` refuses either pair address; `upgrade` needs both. On a live network a
-   fresh pair needs `TREASURY_ADDRESS` and `EXPECTED_FEE_TOKEN_SYMBOL`; only a local network falls
-   back to the deploy wallet as treasury.
-2. **Deploy:** `bun run deploy:base-testnet` (mainnet: `DEPLOY_MAINNET_CONFIRMED=1 bun run
-   deploy:base-mainnet`). After the deploy it reads the pair back and fails, naming each
-   difference, unless `agent.aiAgentEscrow()` is the new escrow, `escrow.evmAIAgent()` the new
-   agent, `escrow.ableToken()` the token, `escrow.treasury()` the treasury, the deploy wallet owns
-   both, the first oracle holds the role, and `token.symbol()` is `EXPECTED_FEE_TOKEN_SYMBOL`. A
-   failed read-back leaves deployed contracts: point nothing at them, fix the setting, deploy again.
-   With no `ORACLE_ADDRESS` the deploy wallet is the first oracle (the signer is derived from the
-   agent's address, so it cannot exist before the deploy), and the script prints the hand-over
-   commands of step 6.
-3. **Record the pair:** in `ENV_FILE` set the two addresses it printed and `DEPLOY_MODE=upgrade`,
-   so a second run upgrades this pair and never deploys another beside it.
+   `DOMAIN`; the four fees `INITIAL_PROMPT_FEE`, `INITIAL_CANCELLATION_FEE`,
+   `INITIAL_METADATA_FEE` and `INITIAL_BRANCH_FEE`, each in wei of the fee token as decimal digits
+   only (one token of 18 decimals is `1000000000000000000`; a point, sign, exponent or `0x` is
+   refused); and `ORACLE_ADDRESS` only when the oracle's signer is already known (local runs and
+   tests). The mode and the two pair addresses are read from `ENV_FILE` alone on every EVM
+   network, and for a fresh pair on a live network so is every other setting in this step: the
+   deploy refuses when the root `.env` or the shell sets one the file does not (or sets it
+   differently), so a value left out of the file cannot come from the root file. `fresh` refuses
+   either pair address; `upgrade` needs both and reads none of the other settings. On a live
+   network a fresh pair needs `TREASURY_ADDRESS`, `EXPECTED_FEE_TOKEN_SYMBOL` and the four fees;
+   only a local network falls back to the deploy wallet as treasury and to default fees (1, 0.1,
+   0.1 and 0.5 tokens), and takes these settings from the root `.env` as well as the file.
+2. **Dry run, then deploy:** first `bun run deploy:base-testnet:dry` (mainnet: `bun run
+   deploy:base-mainnet:dry`, which needs no confirm). It runs every check, reads the token (a
+   contract at the address, its symbol against `EXPECTED_FEE_TOKEN_SYMBOL`, its decimals) and
+   refuses on any difference, prints the plan and sends nothing. The plan names the deploy
+   wallet, the token with its symbol and decimals, the treasury, the first oracle, the domain, and
+   each fee in wei and in whole tokens. Check every line, the fees above all: no fee is refused
+   for its size, so a fee off by a power of ten shows only here. Then `bun run deploy:base-testnet`
+   (mainnet: `DEPLOY_MAINNET_CONFIRMED=1 bun run deploy:base-mainnet`), which makes the same checks,
+   prints the same plan and sends it. After the deploy it reads the pair back and fails, naming each difference, unless `agent.aiAgentEscrow()` is
+   the new escrow, `escrow.evmAIAgent()` the new agent, `escrow.ableToken()` the token,
+   `escrow.treasury()` the treasury, the deploy wallet owns both, the first oracle holds the role
+   (and, with `ORACLE_ADDRESS` set, the deploy wallet does not), the four fees are the planned
+   ones, and `token.symbol()` is `EXPECTED_FEE_TOKEN_SYMBOL`. A failed read-back leaves deployed
+   contracts: point nothing at them, fix the setting, deploy again. With no `ORACLE_ADDRESS` the
+   deploy wallet is the first oracle (the signer is derived from the agent's address, so it
+   cannot exist before the deploy), and the script prints the hand-over commands of step 6.
+3. **Record the pair:** in `ENV_FILE` set the two addresses it printed and `DEPLOY_MODE=upgrade`
+   (the deploy prints this line whether or not `ORACLE_ADDRESS` was set), so a second run upgrades
+   this pair and never deploys another beside it.
 4. **List the escrow and the treasury on the fee token** (a token that moves only to or from
    addresses its owner has listed; an ordinary token needs nothing, and the script says so):
-   `bun run list-fee-token-exempt:base-testnet`. It checks that `escrow.ableToken()` is the
-   token, lists whichever of the two is not listed, and reads both back. When the signer is not
+   `bun run list-fee-token-exempt:base-testnet`. On a live network it reads the agent, escrow,
+   token and `EXPECTED_FEE_TOKEN_SYMBOL` from `ENV_FILE` alone (all four are required) and prints
+   the network, agent, escrow and token before it reads anything. It checks that
+   `escrow.ableToken()` is the token and that the token's symbol is `EXPECTED_FEE_TOKEN_SYMBOL`,
+   lists whichever of the two is not listed, and reads both back. A token whose symbol is `SENSE`
+   (a token that keeps a list) but that answers as one with no list is refused, with or without
+   `--check`: it is not the token it says it is. When the signer is not
    the token's owner (the Safe owns it on mainnet) it sends nothing and prints the calls as Safe
    Transaction Builder JSON: save it as a file, load it in the owner Safe's Transaction Builder,
    simulate, execute. Then `bun run list-fee-token-exempt:base-testnet --check`, which only reads
@@ -190,7 +209,10 @@ where they can; the rest of the order is this list.
    only a few minutes before its first block, so a prompt sent to the new pair long before the
    oracle starts is not seen. If an old pair is still answered, close and drain it first (see
    "Moving prompts to a new agent and escrow" under Lessons learned).
-6. **Move the oracle role off the deploy wallet**, in the order of §1.1, with the script:
+6. **Move the oracle role off the deploy wallet**, in the order of §1.1, with the script. On a live
+   network it reads the agent, escrow and token from `ENV_FILE` alone (all three are required) and
+   prints them before it reads anything; `ORACLE_ADDRESS` and `ANSWER_TX_HASH` are given on the
+   command line:
    - `ORACLE_ADDRESS=<signer> bun run authorize-oracle:base-testnet grant` adds the oracle's own
      signer (from its `[OracleKeys] … signer=` start-up line) and checks `isOracle`. It refuses
      an `ORACLE_ADDRESS` that is the signing wallet, and sends nothing when the role is held.
