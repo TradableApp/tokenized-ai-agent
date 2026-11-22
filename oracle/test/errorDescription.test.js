@@ -842,6 +842,19 @@ describe("describeError — one line of text, with nothing a reader outside the 
       expect(describedText('relation "a.b.c" missing')).to.equal(
         "relation [value removed] missing",
       );
+      expect(describedText('relation"failed_jobs" missing')).to.equal(
+        "relation[value removed] missing",
+      );
+    });
+
+    // Every part of a qualified name is a name: a schema in front does not carry a value through.
+    it("removes a qualified name whose second part is not a plain name", () => {
+      expect(describedText('relation "public"."my secret prompt" missing')).to.equal(
+        "relation [value removed] missing",
+      );
+      expect(describedText('relation "public"."Failed_Jobs" missing')).to.equal(
+        "relation [value removed] missing",
+      );
     });
 
     it("still removes a kept name that is long hex or a long base64 run", () => {
@@ -857,6 +870,11 @@ describe("describeError — one line of text, with nothing a reader outside the 
       refreshRequestSecrets({ SOME_API_KEY: "sense_ai_internal_key" });
 
       expect(describedText('relation "sense_ai_internal_key" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      // Secrets are removed before quoted values are read, so a name that holds one is not a
+      // plain name any more, and no part of it is kept.
+      expect(describedText('relation "x_sense_ai_internal_key_y" does not exist')).to.equal(
         "relation [value removed] does not exist",
       );
     });
