@@ -90,6 +90,13 @@ describe("frameBuffer", () => {
       expect(buffer.lookup("7").state).to.equal("unknown");
     });
 
+    it("refuses a frame after its run was closed", () => {
+      openWithFrames(buffer, "42", RUN_A, 1);
+      buffer.close("42", { run: RUN_A, outcome: "answered" });
+      expect(buffer.append("42", { run: RUN_A, seq: 1, ciphertext: sealed() })).to.equal(false);
+      expect(buffer.framesAfter("42", null).map((f) => f.seq)).to.deep.equal([0]);
+    });
+
     it("refuses ciphertext that is not the sealed iv.ct shape, so nothing can break an SSE line", () => {
       buffer.open("42", { run: RUN_A, replica: "deadbeef", expectedProof: PROOF });
       for (const bad of ["abc\ndata: x", "no-dot", "a.b c", "", 42, null]) {

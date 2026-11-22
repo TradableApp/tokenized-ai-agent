@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const sinon = require("sinon");
+const proxyquire = require("proxyquire");
 const http = require("node:http");
 const net = require("node:net");
 const { EventEmitter } = require("node:events");
@@ -280,6 +281,49 @@ describe("streamServer", function () {
       expect(JSON.parse(res.body)).to.deep.equal({ error: "proof" });
       expect(res.body).to.not.include(sealed());
       expect(res.body).to.not.include("id:");
+    });
+
+    it("refuses a wrong proof against a finished answer still in its grace period with 403 and no frame", async () => {
+      // A finished answer is replayed to whoever shows its proof for STREAM_GRACE_MS; the proof
+      // is checked in that state too, not only while the run is open.
+      const { server, port } = await serve();
+      openAnswer(server, "42");
+      sendFrames(server, "42", RUN_A, 0, 3);
+      server.close("42", { run: RUN_A, outcome: "answered" });
+      const res = await rawRequest(port, {
+        path: "/stream/42",
+        headers: { [PROOF_HEADER]: streamProof(OTHER_KEY, "42") },
+      });
+      expect(res.status).to.equal(403);
+      expect(res.body).to.equal(JSON.stringify({ error: "proof" }));
+    });
+
+    it("ends a reader admitted on one run, with none of the next run's frames, when that run opens with another proof", async () => {
+      const { server, base } = await serve();
+      openAnswer(server, "42", RUN_A, KEY);
+      sendFrames(server, "42", RUN_A, 0, 1);
+      const res = await streamFetch(base, "42", { proof: streamProof(KEY, "42") });
+      expect(res.status).to.equal(200);
+      const reading = readUntil(res, { timeoutMs: 2000 });
+      await sleep(50);
+      openAnswer(server, "42", RUN_B, OTHER_KEY);
+      sendFrames(server, "42", RUN_B, 0, 2);
+      const { text, ended } = await reading;
+      expect(parseSse(text).events.map((e) => e.id)).to.deep.equal([`${RUN_A}.0`]);
+      expect(text).to.not.include(RUN_B);
+      expect(ended, "the server ended the response when the proof changed").to.equal(true);
+    });
+
+    it("opens nothing for a sink open whose expected proof is malformed", async () => {
+      const { server, port } = await serve();
+      server.open("42", { run: RUN_A, replica: "deadbeef", expectedProof: "not-a-proof" });
+      sendFrames(server, "42", RUN_A, 0, 1);
+      const res = await rawRequest(port, {
+        path: "/stream/42",
+        headers: { [PROOF_HEADER]: streamProof(KEY, "42") },
+      });
+      expect(res.status).to.equal(404);
+      expect(JSON.parse(res.body)).to.deep.equal({ error: "not-open" });
     });
 
     it("does not let the proof for one answer open another", async () => {
@@ -655,6 +699,8 @@ describe("streamServer", function () {
         ["GET", "/"],
         ["GET", "/streams/42"],
         ["GET", "/health/x"],
+        ["POST", "/health"],
+        ["OPTIONS", "/health"],
         ["POST", "/stream/42"],
         ["DELETE", "/stream/42"],
         ["HEAD", "/stream/42"],
@@ -683,6 +729,94 @@ describe("streamServer", function () {
       const res = await rawRequest(port, { path: `/stream/${"1".repeat(2000)}` });
       expect(res.status).to.equal(400);
       expect(res.headers.connection).to.equal("close");
+    });
+
+    it("answers 503 when the request handler throws, and the process carries on", async () => {
+      // The buffer's lookup is made to throw inside the request handler. Uncaught there, it
+      // would reach the process as an uncaughtException (which mocha reports as a failure).
+      const realBuffer = require("../src/stream/frameBuffer");
+      const brokenBuffer = {
+        ...realBuffer,
+        createFrameBuffer: (options) => ({
+          ...realBuffer.createFrameBuffer(options),
+          lookup: () => {
+            throw new TypeError("lookup broke");
+          },
+        }),
+      };
+      const { createStreamServer: createWithBrokenLookup } = proxyquire(
+        "../src/stream/streamServer",
+        { "./frameBuffer": brokenBuffer },
+      );
+      sinon.stub(console, "error");
+      const uncaught = sinon.spy();
+      process.on("uncaughtException", uncaught);
+      try {
+        const server = createWithBrokenLookup({ config: testConfig() });
+        running.push(server);
+        const { port } = await server.listen({ port: 0, host: "127.0.0.1" });
+        const res = await rawRequest(port, {
+          path: "/stream/42",
+          headers: { [PROOF_HEADER]: streamProof(KEY, "42") },
+        });
+        expect(res.status).to.equal(503);
+        expect(res.headers.connection).to.equal("close");
+        expect((await rawRequest(port, { path: STREAM_HTTP.healthPath })).status).to.equal(200);
+        expect(uncaught.called).to.equal(false);
+      } finally {
+        process.removeListener("uncaughtException", uncaught);
+      }
+    });
+
+    it("answers 503 to a request whose headers complete while shutting down", async () => {
+      const { server, port } = await serve();
+      openAnswer(server, "42");
+      const socket = net.connect(port, "127.0.0.1");
+      await new Promise((resolve) => socket.once("connect", resolve));
+      let reply = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk) => {
+        reply += chunk;
+      });
+      // The request has begun, so the connection is not idle and shutdown leaves it open.
+      socket.write("GET /stream/42 HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+      await sleep(30);
+      const closing = server.shutdown();
+      socket.write(`${PROOF_HEADER}: ${streamProof(KEY, "42")}\r\n\r\n`);
+      const started = Date.now();
+      while (!reply.includes("}") && Date.now() - started < 1500) await sleep(10);
+      socket.destroy();
+      await closing;
+      expect(reply.split("\r\n")[0]).to.equal("HTTP/1.1 503 Service Unavailable");
+      expect(reply).to.include(JSON.stringify({ error: "unavailable" }));
+    });
+
+    it("clears a reader's heartbeat and lifetime timers when it goes away", async () => {
+      // Distinct delays pick the reader's two timers out of every other timer in the process.
+      const heartbeatMs = 4321;
+      const maxConnMs = 98765;
+      const setIntervalSpy = sinon.spy(global, "setInterval");
+      const setTimeoutSpy = sinon.spy(global, "setTimeout");
+      const clearIntervalSpy = sinon.spy(global, "clearInterval");
+      const clearTimeoutSpy = sinon.spy(global, "clearTimeout");
+      const { server, base } = await serve({ heartbeatMs, maxConnMs });
+      openAnswer(server, "42");
+      const controller = new AbortController();
+      const res = await streamFetch(base, "42", {
+        proof: streamProof(KEY, "42"),
+        signal: controller.signal,
+      });
+      expect(res.status).to.equal(200);
+      const heartbeat = setIntervalSpy.getCalls().find((c) => c.args[1] === heartbeatMs);
+      const lifetime = setTimeoutSpy.getCalls().find((c) => c.args[1] === maxConnMs);
+      expect(heartbeat, "the reader's heartbeat was set").to.not.equal(undefined);
+      expect(lifetime, "the reader's lifetime timer was set").to.not.equal(undefined);
+      controller.abort();
+      const started = Date.now();
+      while (server.stats().connections > 0 && Date.now() - started < 1000) await sleep(10);
+      expect(server.stats().connections).to.equal(0);
+      expect(clearIntervalSpy.calledWith(heartbeat.returnValue)).to.equal(true);
+      expect(clearTimeoutSpy.calledWith(lifetime.returnValue)).to.equal(true);
     });
 
     it("ends every open stream and stops listening on shutdown", async () => {
