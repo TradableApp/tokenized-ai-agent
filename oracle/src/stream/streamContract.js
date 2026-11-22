@@ -6,8 +6,10 @@ const { encryptSymmetrically, GCM_IV_BYTES, GCM_AUTH_TAG_BYTES } = require("./fr
  * Live reasoning stream: the oracle's half of the interface contract, version 1.
  *
  * The dApp keeps its own copy of these rules (`src/lib/liveReasoning/contract.ts`). The two are
- * held equal by the shared test vector in `oracle/test/streamContract.test.js`, so any change
- * here is a change to both repos at once, and to that vector.
+ * held equal by the shared test vectors in `oracle/test/streamContract.test.js` (one per frame
+ * type; the dApp holds the same in `vector.testdata.ts`), and both repos pin the same SHA-256 of
+ * their canonical form, so any change here is a change to both repos at once, to the vectors and
+ * to the pinned hash.
  *
  * A frame is a small JSON object, sealed with the prompt's session key exactly as the stored
  * answer file is. The type travels only inside the ciphertext. The stored record is a projection
