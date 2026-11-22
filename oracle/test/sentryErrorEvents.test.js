@@ -39,7 +39,12 @@ describe("what Sentry is sent about an error", function () {
     );
 
     expect(probe.status, probe.stderr).to.equal(0);
-    everything = JSON.parse(fs.readFileSync(output, "utf8")).join("\n");
+    // The source lines Sentry sends around each frame are the probe's own code, which spells out
+    // the shapes it throws; the oracle's source holds no data. They are left out of what is read.
+    everything = JSON.parse(fs.readFileSync(output, "utf8"))
+      .join("\n")
+      .replace(/"(?:pre_context|post_context)":\[(?:"(?:[^"\\]|\\.)*",?)*\]/g, "")
+      .replace(/"context_line":"(?:[^"\\]|\\.)*"/g, "");
     fs.rmSync(path.dirname(output), { recursive: true, force: true });
   });
 

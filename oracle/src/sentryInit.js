@@ -1,6 +1,6 @@
 const Sentry = require("@sentry/node");
 
-const { withoutAddresses } = require("./errorDescription");
+const { describedText, withoutAddresses } = require("./errorDescription");
 
 const TRACE_RATES = {
   localnet: 1.0,
@@ -176,6 +176,37 @@ function scrubSensitiveData(obj, path = new Set(), depth = 0) {
   }
 }
 
+// The AI SDK names its errors AI_…; their message can echo the request or the response.
+const MODEL_PROVIDER_ERROR = /^AI_[A-Za-z]+$/;
+
+/**
+ * One exception of an event as it is sent: its message as `describedText` writes it (one line,
+ * capped, with no network peer, query text, bound value, quoted value, token, wallet or long
+ * hex), or a model provider's error as its type alone. The error object itself is never sent:
+ * Sentry reads only its type, message and frames, and of the message this is what is left.
+ */
+function describedException(exception) {
+  if (!exception || typeof exception !== "object" || typeof exception.value !== "string") {
+    return exception;
+  }
+  const isModelProvider =
+    typeof exception.type === "string" && MODEL_PROVIDER_ERROR.test(exception.type);
+
+  return { ...exception, value: isModelProvider ? exception.type : describedText(exception.value) };
+}
+
+/**
+ * An event as it is sent: every field scrubbed (`scrubSensitiveData`), and then each exception's
+ * message, the error's own and each linked cause's, described. A copy; the event is not changed.
+ */
+function scrubbedEvent(event) {
+  const scrubbed = scrubSensitiveData(event);
+  const values = scrubbed?.exception?.values;
+  if (!Array.isArray(values)) return scrubbed;
+
+  return { ...scrubbed, exception: { ...scrubbed.exception, values: values.map(describedException) } };
+}
+
 /**
  * The stand-in sent when scrubbing fails: enough to show something broke, none of the payload.
  *
@@ -239,7 +270,7 @@ function initSentry({ transport } = {}) {
     // Spans of outgoing requests carry the address requested.
     beforeSendTransaction(event) {
       try {
-        return scrubSensitiveData(event);
+        return scrubbedEvent(event);
       } catch (error) {
         return redactedStandIn(event, error);
       }
@@ -250,7 +281,7 @@ function initSentry({ transport } = {}) {
       // stand-in instead: never the unscrubbed original, which is the one thing that could
       // leak, but enough to show that something failed and roughly where.
       try {
-        return scrubSensitiveData(event);
+        return scrubbedEvent(event);
       } catch (error) {
         return redactedStandIn(event, error);
       }
@@ -260,4 +291,4 @@ function initSentry({ transport } = {}) {
   console.log(`[Sentry] Initialized for environment: ${environment}`);
 }
 
-module.exports = { initSentry, scrubSensitiveData, redactedStandIn };
+module.exports = { initSentry, scrubSensitiveData, scrubbedEvent, redactedStandIn };
