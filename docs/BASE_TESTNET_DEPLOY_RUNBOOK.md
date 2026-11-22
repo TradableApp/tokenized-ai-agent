@@ -187,7 +187,9 @@ where they can; the rest of the order is this list.
    token and `EXPECTED_FEE_TOKEN_SYMBOL` from `ENV_FILE` alone (all four are required) and prints
    the network, agent, escrow and token before it reads anything. It checks that
    `escrow.ableToken()` is the token and that the token's symbol is `EXPECTED_FEE_TOKEN_SYMBOL`,
-   lists whichever of the two is not listed, and reads both back. A token whose symbol is `SENSE`
+   lists whichever of the two is not listed, and reads both back. "Listed" is the token's own
+   `isTransferExempt`, which is true for the token's owner, so a treasury that is the owner counts
+   as listed and is not sent (see the exempt-list rules below). A token whose symbol is `SENSE`
    (a token that keeps a list) but that answers as one with no list is refused, with or without
    `--check`: it is not the token it says it is. When the signer is not
    the token's owner (the Safe owns it on mainnet) it sends nothing and prints the calls as Safe
@@ -220,8 +222,8 @@ where they can; the rest of the order is this list.
    version; on a fresh pair it grants nothing and uses up version 2, which a later upgrade's own
    `reinitializer(2)` would then be refused. The deploy script calls it only on an upgrade whose
    agent still stores the old oracle. Never publish an encryption key from the deploy wallet.
-8. **Fees:** change them with the escrow's setters only if the deploy's defaults (or the
-   `INITIAL_*_FEE` settings) are not wanted.
+8. **Fees:** they are set at deploy time from the four `INITIAL_*_FEE` settings of step 1 (on a
+   live network there are no defaults). Afterwards change them only with the escrow's setters.
 9. **Point everything else at the new pair:** the subgraph (a deployment of its own: its fee
    record is one per subgraph), the dApp build's addresses, the smoke test's `SMOKE_*`, and the
    e2e testnet settings.
@@ -229,8 +231,11 @@ where they can; the rest of the order is this list.
     the token (if it owns it), change oracles or fees.
 
 **Exempt-list rules.** On a token that keeps a list, a transfer passes when either end is listed.
-List the escrow and the treasury by name, the treasury even when it is the token's owner. Every
-new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
+List the escrow and the treasury. The token's owner is exempt by being the owner, and the
+exemption moves with ownership: the listing script reads a treasury that is the owner as listed
+and sends nothing for it. If ownership will later move away from that treasury (to the Safe, for
+example), list the treasury by name first, from the owner: `setTransferExempt(<treasury>, true)`.
+Every new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
 the treasury, as the admin rehearsal does) must be listed before it is set: an unlisted treasury
 refuses every fee a user pays straight to it (cancel, branch, rename or delete). The listing
 script and its `--check` cover the escrow and the treasury the escrow names now.
@@ -375,7 +380,7 @@ the oracle; out of scope here.
 1. **Connect + guard** — connects to Base Sepolia, asserts `chainId == 84532` **before spending** (a wrong RPC can't burn real tokens).
 2. **Balances + fee** — reads `promptFee()`, ETH and fee token balances; hard-fails on zero ETH, warns on low.
 3. **Plan setup** — `token.approve(escrow, …)` then `escrow.setSpendingLimit(…, +1 day)` (skips if already active).
-4. **Encrypt** — generates a random 32-byte session key, AES-256-GCM-encrypts the prompt payload (`{promptText, isNewConversation, …}`), and ECIES-encrypts the session key to the oracle's `PUBLIC_KEY` (reusing the oracle's own `src/ecies.js` → wire-format guaranteed to match).
+4. **Encrypt** — generates a random 32-byte session key, AES-256-GCM-encrypts the prompt payload (`{promptText, isNewConversation, …}`), and ECIES-encrypts the session key to `SMOKE_ORACLE_PUBLIC_KEY` (the oracle's `encryptionKey=` from its `[OracleKeys]` start-up line; reusing the oracle's own `src/ecies.js` → wire-format guaranteed to match).
 5. **Submit** — `escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)`; parses `PromptSubmitted` for `answerMessageId`.
 6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**) with `eth_getLogs` walked in contiguous windows of at most `SMOKE_LOGS_BLOCK_RANGE` blocks (default 10 — Alchemy's free-tier cap; the public node allows a few hundred), resuming from a refused window rather than re-widening it and logging the node's own error, up to `SMOKE_TIMEOUT_MS` (5 min). A single request over `[submitBlock, head]` is refused by a capped endpoint, so the wait walks windows instead (`scripts/smoke/answerWait.js`).
 7. **Fetch + decrypt** — fetches the answer `MessageFile` from the storage gateway (Autonomys/Irys, 30-s bounded), AES-decrypts it with the session key.
@@ -477,20 +482,22 @@ on-chain CID stays the root of trust — the bucket is a cache.** The mirror is 
 prompt's critical path: a failing bucket costs one alert and a climbing `payloadMirror.failed`
 counter in the heartbeat vitals, never an unanswered prompt. Unset bucket = mirror disabled.
 
-| Network | Bucket (`${project_id}-senseai-payloads`) | GCP project |
-| --- | --- | --- |
-| Base Sepolia (`base-testnet`) | `tradable-app-garrick-senseai-payloads` | `tradable-app-garrick` |
-| Base mainnet (`base-mainnet`) | `tradable-app-senseai-payloads` | `tradable-app` |
+One bucket per network, named `<gcp-project-id>-senseai-payloads` after the GCP project that
+network's oracle uses (the testnet project for `base-testnet`, the production project for
+`base-mainnet`). The placeholders below (`<gcp-project-id>`, `<bucket>`, `<service-account>`) stand
+for real names that are not written in this public file: the operator reads them from their own
+gcloud configuration (`gcloud config get-value project`, `gcloud storage buckets list`,
+`gcloud iam service-accounts list`) or the Infrastructure repository.
 
 - [ ] **9.1 Bucket (Infrastructure repo, `senseai_payloads.tf`):** uniform access,
   `allUsers` → `roles/storage.objectViewer`, CORS `GET`/`HEAD` from the dApp origins, no
-  versioning or lifecycle. The same file creates the writer SA `senseai-payload-writer` with
+  versioning or lifecycle. The same file creates the writer service account `<service-account>` with
   **`roles/storage.objectCreator` on the bucket only** — it can add objects, never read,
   overwrite or delete them, so a leaked key cannot tamper with mirrored history.
 - [ ] **9.2 Writer key (you; gcloud, by hand — never Terraform state):**
   ```bash
   gcloud iam service-accounts keys create /tmp/payload-writer.json \
-    --iam-account senseai-payload-writer@<project>.iam.gserviceaccount.com --project <project>
+    --iam-account <service-account>@<gcp-project-id>.iam.gserviceaccount.com --project <gcp-project-id>
   jq -c . /tmp/payload-writer.json | pbcopy   # ONE line — the secrets generator rejects newlines
   rm /tmp/payload-writer.json
   ```
@@ -539,14 +546,16 @@ target the `base-mainnet` app. Rules that fell out of doing it:
 - Medium offer on the mainnet provider: 2 ROSE/h, 1,000 ROSE/month, **10000 MiB storage**.
   Note the lease expiry from `oasis rofl machine show` (paid-until) and top up before it lapses.
 - Switch-over for the real mainnet: re-run `rofl:init:cloud-sql:base-mainnet` and
-  `rofl:set:base-mainnet` WITHOUT the override so the deployment picks up `tradable-app`.
+  `rofl:set:base-mainnet` WITHOUT the override so the deployment picks up the production GCP
+  project (`<gcp-project-id>`).
   The oracle's keys need no setting: the ROFL key service makes them with the chain id and the
   agent address in their key ids (`oracle/src/oracleKeys.js`), so the mainnet pair gets its own
   signer and encryption key.
 
 
 `compose.base-mainnet.yaml` still carries placeholder contract addresses (the mainnet pair's
-are filled on deploy day), so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
+are filled on deploy day) and a `PUBLIC_KEY` placeholder (a setting the oracle no longer reads;
+the preflight flags it all the same), so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
 bundle**. That is the intended state, not a broken checkout: `ethers` accepts a
 non-address string as an ENS name and defers resolution, so a bundle built from
 placeholders would boot healthy, accept prompts, and fail every answer while the wallet
@@ -638,7 +647,7 @@ and waits for its one-hour refund.
 - [ ] Before the ownership handover, the oracle role is moved to the oracle's own address and the deploy wallet's removed, in the order in §1.1 (never the removal first).
 - [ ] Safe threshold and signer set confirmed; Tenderly simulation green before any batch is sent.
 - [ ] Wait one heartbeat interval before judging boot; read `machine show` → `net.oasis.error` before reading logs.
-- [ ] Payload mirror: `tradable-app-senseai-payloads` applied via Cloud Build on promotion to `prod`; writer key minted and pasted single-line (§9); `payloadMirror.failed` stays 0 across the first heartbeat after the first answered prompt.
+- [ ] Payload mirror: the production `<bucket>` applied via Cloud Build on promotion to `prod`; writer key minted and pasted single-line (§9); `payloadMirror.failed` stays 0 across the first heartbeat after the first answered prompt.
 
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.

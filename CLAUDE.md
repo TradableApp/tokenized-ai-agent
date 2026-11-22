@@ -221,7 +221,7 @@ This repo sits at the centre of the SenseAI stack. Three sibling repos depend on
 |---------|-----------|
 | `sense-ai-dapp` | Calls `EVMAIAgentEscrow.initiatePrompt()` for all user writes; parses `PromptSubmitted` event to extract `answerMessageId` at param index 3 (0-based, non-indexed) |
 | `sense-ai-subgraph` | Indexes events from both `EVMAIAgent` and `EVMAIAgentEscrow`; ABI files in `sense-ai-subgraph/abis/` must match compiled artifacts |
-| `sense-contracts` | `SenseToken`, SenseAI's fee token. It moves only when the sender or the recipient is on its owner's exempt list, so the escrow and the treasury must both be listed (`list-fee-token-exempt:<network>`) |
+| `sense-contracts` | `SenseToken`, SenseAI's fee token. It moves only when the sender or the recipient is on its owner's exempt list, so the escrow and the treasury must both be listed (`list-fee-token-exempt:<network>`; the token's owner counts as listed by being the owner) |
 | `able-contracts` | `AbleToken`, an ordinary ERC-20 and the other token the escrow supports |
 
 The escrow takes whichever token it is initialised with (`initialize(_tokenAddress, …)`, stored in `ableToken`; the getter has that name whatever the token is) and takes a payment with `safeTransferFrom(user, escrow, amount)`.

@@ -20,7 +20,7 @@ bun run deploy:base-testnet
 DEPLOY_MAINNET_CONFIRMED=1 bun run deploy:base-mainnet
 ```
 
-`DEPLOY_MODE` in the env file is `fresh` (a new pair) or `upgrade` (the pair the env file names). The order of a fresh pair, including the oracle hand-over and the fee token listing, is in [the runbook's "Fresh pair, in order"](../docs/BASE_TESTNET_DEPLOY_RUNBOOK.md#12-fresh-pair-in-order).
+`DEPLOY_MODE` in the env file is `fresh` (a new pair) or `upgrade` (the pair the env file names). A fresh pair on a live network needs the four `INITIAL_*_FEE` settings in whole wei (only a local network has defaults), and `deploy:base-testnet:dry` / `deploy:base-mainnet:dry` run every check and print the plan without sending anything. The order of a fresh pair, including the dry run, the oracle hand-over and the fee token listing, is in [the runbook's "Fresh pair, in order"](../docs/BASE_TESTNET_DEPLOY_RUNBOOK.md#12-fresh-pair-in-order).
 
 ### Deploy (Sapphire community example)
 

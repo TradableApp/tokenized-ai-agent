@@ -86,7 +86,7 @@ DEPLOY_MODE=fresh
 
 ### Step 3 — Deploy AbleToken (Tab 1)
 
-> To run locally with `SenseToken` (SenseAI's fee token, from `sense-contracts`) instead: deploy it with `bun run deploy:localnet` in `sense-contracts`, use its printed proxy address everywhere this guide uses the token address (the addresses below then differ), set `VITE_FEE_TOKEN=SENSE` in the dApp, and after Step 4 list the escrow and the treasury on it with `bun run list-fee-token-exempt:base-localnet` (as the token's owner).
+> To run locally with `SenseToken` (SenseAI's fee token, from `sense-contracts`) instead: deploy it with `bun run deploy:localnet` in `sense-contracts` (it reads `sense-contracts/.env.localnet`: `TOKEN_NAME`, `TOKEN_SYMBOL`, `INITIAL_SUPPLY` in wei, and `OWNER_ADDRESS`, which receives the whole supply; set it to Account #0 so Step 7's transfer is allowed, since the token moves only to or from its owner or a listed address), use its printed proxy address everywhere this guide uses the token address (the addresses below then differ), set `VITE_FEE_TOKEN=SENSE` in the dApp, and after Step 4 list the escrow and the treasury on it with `bun run list-fee-token-exempt:base-localnet` (as the token's owner).
 
 The `able-contracts/.env.localnet` already has the Hardhat account #0 keys pre-filled. Verify it has `INITIAL_SUPPLY` set (check against `.env.example` — it should be `1000000000000000000000000000`).
 
@@ -103,7 +103,7 @@ Output:
 ✅ AbleToken proxy deployed to: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 ```
 
-Copy the proxy address. This is your `TOKEN_CONTRACT_ADDRESS`.
+Copy the proxy address. This is your `TOKEN_CONTRACT_ADDRESS`: set it now in `tokenized-ai-agent/.env.base-localnet` → `TOKEN_CONTRACT_ADDRESS`, since the `DEPLOY_MODE=fresh` deploy in Step 4 refuses without it.
 
 ---
 

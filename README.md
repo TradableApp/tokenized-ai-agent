@@ -46,7 +46,7 @@ Oracle Node (Oasis ROFL / TEE) ────────────────�
 - **Oasis CLI** (For deploying to the ROFL network)
 - **Wallets:**
   - EVM private key for deploying and owning the contracts (Base Sepolia/Mainnet)
-  - An Autonomys API key for storage (or an Irys/Arweave key when `STORAGE_PROVIDER=irys`)
+  - Storage credentials, as the oracle's start-up check requires them: with `STORAGE_PROVIDER` unset (the default) or any value but `irys`, both `AUTONOMYS_API_KEY` and `IRYS_PAYMENT_PRIVATE_KEY` (uploads go to Autonomys; the Irys key keeps older Arweave ids readable); with `STORAGE_PROVIDER=irys`, `IRYS_PAYMENT_PRIVATE_KEY` alone. Neither is asked for with `USE_MOCK_STORAGE=true` or `LOCAL_IPFS_API_URL` set (`oracle/src/startupConfig.js`)
 
 ### 1. Installation
 
@@ -79,7 +79,9 @@ cp oracle/.env.oracle.example oracle/.env.oracle.base-testnet
 # - PRIVATE_KEY: leave unset. On every network but a local one the oracle's signing key and
 #   its encryption key are made by the ROFL key service inside the TEE, and the oracle refuses
 #   to start when PRIVATE_KEY is set (oracle/src/oracleKeys.js, oracle/src/startupConfig.js)
-# - AUTONOMYS_API_KEY: storage (or IRYS_PAYMENT_PRIVATE_KEY with STORAGE_PROVIDER=irys)
+# - AUTONOMYS_API_KEY and IRYS_PAYMENT_PRIVATE_KEY: storage. Both are required while
+#   STORAGE_PROVIDER is unset (the default) or anything but irys; with STORAGE_PROVIDER=irys only
+#   IRYS_PAYMENT_PRIVATE_KEY is (oracle/src/startupConfig.js)
 # - AI_PROVIDER: "Gemini" or "ChainGPT" (optional bypass; unset = full routing hierarchy)
 ```
 
@@ -119,6 +121,8 @@ cd ../sense-contracts
 bun run deploy:localnet
 ```
 
+(it reads `sense-contracts/.env.localnet`: `TOKEN_NAME`, `TOKEN_SYMBOL`, `INITIAL_SUPPLY` in wei and `OWNER_ADDRESS`, which receives the whole supply; make Account #0 the owner so it can fund Account #1 and send the listing below)
+
 or `AbleToken`:
 
 ```bash
@@ -139,10 +143,10 @@ bun run deploy:base-localnet
 
 Copy the printed `EVMAIAgent` and `EVMAIAgentEscrow` proxy addresses into:
 - `tokenized-ai-agent/.env.base-localnet` → `AI_AGENT_CONTRACT_ADDRESS`, `AI_AGENT_ESCROW_CONTRACT_ADDRESS`
-- `oracle/.env.oracle.base-localnet` → same fields, plus the token address and your private key/public key from Step 2
-- `sense-ai-dapp/.env.localnet` → `VITE_AGENT_CONTRACT_ADDRESS`, `VITE_ESCROW_CONTRACT_ADDRESS`, `VITE_TOKEN_CONTRACT_ADDRESS`
+- `oracle/.env.oracle.base-localnet` → same fields, plus the token address and `PRIVATE_KEY` (Account #0) from Step 2 (the oracle reads no public key setting)
+- `sense-ai-dapp/.env.localnet` → `VITE_AGENT_CONTRACT_ADDRESS`, `VITE_ESCROW_CONTRACT_ADDRESS`, `VITE_TOKEN_CONTRACT_ADDRESS`, and `VITE_FEE_TOKEN` (`SENSE` or `ABLE`, the token from Step 3; the dApp's build and dev server stop without it)
 
-Then set `DEPLOY_MODE=upgrade` in `.env.base-localnet`, so a second run upgrades this pair. With `SenseToken`, list the escrow and the treasury on it: `bun run list-fee-token-exempt:base-localnet`. It sends the listing when the signer is the token's owner (the token deploy's `OWNER_ADDRESS`) and otherwise prints the calls for the owner to send. With no `TREASURY_ADDRESS` a local deploy makes the deploy wallet the treasury. `AbleToken` keeps no list and needs nothing.
+Then set `DEPLOY_MODE=upgrade` in `.env.base-localnet`, so a second run upgrades this pair. With `SenseToken`, list the escrow and the treasury on it: `bun run list-fee-token-exempt:base-localnet`. It sends the listing when the signer is the token's owner (the token deploy's `OWNER_ADDRESS`) and otherwise prints the calls for the owner to send. With no `TREASURY_ADDRESS` a local deploy makes the deploy wallet the treasury; a treasury that is the token's owner counts as listed (the owner is exempt by being the owner), so only the escrow is sent. `AbleToken` keeps no list and needs nothing.
 
 ### 5. Run Local Oracle
 
@@ -170,13 +174,19 @@ The system is now ready. To test the end-to-end flow (encryption, payment, AI re
 
 ### 1. Deploy Contracts
 
-Deploy the upgradable proxies to Base Sepolia:
+A fresh pair on a live network follows one ordered list, [the runbook's "Fresh pair, in order"](docs/BASE_TESTNET_DEPLOY_RUNBOOK.md#12-fresh-pair-in-order); in short:
+
+1. In `.env.base-testnet`: `DEPLOY_MODE=fresh` with both pair addresses empty, the token, treasury, expected symbol, domain, and the four fees `INITIAL_PROMPT_FEE`, `INITIAL_CANCELLATION_FEE`, `INITIAL_METADATA_FEE`, `INITIAL_BRANCH_FEE` in whole wei. The deploy refuses on a live network while any fee is unset; only a local network has default fees.
+2. Dry run, which reads everything and sends nothing, then deploy:
 
 ```bash
+bun run deploy:base-testnet:dry
 bun run deploy:base-testnet
 ```
 
-_Copy the `EVMAIAgent` and `EVMAIAgentEscrow` addresses into `oracle/.env.oracle.base-testnet`. Addresses of a deployed pair are filled on deploy day; none is committed here._
+3. Record the printed pair and `DEPLOY_MODE=upgrade` in the env file, list the escrow and treasury on the fee token, start the oracle, move the oracle role, and point the rest at the pair, as the runbook orders them.
+
+_Addresses of a deployed pair are filled on deploy day; none is committed here._
 
 > `DEPLOY_MODE` in the env file says what the deploy does: `fresh` deploys a new pair and refuses
 > while either `AI_AGENT_CONTRACT_ADDRESS` or `AI_AGENT_ESCROW_CONTRACT_ADDRESS` is set;

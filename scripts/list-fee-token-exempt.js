@@ -2,8 +2,9 @@
  * Lists the escrow and its treasury on a fee token that moves only to or from addresses its
  * owner has listed (a transfer passes when either end is listed). Unlisted, the escrow cannot
  * take or pay out a prompt's payment, and every fee a user pays straight to the treasury (a
- * cancellation, a branch, a rename or delete) is refused. The treasury is listed by name even
- * when it is the token's owner.
+ * cancellation, a branch, a rename or delete) is refused. "Listed" is the token's own
+ * isTransferExempt, which is true for its owner, so a treasury that is the owner counts as listed
+ * and nothing is sent for it.
  *
  * It checks that the escrow pays in TOKEN_CONTRACT_ADDRESS, then lists whichever of the two is
  * not listed yet and reads both back. When the signer is not the token's owner (the Safe owns it
