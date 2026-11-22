@@ -217,6 +217,30 @@ describe("answer stream", () => {
       expect(stream.record().reasoning[0]).to.deep.equal({ ...sent });
     });
 
+    it("sends a step frame of exactly the frame limit, and leaves out one a byte longer", async () => {
+      const bytesOf = (frame) => Buffer.byteLength(JSON.stringify(frame), "utf-8");
+      const probe = newStream();
+      probe.stream.step(step("T", "a"));
+      await probe.stream.flush();
+      // JSON writes \x01 as six bytes, so the description reaches the limit within 4000 characters.
+      const extra = LIMITS.framePlaintextBytes - bytesOf(probe.sink.frames()[1]);
+      const description = (pad) => `a${"\x01".repeat(Math.floor(extra / 6))}${"a".repeat((extra % 6) + pad)}`;
+
+      const atLimit = newStream();
+      atLimit.stream.step(step("T", description(0)));
+      const over = newStream();
+      over.stream.step(step("T", description(1)));
+      await atLimit.stream.flush();
+      await over.stream.flush();
+
+      expect(description(1).length).to.be.at.most(LIMITS.stepDescriptionChars);
+      const sent = atLimit.sink.frames().filter((f) => f.type === "step");
+      expect(sent.map(bytesOf)).to.deep.equal([LIMITS.framePlaintextBytes]);
+      expect(atLimit.stream.record().reasoning).to.have.length(1);
+      expect(over.sink.frames().filter((f) => f.type === "step")).to.deep.equal([]);
+      expect(over.stream.record().reasoning).to.deep.equal([]);
+    });
+
     it("never splits a surrogate pair when it truncates", async () => {
       const { stream, sink } = newStream();
 
