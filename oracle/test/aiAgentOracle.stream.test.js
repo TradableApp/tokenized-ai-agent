@@ -758,7 +758,13 @@ describe("answer path and live stream", function () {
       const serverStats = { connections: 3, failures: 1, refusedAppends: 2 };
       oracle.setStreamSink(quietSink({ stats: () => serverStats }));
       const withServer = oracle.streamHeartbeatSnapshot();
-      expect(withServer).to.have.all.keys("framesBuilt", "sinkFailures", "server");
+      expect(withServer).to.have.all.keys(
+        "framesBuilt",
+        "sinkFailures",
+        "sealFailures",
+        "thoughtsDropped",
+        "server",
+      );
       expect(withServer.server).to.deep.equal(serverStats);
 
       oracle.setStreamSink(quietSink());
