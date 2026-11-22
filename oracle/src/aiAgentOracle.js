@@ -8,6 +8,22 @@ const crypto = require("crypto");
 const { default: PQueue } = require("p-queue");
 const { Mutex } = require("async-mutex");
 const { LRUCache } = require("lru-cache");
+const { holdFrameworkLogLevel } = require("./elizaos/frameworkLogLevel");
+
+// --- Configuration & Initialization ---
+
+// Load the specific environment file first for precedence.
+if (process.env.ENV_FILE) {
+  dotenv.config({ path: process.env.ENV_FILE });
+}
+// Load the base .env.oracle file to fill in any missing non-secret variables.
+dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
+
+// Before the framework is loaded, which reads its log level once: its agent runtime prints
+// through a logger the oracle does not clean (frameworkLogLevel.js). After the env files, so a
+// stricter level the operator set there is kept.
+holdFrameworkLogLevel();
+
 const {
   ElizaOS,
   stringToUuid,
@@ -71,15 +87,6 @@ const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
 const { createRoleGate } = require("./oracleRoleGate");
-
-// --- Configuration & Initialization ---
-
-// Load the specific environment file first for precedence.
-if (process.env.ENV_FILE) {
-  dotenv.config({ path: process.env.ENV_FILE });
-}
-// Load the base .env.oracle file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
