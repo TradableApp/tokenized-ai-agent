@@ -83,7 +83,9 @@ describe("scripts/deploy — a fresh pair", function () {
         TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
         EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
       }),
-    ).to.be.rejectedWith(/token\.symbol\(\) is "ABLE", which is not EXPECTED_FEE_TOKEN_SYMBOL[\s\S]*Nothing was sent/);
+    ).to.be.rejectedWith(
+      /token\.symbol\(\) is "ABLE", which is not EXPECTED_FEE_TOKEN_SYMBOL[\s\S]*Nothing was sent/,
+    );
     expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
   });
 
@@ -115,10 +117,16 @@ describe("scripts/deploy — a fresh pair", function () {
 
       const first = lines.findIndex((l) => l.includes("Deploying EVMAIAgent proxy"));
       const before = lines.slice(0, first).join("\n");
-      expect(before).to.include("Prompt fee (INITIAL_PROMPT_FEE): 2500000000000000000 wei = 2.5 ABLE");
-      expect(before).to.include("Cancellation fee (INITIAL_CANCELLATION_FEE): 1 wei = 0.000000000000000001 ABLE");
+      expect(before).to.include(
+        "Prompt fee (INITIAL_PROMPT_FEE): 2500000000000000000 wei = 2.5 ABLE",
+      );
+      expect(before).to.include(
+        "Cancellation fee (INITIAL_CANCELLATION_FEE): 1 wei = 0.000000000000000001 ABLE",
+      );
       expect(before).to.include("Metadata fee (INITIAL_METADATA_FEE): 0 wei = 0.0 ABLE");
-      expect(before).to.include("Branch fee (INITIAL_BRANCH_FEE): 750000000000000000000 wei = 750.0 ABLE");
+      expect(before).to.include(
+        "Branch fee (INITIAL_BRANCH_FEE): 750000000000000000000 wei = 750.0 ABLE",
+      );
       expect(await aiAgentEscrow.promptFee()).to.equal(2500000000000000000n);
       expect(await aiAgentEscrow.cancellationFee()).to.equal(1n);
       expect(await aiAgentEscrow.metadataUpdateFee()).to.equal(0n);
@@ -131,13 +139,19 @@ describe("scripts/deploy — a fresh pair", function () {
       const nonce = await ethers.provider.getTransactionCount(deployer.address);
       const lines = [];
 
-      const result = await deployFreshPair(hre, { ...plan, dryRun: true }, {
-        log: (line) => lines.push(String(line)),
-      });
+      const result = await deployFreshPair(
+        hre,
+        { ...plan, dryRun: true },
+        {
+          log: (line) => lines.push(String(line)),
+        },
+      );
 
       const text = lines.join("\n");
       expect(result).to.equal(null);
-      expect(text).to.include("Prompt fee (INITIAL_PROMPT_FEE): 2500000000000000000 wei = 2.5 ABLE");
+      expect(text).to.include(
+        "Prompt fee (INITIAL_PROMPT_FEE): 2500000000000000000 wei = 2.5 ABLE",
+      );
       expect(text).to.include("DRY_RUN=1: nothing was sent");
       expect(text).to.not.include("Deploying EVMAIAgent proxy");
       expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
@@ -146,7 +160,9 @@ describe("scripts/deploy — a fresh pair", function () {
     it("prints the defaults a local network falls back to, marked as defaults", async function () {
       const { able } = await loadFixture(tokensFixture);
 
-      const { aiAgentEscrow, text } = await deploy({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+      const { aiAgentEscrow, text } = await deploy({
+        TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+      });
 
       expect(text()).to.include(
         "Prompt fee (INITIAL_PROMPT_FEE): 1000000000000000000 wei = 1.0 ABLE (default: INITIAL_PROMPT_FEE is not set)",
@@ -161,7 +177,9 @@ describe("scripts/deploy — a fresh pair", function () {
 
       await expect(
         deployFreshPair(hre, { ...plan, fees: { ...plan.fees, prompt: "1.5" } }, { log: () => {} }),
-      ).to.be.rejectedWith(/INITIAL_PROMPT_FEE is not a whole number of wei[\s\S]*Nothing was sent/);
+      ).to.be.rejectedWith(
+        /INITIAL_PROMPT_FEE is not a whole number of wei[\s\S]*Nothing was sent/,
+      );
       expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
     });
 

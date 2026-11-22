@@ -308,7 +308,9 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(chalk.red(error instanceof ListingError ? error.message : error?.stack ?? String(error)));
+    console.error(
+      chalk.red(error instanceof ListingError ? error.message : (error?.stack ?? String(error))),
+    );
     process.exitCode = 1;
   });
 }

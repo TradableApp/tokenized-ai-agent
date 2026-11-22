@@ -280,7 +280,9 @@ describe("scripts/authorize-oracle — moving the oracle role off the deploy wal
           log: () => {},
         }),
       ).to.be.rejectedWith(
-        new RegExp(`was mined as ${HASH}, but agent\\.isOracle\\(${rofl.address}\\) is false[\\s\\S]*Do not remove`),
+        new RegExp(
+          `was mined as ${HASH}, but agent\\.isOracle\\(${rofl.address}\\) is false[\\s\\S]*Do not remove`,
+        ),
       );
       expect(agent.calls).to.deep.equal([["addOracle", rofl.address]]);
     });
@@ -306,7 +308,9 @@ describe("scripts/authorize-oracle — moving the oracle role off the deploy wal
           log: () => {},
         }),
       ).to.be.rejectedWith(
-        new RegExp(`agent\\.isOracle\\(${deployer.address}\\) is true and agent\\.isOracle\\(${rofl.address}\\) is true[\\s\\S]*Check the agent's oracles now`),
+        new RegExp(
+          `agent\\.isOracle\\(${deployer.address}\\) is true and agent\\.isOracle\\(${rofl.address}\\) is true[\\s\\S]*Check the agent's oracles now`,
+        ),
       );
       expect(agent.calls).to.deep.equal([["removeOracle", deployer.address]]);
     });
@@ -334,7 +338,9 @@ describe("scripts/authorize-oracle — moving the oracle role off the deploy wal
           networkName: "hardhat",
           log: () => {},
         }),
-      ).to.be.rejectedWith(/is a submitAnswer that reverted, so it answered nothing[\s\S]*Nothing was sent/);
+      ).to.be.rejectedWith(
+        /is a submitAnswer that reverted, so it answered nothing[\s\S]*Nothing was sent/,
+      );
       expect(await nonceOf(deployer)).to.equal(nonce);
       expect(await aiAgent.isOracle(deployer.address)).to.equal(true);
     });
@@ -386,7 +392,12 @@ describe("scripts/authorize-oracle — moving the oracle role off the deploy wal
 
     it("refuses a live network with no ENV_FILE", function () {
       expect(() =>
-        resolveHandoverTarget({ networkName: "base", envFile: undefined, fileEnv: null, processEnv: file }),
+        resolveHandoverTarget({
+          networkName: "base",
+          envFile: undefined,
+          fileEnv: null,
+          processEnv: file,
+        }),
       ).to.throw(/ENV_FILE is not set/);
     });
 

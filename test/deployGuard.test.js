@@ -292,7 +292,10 @@ describe("scripts/deploy — a fresh pair's initial fees", function () {
   it("fall back to the defaults on a local network", function () {
     for (const networkName of ["hardhat", "localnet", "localhost"]) {
       expect(
-        deployProblems({ networkName, env: { DEPLOY_MODE: "fresh", TOKEN_CONTRACT_ADDRESS: ADDRESS } }),
+        deployProblems({
+          networkName,
+          env: { DEPLOY_MODE: "fresh", TOKEN_CONTRACT_ADDRESS: ADDRESS },
+        }),
         networkName,
       ).to.deep.equal([]);
     }

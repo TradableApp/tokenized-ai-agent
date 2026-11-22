@@ -329,7 +329,12 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
 
     it("refuses a live network with no ENV_FILE", function () {
       expect(() =>
-        resolveListingTarget({ networkName: "base", envFile: undefined, fileEnv: null, processEnv: file }),
+        resolveListingTarget({
+          networkName: "base",
+          envFile: undefined,
+          fileEnv: null,
+          processEnv: file,
+        }),
       ).to.throw(/ENV_FILE is not set/);
     });
 
@@ -339,7 +344,12 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
         TOKEN_CONTRACT_ADDRESS: TOKEN,
       };
       expect(
-        resolveListingTarget({ networkName: "localnet", envFile: ".env.base-localnet", fileEnv: {}, processEnv }),
+        resolveListingTarget({
+          networkName: "localnet",
+          envFile: ".env.base-localnet",
+          fileEnv: {},
+          processEnv,
+        }),
       ).to.deep.equal({ agent: null, escrow: ESCROW, token: TOKEN, expectedSymbol: null });
     });
 
