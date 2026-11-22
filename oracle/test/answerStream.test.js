@@ -718,6 +718,25 @@ describe("answer stream", () => {
   });
 
   describe("sealing", () => {
+    it("sends no sources frame, and does not retry a shorter list, when the sources cannot be sealed", async () => {
+      let calls = 0;
+      const ivSource = () => {
+        calls += 1;
+        if (calls === 2) throw new Error("no randomness");
+        return crypto.randomBytes(12);
+      };
+      const before = streamCounters.snapshot().sealFailures;
+      const { stream, sink } = newStream({ ivSource });
+
+      stream.sources([source("A", "https://a.test/1"), source("B", "https://b.test/2")]);
+      stream.step(step("One", "After the sources."));
+      await stream.flush();
+
+      expect(sink.frames().map((f) => f.type)).to.deep.equal(["reset", "step"]);
+      expect(stream.record().sources).to.deep.equal([]);
+      expect(streamCounters.snapshot().sealFailures - before).to.equal(1);
+    });
+
     it("seals every frame of a run with its own IV, across every frame type", async () => {
       const { stream, sink } = newStream();
 

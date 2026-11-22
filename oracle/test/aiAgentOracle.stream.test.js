@@ -249,7 +249,10 @@ describe("answer path and live stream", function () {
       "Third thought about the market.",
     ];
 
-    it("stores or counts every thought when the Brain loads only after the run completed", async () => {
+    it("stores or counts every thought when the Brain loads only after the run completed", async function () {
+      // About 6 s of real timers (the 3.5 s load, 2 s sanitiser limits, the 3 s flush); room for a
+      // loaded machine.
+      this.timeout(30000);
       // The Brain's import resolves 3.5 s in, long after ElizaOS said it was done. A thought the
       // sanitiser accepts must then be stored and streamed; one it gives up on must be counted.
       // Nothing may vanish without either.
