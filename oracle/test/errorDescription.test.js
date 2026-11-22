@@ -706,4 +706,179 @@ describe("describeError — one line of text, with nothing a reader outside the 
     );
     expect(describedText(undefined)).to.equal("undefined");
   });
+
+  // The schema is public, and a database error an operator cannot act on is no use: the name of
+  // the table, column, constraint or schema it is about is kept. Only that: a plain lower-case
+  // name, quoted right after the word that says what it names.
+  describe("a database identifier", () => {
+    const pgError = (message, code) => Object.assign(new Error(message), { code });
+
+    it("keeps the table of an undefined table", () => {
+      expect(describeError(pgError('relation "failed_jobs" does not exist', "42P01"))).to.equal(
+        '42P01: relation "failed_jobs" does not exist',
+      );
+    });
+
+    it("keeps the column of an undefined column, and the table it was looked for in", () => {
+      expect(describeError(pgError('column "last_error" does not exist', "42703"))).to.equal(
+        '42703: column "last_error" does not exist',
+      );
+      expect(
+        describeError(
+          pgError('column "last_error" of relation "failed_jobs" does not exist', "42703"),
+        ),
+      ).to.equal('42703: column "last_error" of relation "failed_jobs" does not exist');
+    });
+
+    it("keeps the constraint a duplicate violates, and never the key's values", () => {
+      const error = pgError(
+        'duplicate key value violates unique constraint "failed_jobs_pkey"\nKey (id)=(0x1111111111111111111111111111111111111111) already exists.',
+        "23505",
+      );
+
+      expect(describeError(error)).to.equal(
+        '23505: duplicate key value violates unique constraint "failed_jobs_pkey"',
+      );
+    });
+
+    it("keeps a missing schema, and a name qualified by its schema either way it is written", () => {
+      expect(describeError(pgError('schema "senseai" does not exist', "3F000"))).to.equal(
+        '3F000: schema "senseai" does not exist',
+      );
+      expect(describedText('relation "public.failed_jobs" does not exist')).to.equal(
+        'relation "public.failed_jobs" does not exist',
+      );
+      expect(describedText('relation "public"."failed_jobs" does not exist')).to.equal(
+        'relation "public"."failed_jobs" does not exist',
+      );
+    });
+
+    it("keeps it after each word that names one, in any case, after up to eight spaces or tabs", () => {
+      for (const word of [
+        "relation",
+        "column",
+        "table",
+        "constraint",
+        "index",
+        "type",
+        "function",
+        "schema",
+        "sequence",
+        "view",
+      ]) {
+        expect(describedText(`${word} "a_1" missing`)).to.equal(`${word} "a_1" missing`);
+        expect(describedText(`${word.toUpperCase()} "a_1" missing`)).to.equal(
+          `${word.toUpperCase()} "a_1" missing`,
+        );
+      }
+      expect(describedText('relation\t"x" missing')).to.equal('relation\t"x" missing');
+      expect(describedText(`relation${" ".repeat(8)}"x" missing`)).to.equal(
+        `relation${" ".repeat(8)}"x" missing`,
+      );
+    });
+
+    it("keeps a name of 63 characters and removes a longer one", () => {
+      const longest = `a${"b".repeat(62)}`;
+
+      expect(describedText(`relation "${longest}" missing`)).to.equal(
+        `relation "${longest}" missing`,
+      );
+      expect(describedText(`relation "${longest}b" missing`)).to.equal(
+        "relation [value removed] missing",
+      );
+    });
+
+    it("removes a value after a word that names no identifier", () => {
+      expect(describedText('password authentication failed for user "oracle"')).to.equal(
+        "password authentication failed for user [value removed]",
+      );
+      expect(describedText('role "oracle_admin" does not exist')).to.equal(
+        "role [value removed] does not exist",
+      );
+      expect(describedText('database "senseai_agent" does not exist')).to.equal(
+        "database [value removed] does not exist",
+      );
+      expect(describedText('value "failed_jobs" is not allowed')).to.equal(
+        "value [value removed] is not allowed",
+      );
+      expect(describedText('Key (id)=("failed_jobs") already exists')).to.equal(
+        "Key (id)=([value removed]) already exists",
+      );
+    });
+
+    it("removes the host, user and database of a refused connection", () => {
+      const text = describedText(
+        'no pg_hba.conf entry for host "db_primary", user "oracle", database "senseai"',
+      );
+
+      expect(text).to.not.include("db_primary");
+      expect(text).to.not.include("oracle");
+      expect(text).to.not.include("senseai");
+    });
+
+    it("removes anything that is not a plain lower-case name, or not right after the word", () => {
+      expect(describedText("relation 'failed_jobs' does not exist")).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "Failed_Jobs" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "my secret prompt" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "1abc" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation named "failed_jobs" does not exist')).to.equal(
+        "relation named [value removed] does not exist",
+      );
+      expect(describedText('correlation "failed_jobs" missing')).to.equal(
+        "correlation [value removed] missing",
+      );
+      expect(describedText(`relation${" ".repeat(9)}"x" missing`)).to.equal(
+        `relation${" ".repeat(9)}[value removed] missing`,
+      );
+      expect(describedText('relation "a"."b"."c" missing')).to.not.include('"c"');
+      expect(describedText('relation "a.b.c" missing')).to.equal(
+        "relation [value removed] missing",
+      );
+    });
+
+    it("still removes a kept name that is long hex or a long base64 run", () => {
+      expect(describedText('relation "deadbeefdeadbeefdeadbeef" missing')).to.not.include(
+        "deadbeef",
+      );
+      expect(
+        describedText('relation "a1_b2_c3_d4_e5_f6_g7_h8_i9_j0_k1_l2" missing'),
+      ).to.not.include("a1_b2");
+    });
+
+    it("still removes a name that is a configured secret", () => {
+      refreshRequestSecrets({ SOME_API_KEY: "sense_ai_internal_key" });
+
+      expect(describedText('relation "sense_ai_internal_key" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+    });
+
+    it("still removes a name that is the configured database host, whatever its length", () => {
+      refreshRequestSecrets({ POSTGRES_HOST: "db_primary" });
+
+      expect(describedText('relation "db_primary" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "public"."db_primary" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+
+      refreshRequestSecrets({ POSTGRES_URL: "postgresql://u:pw@agent_db/senseai" });
+
+      expect(describedText('relation "agent_db" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "failed_jobs" does not exist')).to.equal(
+        'relation "failed_jobs" does not exist',
+      );
+    });
+  });
 });

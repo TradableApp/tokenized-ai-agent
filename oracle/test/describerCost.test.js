@@ -71,6 +71,20 @@ describe("the describer's cost is bounded", () => {
     ["a long run that almost makes an IPv6 address", "[::".repeat(100000), "["],
     ["a long run that almost makes a host and port", "a.a.".repeat(100000), "a.a."],
     ["a long run of TLS labels with no colon", `Host${" ".repeat(100000)}x`, "Host"],
+    // A database identifier is kept only right after the word that names it.
+    ["a long run of words that name an identifier", 'relation "'.repeat(100000), "relation [value"],
+    [
+      "a long run of columns of relations",
+      'column "a" of relation '.repeat(100000),
+      'column "a" of relation column "a"',
+    ],
+    ["an identifier whose quote never ends", `relation "${"z".repeat(100000)}`, 'relation "zzz'],
+    [
+      "a long run of names qualified by a schema",
+      `relation ${'"a".'.repeat(100000)}`,
+      'relation "a"."a".[value removed]',
+    ],
+    ["a long run of words with no quote", `relation${" \t".repeat(100000)}x`, "relation"],
   ];
 
   for (const [shape, text, start] of adversarial) {
