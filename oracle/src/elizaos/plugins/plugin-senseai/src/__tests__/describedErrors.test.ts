@@ -62,6 +62,15 @@ describe("describeError (plugin)", () => {
     expect(describeError(LEAKY_URL)).toBe("Error");
   });
 
+  it("never takes a code or a name that is more than one short word for the kind", () => {
+    setErrorDescriber(null);
+
+    expect(describeError({ code: `C ${LEAKY_URL}`, name: "TypeError" })).toBe("TypeError");
+    expect(describeError({ code: LEAKY_URL, name: "Evil 192.0.2.1" })).toBe("Error");
+    expect(describeError({ code: "x".repeat(65) })).toBe("Error");
+    expect(describeError({ code: "connect ECONNREFUSED 192.0.2.1:5432" })).toBe("Error");
+  });
+
   it("gives only the error's kind when the host's describer throws", () => {
     setErrorDescriber(() => {
       throw leakyError();
