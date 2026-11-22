@@ -249,6 +249,24 @@ describe("ROFL_DEPLOYMENT override", function () {
         expect(readCompose()).to.not.include("198.51.100.20");
       });
 
+      it("names a malformed key by its line number, never by its text", function () {
+        // A wrapped value's continuation line (base64 padding holds "=") reads as a key.
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+          "c2VjcmV0S2V5TGluZVR3bw==",
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.include("upper-case");
+        expect(out).to.match(/line 3 of /);
+        expect(out).to.not.include("c2VjcmV0S2V5TGluZVR3bw");
+        expect(readLog(ws)).to.not.include("secret set");
+      });
+
       for (const line of [`export POSTGRES_HOST=${ENV_ADDRESS}`, `postgres_host=${ENV_ADDRESS}`]) {
         it(`refuses a key that is not upper-case snake case (${line.split("=")[0]})`, function () {
           writeEnvFile([
