@@ -6,76 +6,21 @@ const { encryptSymmetrically } = require("../src/stream/frameCrypto");
 const { decryptFrame } = require("./helpers/frameDecrypt");
 
 // The interface the oracle and the dApp both build from (live reasoning streaming, contract
-// version 1). The dApp has its own copy of these rules; the shared test vectors below are what
+// version 1). The dApp has its own copy of these rules; the shared test vectors are what
 // keep the two byte-for-byte equal, so they must never be edited on one side only.
 //
-// One vector per frame type, each with the fixed key, its own fixed IV and a fixed plaintext.
+// One vector per frame type, each with the fixed key, its own fixed IV and a fixed plaintext,
+// held as data in `test/fixtures/streamVectors.json` (plain JSON, so any other consumer can load
+// it too); the hash below stays in this file, so a change to the data alone fails the pin.
 // The dApp holds the same data in `src/lib/liveReasoning/vector.testdata.ts`, and both repos pin
 // the same SHA-256 of it (STREAM_VECTORS_SHA256). The hash is of the canonical form: JSON with
 // the keys of every object sorted (JavaScript's default sort, by UTF-16 code unit), arrays kept in
 // order, no whitespace, strings and numbers as JSON.stringify writes them; SHA-256 of its UTF-8,
-// in lower-case hex (`canonicalJson` below; the dApp's is the same function). If a vector changes
-// here, update the hash here, then copy the vectors and the same hash into the dApp: a change on
-// one side only fails that side's pin, or leaves the two hashes different.
+// in lower-case hex (`canonicalJson` below; the dApp's is the same function). If a vector
+// changes in the fixture, update the hash here, then copy the vectors and the same hash into the
+// dApp: a change on one side only fails that side's pin, or leaves the two hashes different.
 
-const STREAM_VECTORS = {
-  keyHex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-  proof: {
-    answerMessageId: "42",
-    proof: "zmsj4OksK8D2N9JMs__j2qRCsgSGomdTiRR9Dl6UUb4",
-    proofHex: "ce6b23e0e92c2bc0f637d24cb3ffe3daa442b20486a2675389147d0e5e9451be",
-  },
-  frames: [
-    {
-      type: "reset",
-      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa0",
-      plaintext:
-        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":0,\"replica\":\"deadbeef\",\"type\":\"reset\",\"data\":{\"reason\":\"start\"}}",
-      frame:
-        "oKGio6Slpqeoqaqg.MAXSTkX0PpEacqE6/56G9pqRvxRGSQw8PmnFcCCTVoAw/oLbdBqpGVcejtoyCQ5eOihWDIikzkCexSkKs9dbpowf9fSqFlVZjf4etreUu90D0I0Of/+WGaZB7+NoPMaKuNFF3E7u1NMRVefT/e46Cya1GLNzg1Psd6GXCkbGs+W2QtfFteqCpsHrvD01",
-    },
-    {
-      type: "step",
-      ivHex: "a0a1a2a3a4a5a6a7a8a9aaab",
-      plaintext:
-        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":1,\"replica\":\"deadbeef\",\"type\":\"step\",\"data\":{\"attempt\":1,\"title\":\"Reading market context\",\"description\":\"Checked recent sentiment for BTC.\"}}",
-      frame:
-        "oKGio6Slpqeoqaqr.nToKD3/6Lp0DC/SkYgiNuwPfOHf3/iZOpiwStF2HV3OnGGXFjRJiD2yoMf4+QrqYJXgiLQTyNlwyO3p8nkGpksbZ9QNZxoXCzsCbfe6qrt+obYmI57XgCotXBLjC7ijkragJz2La7rmkoCQx8fyIRVQkQ5TvGblIRruywZZv0B+gcNQWvSWgelYrle5mavK55q3IE8ry1q6ZqM6W3a5EX693cZOMSAN+52lARwvyxIQUQ5PsIhXLUPbrG1wy9j8xW0RsizSSlc+OIA1DLZj99YCZs7Q2y6k2OjY=",
-    },
-    {
-      type: "attempt",
-      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa2",
-      plaintext:
-        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":2,\"replica\":\"deadbeef\",\"type\":\"attempt\",\"data\":{\"attempt\":2}}",
-      frame:
-        "oKGio6Slpqeoqaqi.EJsWt3u0EoWaB3hgTAjtHtmid1WT58VYmfzn6Q6TbGdmFFIywdoRYLdhYz4JVXOCkg0ngLV3rgwxLnnG8YGRZSEnqrayn5gmv6KS6bH3tXbKm/JsC2UXlgdo04a1hb5/jmFp7h48WY/3DXYXBN+PkTuZti4iwnUTyLQ7OWKiUchcq5e/Zot+1qSU",
-    },
-    {
-      type: "sources",
-      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa3",
-      plaintext:
-        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":3,\"replica\":\"deadbeef\",\"type\":\"sources\",\"data\":{\"attempt\":2,\"sources\":[{\"title\":\"BTC holds its range\",\"url\":\"https://news.example/markets/btc\"},{\"title\":\"Fear & Greed «index» — 72\",\"url\":\"https://data.example/fng/?q=a&b=c\"}]}}",
-      frame:
-        "oKGio6Slpqeoqaqj.QgAkyJonTqMZ72ijXGcRqrO3t477rLeFZ9gBRZe6JauTVgRQDVtc9zNvPiMD6lC/dzfa5beCEiBVEkaUzAfpCyKU0ORpuZZCRq2zSEgTIbEb1BsCi817tNjYKlX15PPKCXOUOVlEy2gsSSWtl3twiD96ofI4PItPFozC2R7qTprHUkftyG2SHgOaoTmsfYCX5v7mWPINSum0+6hnwBZU8VzuIxqzgMOACNCYlFnVu6vgt7awFTngZ22skfAhebR2Eh268rn7RRD6bVYwVhfcOJFsg9fViCR/ttUHg/Wg82qe6mRdHLsGSMsH48Ym1wTkA6bTP1m4mwZsw/MhfqbZGHzJI9axgKV9yj7vvoa17nX3t1t5mwqNfNaHHuSuBROzauNSNx/3PP3E3LROTG9twZKMjQ==",
-    },
-    {
-      type: "answer",
-      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa4",
-      plaintext:
-        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":4,\"replica\":\"deadbeef\",\"type\":\"answer\",\"data\":{\"text\":\"BTC looks steady.\\nSentiment: \\\"greed\\\" (72) — é ✓\",\"answerMessageCID\":\"bafkr6iabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst\",\"reasoningDuration\":4.25}}",
-      frame:
-        "oKGio6Slpqeoqaqk.o06gSe+dwu8KIC72vXRAW31SGUbEvp81u6odzlRWYXrfortfg4QWGAwh3JRxiWYcFpwRiyAm5VNjF+yYTI6IWTHd+HBmo8BUgMKl6Q8Z0+s4UrKysTWT+XnzGb43tpcWuzP4nTxdnTSVmwSPCrk+Fq1akJ+/mxZ+bvz4njnDmkpKg2PiMzjwBwrMd02OMCCOHwhN1Q+4T5OFsWG/ykw+dxk1MRzSoJ30/dKH+It4Ea8dJfSEpN00icJR6Jc3elNgZzetM0fEAHRwnAKjdDBf4E6Z/wgZvdNWqjEckA4N7r3r9+y2/aapvbXJ8y0L30NIfw7aIJlPvrZN9ewzuxZuuUvAVgLeDVHnPq9JwDmy1EMtFfG1XIUGFDSqCtssXcBVAJPsAIJJhJQ=",
-    },
-    {
-      type: "done",
-      ivHex: "a0a1a2a3a4a5a6a7a8a9aaa5",
-      plaintext:
-        "{\"v\":1,\"answerMessageId\":\"42\",\"run\":\"0123456789abcdef\",\"seq\":5,\"replica\":\"deadbeef\",\"type\":\"done\",\"data\":{\"outcome\":\"answered\"}}",
-      frame:
-        "oKGio6Slpqeoqaql.T9yp/qfgN73cJKsKqvHnHWhSTVnR6xS9SnkRscyVCE0ASehTYUPKyirJjH9GsPDkjOKjEUBrx4rCG7q8MZgJDVMfrVE+IVAbRF4NXSeXOx0dSV5AkfmpLadvSkZB0VYm1XqwPFw01Wvw865UeblEAR9BXOtldlwSwcCw5geyvp3d3gwbr9q1fTIsOjL18bTQ",
-    },
-  ],
-};
+const STREAM_VECTORS = require("./fixtures/streamVectors.json");
 
 const STREAM_VECTORS_SHA256 = "e09ee75f9b768d739b145956a61e8702919f33040d70ff50a9ce9195dca3deba";
 
