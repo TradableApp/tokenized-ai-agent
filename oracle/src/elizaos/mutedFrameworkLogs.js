@@ -13,7 +13,8 @@ const { describeError, withoutAddresses, withoutQueryDetail } = require("../erro
  * each call, with the server, the tool and the outcome only.
  *
  * This covers the plugin's lines only. It is put on the framework's shared logger, which the
- * plugin uses; the agent runtime has a logger of its own that this does not reach.
+ * plugin uses; the agent runtime has a logger of its own that this does not reach, and which is
+ * held at warning level instead (frameworkLogLevel.js).
  */
 
 // Hidden when printed as information. A warning or an error that names the server is how the
@@ -104,7 +105,7 @@ function cleanedArgument(arg) {
  * printed as its description. Other values pass through. A copy; the arguments are not changed.
  *
  * This covers the framework's shared logger only (see the note above); the agent runtime's own
- * logger is not reached.
+ * logger is not reached, and is held at warning level (frameworkLogLevel.js).
  *
  * @param {unknown[]} args
  * @returns {unknown[]}
