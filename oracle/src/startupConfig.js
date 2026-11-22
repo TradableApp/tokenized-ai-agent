@@ -121,6 +121,44 @@ function requiredStorageCredentials(provider) {
     : ["IRYS_PAYMENT_PRIVATE_KEY", "AUTONOMYS_API_KEY"];
 }
 
+// How far a typed name may be from a supported one and still be taken for a slip.
+const MAX_SLIP = 2;
+
+/** Letters added, dropped or changed to turn `a` into `b`, or MAX_SLIP + 1 when it is more. */
+function slipsBetween(a, b) {
+  if (Math.abs(a.length - b.length) > MAX_SLIP || a.length > 64) return MAX_SLIP + 1;
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      const changed = previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1);
+      current.push(Math.min(previous[j] + 1, current[j - 1] + 1, changed));
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+/**
+ * The one supported name `value` is a slip away from (at most MAX_SLIP letters added, dropped or
+ * changed, case aside), or null. A refusal can then point at the name that was meant without
+ * printing the value, which may be a key pasted into the wrong setting.
+ *
+ * @param {string} value
+ * @param {readonly string[]} names
+ * @returns {string | null}
+ */
+function closestSupported(value, names) {
+  const typed = value.trim().toLowerCase();
+  const near = names.filter((name) => {
+    const slips = slipsBetween(typed, name.toLowerCase());
+    return slips > 0 && slips <= MAX_SLIP;
+  });
+  return near.length === 1 ? near[0] : null;
+}
+
+const didYouMean = (name) => (name ? ` (did you mean "${name}"?)` : "");
+
 /** Required regardless of network, storage provider, or mode. */
 const ALWAYS_REQUIRED = ["NETWORK_NAME", "AI_AGENT_CONTRACT_ADDRESS"];
 
@@ -148,7 +186,8 @@ function validateConfig(env = process.env) {
     problems.push("NETWORK_NAME has spaces around it");
   } else if (!isBlank(network) && !SUPPORTED_NETWORKS.includes(network.trim())) {
     problems.push(
-      "NETWORK_NAME is not a supported network — expected one of: " + SUPPORTED_NETWORKS.join(", "),
+      `NETWORK_NAME is not a supported network${didYouMean(closestSupported(network, SUPPORTED_NETWORKS))}` +
+        ` — expected one of: ${SUPPORTED_NETWORKS.join(", ")}`,
     );
   }
 
@@ -292,7 +331,9 @@ function validateConfig(env = process.env) {
     // Only a value this module knows is named; anything else is described, not quoted.
     let describe = "STORAGE_PROVIDER is unset";
     if (provider === "irys") describe = 'STORAGE_PROVIDER is "irys"';
-    else if (provider) describe = "STORAGE_PROVIDER names a provider other than irys";
+    else if (provider) {
+      describe = `STORAGE_PROVIDER names a provider other than irys${didYouMean(closestSupported(provider, ["irys"]))}`;
+    }
     for (const credential of requiredStorageCredentials(provider)) {
       if (isMissingOrPlaceholder(env[credential])) {
         const state = isBlank(env[credential])

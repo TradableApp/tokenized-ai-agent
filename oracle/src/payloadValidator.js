@@ -78,10 +78,36 @@ function validatePayload(input, eventName) {
     // is the one case where dropping the event permanently is correct.
     // The kind only: a schema or parse error's message describes, and can quote, the user's
     // decrypted payload.
-    throw new BadInputError(`Validation Failed for ${eventName} (${errorKind(error)}).`, {
-      cause: error,
-    });
+    // Which field failed and how is the schema's text, and is kept: never what was received or
+    // the issue's own message.
+    const issues = issuesOf(error);
+    throw new BadInputError(
+      `Validation Failed for ${eventName} (${errorKind(error)}${issues ? `: ${issues}` : ""}).`,
+      { cause: error },
+    );
   }
+}
+
+// The most issues named; a payload that fails everywhere is described by its first few.
+const MAX_ISSUES = 5;
+const FIELD = /^[A-Za-z_$][\w$]{0,63}$/;
+const ISSUE_CODE = /^[a-z_]{1,32}$/;
+
+/** Each failing field and the kind of its failure ("promptText too_small"), or "". */
+function issuesOf(error) {
+  const issues = Array.isArray(error?.issues) ? error.issues : [];
+  return issues
+    .slice(0, MAX_ISSUES)
+    .map((issue) => {
+      const path = Array.isArray(issue?.path) ? issue.path : [];
+      const field =
+        path
+          .map((part) => (Number.isInteger(part) || FIELD.test(String(part)) ? String(part) : "…"))
+          .join(".") || "(payload)";
+      const code = typeof issue?.code === "string" && ISSUE_CODE.test(issue.code) ? issue.code : "invalid";
+      return `${field} ${code}`;
+    })
+    .join(", ");
 }
 
 module.exports = { validatePayload };
