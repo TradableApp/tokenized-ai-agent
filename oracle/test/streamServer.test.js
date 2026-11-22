@@ -8,6 +8,7 @@ const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 
 const {
+  LIMITS,
   STREAM_HTTP,
   STREAM_REFUSALS,
   isSink,
@@ -17,6 +18,7 @@ const {
   createStreamServer,
   startStreamFromEnv,
   httpLimitsFor,
+  readerQueueCap,
 } = require("../src/stream/streamServer");
 const { readStreamConfig } = require("../src/stream/streamConfig");
 const { BUFFER_LIMITS } = require("../src/stream/frameBuffer");
@@ -752,6 +754,61 @@ describe("streamServer", function () {
       expect(Date.now() - started).to.be.below(5000);
       expect(backedUpCalls, "frames were sent while the reader was backed up").to.be.greaterThan(0);
       expect(slowestMs).to.be.below(5);
+    });
+
+    it("may queue one run's worth of bytes, not two answers' worth", () => {
+      // One run at its longest (contract limits): a reset, then per attempt an attempt frame, a
+      // sources frame and 64 steps, then the answer and done: 1 + 4 x 66 + 2 = 267 frames.
+      const maxFrames = 1 + LIMITS.maxAttempts * (2 + LIMITS.maxStepsPerAttempt) + 2;
+      expect(maxFrames).to.equal(267);
+      const cap = readerQueueCap(BUFFER_LIMITS);
+      // Room for a whole answer's replay with its SSE lines, the retry line and a few pings.
+      expect(cap).to.be.at.least(BUFFER_LIMITS.maxAnswerBytes + maxFrames * 50);
+      // About 1.02 MiB, where it was 2 MiB: 200 readers hold at most about 204 MiB.
+      expect(cap).to.be.below(BUFFER_LIMITS.maxAnswerBytes * 1.05);
+    });
+
+    it("is destroyed once its queued bytes pass the cap, long before the drain timer", async () => {
+      // Drain timer 60 s, so only the byte cap can end this reader inside the 4 s loop. Each run
+      // stays under the answer's 256 KiB cap (15 frames of 16 KiB), and a new run on the same
+      // proof follows on the same response, so the queue grows run after run while the reader,
+      // paused, reads nothing. The kernel's buffers take some first; the cap ends it after that.
+      const maxAnswerBytes = 256 * 1024;
+      const { server, port } = await serve(
+        {},
+        {
+          backpressureMs: 60000,
+          bufferLimits: { ...BUFFER_LIMITS, maxAnswerBytes, maxTotalBytes: 64 * 1024 * 1024 },
+        },
+      );
+      const runId = (n) => n.toString(16).padStart(16, "0");
+      openAnswer(server, "42", runId(0));
+      const socket = net.connect(port, "127.0.0.1");
+      await new Promise((resolve) => socket.once("connect", resolve));
+      socket.write(
+        `GET /stream/42 HTTP/1.1\r\nHost: 127.0.0.1\r\n${PROOF_HEADER}: ${streamProof(KEY, "42")}\r\n\r\n`,
+      );
+      socket.pause();
+      await sleep(50);
+      expect(server.stats().connections).to.equal(1);
+
+      const frame = sealed(16 * 1024);
+      const started = Date.now();
+      let run = 0;
+      try {
+        while (server.stats().connections > 0 && Date.now() - started < 4000) {
+          for (let seq = 0; seq < 15; seq += 1) {
+            server.frame("42", { run: runId(run), seq, ciphertext: frame });
+          }
+          run += 1;
+          openAnswer(server, "42", runId(run));
+          await sleep(2);
+        }
+        expect(server.stats().connections, "destroyed by the byte cap").to.equal(0);
+        expect(Date.now() - started).to.be.below(4000);
+      } finally {
+        socket.destroy();
+      }
     });
   });
 
