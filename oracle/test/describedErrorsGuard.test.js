@@ -414,6 +414,76 @@ const FIXTURES = [
     inCatch("throw new Error(`x: ${(error as Error).message}`);", "error: unknown"),
     true,
   ],
+  // A cause passes an error on only in a thrown error; in a print it is printed whole.
+  ["a cause in a print", inCatch('console.error("x", { cause: error });'), true],
+  ["a cause in an alert", inCatch("await sendAlert({ text: 'down', cause: error });"), true],
+  // An error that arrives as an ordinary parameter: a crash handler, an error event, a hook.
+  [
+    "a raw print in an unhandled rejection handler",
+    'process.on("unhandledRejection", (reason) => {\n  console.error("[Fatal]", reason);\n});',
+    true,
+  ],
+  [
+    "a raw print in an uncaught exception handler",
+    'process.on("uncaughtException", function (error) {\n  console.error(error);\n});',
+    true,
+  ],
+  [
+    "a described crash handler",
+    'process.on("uncaughtException", (error) => {\n  console.error(describedError(error));\n});',
+    false,
+  ],
+  ["a raw print of an error event", "socket.on('error', (err) => console.error(err));", true],
+  [
+    "a raw alert from a one-off error event",
+    "pool.once('error', async (err) => {\n  await sendAlert(`pool: ${err.message}`);\n});",
+    true,
+  ],
+  ["a print of an ordinary event", "stream.on('data', (chunk) => console.log(chunk));", false],
+  [
+    "a raw print in a retry hook",
+    "upload(f, { onRetry: (error) => console.warn(error.message) });",
+    true,
+  ],
+  [
+    "a raw alert in a hook with more parameters",
+    "track({ onAlert: (error, { failures }) => sendAlert('x', `${failures} ${error.message}`) });",
+    true,
+  ],
+  [
+    "a raw print in a hook written as a function",
+    "track({ onLost: async function (error) {\n  console.error(error);\n} });",
+    true,
+  ],
+  [
+    "a described retry hook",
+    "upload(f, { onRetry: (error) => console.warn(describeError(error)) });",
+    false,
+  ],
+  [
+    "a hook with no error to print",
+    "track({ onRecover: ({ failures }) => console.log(failures) });",
+    false,
+  ],
+  [
+    "a settled promise's reason printed whole",
+    "for (const r of results) if (r.status === 'rejected') console.error(r.reason);",
+    true,
+  ],
+  [
+    "a settled promise's reason described",
+    "for (const r of results) console.error(describeError(r.reason));",
+    false,
+  ],
+  // More of the console and of the framework's logger.
+  ["console.dir", inCatch("console.dir(error);"), true],
+  ["console.assert", inCatch("console.assert(false, error.message);"), true],
+  ["console.group", inCatch("console.group(error.message);"), true],
+  ["logger.success", inCatch("logger.success(error);"), true],
+  ["logger.verbose", inCatch("elizaLogger.verbose(error.message);"), true],
+  ["logger.progress", inCatch("logger.progress(`x ${error}`);"), true],
+  ["an optional console member", inCatch("console?.error(error);"), true],
+  ["a console method by its name in brackets", inCatch('console["error"](error);'), true],
 ];
 
 describe("errors are described before they are handed on", () => {
