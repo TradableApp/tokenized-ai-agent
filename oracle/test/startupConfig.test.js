@@ -737,6 +737,15 @@ describe("startup config validation", () => {
       expect(error.message).to.match(/STREAM_MAX_CONN_PER_ANSWER/);
     });
 
+    it("refuses a reader cap above a third of the socket budget, so proof-less sockets keep room", () => {
+      // 768 sockets in the budget: up to 256 readers is accepted, 257 is not.
+      expect(() => validateConfig(baseEnv({ STREAM_MAX_CONN_TOTAL: "256" }))).to.not.throw();
+      const error = refusalFor({ STREAM_MAX_CONN_TOTAL: "257" });
+      expect(error).to.be.instanceOf(ConfigError);
+      expect(error.message).to.match(/STREAM_MAX_CONN_TOTAL/);
+      expect(error.message).to.not.include("257");
+    });
+
     it("checks nothing else of the stream when it is switched off", () => {
       expect(() =>
         validateConfig(baseEnv({ STREAM_ENABLED: "false", STREAM_PORT: "not-a-port" })),

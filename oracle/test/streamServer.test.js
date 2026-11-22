@@ -20,7 +20,7 @@ const {
   httpLimitsFor,
   readerQueueCap,
 } = require("../src/stream/streamServer");
-const { readStreamConfig } = require("../src/stream/streamConfig");
+const { readStreamConfig, SOCKET_BUDGET } = require("../src/stream/streamConfig");
 const { BUFFER_LIMITS } = require("../src/stream/frameBuffer");
 
 /**
@@ -533,19 +533,32 @@ describe("streamServer", function () {
     const within = (promise, ms) =>
       Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(false), ms))]);
 
+    const readerRequest = (id = "42") =>
+      `GET /stream/${id} HTTP/1.1\r\nHost: 127.0.0.1\r\n${PROOF_HEADER}: ${streamProof(KEY, id)}\r\n\r\n`;
+
+    it("sizes the socket cap from a descriptor budget, several times the reader cap", () => {
+      // An assumed descriptor limit of 1024 less 256 kept for the oracle's own sockets and
+      // files: 768 sockets, whatever the reader cap. The reader cap may be at most a third of
+      // it, so the default 200 readers leave 568 sockets that proof-less callers must fill.
+      expect(SOCKET_BUDGET).to.equal(768);
+      for (const maxConnTotal of [1, 200, 256]) {
+        const limits = httpLimitsFor(testConfig({ maxConnTotal }));
+        expect(limits.maxConnections, `reader cap ${maxConnTotal}`).to.equal(SOCKET_BUDGET);
+        expect(limits.maxConnections).to.be.at.least(3 * maxConnTotal);
+      }
+    });
+
     it("derives Node's own socket limits from the stream settings", () => {
       const config = testConfig();
       const limits = httpLimitsFor(config);
-      // The reader cap (200 by default) plus a quarter of it for preflights and refusals.
-      expect(limits.maxConnections).to.equal(config.maxConnTotal + config.maxConnTotal / 4);
-      expect(limits.maxConnections).to.equal(250);
       // One preflight and the polls of one preflight lifetime: 600 s / 20 s + 1.
       expect(limits.maxRequestsPerSocket).to.equal(31);
       // The SSE retry (2 s) plus a second; Node then adds its 1 s buffer.
       expect(limits.keepAliveTimeoutMs).to.equal(STREAM_HTTP.sseRetryMs + 1000);
       expect(limits.keepAliveTimeoutBufferMs).to.equal(1000);
-      // A socket that has not sent its headers is closed within 11 s, not Node's 10 + 30 s.
-      expect(limits.headersTimeoutMs + limits.connectionsCheckingIntervalMs).to.be.at.most(11000);
+      // A socket that has not sent complete headers (nothing at all included) is closed within
+      // 5.5 s, not Node's 60 + 30 s.
+      expect(limits.headersTimeoutMs + limits.connectionsCheckingIntervalMs).to.be.at.most(5500);
       expect(limits.requestTimeoutMs).to.be.at.least(limits.headersTimeoutMs);
     });
 
@@ -565,10 +578,13 @@ describe("streamServer", function () {
     });
 
     it("closes sockets past the cap at once and keeps serving the readers it has", async () => {
-      // Reader cap 4: maxConnections is 4 + 1. Four readers hold four sockets, one more socket
-      // fits, and each of the other nineteen of a flood of twenty is closed on arrival, before
-      // a byte of it is parsed.
-      const { server, port } = await serve({ maxConnTotal: 4, maxConnPerAnswer: 4 });
+      // A socket cap of 5 for the test (768 in production). Four readers hold four sockets, one
+      // more socket fits, and each of the other nineteen of a flood of twenty is closed on
+      // arrival, before a byte of it is parsed.
+      const { server, port } = await serve(
+        { maxConnTotal: 4, maxConnPerAnswer: 4 },
+        { httpLimits: { maxConnections: 5 } },
+      );
       openAnswer(server, "42");
       const readers = [];
       for (let i = 0; i < 4; i += 1) {
@@ -625,6 +641,102 @@ describe("streamServer", function () {
       } finally {
         clearInterval(drip);
         socket.destroy();
+      }
+    });
+
+    it("closes the socket after every answer but an admitted stream", async () => {
+      // Refused, malformed, preflight, health and unknown-path requests all carry
+      // `Connection: close` and lose their socket at once: no proof-less request keeps a place.
+      const { server, port } = await serve();
+      openAnswer(server, "42");
+      const requests = [
+        [`GET /stream/42 HTTP/1.1\r\n${PROOF_HEADER}: ${streamProof(OTHER_KEY, "42")}`, "403"],
+        [`GET /stream/7 HTTP/1.1\r\n${PROOF_HEADER}: ${streamProof(KEY, "7")}`, "404"],
+        ["GET /stream/42 HTTP/1.1", "400"],
+        ["GET /stream/42?mode=other HTTP/1.1", "400"],
+        [`OPTIONS /stream/42 HTTP/1.1\r\nOrigin: ${ALLOWED}`, "204"],
+        ["GET /health HTTP/1.1", "200"],
+        ["GET /nowhere HTTP/1.1", "404"],
+      ];
+      for (const [head, status] of requests) {
+        const socket = await rawSocket(port);
+        try {
+          socket.write(`${head.replace(" HTTP/1.1", " HTTP/1.1\r\nHost: 127.0.0.1")}\r\n\r\n`);
+          expect(await within(socket.whenClosed, 1000), `${head} closed`).to.equal(true);
+          expect(socket.text.split("\r\n")[0], head).to.match(new RegExp(`^HTTP/1.1 ${status} `));
+          expect(socket.text.toLowerCase(), head).to.include("connection: close");
+        } finally {
+          socket.destroy();
+        }
+      }
+    });
+
+    it("drops idle proof-less sockets that fill the pool within the bound, then admits a reader", async () => {
+      // A socket cap of 10 and a 200 ms headers bound checked every 50 ms. Ten sockets that send
+      // nothing fill the pool; each is closed by about 250 ms. A reader with a valid proof then
+      // gets a place and is still served after the bound has passed again.
+      const { server, port } = await serve(
+        {},
+        {
+          httpLimits: {
+            maxConnections: 10,
+            headersTimeoutMs: 200,
+            requestTimeoutMs: 200,
+            connectionsCheckingIntervalMs: 50,
+          },
+        },
+      );
+      openAnswer(server, "42");
+      const idle = [];
+      try {
+        for (let i = 0; i < 10; i += 1) idle.push(await rawSocket(port));
+        const closed = await Promise.all(idle.map((socket) => within(socket.whenClosed, 1000)));
+        expect(closed.every(Boolean), "every idle socket closed within the bound").to.equal(true);
+
+        const reader = await rawSocket(port);
+        try {
+          reader.write(readerRequest());
+          await sleep(500);
+          sendFrames(server, "42", RUN_A, 0, 1);
+          const waitedFrom = Date.now();
+          while (!reader.text.includes(`id: ${RUN_A}.0`) && Date.now() - waitedFrom < 1000) {
+            await sleep(10);
+          }
+          expect(reader.text.split("\r\n")[0]).to.equal("HTTP/1.1 200 OK");
+          expect(reader.text).to.include(`id: ${RUN_A}.0`);
+          expect(server.stats().connections).to.equal(1);
+        } finally {
+          reader.destroy();
+        }
+      } finally {
+        idle.forEach((socket) => socket.destroy());
+      }
+    });
+
+    it("admits a reader while idle sockets are still within their bound, if the cap has room", async () => {
+      const { server, port } = await serve(
+        {},
+        { httpLimits: { maxConnections: 10, headersTimeoutMs: 2000, requestTimeoutMs: 2000 } },
+      );
+      openAnswer(server, "42");
+      const idle = [];
+      try {
+        for (let i = 0; i < 8; i += 1) idle.push(await rawSocket(port));
+        const reader = await rawSocket(port);
+        try {
+          reader.write(readerRequest());
+          const waitedFrom = Date.now();
+          while (!reader.text.includes("\r\n\r\n") && Date.now() - waitedFrom < 1000) {
+            await sleep(10);
+          }
+          expect(reader.text.split("\r\n")[0]).to.equal("HTTP/1.1 200 OK");
+          expect(server.stats().connections).to.equal(1);
+          expect(server.stats().refusedSockets).to.equal(0);
+        } finally {
+          reader.destroy();
+        }
+      } finally {
+        idle.forEach((socket) => socket.destroy());
       }
     });
 
