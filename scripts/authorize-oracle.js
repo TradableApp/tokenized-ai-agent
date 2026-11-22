@@ -14,10 +14,16 @@
  *
  * (or `bun run authorize-oracle:<network> <phase>`). On Base mainnet a phase that sends needs
  * DEPLOY_MAINNET_CONFIRMED=1.
+ *
+ * On a live network the agent, the escrow and the token are read from ENV_FILE alone (one that
+ * only the root .env or the shell sets is refused), and all three are printed before anything is
+ * read or sent. ORACLE_ADDRESS and ANSWER_TX_HASH are given on the command line, as above.
  */
 const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
+const { readEnvFile } = require("./lib/envFile");
+const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
 
 const PHASES = Object.freeze(["grant", "retire-deployer"]);
 const MAINNET_NETWORK = "base";
@@ -193,22 +199,65 @@ async function runHandover({ phase, agent, signer, provider, env, networkName, l
   return phase === "grant" ? grant(args) : retireDeployer(args);
 }
 
+/**
+ * The agent, escrow and token this run acts on, or a refusal listing every problem. On a live
+ * network all three come from ENV_FILE alone and must be set; locally only the agent is needed.
+ */
+function resolveHandoverTarget({ networkName, envFile, fileEnv, processEnv }) {
+  const { values, problems } = resolveTarget({
+    networkName,
+    envFile,
+    fileEnv,
+    processEnv,
+    vars: PAIR_TARGET_VARS,
+    addressKeys: Object.keys(PAIR_TARGET_VARS),
+    requiredLive: Object.keys(PAIR_TARGET_VARS),
+    requiredLocal: ["agent"],
+    howToRun:
+      "Run it through its package script (for example bun run authorize-oracle:base-testnet grant).",
+  });
+  if (problems.length > 0) {
+    throw new HandoverError(
+      `Oracle hand-over on ${networkName} refused:\n  - ${problems.join("\n  - ")}\n${NOTHING_SENT}`,
+    );
+  }
+  return values;
+}
+
+/** The run's header: the network, the phase, the signer and the pair it acts on. */
+function targetLines({ networkName, envFile, phase, signer, target }) {
+  return [
+    `--- Oracle hand-over on ${chalk.bold(networkName)} · phase=${phase} · signer=${signer} ---`,
+    `  Agent: ${shown(target.agent)}`,
+    `  Escrow: ${shown(target.escrow)}`,
+    `  Fee token: ${shown(target.token)}`,
+    `  Settings from: ${envFile ?? "the environment (ENV_FILE is not set)"}`,
+  ];
+}
+
 async function main() {
   const hre = require("hardhat");
   const { env } = process;
-  const agentAddress = env.AI_AGENT_CONTRACT_ADDRESS;
-  if (!isSet(agentAddress) || !ADDRESS_RE.test(agentAddress)) {
-    throw new HandoverError(
-      `AI_AGENT_CONTRACT_ADDRESS must name the agent (it is ${describeShape(agentAddress)}). ${NOTHING_SENT}`,
-    );
-  }
+  const networkName = hre.network.name;
+  const target = resolveHandoverTarget({
+    networkName,
+    envFile: env.ENV_FILE,
+    fileEnv: readEnvFile(env.ENV_FILE),
+    processEnv: env,
+  });
   const [signer] = await hre.ethers.getSigners();
-  const agent = await hre.ethers.getContractAt("EVMAIAgent", agentAddress);
   const phase = process.argv[2];
   const log = (line) => console.log(line);
-  log(
-    `--- Oracle hand-over on ${chalk.bold(hre.network.name)} · phase=${phase} · signer=${signer.address} ---`,
-  );
+  for (const line of targetLines({
+    networkName,
+    envFile: env.ENV_FILE,
+    phase,
+    signer: signer.address,
+    target,
+  })) {
+    log(line);
+  }
+  const agent = await hre.ethers.getContractAt("EVMAIAgent", target.agent);
   await runHandover({
     phase,
     agent,
@@ -220,7 +269,7 @@ async function main() {
   });
 }
 
-module.exports = { PHASES, runHandover, HandoverError };
+module.exports = { PHASES, runHandover, resolveHandoverTarget, targetLines, HandoverError };
 
 if (require.main === module) {
   main().catch((error) => {

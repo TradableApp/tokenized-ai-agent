@@ -9,24 +9,34 @@
  * not listed yet and reads both back. When the signer is not the token's owner (the Safe owns it
  * on mainnet), it sends nothing and prints the calls as Safe Transaction Builder JSON. With
  * --check it only reads, and fails while either is unlisted. A token that keeps no list needs
- * nothing.
+ * nothing, unless its symbol is that of a token that does (LISTED_TRANSFER_SYMBOLS): then it is not
+ * the token it says it is, and the script refuses. The token's symbol must be
+ * EXPECTED_FEE_TOKEN_SYMBOL when that is set, and on a live network it must be set.
  *
  *   ENV_FILE=.env.base-testnet HARDHAT_NETWORK=baseSepolia node scripts/list-fee-token-exempt.js [--check]
  *
- * (or `bun run list-fee-token-exempt:<network> [--check]`). Reads TOKEN_CONTRACT_ADDRESS and
- * AI_AGENT_ESCROW_CONTRACT_ADDRESS; the treasury is read from the escrow. On Base mainnet,
- * sending needs DEPLOY_MAINNET_CONFIRMED=1.
+ * (or `bun run list-fee-token-exempt:<network> [--check]`). Reads TOKEN_CONTRACT_ADDRESS,
+ * AI_AGENT_ESCROW_CONTRACT_ADDRESS, AI_AGENT_CONTRACT_ADDRESS and EXPECTED_FEE_TOKEN_SYMBOL, from
+ * ENV_FILE alone on a live network, and prints them before anything is read or sent; the
+ * treasury is read from the escrow. On Base mainnet, sending needs DEPLOY_MAINNET_CONFIRMED=1.
  */
 const chalk = require("chalk");
 const { ethers } = require("ethers");
 
-const { describeShape, isSet } = require("./lib/settingShape");
+const { describeShape } = require("./lib/settingShape");
+const { readEnvFile } = require("./lib/envFile");
+const { LOCAL_NETWORKS } = require("./lib/networks");
+const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
 const { isEmptyRevert } = require("./rehearsal/token");
 
 const MAINNET_NETWORK = "base";
 const CONFIRM_VAR = "DEPLOY_MAINNET_CONFIRMED";
-const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+// Symbols of the fee tokens that move only to or from listed addresses: SenseToken (from the
+// sense-contracts repository, compiled here by contracts/test/SenseTokenImport.sol). A token with
+// one of these symbols that answers as one with no list is not that token.
+const LISTED_TRANSFER_SYMBOLS = Object.freeze(["SENSE"]);
 const TOKEN_ABI = [
+  "function symbol() view returns (string)",
   "function owner() view returns (address)",
   "function isTransferExempt(address account) view returns (bool)",
   "function setTransferExempt(address account, bool exempt)",
@@ -81,6 +91,24 @@ async function readListing({ token, accounts }) {
   }
 }
 
+/** The token's symbol, refused when it cannot be read or is not `expectedSymbol` (when set). */
+async function readSymbol({ token, tokenAddress, expectedSymbol }) {
+  let symbol;
+  try {
+    symbol = await token.symbol();
+  } catch {
+    throw new ListingError(
+      `token.symbol() could not be read from TOKEN_CONTRACT_ADDRESS ${tokenAddress}. Nothing was sent.`,
+    );
+  }
+  if (expectedSymbol && symbol !== expectedSymbol) {
+    throw new ListingError(
+      `token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL: TOKEN_CONTRACT_ADDRESS ${tokenAddress} is not the token this pair was set up for. Nothing was sent.`,
+    );
+  }
+  return symbol;
+}
+
 /**
  * Checks, and unless `check` is set lists, the escrow and its treasury on `tokenAddress`.
  * Returns what it found, what it sent, and the Safe batch it printed (or null).
@@ -93,9 +121,15 @@ async function listFeeTokenExempt({
   check,
   env,
   networkName,
+  expectedSymbol,
   log,
   now = Date.now,
 }) {
+  if (!expectedSymbol && !LOCAL_NETWORKS.has(networkName)) {
+    throw new ListingError(
+      `EXPECTED_FEE_TOKEN_SYMBOL must be set on ${networkName}: the token's symbol is checked against it, so a listing is never judged on the wrong token. Nothing was sent.`,
+    );
+  }
   const escrowAddress = await escrow.getAddress();
   const escrowToken = await escrow.ableToken();
   if (!same(escrowToken, tokenAddress)) {
@@ -106,13 +140,19 @@ async function listFeeTokenExempt({
   const treasury = await escrow.treasury();
   const accounts = { escrow: escrowAddress, treasury };
   const token = new ethers.Contract(tokenAddress, TOKEN_ABI, signer ?? provider);
+  const symbol = await readSymbol({ token, tokenAddress, expectedSymbol });
+  const named = `The fee token ${tokenAddress} (symbol ${JSON.stringify(symbol)})`;
   const before = await readListing({ token, accounts });
   if (!before.restricted) {
-    log(
-      `The fee token ${tokenAddress} does not restrict who it moves between: nothing to list. Nothing was sent.`,
-    );
+    if (LISTED_TRANSFER_SYMBOLS.includes(symbol)) {
+      throw new ListingError(
+        `${named} answers as a token that keeps no list, but its symbol ${JSON.stringify(symbol)} is that of a token that moves only to or from listed addresses: it is not the token it says it is. Check TOKEN_CONTRACT_ADDRESS and the token. Nothing was sent.`,
+      );
+    }
+    log(`${named} does not restrict who it moves between: nothing to list. Nothing was sent.`);
     return { restricted: false, listed: null, sent: [], safeBatch: null };
   }
+  log(`${named} moves only to or from listed addresses.`);
   for (const [name, address] of Object.entries(accounts)) {
     log(`The ${name} ${address} is ${before.listed[name] ? "already listed" : "not listed"}.`);
   }
@@ -171,43 +211,100 @@ async function listFeeTokenExempt({
   return { restricted: true, listed: after.listed, sent, safeBatch: null };
 }
 
+const LISTING_VARS = Object.freeze({
+  ...PAIR_TARGET_VARS,
+  expectedSymbol: "EXPECTED_FEE_TOKEN_SYMBOL",
+});
+
+/**
+ * The agent, escrow, token and expected symbol this run acts on, or a refusal listing every
+ * problem. On a live network all four come from ENV_FILE alone and must be set; locally the
+ * escrow and the token are needed.
+ */
+function resolveListingTarget({ networkName, envFile, fileEnv, processEnv }) {
+  const { values, problems } = resolveTarget({
+    networkName,
+    envFile,
+    fileEnv,
+    processEnv,
+    vars: LISTING_VARS,
+    addressKeys: Object.keys(PAIR_TARGET_VARS),
+    requiredLive: Object.keys(LISTING_VARS),
+    requiredLocal: ["escrow", "token"],
+    howToRun:
+      "Run it through its package script (for example bun run list-fee-token-exempt:base-testnet).",
+  });
+  if (problems.length > 0) {
+    throw new ListingError(
+      `Fee token listing on ${networkName} refused:\n  - ${problems.join("\n  - ")}\nNothing was sent.`,
+    );
+  }
+  return values;
+}
+
+/** The run's header: the network, the mode, the signer and the pair it acts on. */
+function targetLines({ networkName, envFile, check, signer, target }) {
+  const expected = target.expectedSymbol
+    ? ` (expected symbol ${target.expectedSymbol})`
+    : " (no expected symbol)";
+  return [
+    `--- Fee token listing on ${chalk.bold(networkName)}${check ? " · --check (read only)" : ""} · signer=${signer} ---`,
+    `  Agent: ${shown(target.agent)}`,
+    `  Escrow: ${shown(target.escrow)}`,
+    `  Fee token: ${shown(target.token)}${expected}`,
+    `  Settings from: ${envFile ?? "the environment (ENV_FILE is not set)"}`,
+  ];
+}
+
 async function main() {
   const hre = require("hardhat");
   const { env } = process;
-  for (const name of ["TOKEN_CONTRACT_ADDRESS", "AI_AGENT_ESCROW_CONTRACT_ADDRESS"]) {
-    if (!isSet(env[name]) || !ADDRESS_RE.test(env[name])) {
-      throw new ListingError(
-        `${name} must be an address (it is ${describeShape(env[name])}). Nothing was sent.`,
-      );
-    }
-  }
+  const networkName = hre.network.name;
   const unknown = process.argv.slice(2).filter((arg) => arg !== "--check");
   if (unknown.length > 0) {
     throw new ListingError("The only option is --check. Nothing was sent.");
   }
   const check = process.argv.includes("--check");
+  const target = resolveListingTarget({
+    networkName,
+    envFile: env.ENV_FILE,
+    fileEnv: readEnvFile(env.ENV_FILE),
+    processEnv: env,
+  });
   const [signer] = await hre.ethers.getSigners();
-  const escrow = await hre.ethers.getContractAt(
-    "EVMAIAgentEscrow",
-    env.AI_AGENT_ESCROW_CONTRACT_ADDRESS,
-  );
   const log = (line) => console.log(line);
-  log(
-    `--- Fee token listing on ${chalk.bold(hre.network.name)}${check ? " · --check (read only)" : ""} · signer=${signer.address} ---`,
-  );
+  for (const line of targetLines({
+    networkName,
+    envFile: env.ENV_FILE,
+    check,
+    signer: signer.address,
+    target,
+  })) {
+    log(line);
+  }
+  const escrow = await hre.ethers.getContractAt("EVMAIAgentEscrow", target.escrow);
   await listFeeTokenExempt({
-    tokenAddress: env.TOKEN_CONTRACT_ADDRESS,
+    tokenAddress: target.token,
     escrow,
     signer,
     provider: hre.ethers.provider,
     check,
     env,
-    networkName: hre.network.name,
+    networkName,
+    expectedSymbol: target.expectedSymbol,
     log,
   });
 }
 
-module.exports = { listFeeTokenExempt, safeBatch, ListingError, TOKEN_ABI };
+module.exports = {
+  listFeeTokenExempt,
+  resolveListingTarget,
+  targetLines,
+  safeBatch,
+  ListingError,
+  TOKEN_ABI,
+  LISTED_TRANSFER_SYMBOLS,
+};
 
 if (require.main === module) {
   main().catch((error) => {

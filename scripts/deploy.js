@@ -3,6 +3,7 @@ const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
 const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
+const { LOCAL_NETWORKS } = require("./lib/networks");
 
 // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so the process
 // environment holds both. DEPLOY_MODE and the pair's addresses are read again from ENV_FILE
@@ -12,9 +13,6 @@ const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
 
-// Networks the deploy wallet runs on its own. Any other network counts as live, so a network
-// added later is checked rather than skipped.
-const LOCAL_NETWORKS = new Set(["hardhat", "localhost", "localnet"]);
 
 // --- Base mainnet guard -------------------------------------------------------------------
 // `deploy:base-mainnet` reads .env.base-mainnet, which ships with placeholder addresses until

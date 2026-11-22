@@ -272,7 +272,11 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
     const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
 
     await expect(
-      run(fixture, { networkName: "base", env: { DEPLOY_MAINNET_CONFIRMED: "true" } }),
+      run(fixture, {
+        networkName: "base",
+        expectedSymbol: "SENSE",
+        env: { DEPLOY_MAINNET_CONFIRMED: "true" },
+      }),
     ).to.be.rejectedWith(/DEPLOY_MAINNET_CONFIRMED=1/);
     expect(await listed(fixture, fixture.treasury.address)).to.equal(false);
   });
