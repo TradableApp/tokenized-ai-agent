@@ -52,7 +52,7 @@ const MAX_REQUEST_TARGET_CHARS = 128;
 /** Request line and headers together; a browser's GET with these headers is far below it. */
 const MAX_HEADER_BYTES = 8192;
 const MAX_HEADERS_COUNT = 50;
-/** How long a socket may take to send its request line and headers; a browser sends them at once. */
+/** The time a socket has to send its request line and headers; a browser sends both at once. */
 const HEADERS_TIMEOUT_MS = 10000;
 /**
  * A request with a body is refused, so a request we serve is complete with its headers. Node
@@ -430,7 +430,7 @@ function createStreamServer({
   server.maxConnections = limits.maxConnections;
   server.maxRequestsPerSocket = limits.maxRequestsPerSocket;
   server.keepAliveTimeoutBuffer = limits.keepAliveTimeoutBufferMs;
-  // A socket closed for being past maxConnections is counted; what Node passes about it is not read.
+  // A socket closed for being past maxConnections is counted; what Node passes with it is unread.
   server.on("drop", () => {
     refusedSockets += 1;
   });
