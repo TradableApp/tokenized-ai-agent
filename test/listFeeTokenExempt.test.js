@@ -103,6 +103,36 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
     expect(fixture.lines.join("\n")).to.match(/already listed/);
   });
 
+  it("lists an owner-treasury again on a second run, and nothing else, saying why", async function () {
+    const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
+    await (await fixture.contracts.escrow.setTreasury(fixture.deployer.address)).wait();
+    await run(fixture);
+
+    const result = await run(fixture);
+
+    expect(result.sent).to.have.lengthOf(1);
+    expect(fixture.lines.join("\n")).to.match(
+      /The treasury 0x[0-9a-fA-F]{40} is the token's owner, so its by-name listing cannot be read; listed again/,
+    );
+    expect(fixture.lines.join("\n")).to.match(/The escrow 0x[0-9a-fA-F]{40} is already listed/);
+  });
+
+  it("puts an owner-treasury in the Safe batch when the signer is not the owner", async function () {
+    const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
+    const { token, treasury } = fixture;
+    const escrow = await fixture.contracts.escrow.getAddress();
+    await (await token.setTransferExempt(escrow, true)).wait();
+    await (await token.transferOwnership(treasury.address)).wait();
+    await (await token.connect(treasury).acceptOwnership()).wait();
+
+    const result = await run(fixture);
+
+    expect(result.sent).to.deep.equal([]);
+    expect(result.safeBatch.transactions.map((tx) => tx.data)).to.deep.equal([
+      token.interface.encodeFunctionData("setTransferExempt", [treasury.address, true]),
+    ]);
+  });
+
   it("lists only the one that is missing", async function () {
     const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
     await (await fixture.token.setTransferExempt(fixture.treasury.address, true)).wait();
@@ -123,6 +153,22 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
 
       expect(result.listed).to.deep.equal({ escrow: true, treasury: true });
       expect(await nonceOf(fixture.deployer)).to.equal(nonce);
+    });
+
+    it("passes on an owner-treasury, saying its by-name listing cannot be read", async function () {
+      const fixture = await loadRehearsal(deployRestrictedRehearsalFixture);
+      await (await fixture.contracts.escrow.setTreasury(fixture.deployer.address)).wait();
+      const escrow = await fixture.contracts.escrow.getAddress();
+      await (await fixture.token.setTransferExempt(escrow, true)).wait();
+      const nonce = await nonceOf(fixture.deployer);
+
+      const result = await run(fixture, { check: true });
+
+      expect(result.sent).to.deep.equal([]);
+      expect(await nonceOf(fixture.deployer)).to.equal(nonce);
+      expect(fixture.lines.join("\n")).to.match(
+        /The treasury 0x[0-9a-fA-F]{40} is exempt as the owner; by-name listing cannot be read from the chain/,
+      );
     });
 
     for (const unlisted of ["escrow", "treasury"]) {

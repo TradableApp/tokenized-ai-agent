@@ -2,12 +2,15 @@
  * Lists the escrow and its treasury on a fee token that moves only to or from addresses its
  * owner has listed (a transfer passes when either end is listed). Unlisted, the escrow cannot
  * take or pay out a prompt's payment, and every fee a user pays straight to the treasury (a
- * cancellation, a branch, a rename or delete) is refused. The treasury is listed by name even
- * when it is the token's owner.
+ * cancellation, a branch, a rename or delete) is refused. An account that is the token's owner
+ * is exempt only while it stays the owner, and the token cannot say whether it is also listed by
+ * name, so such an account is listed again on every run (setTransferExempt is idempotent) and
+ * stays listed when ownership moves; --check reports it as exempt as the owner and passes.
  *
  * It checks that the escrow pays in TOKEN_CONTRACT_ADDRESS, then lists whichever of the two is
- * not listed yet and reads both back. When the signer is not the token's owner (the Safe owns it
- * on mainnet), it sends nothing and prints the calls as Safe Transaction Builder JSON. With
+ * not listed yet, or is the owner, and reads both back. When the signer is not the token's owner
+ * (the Safe owns it on mainnet), it sends nothing and prints the calls as Safe Transaction
+ * Builder JSON. With
  * --check it only reads, and fails while either is unlisted. A token that keeps no list needs
  * nothing, unless its symbol is that of a token that does (LISTED_TRANSFER_SYMBOLS): then it is not
  * the token it says it is, and the script refuses. The token's symbol must be
@@ -153,10 +156,22 @@ async function listFeeTokenExempt({
     return { restricted: false, listed: null, sent: [], safeBatch: null };
   }
   log(`${named} moves only to or from listed addresses.`);
+  // The owner is exempt by being the owner, and isTransferExempt cannot tell that from a listing
+  // by name (the list itself has no getter). The owner's exemption ends when ownership moves, so
+  // an account that is the owner is listed again on every run; setTransferExempt is idempotent.
+  const owner = await token.owner();
+  const isOwner = (name) => same(accounts[name], owner);
   for (const [name, address] of Object.entries(accounts)) {
-    log(`The ${name} ${address} is ${before.listed[name] ? "already listed" : "not listed"}.`);
+    let state = before.listed[name] ? "already listed" : "not listed";
+    if (isOwner(name)) {
+      state = check
+        ? "exempt as the owner; by-name listing cannot be read from the chain"
+        : "the token's owner, so its by-name listing cannot be read; listed again";
+    }
+    log(`The ${name} ${address} is ${state}.`);
   }
   const missing = Object.keys(accounts).filter((name) => !before.listed[name]);
+  const toList = Object.keys(accounts).filter((name) => !before.listed[name] || isOwner(name));
 
   if (check) {
     if (missing.length > 0) {
@@ -167,19 +182,18 @@ async function listFeeTokenExempt({
     log(chalk.green("Both the escrow and the treasury are listed."));
     return { restricted: true, listed: before.listed, sent: [], safeBatch: null };
   }
-  if (missing.length === 0) {
+  if (toList.length === 0) {
     log(chalk.green("Both are already listed. Nothing was sent."));
     return { restricted: true, listed: before.listed, sent: [], safeBatch: null };
   }
 
-  const owner = await token.owner();
   if (!same(owner, signer.address)) {
     const { chainId } = await provider.getNetwork();
     const batch = safeBatch({
       chainId,
       safe: owner,
       token: tokenAddress,
-      accounts: missing.map((name) => accounts[name]),
+      accounts: toList.map((name) => accounts[name]),
       createdAt: now(),
     });
     log(
@@ -195,7 +209,7 @@ async function listFeeTokenExempt({
     );
   }
   const sent = [];
-  for (const name of missing) {
+  for (const name of toList) {
     const receipt = await (await token.setTransferExempt(accounts[name], true)).wait();
     log(`token.setTransferExempt(${accounts[name]}, true) tx: ${receipt.hash} (the ${name})`);
     sent.push(receipt.hash);
