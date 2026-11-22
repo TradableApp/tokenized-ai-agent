@@ -521,8 +521,19 @@ function createStreamServer({
  * oracle answers without a stream, since a paid answer matters more than its live view.
  *
  * On SIGTERM the server ends every reader's response (each reconnects and is told the answer is
- * not open, or reads the stored answer) within `SHUTDOWN_GRACE_MS`, then the signal is raised
- * again so the process ends exactly as it would have without this handler.
+ * not open, or reads the stored answer) within `SHUTDOWN_GRACE_MS`, removes its handler and
+ * raises the signal again. What that does depends on the process's place:
+ *
+ * - Outside a container, or under an init: the default action ends the process, as it would
+ *   have ended without this handler.
+ * - In the oracle's container, node is PID 1 (Dockerfile.oracle runs `node src/index.js`; the
+ *   compose files' `sh -c 'node src/index.js'` hands its one command over to node, assuming the
+ *   image's sh does so, which was not run here; if it does not, sh is PID 1 and node never sees
+ *   the runtime's SIGTERM at all) and no compose file sets `init:`. The kernel gives PID 1 no
+ *   default action for a signal it has no handler for, so the raised SIGTERM is ignored: the
+ *   oracle goes on answering with the stream closed until the runtime sends SIGKILL. Node as
+ *   PID 1 ignored SIGTERM before this handler existed too, so this is no worse; whether the
+ *   oracle should exit on SIGTERM is a separate decision (it could cut an answer in flight).
  *
  * @param {object} options
  * @param {Record<string, string | undefined>} [options.env]

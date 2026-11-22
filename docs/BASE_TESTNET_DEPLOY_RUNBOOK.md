@@ -274,7 +274,29 @@ ciphertext only.
   time and the total cap are set from the Phase 0 measurement. A value that cannot work stops
   the boot naming the setting.
 - **Nothing about readers is logged**: no address, header, proof or answer id. A quiet log is
-  normal; the dApp's own reports say whether it is reading.
+  normal; the dApp's own reports say whether it is reading. The heartbeat's `stream.server`
+  block counts readers (`connections`), sockets closed past the cap (`refusedSockets`), server
+  failures (`failures`; each kind is also logged at most once an hour), and frames and answers
+  the buffer refused (`refusedAppends`, `refusedOpens`).
+
+#### Load check: an unauthenticated flood (Phase 0)
+
+The stream server runs in the oracle's own process, beside the work that answers paid prompts,
+and anyone can connect to it without a proof. It bounds what such a caller can hold with Node's
+own limits (`httpLimitsFor` in `streamServer.js`): at most the reader cap plus a quarter (250
+sockets by default; the rest are closed on arrival, before any parsing), 31 requests per socket,
+4 s for an idle keep-alive socket, and 11 s at most for a socket to send its headers. What the
+ROFL proxy in front of it limits (sockets, request rate, slow clients) is not known. So the
+Phase 0 load check must include, against the real proxy URL:
+
+- [ ] A flood of connections well past 250 (and of idle and half-sent requests) while prompts
+      are answered: prompt answer times and the heartbeat's `blockLag` stay as without the
+      flood, existing readers keep receiving frames, and `stream.server.refusedSockets` climbs.
+- [ ] The oracle's descriptor use stays well below the container's limit throughout (no
+      `EMFILE` in the log; the RPC and database connections keep working).
+- [ ] If prompt handling slows, record it: the next step is moving the server off the
+      oracle's event loop (a worker thread), not a per-address limit, since the reader's
+      address is deliberately never read.
 
 ---
 
