@@ -209,7 +209,8 @@ describe("ROFL_DEPLOYMENT override", function () {
         ]);
         const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
         expect(code, out).to.not.equal(0);
-        expect(out).to.include("POSTGRES_HOST");
+        // Refused for being below the delimiter, as an address is, not only for a missing host.
+        expect(out).to.include("POSTGRES_HOST is set below the delimiter");
         expect(out).to.not.include("db.example.com");
         expect(readLog(ws)).to.not.include("secret set");
         expect(readCompose()).to.not.include("db.example.com");
