@@ -3,7 +3,12 @@ const hre = require("hardhat");
 const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers");
 
 const { resolveDeployPlan, deployFreshPair } = require("../scripts/deploy");
-const { runHandover, PHASES } = require("../scripts/authorize-oracle");
+const {
+  runHandover,
+  PHASES,
+  resolveHandoverTarget,
+  targetLines,
+} = require("../scripts/authorize-oracle");
 
 const { ethers } = hre;
 
@@ -233,5 +238,183 @@ describe("scripts/authorize-oracle — moving the oracle role off the deploy wal
       }),
     ).to.be.rejectedWith(/DEPLOY_MAINNET_CONFIRMED=1/);
     expect(await fixture.aiAgent.isOracle(fixture.rofl.address)).to.equal(false);
+  });
+
+  describe("a contract that does not do what was sent", function () {
+    const HASH = `0x${"cd".repeat(32)}`;
+
+    // An agent stand-in whose owner is the signer, whose oracle role never changes whatever is
+    // sent, and which records each call. `holds` says who reads as holding the role.
+    function stubAgent({ signer, holds }) {
+      const calls = [];
+      const agent = {
+        calls,
+        connect: () => agent,
+        owner: async () => signer.address,
+        getAddress: async () => "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
+        isOracle: async (address) => holds.some((a) => a.toLowerCase() === address.toLowerCase()),
+        addOracle: async (address) => {
+          calls.push(["addOracle", address]);
+          return { wait: async () => ({ hash: HASH, blockNumber: 7 }) };
+        },
+        removeOracle: async (address) => {
+          calls.push(["removeOracle", address]);
+          return { wait: async () => ({ hash: HASH, blockNumber: 8 }) };
+        },
+      };
+      return agent;
+    }
+
+    it("grant fails when the oracle still lacks the role after addOracle was mined", async function () {
+      const [deployer, , rofl] = await ethers.getSigners();
+      const agent = stubAgent({ signer: deployer, holds: [deployer.address] });
+
+      await expect(
+        runHandover({
+          phase: "grant",
+          agent,
+          signer: deployer,
+          provider: ethers.provider,
+          env: { ORACLE_ADDRESS: rofl.address },
+          networkName: "hardhat",
+          log: () => {},
+        }),
+      ).to.be.rejectedWith(
+        new RegExp(`was mined as ${HASH}, but agent\\.isOracle\\(${rofl.address}\\) is false[\\s\\S]*Do not remove`),
+      );
+      expect(agent.calls).to.deep.equal([["addOracle", rofl.address]]);
+    });
+
+    it("retire-deployer fails when the deploy wallet still holds the role after removeOracle was mined", async function () {
+      const fixture = await loadFixture(freshPairFixture);
+      const { deployer, rofl } = fixture;
+      await handover(fixture, "grant", { ORACLE_ADDRESS: rofl.address });
+      const answerTx = await answerOnePrompt(fixture, rofl);
+      // The real agent answers who sent the answer; the stand-in keeps both roles whatever is sent.
+      const agent = stubAgent({ signer: deployer, holds: [deployer.address, rofl.address] });
+      agent.getAddress = () => fixture.aiAgent.getAddress();
+      agent.interface = fixture.aiAgent.interface;
+
+      await expect(
+        runHandover({
+          phase: "retire-deployer",
+          agent,
+          signer: deployer,
+          provider: ethers.provider,
+          env: { ORACLE_ADDRESS: rofl.address, ANSWER_TX_HASH: answerTx },
+          networkName: "hardhat",
+          log: () => {},
+        }),
+      ).to.be.rejectedWith(
+        new RegExp(`agent\\.isOracle\\(${deployer.address}\\) is true and agent\\.isOracle\\(${rofl.address}\\) is true[\\s\\S]*Check the agent's oracles now`),
+      );
+      expect(agent.calls).to.deep.equal([["removeOracle", deployer.address]]);
+    });
+
+    it("retire-deployer refuses an answer that reverted, sending nothing", async function () {
+      const fixture = await loadFixture(freshPairFixture);
+      const { aiAgent, deployer, rofl } = fixture;
+      await handover(fixture, "grant", { ORACLE_ADDRESS: rofl.address });
+      const agentAddress = await aiAgent.getAddress();
+      const data = aiAgent.interface.encodeFunctionData("submitAnswer", [1n, 2n, CID_BUNDLE]);
+      // What the node holds for a submitAnswer from the oracle that was mined and reverted.
+      const provider = {
+        getTransaction: async () => ({ to: agentAddress, from: rofl.address, data }),
+        getTransactionReceipt: async () => ({ status: 0 }),
+      };
+      const nonce = await nonceOf(deployer);
+
+      await expect(
+        runHandover({
+          phase: "retire-deployer",
+          agent: aiAgent,
+          signer: deployer,
+          provider,
+          env: { ORACLE_ADDRESS: rofl.address, ANSWER_TX_HASH: HASH },
+          networkName: "hardhat",
+          log: () => {},
+        }),
+      ).to.be.rejectedWith(/is a submitAnswer that reverted, so it answered nothing[\s\S]*Nothing was sent/);
+      expect(await nonceOf(deployer)).to.equal(nonce);
+      expect(await aiAgent.isOracle(deployer.address)).to.equal(true);
+    });
+  });
+
+  describe("the pair it acts on", function () {
+    const envFile = ".env.base-testnet";
+    const AGENT = "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D";
+    const ESCROW = "0x36ec08471F2b995024967204D7542713cFaf5Fa4";
+    const TOKEN = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+    const file = {
+      AI_AGENT_CONTRACT_ADDRESS: AGENT,
+      AI_AGENT_ESCROW_CONTRACT_ADDRESS: ESCROW,
+      TOKEN_CONTRACT_ADDRESS: TOKEN,
+    };
+    const outside = {
+      AI_AGENT_CONTRACT_ADDRESS: "0x1111111111111111111111111111111111111111",
+      AI_AGENT_ESCROW_CONTRACT_ADDRESS: "0x2222222222222222222222222222222222222222",
+      TOKEN_CONTRACT_ADDRESS: "0x3333333333333333333333333333333333333333",
+    };
+
+    it("is read from ENV_FILE on a live network", function () {
+      expect(
+        resolveHandoverTarget({ networkName: "base", envFile, fileEnv: file, processEnv: file }),
+      ).to.deep.equal({ agent: AGENT, escrow: ESCROW, token: TOKEN });
+    });
+
+    for (const name of Object.keys(outside)) {
+      it(`refuses ${name} set only in the root .env or the shell on a live network, never printing it`, function () {
+        for (const networkName of ["baseSepolia", "base"]) {
+          const fileEnv = { ...file };
+          delete fileEnv[name];
+          expect(() =>
+            resolveHandoverTarget({
+              networkName,
+              envFile,
+              fileEnv,
+              processEnv: { ...fileEnv, [name]: outside[name] },
+            }),
+          )
+            .to.throw(Error)
+            .with.property("message")
+            .that.includes(`${name} is not set in ${envFile}`)
+            .and.includes("Nothing was sent")
+            .and.not.includes(outside[name]);
+        }
+      });
+    }
+
+    it("refuses a live network with no ENV_FILE", function () {
+      expect(() =>
+        resolveHandoverTarget({ networkName: "base", envFile: undefined, fileEnv: null, processEnv: file }),
+      ).to.throw(/ENV_FILE is not set/);
+    });
+
+    it("on a local network takes the merged environment and needs only the agent", function () {
+      expect(
+        resolveHandoverTarget({
+          networkName: "localnet",
+          envFile: ".env.base-localnet",
+          fileEnv: {},
+          processEnv: { AI_AGENT_CONTRACT_ADDRESS: AGENT },
+        }),
+      ).to.deep.equal({ agent: AGENT, escrow: null, token: null });
+    });
+
+    it("prints the network, the agent, the escrow and the token before anything is read", function () {
+      const text = targetLines({
+        networkName: "base",
+        envFile,
+        phase: "grant",
+        signer: AGENT,
+        target: { agent: AGENT, escrow: ESCROW, token: TOKEN },
+      }).join("\n");
+      expect(text).to.include("on base");
+      expect(text).to.include("phase=grant");
+      expect(text).to.include(`Agent: ${AGENT}`);
+      expect(text).to.include(`Escrow: ${ESCROW}`);
+      expect(text).to.include(`Fee token: ${TOKEN}`);
+      expect(text).to.include(envFile);
+    });
   });
 });
