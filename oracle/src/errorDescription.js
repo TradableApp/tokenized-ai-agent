@@ -75,13 +75,21 @@ function bounded(text) {
   return { head: head.slice(0, end), isCut: true };
 }
 
-// A failed query's text and the values bound to it. The fact that a query failed is kept, and
-// the database's code comes with the error's cause.
-const FAILED_QUERY = /^(\s*Failed query)\b.*$/i;
-const QUERY_PARAMETERS = /\s*\bparams:.*$/i;
+// A failed query's text and the values bound to it, to the end of the text. The fact that a
+// query failed is kept, and the database's code comes with the error's cause.
+const FAILED_QUERY = /\b(Failed query)\b[\s\S]*$/i;
+const QUERY_PARAMETERS = /\s*\bparams:[\s\S]*$/i;
 
+/**
+ * `text` without a failed query's text and bound values ("Failed query: <sql>\nparams: <values>"
+ * is "Failed query"; anything after "params:" goes). For text this module did not write: a line
+ * the framework prints.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
 function withoutQueryDetail(text) {
-  return text.replace(FAILED_QUERY, "$1").replace(QUERY_PARAMETERS, "");
+  return String(text).replace(FAILED_QUERY, "$1").replace(QUERY_PARAMETERS, "");
 }
 
 // A value in double quotes, or in single quotes that do not sit inside a word (so "can't" stays).
@@ -285,5 +293,6 @@ module.exports = {
   describedText,
   errorKind,
   withoutAddresses,
+  withoutQueryDetail,
   MAX_DESCRIBED_LENGTH,
 };

@@ -311,7 +311,11 @@ const {
 } = require("./answerSelection");
 const { createToolServerWatch } = require("./elizaos/toolServerWatch");
 const { MARKET_DATA_TOOLS } = require("./elizaos/marketDataTools");
-const { isMutedFrameworkLog } = require("./elizaos/mutedFrameworkLogs");
+const {
+  isMutedFrameworkLog,
+  cleanedFrameworkArgs,
+  FRAMEWORK_LOG_LEVELS,
+} = require("./elizaos/mutedFrameworkLogs");
 
 const toolServerWatch = createToolServerWatch({
   expectedTools: MARKET_DATA_TOOLS,
@@ -599,12 +603,15 @@ async function initializeEliza() {
   // Create the orchestrator
   elizaOS = new ElizaOS();
 
-  // Some of the framework's lines are not printed. See mutedFrameworkLogs for which and why.
-  for (const level of ["info", "log", "warn", "error"]) {
+  // Some of the framework's lines are not printed, and every other one is cleaned first. See
+  // mutedFrameworkLogs for which and why.
+  for (const level of FRAMEWORK_LOG_LEVELS) {
     const original = elizaLogger[level];
     if (typeof original !== "function") continue;
     elizaLogger[level] = (...args) => {
-      if (!isMutedFrameworkLog(args, level)) original.apply(elizaLogger, args);
+      if (!isMutedFrameworkLog(args, level)) {
+        original.apply(elizaLogger, cleanedFrameworkArgs(args));
+      }
     };
   }
 
