@@ -1,7 +1,9 @@
+const fs = require("fs");
+const path = require("path");
 const { expect } = require("chai");
 const sinon = require("sinon");
 
-const { STREAM_HTTP, MAX_SEALED_FRAME_CHARS } = require("../src/stream/streamContract");
+const { STREAM_HTTP, MAX_SEALED_FRAME_CHARS, LIMITS } = require("../src/stream/streamContract");
 const { createFrameBuffer, BUFFER_LIMITS } = require("../src/stream/frameBuffer");
 
 /**
@@ -152,6 +154,20 @@ describe("frameBuffer", () => {
     it("leaves room in the per-answer cap for the largest frame beside a reset and a done", () => {
       // A reset, the largest answer frame and done always fit: the cap is not what loses them.
       expect(BUFFER_LIMITS.maxAnswerBytes).to.be.at.least(MAX_SEALED_FRAME_CHARS + 2 * 1024);
+    });
+
+    it("takes the frame limit from the contract's isSealedFrame and holds no copy of the figure", () => {
+      const read = (file) =>
+        fs.readFileSync(path.join(__dirname, "../src/stream", file), "utf-8").replace(/(\d)_(?=\d)/g, "$1");
+      const figures = [MAX_SEALED_FRAME_CHARS, LIMITS.answerFramePlaintextBytes, LIMITS.framePlaintextBytes];
+
+      expect(read("frameBuffer.js")).to.match(/require\("\.\/streamContract"\)/);
+      expect(read("frameBuffer.js")).to.match(/!isSealedFrame\(ciphertext\)/);
+      for (const file of ["frameBuffer.js", "streamServer.js", "streamConfig.js"]) {
+        const source = read(file);
+        for (const n of figures) expect(source, `${file} ${n}`).to.not.match(new RegExp(`\\b${n}\\b`));
+        expect(source, file).to.not.match(/6\s*\*\s*64\s*\*\s*1024|sealedFrameChars\(|SEALED_FRAME_PATTERN/);
+      }
     });
   });
 
