@@ -268,6 +268,23 @@ describe("answer stream", () => {
       }
     });
 
+    it("never sends or stores a javascript: or data: source beside an https one", async () => {
+      const { stream, sink } = newStream();
+      const unsafe = [
+        source("Script link", "javascript:alert(document.domain)"),
+        source("Script link, mixed case", "  JaVaScRiPt:alert(1)"),
+        source("Data link", "data:text/html,<script>alert(1)</script>"),
+        source("Data link, base64", "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="),
+      ];
+
+      stream.sources([unsafe[0], source("Safe", "https://ok.test/safe"), ...unsafe.slice(1)]);
+      await stream.flush();
+
+      const sent = sink.frames().filter((f) => f.type === "sources").flatMap((f) => f.data.sources);
+      expect(sent).to.deep.equal([{ title: "Safe", url: "https://ok.test/safe" }]);
+      expect(stream.record().sources).to.deep.equal([{ attempt: 1, title: "Safe", url: "https://ok.test/safe" }]);
+    });
+
     it("trims a sources frame to fit the plaintext limit rather than sending an oversized frame", async () => {
       const { stream, sink } = newStream();
       const fat = Array.from({ length: 20 }, (_, i) =>
