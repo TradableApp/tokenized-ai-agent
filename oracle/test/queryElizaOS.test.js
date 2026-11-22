@@ -337,6 +337,42 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(printedByFramework).to.deep.equal(["warn: Transport closed: coingecko_mcp_local"]);
   });
 
+  // The database plugin prints a failed query itself, with its text and its bound values.
+  it("cleans what the framework prints at every level, fields included", async () => {
+    const printedByFramework = [];
+    const elizaLogger = {};
+    for (const level of ["info", "warn", "error", "fatal", "debug"]) {
+      elizaLogger[level] = (...args) => printedByFramework.push(JSON.stringify(args));
+    }
+    const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
+    const oracle = loadOracle(stub, {
+      "@elizaos/core": {
+        setAllowedEnvVars() {},
+        ElizaOS: stub.ElizaOS,
+        elizaLogger,
+        stringToUuid: s => s,
+        createUniqueUuid: (_ns, s) => s,
+        ChannelType: { DM: "DM", WORLD: "WORLD" },
+        EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
+      },
+    });
+    await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+
+    elizaLogger.warn(
+      { src: "plugin:sql", error: "Failed query: insert into memories values ($1)\nparams: a-users-question" },
+      "Could not write",
+    );
+    elizaLogger.fatal("connect ECONNREFUSED 192.0.2.10:5432");
+    const printed = printedByFramework.join("\n");
+
+    expect(printed).to.include("Could not write");
+    expect(printed).to.include("Failed query");
+    expect(printed).to.include("ECONNREFUSED");
+    expect(printed).to.not.include("a-users-question");
+    expect(printed).to.not.include("insert into memories");
+    expect(printed).to.not.include("192.0.2.10");
+  });
+
   it("answers with what a later tool step wrote when an earlier one failed", async () => {
     const stub = makeElizaStub({
       providerData,
