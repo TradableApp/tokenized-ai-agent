@@ -143,5 +143,67 @@ describe("scripts/deploy — a fresh pair", function () {
       expect(text).to.include("escrow.ableToken()");
       expect(text).to.include("escrow.treasury()");
     });
+
+    async function pairWithOracle() {
+      const { able, oracle, treasury } = await loadFixture(tokensFixture);
+      const plan = planFor({
+        TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+        TREASURY_ADDRESS: treasury.address,
+        ORACLE_ADDRESS: oracle.address,
+      });
+      const pair = await deployFreshPair(hre, plan, { log: () => {} });
+      const [deployer, , , , stranger] = await ethers.getSigners();
+      return { plan, pair, deployer, oracle, stranger };
+    }
+
+    // Ownership moves in two steps: the new owner accepts.
+    async function handOver(contract, to) {
+      await (await contract.transferOwnership(to.address)).wait();
+      await (await contract.connect(to).acceptOwnership()).wait();
+    }
+
+    it("names each contract the deploy wallet does not own", async function () {
+      const { plan, pair, deployer, stranger } = await pairWithOracle();
+      await handOver(pair.aiAgent, stranger);
+      await handOver(pair.aiAgentEscrow, stranger);
+
+      const problems = await freshPairProblems(hre, { plan, ...pair, deployer });
+
+      expect(problems).to.have.lengthOf(2);
+      expect(problems[0]).to.equal(
+        `agent.owner() is ${stranger.address}, not the deploy wallet ${deployer.address}`,
+      );
+      expect(problems[1]).to.equal(
+        `escrow.owner() is ${stranger.address}, not the deploy wallet ${deployer.address}`,
+      );
+    });
+
+    it("names ORACLE_ADDRESS without the oracle role, and the deploy wallet with it", async function () {
+      const { plan, pair, deployer, oracle } = await pairWithOracle();
+      await (await pair.aiAgent.addOracle(deployer.address)).wait();
+      await (await pair.aiAgent.removeOracle(oracle.address)).wait();
+
+      const problems = await freshPairProblems(hre, { plan, ...pair, deployer });
+
+      expect(problems).to.deep.equal([
+        `agent.isOracle(${oracle.address}) is false: ORACLE_ADDRESS does not hold the oracle role`,
+        `agent.isOracle(${deployer.address}) is true: the deploy wallet holds the oracle role`,
+      ]);
+    });
+
+    it("names the deploy wallet without the oracle role when it is meant to be the first oracle", async function () {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+      const pair = await deployFreshPair(hre, plan, { log: () => {} });
+      const [deployer, , , , stranger] = await ethers.getSigners();
+      await (await pair.aiAgent.addOracle(stranger.address)).wait();
+      await (await pair.aiAgent.removeOracle(deployer.address)).wait();
+
+      const problems = await freshPairProblems(hre, { plan, ...pair, deployer });
+
+      expect(problems).to.deep.equal([
+        `agent.isOracle(${deployer.address}) is false: the deploy wallet does not hold the oracle role`,
+      ]);
+    });
   });
 });
