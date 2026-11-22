@@ -32,6 +32,17 @@ const DONE_OUTCOMES = Object.freeze(["answered", "abandoned", "interrupted"]);
 /** Every SSE event has this one name, so a proxy sees only lengths and timing. */
 const SSE_EVENT_NAME = "frame";
 
+/**
+ * Every limit is applied before a frame is built, so the stored copy is cut the same way.
+ *
+ * `framePlaintextBytes` holds for every frame but one: the `answer` frame. Its text is the exact
+ * stored answer and is limited only by `answerTextBytes` (64 KiB of UTF-8; over it the frame is
+ * left out and the dApp waits for the stored answer). JSON escaping can grow that text up to six
+ * times, since a control character is written `\u00XX` (a quote or backslash doubles, a lone
+ * surrogate is 6 bytes for 3), so the answer frame's plaintext is at most 6 x 64 KiB = 384 KiB
+ * plus its other fields (the ids, the CID and the duration: well under 1 KiB). A stream server
+ * must accept a frame of that size, or the answer frame is lost and `done` waits behind its gap.
+ */
 const LIMITS = Object.freeze({
   maxSourcesPerFrame: 20,
   sourceTitleChars: 300,
