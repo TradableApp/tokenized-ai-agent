@@ -8,6 +8,7 @@ const {
   resolveDeployPlan,
   CONFIRM_VAR,
   FILE_ONLY_VARS,
+  FRESH_LIVE_FILE_ONLY_VARS,
 } = require("../scripts/deploy");
 const hardhatConfig = require("../hardhat.config");
 
@@ -294,6 +295,86 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
 
   it("carries ORACLE_ADDRESS into the plan when set", function () {
     expect(plan({ ...freshFile, ORACLE_ADDRESS: OTHER }).oracle).to.equal(OTHER);
+  });
+
+  describe("a fresh pair on a live network takes every setting that wires it from the file", function () {
+    const liveFile = {
+      ...freshFile,
+      ORACLE_ADDRESS: OTHER,
+      DOMAIN: "tradable.app",
+      INITIAL_PROMPT_FEE: "1000000000000000000",
+      INITIAL_CANCELLATION_FEE: "100000000000000000",
+      INITIAL_METADATA_FEE: "100000000000000000",
+      INITIAL_BRANCH_FEE: "500000000000000000",
+    };
+    // A value only the root .env or the shell holds: one per setting, each distinct, so a
+    // message that repeated it would be caught.
+    const outside = {
+      TOKEN_CONTRACT_ADDRESS: "0x1111111111111111111111111111111111111111",
+      TREASURY_ADDRESS: "0x2222222222222222222222222222222222222222",
+      ORACLE_ADDRESS: "0x3333333333333333333333333333333333333333",
+      EXPECTED_FEE_TOKEN_SYMBOL: "ROOTSYMBOL",
+      INITIAL_PROMPT_FEE: "7777777777",
+      INITIAL_CANCELLATION_FEE: "6666666666",
+      INITIAL_METADATA_FEE: "5555555555",
+      INITIAL_BRANCH_FEE: "4444444444",
+      DOMAIN: "root-domain.example",
+    };
+    const livePlan = (networkName, fileEnv, extra = {}) =>
+      resolveDeployPlan({
+        networkName,
+        envFile,
+        fileEnv,
+        processEnv: { ...fileEnv, ...extra },
+      });
+
+    it("names the settings it reads from the file alone for a fresh pair on a live network", function () {
+      expect([...FRESH_LIVE_FILE_ONLY_VARS].sort()).to.deep.equal(Object.keys(outside).sort());
+    });
+
+    it("passes when the file holds them all", function () {
+      const p = livePlan("baseSepolia", liveFile);
+      expect(p.oracle).to.equal(OTHER);
+      expect(p.domain).to.equal("tradable.app");
+    });
+
+    for (const name of Object.keys(outside)) {
+      it(`refuses ${name} set only in the root .env or the shell, naming it and the file, never its value`, function () {
+        for (const networkName of ["baseSepolia", "base"]) {
+          const fileEnv = { ...liveFile, [CONFIRM_VAR]: "1" };
+          delete fileEnv[name];
+          expect(() => livePlan(networkName, fileEnv, { [name]: outside[name] }), networkName)
+            .to.throw(Error)
+            .with.property("message")
+            .that.includes(`${name} is not set in ${envFile}`)
+            .and.not.includes(outside[name]);
+        }
+      });
+
+      it(`refuses ${name} that differs between the file and the shell, never printing either`, function () {
+        const fileEnv = { ...liveFile };
+        expect(() => livePlan("baseSepolia", fileEnv, { [name]: outside[name] }))
+          .to.throw(Error)
+          .with.property("message")
+          .that.includes(`${name} in the root .env or the shell differs from ${envFile}`)
+          .and.not.includes(outside[name]);
+      });
+    }
+
+    it("an upgrade does not ask: it reads none of them", function () {
+      const upgradeFile = {
+        DEPLOY_MODE: "upgrade",
+        AI_AGENT_CONTRACT_ADDRESS: ADDRESS,
+        AI_AGENT_ESCROW_CONTRACT_ADDRESS: ADDRESS,
+      };
+      expect(livePlan("baseSepolia", upgradeFile, outside).mode).to.equal("upgrade");
+    });
+
+    it("a local network still reads them from the merged environment, as the e2e bring-up writes only some to the file", function () {
+      const localFile = { DEPLOY_MODE: "fresh", TOKEN_CONTRACT_ADDRESS: ADDRESS };
+      const p = livePlan("localnet", localFile, { TREASURY_ADDRESS: outside.TREASURY_ADDRESS });
+      expect(p.treasury).to.equal(outside.TREASURY_ADDRESS);
+    });
   });
 
   it("gives the Sapphire path no mode", function () {
