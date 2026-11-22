@@ -10,6 +10,7 @@ const {
   isSink,
   noopSink,
   capChars,
+  isAnswerCid,
 } = require("./streamContract");
 const { errorKind } = require("../errorDescription");
 
@@ -383,11 +384,12 @@ function buildStream(options, deliver) {
       enqueue(noop, () => {
         if (ended || answered) return;
         answered = true;
-        // Over the limit the frame is left out and the dApp waits for the stored answer.
+        // Over a limit the frame is left out and the dApp waits for the stored answer.
         if (Buffer.byteLength(text, "utf-8") > LIMITS.answerTextBytes) return;
+        if (!isAnswerCid(answerMessageCID)) return;
         const data = { text, answerMessageCID };
         if (Number.isFinite(reasoningDuration)) data.reasoningDuration = reasoningDuration;
-        emit(FRAME_TYPES.ANSWER, data, Infinity);
+        emit(FRAME_TYPES.ANSWER, data, LIMITS.answerFramePlaintextBytes);
       });
     },
 
