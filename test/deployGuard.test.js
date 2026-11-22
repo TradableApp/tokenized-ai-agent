@@ -14,6 +14,13 @@ const hardhatConfig = require("../hardhat.config");
 
 const ADDRESS = "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D";
 const OTHER = "0x36ec08471F2b995024967204D7542713cFaf5Fa4";
+// The four fees a fresh escrow starts with, in wei: required for a fresh pair on a live network.
+const FEES = {
+  INITIAL_PROMPT_FEE: "1000000000000000000",
+  INITIAL_CANCELLATION_FEE: "100000000000000000",
+  INITIAL_METADATA_FEE: "100000000000000000",
+  INITIAL_BRANCH_FEE: "500000000000000000",
+};
 // An upgrade of both proxies on Base mainnet, with everything the guard asks for.
 const resolved = {
   DEPLOY_MODE: "upgrade",
@@ -29,6 +36,7 @@ const freshOnBase = {
   TOKEN_CONTRACT_ADDRESS: ADDRESS,
   TREASURY_ADDRESS: ADDRESS,
   EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
+  ...FEES,
   [CONFIRM_VAR]: "1",
 };
 
@@ -211,6 +219,83 @@ describe("scripts/deploy — DEPLOY_MODE says whether a new pair is deployed", f
   });
 });
 
+describe("scripts/deploy — a fresh pair's initial fees", function () {
+  const FEE_NAMES = Object.keys(FEES);
+
+  it("must each be a whole number of wei written in decimal digits, on every network", function () {
+    for (const networkName of ["base", "baseSepolia", "localnet", "hardhat"]) {
+      for (const name of FEE_NAMES) {
+        for (const value of ["1.5", "-1", "+1", "0x10", "1e18", "1_000", "1 000", "ten", "١"]) {
+          const problems = deployProblems({
+            networkName,
+            env: { ...freshOnBase, [name]: value },
+          });
+          const label = `${networkName} ${name}=${JSON.stringify(value)}`;
+          expect(problems, label).to.have.lengthOf(1);
+          expect(problems[0], label).to.include(name).and.include("whole number of wei");
+          // Described by its shape, never repeated.
+          expect(problems[0], label).to.not.include(`(${value})`);
+          expect(problems[0], label).to.not.include(`"${value}"`);
+        }
+      }
+    }
+  });
+
+  it("accepts zero and any whole number of wei", function () {
+    for (const value of ["0", "1", "1000000000000000000", "123456789012345678901234567890"]) {
+      expect(
+        deployProblems({ networkName: "base", env: { ...freshOnBase, INITIAL_PROMPT_FEE: value } }),
+        value,
+      ).to.deep.equal([]);
+    }
+  });
+
+  it("are each required for a fresh pair on a live network", function () {
+    for (const networkName of ["base", "baseSepolia"]) {
+      for (const name of FEE_NAMES) {
+        for (const missing of [undefined, "", "  "]) {
+          const problems = deployProblems({
+            networkName,
+            env: { ...freshOnBase, [name]: missing },
+          });
+          expect(problems, `${networkName} ${name}`).to.have.lengthOf(1);
+          expect(problems[0]).to.include(`${name} must be set for a fresh pair on ${networkName}`);
+        }
+      }
+    }
+  });
+
+  it("fall back to the defaults on a local network", function () {
+    for (const networkName of ["hardhat", "localnet", "localhost"]) {
+      expect(
+        deployProblems({ networkName, env: { DEPLOY_MODE: "fresh", TOKEN_CONTRACT_ADDRESS: ADDRESS } }),
+        networkName,
+      ).to.deep.equal([]);
+    }
+  });
+
+  it("are not asked for by an upgrade, which sets no fee", function () {
+    expect(
+      deployProblems({ networkName: "base", env: { ...resolved, INITIAL_PROMPT_FEE: "1.5" } }),
+    ).to.deep.equal([]);
+  });
+
+  it("carries each fee into the plan as written", function () {
+    const plan = resolveDeployPlan({
+      networkName: "baseSepolia",
+      envFile: ".env.base-testnet",
+      fileEnv: { ...freshOnBase },
+      processEnv: { ...freshOnBase },
+    });
+    expect(plan.fees).to.deep.equal({
+      prompt: FEES.INITIAL_PROMPT_FEE,
+      cancellation: FEES.INITIAL_CANCELLATION_FEE,
+      metadata: FEES.INITIAL_METADATA_FEE,
+      branch: FEES.INITIAL_BRANCH_FEE,
+    });
+  });
+});
+
 describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone", function () {
   const envFile = ".env.base-testnet";
   const freshFile = {
@@ -218,6 +303,7 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
     TOKEN_CONTRACT_ADDRESS: ADDRESS,
     TREASURY_ADDRESS: ADDRESS,
     EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
+    ...FEES,
   };
   // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so whatever
   // ENV_FILE sets is in the process environment too.
@@ -302,10 +388,6 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
       ...freshFile,
       ORACLE_ADDRESS: OTHER,
       DOMAIN: "tradable.app",
-      INITIAL_PROMPT_FEE: "1000000000000000000",
-      INITIAL_CANCELLATION_FEE: "100000000000000000",
-      INITIAL_METADATA_FEE: "100000000000000000",
-      INITIAL_BRANCH_FEE: "500000000000000000",
     };
     // A value only the root .env or the shell holds: one per setting, each distinct, so a
     // message that repeated it would be caught.
