@@ -181,6 +181,8 @@ describe("stream contract (version 1)", () => {
         maxAttempts: 4,
         answerTextBytes: 64 * 1024,
         framePlaintextBytes: 16 * 1024,
+        answerFramePlaintextBytes: 6 * 64 * 1024 + 1024,
+        answerCidChars: 128,
       });
       expect(Object.isFrozen(contract.LIMITS)).to.equal(true);
     });
@@ -194,6 +196,61 @@ describe("stream contract (version 1)", () => {
       expect(() => contract.buildFrame({ ...base, seq: -1 })).to.throw(TypeError);
       expect(() => contract.buildFrame({ ...base, seq: 1.5 })).to.throw(TypeError);
       expect(() => contract.buildFrame({ ...base, replica: "Bad Replica" })).to.throw(TypeError);
+    });
+  });
+
+  describe("frame sizes and content ids", () => {
+    const AUTONOMYS = `bafkr6i${"a".repeat(52)}`;
+
+    it("accepts the content ids the storage paths produce, up to the limit, and nothing else", () => {
+      const good = [
+        AUTONOMYS, // Autonomys Auto Drive: 59
+        `bafybei${"b".repeat(52)}`, // local IPFS, CIDv1 base32: 59
+        "A".repeat(43), // legacy Arweave id
+        `${"a_-".repeat(14)}Zz`, // legacy Irys id: 44
+        `mock_${"0".repeat(20)}`, // mock storage
+        "x".repeat(128),
+      ];
+      const bad = ["", "x".repeat(129), "bafy.x", "bafy/x", "bafy x", "bafyé", "a+b", "a=b", null, 42];
+
+      for (const cid of good) expect(contract.isAnswerCid(cid), cid).to.equal(true);
+      for (const cid of bad) expect(contract.isAnswerCid(cid), String(cid)).to.equal(false);
+      expect(contract.LIMITS.answerCidChars).to.equal(128);
+      expect(contract.ANSWER_CID_PATTERN.test("x".repeat(128))).to.equal(true);
+    });
+
+    it("gives the answer frame room for the largest answer it may carry", () => {
+      // The largest legal answer frame: every identity at its longest, 64 KiB of text that JSON
+      // writes six bytes per byte, the longest content id and the longest finite duration.
+      const worst = contract.buildFrame({
+        answerMessageId: "9".repeat(78),
+        run: "f".repeat(16),
+        seq: Number.MAX_SAFE_INTEGER,
+        replica: "r".repeat(32),
+        type: "answer",
+        data: {
+          text: "\x01".repeat(contract.LIMITS.answerTextBytes),
+          answerMessageCID: "A".repeat(contract.LIMITS.answerCidChars),
+          reasoningDuration: -2.2250738585072014e-308,
+        },
+      });
+      const bytes = Buffer.byteLength(JSON.stringify(worst), "utf-8");
+
+      expect(bytes).to.equal(393645);
+      expect(bytes).to.be.at.most(contract.LIMITS.answerFramePlaintextBytes);
+      expect(contract.LIMITS.framePlaintextBytes).to.be.below(contract.LIMITS.answerFramePlaintextBytes);
+    });
+
+    it("counts a sealed frame's characters exactly as the encryptor writes them", () => {
+      for (const n of [0, 1, 2, 3, 100, 16 * 1024]) {
+        const sealed = encryptSymmetrically("x".repeat(n), vectorKey());
+        // JSON.stringify of a string adds its two quotes.
+        expect(sealed.length, String(n)).to.equal(contract.sealedFrameChars(n + 2));
+      }
+      expect(contract.MAX_SEALED_FRAME_CHARS).to.equal(
+        contract.sealedFrameChars(contract.LIMITS.answerFramePlaintextBytes),
+      );
+      expect(contract.MAX_SEALED_FRAME_CHARS).to.equal(525693);
     });
   });
 
