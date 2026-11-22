@@ -187,15 +187,17 @@ where they can; the rest of the order is this list.
    token and `EXPECTED_FEE_TOKEN_SYMBOL` from `ENV_FILE` alone (all four are required) and prints
    the network, agent, escrow and token before it reads anything. It checks that
    `escrow.ableToken()` is the token and that the token's symbol is `EXPECTED_FEE_TOKEN_SYMBOL`,
-   lists whichever of the two is not listed, and reads both back. "Listed" is the token's own
-   `isTransferExempt`, which is true for the token's owner, so a treasury that is the owner counts
-   as listed and is not sent (see the exempt-list rules below). A token whose symbol is `SENSE`
+   lists whichever of the two is not listed, and reads both back. An account that is the token's
+   owner is listed by name on every run, since `isTransferExempt` is true for the owner and the
+   by-name list cannot be read, so it stays listed when ownership moves (see the exempt-list rules
+   below); a second run therefore sends one transaction for an owner-treasury and none otherwise. A token whose symbol is `SENSE`
    (a token that keeps a list) but that answers as one with no list is refused, with or without
    `--check`: it is not the token it says it is. When the signer is not
    the token's owner (the Safe owns it on mainnet) it sends nothing and prints the calls as Safe
    Transaction Builder JSON: save it as a file, load it in the owner Safe's Transaction Builder,
    simulate, execute. Then `bun run list-fee-token-exempt:base-testnet --check`, which only reads
-   and fails while either is unlisted (run it again on run day).
+   and fails while either is unlisted (run it again on run day); an account that is the owner is
+   reported as exempt as the owner, with its by-name listing unreadable, and does not fail.
 5. **Start the oracle on the new pair before the dApp moves to it.** Point the oracle's settings
    at the new addresses and deploy it (§3). With no stored cursor for a pair the oracle looks back
    only a few minutes before its first block, so a prompt sent to the new pair long before the
@@ -231,10 +233,10 @@ where they can; the rest of the order is this list.
     the token (if it owns it), change oracles or fees.
 
 **Exempt-list rules.** On a token that keeps a list, a transfer passes when either end is listed.
-List the escrow and the treasury. The token's owner is exempt by being the owner, and the
-exemption moves with ownership: the listing script reads a treasury that is the owner as listed
-and sends nothing for it. If ownership will later move away from that treasury (to the Safe, for
-example), list the treasury by name first, from the owner: `setTransferExempt(<treasury>, true)`.
+List the escrow and the treasury by name, the treasury even when it is the token's owner: the
+owner is exempt by being the owner, and that exemption moves with ownership, so only the by-name
+listing keeps the treasury exempt once ownership moves (to the Safe on mainnet). The listing
+script does this: it lists an account that is the owner on every run.
 Every new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
 the treasury, as the admin rehearsal does) must be listed before it is set: an unlisted treasury
 refuses every fee a user pays straight to it (cancel, branch, rename or delete). The listing

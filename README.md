@@ -146,7 +146,7 @@ Copy the printed `EVMAIAgent` and `EVMAIAgentEscrow` proxy addresses into:
 - `oracle/.env.oracle.base-localnet` → same fields, plus the token address and `PRIVATE_KEY` (Account #0) from Step 2 (the oracle reads no public key setting)
 - `sense-ai-dapp/.env.localnet` → `VITE_AGENT_CONTRACT_ADDRESS`, `VITE_ESCROW_CONTRACT_ADDRESS`, `VITE_TOKEN_CONTRACT_ADDRESS`, and `VITE_FEE_TOKEN` (`SENSE` or `ABLE`, the token from Step 3; the dApp's build and dev server stop without it)
 
-Then set `DEPLOY_MODE=upgrade` in `.env.base-localnet`, so a second run upgrades this pair. With `SenseToken`, list the escrow and the treasury on it: `bun run list-fee-token-exempt:base-localnet`. It sends the listing when the signer is the token's owner (the token deploy's `OWNER_ADDRESS`) and otherwise prints the calls for the owner to send. With no `TREASURY_ADDRESS` a local deploy makes the deploy wallet the treasury; a treasury that is the token's owner counts as listed (the owner is exempt by being the owner), so only the escrow is sent. `AbleToken` keeps no list and needs nothing.
+Then set `DEPLOY_MODE=upgrade` in `.env.base-localnet`, so a second run upgrades this pair. With `SenseToken`, list the escrow and the treasury on it: `bun run list-fee-token-exempt:base-localnet`. It sends the listing when the signer is the token's owner (the token deploy's `OWNER_ADDRESS`) and otherwise prints the calls for the owner to send. With no `TREASURY_ADDRESS` a local deploy makes the deploy wallet the treasury; a treasury that is the token's owner is listed by name all the same, so it stays listed when ownership moves. `AbleToken` keeps no list and needs nothing.
 
 ### 5. Run Local Oracle
 
