@@ -20,8 +20,9 @@
  * is not recognised: it reads like any dotted word. The configured database host is removed by
  * value wherever it is written (requestSecrets.js).
  *
- * Every pattern starts only at the beginning of a run (a left boundary) and repeats a bounded
- * number of times, so no text is rescanned from every position inside a long run.
+ * Every pattern starts only at the beginning of a run (a word boundary or a look-behind on the
+ * run's own characters), and every run before a literal is bounded ({1,8} spaces, not \s+), so
+ * no text is rescanned from every position inside a long run.
  */
 
 const PEER_REMOVED = "[peer removed]";
@@ -50,16 +51,17 @@ const NETWORK_CODES = [
   "EPROTO",
 ];
 // What follows the code, unless it was already removed ("[address removed]").
-const AFTER_CODE = new RegExp(`\\b(${NETWORK_CODES.join("|")})([ \\t]+)(?!\\[)\\S+`, "g");
+const AFTER_CODE = new RegExp(`\\b(${NETWORK_CODES.join("|")})([ \\t]{1,8})(?!\\[)\\S+`, "g");
 
 // The names a TLS error gives: the host it checked, and the names and addresses on the
 // certificate ("Host: <host>.", "DNS:<name>", "IP: <address>", "CN=<name>").
-const TLS_NAME = /\b([Hh]ost|DNS|IP(?: Address)?|URI|CN|[Ss]ervername)(\s*[:=]\s*)(?!\[)[^\s,;]+/g;
+const TLS_NAME =
+  /\b([Hh]ost|DNS|IP(?: Address)?|URI|CN|[Ss]ervername)([ \t]{0,8}[:=][ \t]{0,8})(?!\[)[^\s,;]+/g;
 
 // The host the database client quotes ('for host "<host>"', 'server at "<host>"').
-const QUOTED_HOST = /\b(host|server at)(\s+)"[^"\n]{0,255}"/g;
+const QUOTED_HOST = /\b(host|server at)([ \t]{1,8})"[^"\n]{0,255}"/g;
 
-const PORT_PHRASE = /\bport\s+\d{1,5}\b/g;
+const PORT_PHRASE = /\bport[ \t]{1,8}\d{1,5}\b/g;
 
 const IPV6_BRACKETED =
   /\[[0-9a-f.]{0,39}:[0-9a-f.]{0,39}:[0-9a-f:.]{0,39}(?:%[\w.-]{1,32})?\](?::\d{1,5})?/gi;

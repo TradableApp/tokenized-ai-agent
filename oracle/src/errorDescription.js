@@ -33,69 +33,83 @@ function describeError(error) {
 // The longest description, before a revert's data and a cause's kind are added. Enough for a
 // code and a short message; nothing past it is read by anyone acting on an alert.
 const MAX_DESCRIBED_LENGTH = 300;
-// The most of one line that is cleaned. Text past it is dropped before cleaning, back to the
-// last space, so that the cut never leaves part of a word (a key, an address) behind.
-const MAX_CLEANED_INPUT = 4096;
+// The most of the raw text any pattern is run on: the text is cut here before anything else is
+// done with it, so the describer's cost is bounded whatever the message's length (it runs on the
+// event loop, on messages that can echo input of any size). Well above the cap: cleaning
+// shortens text (a long address becomes "[address removed]"), and what is left of a first line
+// after that must still be able to fill MAX_DESCRIBED_LENGTH. The cut goes back to the last
+// space, so the token it falls in (part of a key, of an address) is dropped whole.
+const MAX_RAW_INPUT = 4096;
 const VALUE_REMOVED = "[value removed]";
 const CUT = "…";
 
 /**
- * Any text as `describeError` writes an error's: the first line that is not blank; a failed
- * query's text and values dropped ("Failed query: <sql> params: <values>" is "Failed query");
- * addresses, configured secrets and network peers removed (`withoutAddresses`); quoted values
- * (a database quotes back the value it refused, a user name, a file path), bearer tokens, JWTs,
- * long base64 runs, wallet addresses and other long hex removed; and only then capped at
- * `MAX_DESCRIBED_LENGTH`, so that a cut can never leave part of a secret where a pattern would
- * have found it whole. A four-byte selector (0x and eight hex digits) names an error and is
- * kept. For text that is not an error's: an exception's message in a report, a framework's line.
+ * Any text as `describeError` writes an error's. In this order: the raw text is cut to
+ * `MAX_RAW_INPUT`, dropping the token the cut falls in; the first line that is not blank is
+ * taken; a failed query's text and values are dropped ("Failed query: <sql> params: <values>" is
+ * "Failed query"); addresses, configured secrets and network peers are removed
+ * (`withoutAddresses`); quoted values (a database quotes back the value it refused, a user name,
+ * a file path), bearer tokens, JWTs, long base64 runs, wallet addresses and other long hex are
+ * removed; and only then is it capped at `MAX_DESCRIBED_LENGTH`, so that a cut can never leave
+ * part of a secret where a pattern would have found it whole. A four-byte selector (0x and eight
+ * hex digits) names an error and is kept. For text that is not an error's: an exception's
+ * message in a report, a framework's line.
  *
  * @param {unknown} text
  * @returns {string}
  */
 function describedText(text) {
-  const line =
-    String(text)
-      .split(/\r\n|\r|\n/)
-      .find((each) => each.trim()) ?? "";
-  const { head, isCut } = bounded(line);
-  const cleaned = withoutValues(withoutAddresses(withoutQueryDetail(head))).trim();
-  const marked = isCut ? `${cleaned}${CUT}` : cleaned;
+  const { head, isCut } = bounded(String(text));
+  const lines = head.split(/\r\n|\r|\n/);
+  const index = lines.findIndex((each) => each.trim());
+  const line = index < 0 ? "" : lines[index];
+  // Marked as cut only when the cut fell in the line that is described.
+  const lineIsCut = isCut && index === lines.length - 1;
+  const cleaned = withoutValues(withoutAddresses(withoutQueryDetail(line))).trim();
+  const marked = lineIsCut ? `${cleaned}${CUT}` : cleaned;
 
   return marked.length > MAX_DESCRIBED_LENGTH
     ? `${marked.slice(0, MAX_DESCRIBED_LENGTH - CUT.length)}${CUT}`
     : marked;
 }
 
-/** The first `MAX_CLEANED_INPUT` characters, back to the last space, and whether any were cut. */
+/** The first `MAX_RAW_INPUT` characters, back to the last space, and whether any were cut. */
 function bounded(text) {
-  if (text.length <= MAX_CLEANED_INPUT) return { head: text, isCut: false };
-  const head = text.slice(0, MAX_CLEANED_INPUT);
+  if (text.length <= MAX_RAW_INPUT) return { head: text, isCut: false };
+  const head = text.slice(0, MAX_RAW_INPUT);
   let end = head.length;
   while (end > 0 && !/\s/.test(head[end - 1])) end -= 1;
   return { head: head.slice(0, end), isCut: true };
 }
 
-// A failed query's text and the values bound to it, to the end of the text. The fact that a
-// query failed is kept, and the database's code comes with the error's cause.
-const FAILED_QUERY = /\b(Failed query)\b[\s\S]*$/i;
-const QUERY_PARAMETERS = /\s*\bparams:[\s\S]*$/i;
+/** `text` up to the first place `marker` is written, in any case, or all of it. */
+function before(text, marker) {
+  const at = text.toLowerCase().indexOf(marker);
+  return at < 0 ? text : text.slice(0, at);
+}
 
 /**
  * `text` without a failed query's text and bound values ("Failed query: <sql>\nparams: <values>"
- * is "Failed query"; anything after "params:" goes). For text this module did not write: a line
- * the framework prints.
+ * is "Failed query"; everything from "params:" on goes, and the space before it). Plain string
+ * search, no pattern, so its cost is linear in any text. For text this module did not write too:
+ * a line the framework prints.
  *
  * @param {string} text
  * @returns {string}
  */
 function withoutQueryDetail(text) {
-  return String(text).replace(FAILED_QUERY, "$1").replace(QUERY_PARAMETERS, "");
+  const written = String(text);
+  const query = written.toLowerCase().indexOf("failed query");
+  const withoutQuery = query < 0 ? written : written.slice(0, query + "failed query".length);
+  return before(withoutQuery, "params:").trimEnd();
 }
 
 // A value in double quotes, or in single quotes that do not sit inside a word (so "can't" stays).
 const QUOTED = /"[^"\n]*"|(?<!\w)'[^'\n]*'(?!\w)/g;
-const BEARER = /\b(Bearer)\s+[^\s,;]+/gi;
-const JWT = /\beyJ[\w-]{2,}\.[\w-]{2,}\.[\w-]*/g;
+// Every pattern below starts only where its run starts (a word boundary or a look-behind on the
+// run's own characters) and has no quantified run before a literal it could backtrack over.
+const BEARER = /\b(Bearer)[ \t]{1,8}[^\s,;]+/gi;
+const JWT = /(?<![\w-])eyJ[\w-]{2,}\.[\w-]{2,}\.[\w-]*/g;
 // 0x and nine or more hex digits (a wallet address, a hash, call data), or sixteen or more hex
 // digits standing alone.
 const LONG_HEX = /0x[0-9a-f]{9,}|(?<![0-9a-z])[0-9a-f]{16,}(?![0-9a-z])/gi;
@@ -207,7 +221,7 @@ const KIND = /^[A-Za-z0-9_.-]{1,64}$/;
 function plainKind(value) {
   if (typeof value !== "string" && typeof value !== "number") return null;
   const text = String(value);
-  return KIND.test(text) ? text : null;
+  return text.length <= 64 && KIND.test(text) ? text : null;
 }
 
 // Any scheme (a database address carries a password as an RPC address carries a key), with the
@@ -260,7 +274,7 @@ function partsOf(error) {
 
 function isModelProviderError(error) {
   const name = readProperty(error, "name");
-  if (typeof name === "string" && /^AI_[A-Za-z]+$/.test(name)) return true;
+  if (typeof name === "string" && name.length <= 64 && /^AI_[A-Za-z]+$/.test(name)) return true;
   return ["requestBodyValues", "responseBody"].some((field) => {
     try {
       return field in error;
@@ -295,4 +309,5 @@ module.exports = {
   withoutAddresses,
   withoutQueryDetail,
   MAX_DESCRIBED_LENGTH,
+  MAX_RAW_INPUT,
 };

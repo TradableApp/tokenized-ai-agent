@@ -64,7 +64,8 @@ describe("the describer's cost is bounded", () => {
     ["100,000 spaces with no params", `x${" ".repeat(100000)}y`, "x"],
     ["100,000 params without the colon", "params ".repeat(100000), "params params"],
     ["a long run that almost makes an address", "a:/".repeat(100000), "a:/a:/"],
-    ["a long run that almost makes hex", `0x${"0x".repeat(100000)}`, "0x0x"],
+    // A selector, one digit short of long hex, again and again.
+    ["a long run that almost makes hex", "0x12345678.".repeat(100000), "0x12345678.0x"],
     ["a long run that almost makes a JWT", "eyJ-".repeat(100000), "eyJ-eyJ-"],
     ["a long run that almost makes an IPv4 address", "1.".repeat(100000), "1.1."],
     ["a long run that almost makes an IPv6 address", "[::".repeat(100000), "["],
