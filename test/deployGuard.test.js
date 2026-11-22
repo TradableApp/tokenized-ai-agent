@@ -478,6 +478,37 @@ describe("scripts/deploy — what it prints", function () {
     expect(source).to.not.match(/network\.config\.url/);
     expect(source).to.not.match(/rpcUrl/i);
   });
+
+  it("prints a failure's stack, never the whole error object, which can carry the request", function () {
+    for (const script of ["deploy.js", "authorize-oracle.js", "list-fee-token-exempt.js"]) {
+      const source = fs.readFileSync(path.join(__dirname, "..", "scripts", script), "utf8");
+      expect(source, script).to.not.match(/console\.error\(\s*error\s*\)/);
+      expect(source, script).to.match(/error\?\.stack/);
+    }
+  });
+});
+
+describe(".env.example — the deploy's settings are named", function () {
+  const template = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
+
+  for (const name of [
+    "DEPLOY_MODE",
+    "EXPECTED_FEE_TOKEN_SYMBOL",
+    "TREASURY_ADDRESS",
+    "ORACLE_ADDRESS",
+    "INITIAL_PROMPT_FEE",
+    "INITIAL_CANCELLATION_FEE",
+    "INITIAL_METADATA_FEE",
+    "INITIAL_BRANCH_FEE",
+  ]) {
+    it(`names ${name} with an empty value and a comment above it`, function () {
+      const lines = template.split("\n");
+      const at = lines.findIndex((line) => line.startsWith(`${name}=`));
+      expect(at, name).to.be.greaterThan(0);
+      expect(lines[at], name).to.equal(`${name}=`);
+      expect(lines[at - 1], name).to.match(/^#/);
+    });
+  }
 });
 
 describe("hardhat.config — Basescan verify endpoints", function () {

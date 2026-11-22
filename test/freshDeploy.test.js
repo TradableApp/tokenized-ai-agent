@@ -171,6 +171,20 @@ describe("scripts/deploy — a fresh pair", function () {
     });
   });
 
+  it("says to record the pair and set DEPLOY_MODE=upgrade when ORACLE_ADDRESS is set too", async function () {
+    const { able, oracle } = await loadFixture(tokensFixture);
+
+    const { aiAgentAddress, aiAgentEscrowAddress, text } = await deploy({
+      TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+      ORACLE_ADDRESS: oracle.address,
+    });
+
+    expect(text()).to.include(
+      `In .env.test: AI_AGENT_CONTRACT_ADDRESS=${aiAgentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${aiAgentEscrowAddress}, DEPLOY_MODE=upgrade.`,
+    );
+    expect(text()).to.not.include("authorize-oracle.js grant");
+  });
+
   it("refuses an ORACLE_ADDRESS that is the deploy wallet before anything is sent", async function () {
     const { able, deployer } = await loadFixture(tokensFixture);
     const nonce = await ethers.provider.getTransactionCount(deployer.address);
