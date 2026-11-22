@@ -308,6 +308,52 @@ describe("errors printed by the oracle carry no access key", () => {
       expect(thrown?.message).to.include("POLL_INTERVAL_MS");
       expect(thrown.message).to.not.include(KEY);
     });
+
+    // A short key pasted into the wrong setting looks like a name, so the value itself is never
+    // printed: a misspelt name is answered with the supported name it is closest to.
+    it("names the supported network a misspelt one is closest to, never the value", () => {
+      const { validateConfig } = require("../src/startupConfig");
+      const { SUPPORTED_NETWORKS } = require("../src/contractUtility");
+      const supported = SUPPORTED_NETWORKS.find((name) => name.length > 6);
+      const misspelt = `${supported.slice(0, -1)}x`;
+      let thrown;
+      try {
+        validateConfig({ ...process.env, NETWORK_NAME: misspelt });
+      } catch (error) {
+        thrown = error;
+      }
+      let unlike;
+      try {
+        validateConfig({ ...process.env, NETWORK_NAME: "Zx9Yw8Vu7Ts6Rq5P" });
+      } catch (error) {
+        unlike = error;
+      }
+
+      expect(thrown?.message).to.include(`did you mean "${supported}"`);
+      expect(thrown.message).to.not.include(misspelt);
+      expect(unlike?.message).to.include("NETWORK_NAME is not a supported network");
+      expect(unlike.message).to.not.include("did you mean");
+      expect(unlike.message).to.not.include("Zx9Yw8Vu7Ts6Rq5P");
+    });
+
+    it("names the storage provider a misspelt one is closest to, never the value", () => {
+      const { validateConfig } = require("../src/startupConfig");
+      let thrown;
+      try {
+        validateConfig({
+          ...process.env,
+          USE_MOCK_STORAGE: "false",
+          LOCAL_IPFS_API_URL: "",
+          STORAGE_PROVIDER: "iris",
+          AUTONOMYS_API_KEY: "",
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown?.message).to.include('STORAGE_PROVIDER names a provider other than irys (did you mean "irys"?)');
+      expect(thrown.message).to.not.include('"iris"');
+    });
   });
 
   describe("oracleHeartbeat", () => {
@@ -414,6 +460,26 @@ describe("errors printed by the oracle carry no access key", () => {
 
       expect(thrown?.message).to.include("Validation Failed for PromptSubmitted");
       expect(thrownText(thrown)).to.not.include(KEY);
+    });
+
+    // Which field failed and how is the schema's text, not the user's: it is kept. What was
+    // received, and the issue's own message, are not.
+    it("names each failing field and the kind of its failure, and never the value", () => {
+      let thrown;
+      try {
+        validatePayload(
+          { promptText: "", isNewConversation: "Should I sell everything now" },
+          "PromptSubmitted",
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown?.message).to.include("ZodError");
+      expect(thrown.message).to.include("promptText too_small");
+      expect(thrown.message).to.include("isNewConversation invalid_type");
+      expect(thrown.message).to.not.include("sell everything");
+      expect(thrown.message).to.not.include("Expected");
     });
 
     it("does not quote the user's text from a payload that is not JSON", () => {
