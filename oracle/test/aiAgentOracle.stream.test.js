@@ -8,6 +8,8 @@ const { withTestKeys } = require("./helpers/oracleTestKeys");
 const { decryptFrame } = require("./helpers/frameDecrypt");
 const { initInboundPrompt } = require("../src/inboundPrompt");
 const { streamProof } = require("../src/stream/streamContract");
+const { streamCounters } = require("../src/stream/answerStream");
+const outbound = require("../src/outboundSanitizer");
 
 // The answer path and the live stream, end to end with fakes: what is stored is what was
 // streamed, the answer frame goes only after this run's submitAnswer receipt, every exit ends the
@@ -96,10 +98,12 @@ function makeEliza(scriptFor) {
       }
       if (script.fail) {
         options.onError(script.fail);
+        if (script.lateThought) await options.onResponse({ thought: script.lateThought });
         return {};
       }
       await options.onResponse({ text: script.answer, actions: ["REPLY"] });
       options.onComplete();
+      if (script.lateThought) await options.onResponse({ thought: script.lateThought });
       return {};
     }
   }
@@ -218,6 +222,16 @@ function projection(frames) {
 
 const runsOf = (frames) => [...new Set(frames.map((f) => f.run))];
 
+/** Thoughts counted as dropped since `before`, all kinds together (none counted if no counter). */
+const droppedSince = (before) => {
+  const now = streamCounters.snapshot().thoughtsDropped ?? {};
+  return Object.keys(now).reduce((sum, kind) => sum + now[kind] - (before?.[kind] ?? 0), 0);
+};
+
+/** A Brain whose import resolves after `ms`, with a sanitiser that keeps every thought. */
+const brainLoadingIn = (ms) => () =>
+  new Promise((resolve) => setTimeout(() => resolve({ sanitizeOutboundText: (text) => text }), ms));
+
 describe("answer path and live stream", function () {
   this.timeout(10000);
 
@@ -227,8 +241,134 @@ describe("answer path and live stream", function () {
 
   afterEach(() => {
     sinon.restore();
+    outbound._resetForTests();
     delete process.env.MOCK_AI;
     delete process.env.CHAIN_GPT_API_KEY;
+  });
+
+  describe("steps still being sanitised when the run completes", () => {
+    const THOUGHTS = [
+      "First thought about the market.",
+      "Second thought about the market.",
+      "Third thought about the market.",
+    ];
+
+    it("stores or counts every thought when the Brain loads only after the run completed", async function () {
+      // About 6 s of real timers (the 3.5 s load, 2 s sanitiser limits, the 3 s flush); room for a
+      // loaded machine.
+      this.timeout(30000);
+      // The Brain's import resolves 3.5 s in, long after ElizaOS said it was done. A thought the
+      // sanitiser accepts must then be stored and streamed; one it gives up on must be counted.
+      // Nothing may vanish without either.
+      outbound._setSanitizerForTests(null, { loader: brainLoadingIn(3500) });
+      sinon.stub(console, "warn");
+      const before = streamCounters.snapshot().thoughtsDropped;
+      const { oracle, sink, storedAnswer } = loadOracle({
+        scriptFor: () => ({ thoughts: THOUGHTS, answer: "An answer here." }),
+      });
+
+      await oracle.handlePrompt(
+        USER,
+        9,
+        458,
+        459,
+        promptPayload("How is BTC?"),
+        "0xkey",
+        fakeEvent(),
+      );
+      await oracle.flushStreamsForTest();
+
+      const frames = sink.frames("459");
+      const [stored] = storedAnswer();
+      const storedSteps = stored.file.reasoning ?? [];
+      expect({ reasoning: storedSteps, sources: stored.file.sources ?? [] }).to.deep.equal(
+        projection(frames),
+      );
+      expect(
+        storedSteps.length + droppedSince(before),
+        "every thought is stored or counted as dropped",
+      ).to.equal(THOUGHTS.length);
+    });
+
+    it("waits for steps whose sanitising finishes after the run completed, and stores them", async () => {
+      outbound._setSanitizerForTests(null, { loader: brainLoadingIn(300) });
+      const { oracle, sink, storedAnswer } = loadOracle({
+        scriptFor: () => ({ thoughts: THOUGHTS, answer: "An answer here." }),
+      });
+
+      await oracle.handlePrompt(
+        USER,
+        9,
+        460,
+        461,
+        promptPayload("How is BTC?"),
+        "0xkey",
+        fakeEvent(),
+      );
+
+      const [stored] = storedAnswer();
+      expect(stored.file.reasoning.map((s) => s.description)).to.deep.equal(THOUGHTS);
+      await oracle.flushStreamsForTest();
+      expect({
+        reasoning: stored.file.reasoning,
+        sources: stored.file.sources ?? [],
+      }).to.deep.equal(projection(sink.frames("461")));
+    });
+
+    it("neither streams nor stores a thought that arrives after a failed run ended, and counts it", async () => {
+      process.env.CHAIN_GPT_API_KEY = "test-key";
+      sinon.stub(global, "fetch").resolves({ ok: true, text: async () => "ChainGPT answer here." });
+      const before = streamCounters.snapshot().thoughtsDropped;
+      const { oracle, sink, storedAnswer } = loadOracle({
+        scriptFor: () => ({
+          thoughts: ["Reading the latest market headlines.", "Checking the funding rates now."],
+          fail: new Error("model 404"),
+          lateThought: "A thought that came after the run had failed.",
+        }),
+      });
+
+      await oracle.handlePrompt(
+        USER,
+        9,
+        456,
+        457,
+        promptPayload("How is ETH?"),
+        "0xkey",
+        fakeEvent(),
+      );
+      await oracle.flushStreamsForTest();
+
+      const frames = sink.frames("457");
+      const [stored] = storedAnswer();
+      expect(stored.file.reasoning.map((s) => [s.description, s.attempt])).to.deep.equal([
+        ["Reading the latest market headlines.", 1],
+        ["Checking the funding rates now.", 1],
+      ]);
+      expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(
+        projection(frames),
+      );
+      expect(streamCounters.snapshot().thoughtsDropped?.late - (before?.late ?? 0)).to.equal(1);
+    });
+
+    it("alerts once, by kind, when thoughts are dropped because the sanitiser cannot be loaded", async () => {
+      outbound._setSanitizerForTests(null, { loadFails: true });
+      sinon.stub(console, "error");
+      const { oracle, stubs } = loadOracle({
+        scriptFor: () => ({
+          thoughts: ["Reading the latest market headlines."],
+          answer: "An answer.",
+        }),
+      });
+
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("One"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 458, 459, promptPayload("Two"), "0xkey", fakeEvent());
+
+      const alerts = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((c) => /thought/i.test(c.args[0]));
+      expect(alerts).to.have.length(1);
+      expect(alerts[0].args[1]).to.include("kind: unavailable");
+    });
   });
 
   describe("stored equals streamed", () => {

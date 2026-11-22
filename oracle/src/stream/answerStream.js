@@ -21,15 +21,22 @@ const { errorKind } = require("../errorDescription");
  * into the reasoning and sources the answer MessageFile stores, so what was shown live and what is
  * stored come from the same frames, built before encryption and before any send.
  *
- * WHY A SERIAL QUEUE. Thoughts arrive from ElizaOS's async callback and are sanitised
- * asynchronously before they become steps; two sanitisations finishing out of order would put the
- * steps out of order. Every frame after the reset goes through one queue, so frames keep the order
- * of the calls that asked for them.
+ * WHY A QUEUE. Thoughts arrive from ElizaOS's async callback and are sanitised asynchronously
+ * before they become steps; two sanitisations finishing out of order would put the steps out of
+ * order. Every frame after the reset is APPLIED through one queue, so frames keep the order of the
+ * calls that asked for them.
+ *
+ * WHY THE WORK STARTS WHEN IT IS QUEUED. Each piece of work (a thought's sanitising) is started at
+ * once and given `taskTimeoutMs` from that moment; only applying its result waits for the work
+ * queued before it. So every piece is settled, applied or cut off, within `taskTimeoutMs` of being
+ * queued, however many are queued, and a `flush()` waits at most that long for the work queued
+ * before it. Run one after another, N slow thoughts would need N times as long, and a bounded
+ * flush would lose the later ones.
  *
  * WHY NOTHING HERE CAN HURT AN ANSWER. No method throws or returns a promise the answer path must
- * wait on, except `flush()`, which is bounded by `flushTimeoutMs`. Each queued piece of work is cut
- * off after `taskTimeoutMs`, so one that hangs cannot hold back the frames behind it, and its late
- * result is dropped. Every sink call is guarded and never awaited. A run holds a bounded number of
+ * wait on, except `flush()`, which is bounded by `flushTimeoutMs`. A piece of work that hangs is cut
+ * off, so it cannot hold back the frames behind it, and its late result is dropped and counted.
+ * Every sink call is guarded and never awaited. A run holds a bounded number of
  * frames (one reset, at most four attempts of at most 64 steps and one sources frame each, one
  * answer, one done), each bounded in size. A stream that cannot be built is replaced by an offline
  * one: the record still works and nothing is sent.
@@ -38,14 +45,60 @@ const { errorKind } = require("../errorDescription");
  * shown live that the stored record does not hold.
  */
 
+/**
+ * How long one piece of queued work may take, from when it was queued. Above the thought
+ * sanitiser's own limit (`THOUGHT_SANITIZE_TIMEOUT_MS`, 2 s, pinned by a test), so a thought is
+ * cut off by the sanitiser, which counts why, before the stream gives up on it.
+ */
 const DEFAULT_TASK_TIMEOUT_MS = 2500;
-const DEFAULT_FLUSH_TIMEOUT_MS = 3000;
+/** Room for applying the settled results (each a small seal) and for timer lateness. */
+const FLUSH_MARGIN_MS = 500;
+/**
+ * How long `flush()` may make the answer wait. Every piece of work queued before the flush is
+ * settled within `taskTimeoutMs` of being queued (see the header), so the bound is that plus the
+ * margin: 3 s by default. If it is reached anyway (a blocked event loop), a step that lands after
+ * the record was read is neither streamed nor stored, and is counted as a `late` drop.
+ */
+const DEFAULT_FLUSH_TIMEOUT_MS = DEFAULT_TASK_TIMEOUT_MS + FLUSH_MARGIN_MS;
 const OFFLINE_ANSWER_ID = "0";
 const OFFLINE_REPLICA = "offline";
 
+/**
+ * Why a thought was neither streamed nor stored. `timeout`, `unavailable`, `refused` and `failed`
+ * come from the thought sanitiser; `late` is a step that landed after its run had ended or its
+ * record had been read. What is dropped by design (a tool payload, nothing left after the fence
+ * strip) is not counted.
+ */
+const THOUGHT_DROP_KINDS = Object.freeze(["timeout", "unavailable", "refused", "failed", "late"]);
+
 // Process-wide counts for the heartbeat. Never an id.
-const counters = { framesBuilt: 0, sinkFailures: 0 };
-const streamCounters = Object.freeze({ snapshot: () => ({ ...counters }) });
+const counters = {
+  framesBuilt: 0,
+  sinkFailures: 0,
+  sealFailures: 0,
+  thoughtsDropped: Object.fromEntries(THOUGHT_DROP_KINDS.map((kind) => [kind, 0])),
+};
+const streamCounters = Object.freeze({
+  snapshot: () => ({ ...counters, thoughtsDropped: { ...counters.thoughtsDropped } }),
+});
+
+let thoughtDropListener = null;
+
+/** Who hears of each dropped thought, by kind (the oracle's alert); null for nobody. */
+function setThoughtDropListener(listener) {
+  thoughtDropListener = typeof listener === "function" ? listener : null;
+}
+
+/** Counts one dropped thought by its kind and tells the listener. Never throws. */
+function noteThoughtDropped(kind) {
+  if (!THOUGHT_DROP_KINDS.includes(kind)) return;
+  counters.thoughtsDropped[kind] += 1;
+  try {
+    thoughtDropListener?.(kind);
+  } catch {
+    // An alert that fails must not reach the answer path.
+  }
+}
 
 const noop = () => undefined;
 
@@ -116,7 +169,18 @@ function buildStream(options, deliver) {
     // Checks the key and the id; the frame builder below checks the run and the replica.
     expectedProof = streamProof(sessionKey, answerMessageId);
   }
-  buildFrame({ answerMessageId: id, run, seq: 0, replica: replicaId, type: FRAME_TYPES.RESET, data: null });
+  // The reset is built (which checks the run and the replica) and sealed before the sink hears of
+  // the run. If it cannot be sealed, this throws and the caller gets an offline stream, rather
+  // than a run opened on the sink whose seq 0 never comes.
+  const reset = buildFrame({
+    answerMessageId: id,
+    run,
+    seq: 0,
+    replica: replicaId,
+    type: FRAME_TYPES.RESET,
+    data: { reason },
+  });
+  const resetCiphertext = deliver ? encryptFrame(reset, sessionKey, ivSource) : undefined;
 
   const frames = [];
   let seq = 0;
@@ -147,65 +211,95 @@ function buildStream(options, deliver) {
     }
   }
 
-  /** Builds, keeps and sends one frame; false when it would be over `maxBytes` and was not built. */
+  /**
+   * Builds, seals, keeps and sends one frame. True when built; false when it would be over
+   * `maxBytes`; null when it could not be sealed. The frame is sealed BEFORE it takes a sequence
+   * number or is kept, so a seal that fails leaves no gap the dApp would wait on and nothing in
+   * the record that was not sent.
+   */
   function emit(type, data, maxBytes = LIMITS.framePlaintextBytes) {
     const frame = buildFrame({ answerMessageId: id, run, seq, replica: replicaId, type, data });
     if (Buffer.byteLength(JSON.stringify(frame), "utf-8") > maxBytes) return false;
+    let ciphertext;
+    if (deliver) {
+      try {
+        ciphertext = encryptFrame(frame, sessionKey, ivSource);
+      } catch {
+        // Nothing about the frame or the error is printed: either can carry its text.
+        counters.sealFailures += 1;
+        return null;
+      }
+    }
     frames.push(frame);
     seq += 1;
     if (!deliver) return true;
     counters.framesBuilt += 1;
-    let ciphertext;
-    try {
-      ciphertext = encryptFrame(frame, sessionKey, ivSource);
-    } catch (error) {
-      noteSinkFailure(error);
-      return true;
-    }
     callSink("frame", { run, seq: frame.seq, ciphertext });
     return true;
   }
 
-  /** Runs `produce` (sync or async), then `apply` with its value, unless it took too long. */
-  function runBounded(produce, apply) {
+  /**
+   * Starts `produce` (sync or async) now and settles within `taskTimeoutMs`: to
+   * `{ value }`, or to null when it threw or took too long. `onLate` gets a value that arrives
+   * after the cut-off.
+   */
+  function startBounded(produce, onLate) {
     return new Promise((resolve) => {
       let finished = false;
-      const finish = () => {
+      const finish = (outcome) => {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        resolve();
+        resolve(outcome);
       };
-      const timer = setTimeout(finish, taskTimeoutMs);
+      const timer = setTimeout(() => finish(null), taskTimeoutMs);
       timer.unref?.();
       let pending;
       try {
         pending = Promise.resolve(produce());
       } catch {
-        finish();
+        finish(null);
         return;
       }
       pending.then(
         (value) => {
-          if (finished) return;
-          try {
-            apply(value);
-          } catch {
-            // A frame that cannot be built is skipped; nothing about it is printed.
+          if (!finished) {
+            finish({ value });
+            return;
           }
-          finish();
+          try {
+            onLate?.(value);
+          } catch {
+            // Counting a late result must not throw out of a promise nobody awaits.
+          }
         },
-        finish,
+        () => finish(null),
       );
     });
   }
 
-  function enqueue(produce, apply) {
-    tail = tail.then(() => runBounded(produce, apply));
+  /** Starts the work now; applies its result in queue order. */
+  function enqueue(produce, apply, onLate) {
+    const settled = startBounded(produce, onLate);
+    tail = tail
+      .then(() => settled)
+      .then((outcome) => {
+        if (!outcome) return;
+        try {
+          apply(outcome.value);
+        } catch {
+          // A frame that cannot be built is skipped; nothing about it is printed.
+        }
+      });
   }
 
   callSink("open", { run, replica: replicaId, expectedProof });
-  emit(FRAME_TYPES.RESET, { reason });
+  frames.push(reset);
+  seq = 1;
+  if (deliver) {
+    counters.framesBuilt += 1;
+    callSink("frame", { run, seq: 0, ciphertext: resetCiphertext });
+  }
 
   return {
     run,
@@ -226,29 +320,47 @@ function buildStream(options, deliver) {
         if (attemptsWithSources.has(attempt) || (stepsInAttempt.get(attempt) ?? 0) > 0) return;
         // Trimmed from the end until the frame fits the plaintext limit.
         for (let n = items.length; n > 0; n -= 1) {
-          if (emit(FRAME_TYPES.SOURCES, { attempt, sources: items.slice(0, n) })) {
+          const built = emit(FRAME_TYPES.SOURCES, { attempt, sources: items.slice(0, n) });
+          if (built) {
             attemptsWithSources.add(attempt);
             return;
           }
+          // Not sealed: nothing is sent, and a shorter list would not seal either.
+          if (built === null) return;
         }
       });
     },
 
     /**
      * A step of the current attempt: a `{ title, description }`, or a function giving one (or
-     * null to skip), possibly async. Order is the order of the calls.
+     * null to skip), possibly async. The work may also give a function of the step's place in
+     * its attempt (0 for the first step built in it), called when the step is applied, so a
+     * "Step N" title follows the order the steps are shown in. Order is the order of the calls.
+     *
+     * A step whose work gives something after the run ended, after the record was read or after
+     * its cut-off is neither streamed nor stored, and is counted as a `late` drop.
      */
     step(stepOrWork) {
       if (closing) return;
       const produce = typeof stepOrWork === "function" ? stepOrWork : () => stepOrWork;
-      enqueue(produce, (value) => {
-        if (sealed || ended) return;
-        const step = cleanStep(value);
-        if (!step) return;
-        const count = stepsInAttempt.get(attempt) ?? 0;
-        if (count >= LIMITS.maxStepsPerAttempt) return;
-        if (emit(FRAME_TYPES.STEP, { attempt, ...step })) stepsInAttempt.set(attempt, count + 1);
-      });
+      const late = (value) => {
+        if (value) noteThoughtDropped("late");
+      };
+      enqueue(
+        produce,
+        (value) => {
+          if (sealed || ended) {
+            late(value);
+            return;
+          }
+          const count = stepsInAttempt.get(attempt) ?? 0;
+          const step = cleanStep(typeof value === "function" ? value(count) : value);
+          if (!step) return;
+          if (count >= LIMITS.maxStepsPerAttempt) return;
+          if (emit(FRAME_TYPES.STEP, { attempt, ...step })) stepsInAttempt.set(attempt, count + 1);
+        },
+        late,
+      );
     },
 
     /** A fallback tier started. Earlier steps stay; this is not a reset. */
@@ -341,6 +453,10 @@ module.exports = {
   createAnswerStream,
   createOfflineStream,
   streamCounters,
+  noteThoughtDropped,
+  setThoughtDropListener,
+  THOUGHT_DROP_KINDS,
   DEFAULT_TASK_TIMEOUT_MS,
   DEFAULT_FLUSH_TIMEOUT_MS,
+  FLUSH_MARGIN_MS,
 };

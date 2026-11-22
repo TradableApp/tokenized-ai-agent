@@ -31,6 +31,23 @@ function createMessageFileCalls(code) {
   return calls;
 }
 
+/** The parameter list and body of a top-level `function name(…) { … }`. */
+function functionParts(code, name) {
+  const head = new RegExp(`function ${name}\\(([^)]*)\\)\\s*\\{`).exec(code);
+  if (!head) return null;
+  let depth = 1;
+  let i = head.index + head[0].length;
+  while (depth > 0 && i < code.length) {
+    if (code[i] === "{") depth += 1;
+    else if (code[i] === "}") depth -= 1;
+    i += 1;
+  }
+  return {
+    params: head[1].replace(/\s+/g, " ").trim(),
+    body: code.slice(head.index + head[0].length, i - 1),
+  };
+}
+
 describe("stream single source (static)", () => {
   const assistantCalls = createMessageFileCalls(ORACLE).filter((call) => /role:\s*"assistant"/.test(call));
 
@@ -62,16 +79,51 @@ describe("stream single source (static)", () => {
     expect(ORACLE).to.not.match(/answer\.sources\b/);
   });
 
+  it("never takes reasoning or sources out of an answer by destructuring, indexing or spreading it", () => {
+    expect(ORACLE).to.not.match(
+      /\{[^{}]*\b(reasoning|sources)\b[^{}]*\}\s*=\s*(await\s+)?answer\b/,
+    );
+    expect(ORACLE).to.not.match(/answer\s*\[\s*["'`](reasoning|sources)["'`]\s*\]/);
+    for (const call of assistantCalls) {
+      expect(call, call).to.not.match(/\.\.\.\s*answer\b/);
+    }
+  });
+
+  it("builds the stored extras only from the record and the duration it is given", () => {
+    const parts = functionParts(ORACLE, "storedExtrasFrom");
+    expect(parts, "storedExtrasFrom exists").to.not.equal(null);
+    expect(parts.params).to.equal("{ reasoning, sources }, reasoningDuration");
+    const allowed = new Set([
+      "return",
+      "reasoning",
+      "sources",
+      "reasoningDuration",
+      "length",
+      "undefined",
+    ]);
+    const names = parts.body.match(/[A-Za-z_$][\w$]*/g) ?? [];
+    expect(names.filter((name) => !allowed.has(name))).to.deep.equal([]);
+  });
+
+  it("calls storedExtrasFrom only to build storedExtras", () => {
+    const calls = ORACLE.match(/storedExtrasFrom\(/g) ?? [];
+    // The definition and the two builds checked above.
+    expect(calls).to.have.length(3);
+  });
+
   it("has no mock extras that bypass the stream", () => {
     expect(ORACLE).to.not.match(/mockAnswerExtras/);
     expect(ORACLE).to.not.match(/realAnswerExtras/);
   });
 
-  it("sanitises a thought before it is recorded, in the one place thoughts arrive", () => {
-    const recordCalls = ORACLE.match(/runProvenance\.recordThought\([^)]*\)/g) ?? [];
-    expect(recordCalls).to.have.length(1);
-    expect(recordCalls[0]).to.match(/recordThought\(runId, clean, action\)/);
-    expect(ORACLE).to.match(/await sanitizeThought\(/);
+  it("sanitises a thought before it becomes a step, in the one place thoughts arrive", () => {
+    // The step is made from the sanitised thought itself, never from the run's record, which a
+    // finished run no longer has.
+    expect(ORACLE).to.not.match(/runProvenance\.recordThought\(/);
+    expect(ORACLE.match(/await sanitizeThought\(thought\)/g) ?? []).to.have.length(1);
+    expect(ORACLE).to.match(
+      /const entry = action \? \{ thought: clean, action \} : \{ thought: clean \};\s*return \(index\) => stepFromThought\(entry, index\);/,
+    );
   });
 
   it("gives the answer frame the same text binding the stored file gets", () => {
