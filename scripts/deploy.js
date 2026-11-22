@@ -109,7 +109,8 @@ function deployProblems({ networkName, env }) {
     }
   }
   problems.push(...modeProblems({ networkName, env }));
-  if (networkName === MAINNET_NETWORK && env[CONFIRM_VAR] !== "1") {
+  // A dry run sends nothing, so it may show the plan before the confirm is given.
+  if (networkName === MAINNET_NETWORK && env[CONFIRM_VAR] !== "1" && env.DRY_RUN !== "1") {
     problems.push(
       `${CONFIRM_VAR} is ${describeShape(env[CONFIRM_VAR])}; a live deploy to ${MAINNET_NETWORK} needs exactly ${CONFIRM_VAR}=1 bun run deploy:base-mainnet`,
     );
@@ -214,6 +215,7 @@ function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
     isSapphire: false,
     envFile,
     mode: env.DEPLOY_MODE,
+    dryRun: env.DRY_RUN === "1",
     live: !LOCAL_NETWORKS.has(networkName),
     domain: orNull(env.DOMAIN),
     token: orNull(env.TOKEN_CONTRACT_ADDRESS),
@@ -537,6 +539,14 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
   for (const line of planLines({ plan, deployer, oracle, treasury, token, fees, ethers })) {
     log(line);
   }
+  if (plan.dryRun) {
+    log(
+      chalk.yellow(
+        "DRY_RUN=1: nothing was sent. Run the deploy without DRY_RUN to send this plan (on Base mainnet with DEPLOY_MAINNET_CONFIRMED=1).",
+      ),
+    );
+    return null;
+  }
 
   const EVMAIAgent = await ethers.getContractFactory("EVMAIAgent", deployer);
   const EVMAIAgentEscrow = await ethers.getContractFactory("EVMAIAgentEscrow", deployer);
@@ -781,11 +791,20 @@ async function main() {
   }
 
   console.log(`\nDEPLOY_MODE=${plan.mode} (from ${envFile})`);
+  if (plan.dryRun && plan.mode !== "fresh") {
+    throw new Error(
+      "DRY_RUN=1 prints the plan of a fresh pair; an upgrade has no dry run. Nothing was sent.",
+    );
+  }
   const pair =
     plan.mode === "fresh"
       ? await deployFreshPair(hre, plan, { deployer })
       : await upgradePair(hre, plan);
 
+  if (!pair) {
+    console.log("\n--- Dry run finished ---");
+    return;
+  }
   if (plan.live) {
     await verifyOnExplorer(networkName, [
       ["EVMAIAgent", pair.aiAgentAddress],
