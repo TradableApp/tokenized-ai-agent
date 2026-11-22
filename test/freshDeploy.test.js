@@ -125,6 +125,24 @@ describe("scripts/deploy — a fresh pair", function () {
       expect(await aiAgentEscrow.branchFee()).to.equal(750000000000000000000n);
     });
 
+    it("a dry run prints the whole plan and sends nothing", async function () {
+      const { able, deployer } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress(), ...FEES });
+      const nonce = await ethers.provider.getTransactionCount(deployer.address);
+      const lines = [];
+
+      const result = await deployFreshPair(hre, { ...plan, dryRun: true }, {
+        log: (line) => lines.push(String(line)),
+      });
+
+      const text = lines.join("\n");
+      expect(result).to.equal(null);
+      expect(text).to.include("Prompt fee (INITIAL_PROMPT_FEE): 2500000000000000000 wei = 2.5 ABLE");
+      expect(text).to.include("DRY_RUN=1: nothing was sent");
+      expect(text).to.not.include("Deploying EVMAIAgent proxy");
+      expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
+    });
+
     it("prints the defaults a local network falls back to, marked as defaults", async function () {
       const { able } = await loadFixture(tokensFixture);
 

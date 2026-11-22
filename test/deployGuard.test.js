@@ -114,6 +114,30 @@ describe("scripts/deploy — Base mainnet guard", function () {
     }
   });
 
+  it("lets a dry run on base print the plan without the confirm, since it sends nothing", function () {
+    const env = { ...freshOnBase, DRY_RUN: "1" };
+    delete env[CONFIRM_VAR];
+    expect(deployProblems({ networkName: "base", env })).to.deep.equal([]);
+    for (const value of ["true", "yes", " 1", ""]) {
+      const problems = deployProblems({ networkName: "base", env: { ...env, DRY_RUN: value } });
+      expect(problems, JSON.stringify(value)).to.have.lengthOf(1);
+      expect(problems[0]).to.include(`${CONFIRM_VAR}=1`);
+    }
+  });
+
+  it("carries DRY_RUN=1 (exactly) into the plan", function () {
+    const plan = (DRY_RUN) =>
+      resolveDeployPlan({
+        networkName: "baseSepolia",
+        envFile: ".env.base-testnet",
+        fileEnv: freshOnBase,
+        processEnv: { ...freshOnBase, DRY_RUN },
+      });
+    expect(plan("1").dryRun).to.equal(true);
+    expect(plan("true").dryRun).to.equal(false);
+    expect(plan(undefined).dryRun).to.equal(false);
+  });
+
   it("assertDeployAllowed throws one error listing every problem", function () {
     expect(() =>
       assertDeployAllowed({
@@ -581,6 +605,15 @@ describe("package scripts — ROFL signing goes through the Keychain wrapper", f
         );
       }
     }
+  });
+
+  it("has a dry run of the deploy on each live Base network, which prints the plan and sends nothing", function () {
+    expect(scripts["deploy:base-testnet:dry"]).to.equal(
+      "DRY_RUN=1 ENV_FILE=.env.base-testnet hardhat run scripts/deploy.js --network baseSepolia",
+    );
+    expect(scripts["deploy:base-mainnet:dry"]).to.equal(
+      "DRY_RUN=1 ENV_FILE=.env.base-mainnet hardhat run scripts/deploy.js --network base",
+    );
   });
 
   it("deploy:base-mainnet still targets --network base from .env.base-mainnet (the guard is in deploy.js)", function () {
