@@ -78,8 +78,16 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
     const { escrow } = fixture.contracts;
     await (await escrow.setTreasury(fixture.deployer.address)).wait();
 
-    await run(fixture);
+    const result = await run(fixture);
 
+    expect(await listed(fixture, fixture.deployer.address)).to.equal(true);
+    // The owner is exempt by being the owner, which reads the same as a by-name listing. The
+    // listing must be sent anyway, or the treasury stops being exempt when ownership moves.
+    expect(result.sent).to.have.lengthOf(2);
+    const newOwner = (await ethers.getSigners())[7];
+    await (await fixture.token.transferOwnership(newOwner.address)).wait();
+    await (await fixture.token.connect(newOwner).acceptOwnership()).wait();
+    expect(await fixture.token.owner()).to.equal(newOwner.address);
     expect(await listed(fixture, fixture.deployer.address)).to.equal(true);
   });
 
