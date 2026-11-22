@@ -199,9 +199,97 @@ describe("ROFL_DEPLOYMENT override", function () {
         expect(readCompose()).to.not.include(ENV_ADDRESS);
       });
 
+      it("refuses a host name below the delimiter as it refuses an address", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          "POSTGRES_HOST=db.example.com",
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.include("POSTGRES_HOST");
+        expect(out).to.not.include("db.example.com");
+        expect(readLog(ws)).to.not.include("secret set");
+        expect(readCompose()).to.not.include("db.example.com");
+      });
+
+      it("refuses a setting below the delimiter whose value holds the address, naming only the setting", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          `DB_PROXY_TARGET=${ENV_ADDRESS}:5432`,
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.include("DB_PROXY_TARGET");
+        expect(out).to.not.include(ENV_ADDRESS);
+        expect(readLog(ws)).to.not.include("secret set");
+        expect(readCompose()).to.not.include(ENV_ADDRESS);
+      });
+
+      it("refuses a database address below the delimiter, without printing it", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          "POSTGRES_URL=postgres://oracle@198.51.100.20:5432/oracle_agent",
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.include("POSTGRES_URL");
+        expect(out).to.not.include("198.51.100.20");
+        expect(readCompose()).to.not.include("198.51.100.20");
+      });
+
+      for (const line of [
+        `export POSTGRES_HOST=${ENV_ADDRESS}`,
+        `postgres_host=${ENV_ADDRESS}`,
+      ]) {
+        it(`refuses a key that is not upper-case snake case (${line.split("=")[0]})`, function () {
+          writeEnvFile([
+            "PRIVATE_KEY=0xabc",
+            `POSTGRES_HOST=${ENV_ADDRESS}`,
+            MARKER,
+            "NETWORK_NAME=baseSepolia",
+            line,
+            "mcp=",
+          ]);
+          const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+          expect(code, out).to.not.equal(0);
+          expect(out).to.include("upper-case");
+          expect(out).to.not.include(ENV_ADDRESS);
+          expect(readLog(ws)).to.not.include("secret set");
+          expect(readCompose()).to.not.include(ENV_ADDRESS);
+        });
+      }
+
+      it("refuses database settings with no POSTGRES_HOST above the delimiter", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          "POSTGRES_AGENT_DATABASE=oracle_agent",
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.include("POSTGRES_HOST");
+        expect(out).to.include("ABOVE the delimiter");
+        expect(readLog(ws)).to.not.include("secret set");
+        expect(readCompose()).to.include("STALE=1");
+      });
+
       it("accepts a blank POSTGRES_HOST below the delimiter, which writes nothing", function () {
         writeEnvFile([
           "PRIVATE_KEY=0xabc",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
           MARKER,
           "NETWORK_NAME=baseSepolia",
           "POSTGRES_AGENT_DATABASE=oracle_agent",
@@ -210,7 +298,9 @@ describe("ROFL_DEPLOYMENT override", function () {
         ]);
         const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
         expect(code, out).to.equal(0);
-        expect(readCompose()).to.not.match(/POSTGRES_HOST=/);
+        // Injected from the secret above; no literal line of its own.
+        expect(readCompose()).to.include("- POSTGRES_HOST=${POSTGRES_HOST:-}");
+        expect(readCompose()).to.not.match(/- POSTGRES_HOST=(?!\$\{POSTGRES_HOST:-\})/);
       });
     });
 
@@ -224,11 +314,31 @@ describe("ROFL_DEPLOYMENT override", function () {
         expect(out).to.not.include("below the delimiter");
       });
 
-      it("warns when the stamped line sits below the delimiter", function () {
+      it("does not stamp a line below the delimiter, and says where it belongs", function () {
         writeEnvFile(["PRIVATE_KEY=0xabc", MARKER, "NETWORK_NAME=baseSepolia", `POSTGRES_HOST=${ENV_ADDRESS}`]);
         const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
         expect(code, out).to.equal(0);
         expect(out).to.include("below the delimiter");
+        expect(out).to.include("gcloud sql instances describe");
+        expect(out).to.not.include(GCLOUD_ADDRESS);
+        expect(out).to.not.include(ENV_ADDRESS);
+        expect(fs.readFileSync(envFilePath(), "utf8")).to.not.include(GCLOUD_ADDRESS);
+      });
+
+      it("stamps only the line above the delimiter, leaving a blank one below as it is", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          "POSTGRES_HOST=",
+        ]);
+        const { code, out } = run(INIT_CLOUD_SQL, ["base-testnet"], ws);
+        expect(code, out).to.equal(0);
+        const [above, below] = fs.readFileSync(envFilePath(), "utf8").split(MARKER);
+        expect(above).to.include(`POSTGRES_HOST=${GCLOUD_ADDRESS}`);
+        expect(below).to.match(/^POSTGRES_HOST=$/m);
+        expect(below).to.not.include(GCLOUD_ADDRESS);
         expect(out).to.not.include(GCLOUD_ADDRESS);
       });
 
