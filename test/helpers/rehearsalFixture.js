@@ -153,6 +153,7 @@ function scratchFolders() {
 
 module.exports = {
   loadRehearsal,
+  deployPair,
   scratchFolders,
   OFFERS_DONE,
   PROMPT_FEE,

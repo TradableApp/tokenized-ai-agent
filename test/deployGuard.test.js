@@ -8,11 +8,19 @@ const {
   resolveDeployPlan,
   CONFIRM_VAR,
   FILE_ONLY_VARS,
+  FRESH_LIVE_FILE_ONLY_VARS,
 } = require("../scripts/deploy");
 const hardhatConfig = require("../hardhat.config");
 
 const ADDRESS = "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D";
 const OTHER = "0x36ec08471F2b995024967204D7542713cFaf5Fa4";
+// The four fees a fresh escrow starts with, in wei: required for a fresh pair on a live network.
+const FEES = {
+  INITIAL_PROMPT_FEE: "1000000000000000000",
+  INITIAL_CANCELLATION_FEE: "100000000000000000",
+  INITIAL_METADATA_FEE: "100000000000000000",
+  INITIAL_BRANCH_FEE: "500000000000000000",
+};
 // An upgrade of both proxies on Base mainnet, with everything the guard asks for.
 const resolved = {
   DEPLOY_MODE: "upgrade",
@@ -28,6 +36,7 @@ const freshOnBase = {
   TOKEN_CONTRACT_ADDRESS: ADDRESS,
   TREASURY_ADDRESS: ADDRESS,
   EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
+  ...FEES,
   [CONFIRM_VAR]: "1",
 };
 
@@ -103,6 +112,30 @@ describe("scripts/deploy — Base mainnet guard", function () {
       expect(problems[0]).to.include(`${CONFIRM_VAR}=1`);
       if (value) expect(problems[0]).to.not.include(JSON.stringify(value));
     }
+  });
+
+  it("lets a dry run on base print the plan without the confirm, since it sends nothing", function () {
+    const env = { ...freshOnBase, DRY_RUN: "1" };
+    delete env[CONFIRM_VAR];
+    expect(deployProblems({ networkName: "base", env })).to.deep.equal([]);
+    for (const value of ["true", "yes", " 1", ""]) {
+      const problems = deployProblems({ networkName: "base", env: { ...env, DRY_RUN: value } });
+      expect(problems, JSON.stringify(value)).to.have.lengthOf(1);
+      expect(problems[0]).to.include(`${CONFIRM_VAR}=1`);
+    }
+  });
+
+  it("carries DRY_RUN=1 (exactly) into the plan", function () {
+    const plan = (DRY_RUN) =>
+      resolveDeployPlan({
+        networkName: "baseSepolia",
+        envFile: ".env.base-testnet",
+        fileEnv: freshOnBase,
+        processEnv: { ...freshOnBase, DRY_RUN },
+      });
+    expect(plan("1").dryRun).to.equal(true);
+    expect(plan("true").dryRun).to.equal(false);
+    expect(plan(undefined).dryRun).to.equal(false);
   });
 
   it("assertDeployAllowed throws one error listing every problem", function () {
@@ -210,6 +243,86 @@ describe("scripts/deploy — DEPLOY_MODE says whether a new pair is deployed", f
   });
 });
 
+describe("scripts/deploy — a fresh pair's initial fees", function () {
+  const FEE_NAMES = Object.keys(FEES);
+
+  it("must each be a whole number of wei written in decimal digits, on every network", function () {
+    for (const networkName of ["base", "baseSepolia", "localnet", "hardhat"]) {
+      for (const name of FEE_NAMES) {
+        for (const value of ["1.5", "-1", "+1", "0x10", "1e18", "1_000", "1 000", "ten", "١"]) {
+          const problems = deployProblems({
+            networkName,
+            env: { ...freshOnBase, [name]: value },
+          });
+          const label = `${networkName} ${name}=${JSON.stringify(value)}`;
+          expect(problems, label).to.have.lengthOf(1);
+          expect(problems[0], label).to.include(name).and.include("whole number of wei");
+          // Described by its shape, never repeated.
+          expect(problems[0], label).to.not.include(`(${value})`);
+          expect(problems[0], label).to.not.include(`"${value}"`);
+        }
+      }
+    }
+  });
+
+  it("accepts zero and any whole number of wei", function () {
+    for (const value of ["0", "1", "1000000000000000000", "123456789012345678901234567890"]) {
+      expect(
+        deployProblems({ networkName: "base", env: { ...freshOnBase, INITIAL_PROMPT_FEE: value } }),
+        value,
+      ).to.deep.equal([]);
+    }
+  });
+
+  it("are each required for a fresh pair on a live network", function () {
+    for (const networkName of ["base", "baseSepolia"]) {
+      for (const name of FEE_NAMES) {
+        for (const missing of [undefined, "", "  "]) {
+          const problems = deployProblems({
+            networkName,
+            env: { ...freshOnBase, [name]: missing },
+          });
+          expect(problems, `${networkName} ${name}`).to.have.lengthOf(1);
+          expect(problems[0]).to.include(`${name} must be set for a fresh pair on ${networkName}`);
+        }
+      }
+    }
+  });
+
+  it("fall back to the defaults on a local network", function () {
+    for (const networkName of ["hardhat", "localnet", "localhost"]) {
+      expect(
+        deployProblems({
+          networkName,
+          env: { DEPLOY_MODE: "fresh", TOKEN_CONTRACT_ADDRESS: ADDRESS },
+        }),
+        networkName,
+      ).to.deep.equal([]);
+    }
+  });
+
+  it("are not asked for by an upgrade, which sets no fee", function () {
+    expect(
+      deployProblems({ networkName: "base", env: { ...resolved, INITIAL_PROMPT_FEE: "1.5" } }),
+    ).to.deep.equal([]);
+  });
+
+  it("carries each fee into the plan as written", function () {
+    const plan = resolveDeployPlan({
+      networkName: "baseSepolia",
+      envFile: ".env.base-testnet",
+      fileEnv: { ...freshOnBase },
+      processEnv: { ...freshOnBase },
+    });
+    expect(plan.fees).to.deep.equal({
+      prompt: FEES.INITIAL_PROMPT_FEE,
+      cancellation: FEES.INITIAL_CANCELLATION_FEE,
+      metadata: FEES.INITIAL_METADATA_FEE,
+      branch: FEES.INITIAL_BRANCH_FEE,
+    });
+  });
+});
+
 describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone", function () {
   const envFile = ".env.base-testnet";
   const freshFile = {
@@ -217,6 +330,7 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
     TOKEN_CONTRACT_ADDRESS: ADDRESS,
     TREASURY_ADDRESS: ADDRESS,
     EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
+    ...FEES,
   };
   // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so whatever
   // ENV_FILE sets is in the process environment too.
@@ -296,6 +410,114 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
     expect(plan({ ...freshFile, ORACLE_ADDRESS: OTHER }).oracle).to.equal(OTHER);
   });
 
+  describe("a fresh pair on a live network takes every setting that wires it from the file", function () {
+    const liveFile = {
+      ...freshFile,
+      ORACLE_ADDRESS: OTHER,
+      DOMAIN: "tradable.app",
+    };
+    // A value only the root .env or the shell holds: one per setting, each distinct, so a
+    // message that repeated it would be caught.
+    const outside = {
+      TOKEN_CONTRACT_ADDRESS: "0x1111111111111111111111111111111111111111",
+      TREASURY_ADDRESS: "0x2222222222222222222222222222222222222222",
+      ORACLE_ADDRESS: "0x3333333333333333333333333333333333333333",
+      EXPECTED_FEE_TOKEN_SYMBOL: "ROOTSYMBOL",
+      INITIAL_PROMPT_FEE: "7777777777",
+      INITIAL_CANCELLATION_FEE: "6666666666",
+      INITIAL_METADATA_FEE: "5555555555",
+      INITIAL_BRANCH_FEE: "4444444444",
+      DOMAIN: "root-domain.example",
+    };
+    const livePlan = (networkName, fileEnv, extra = {}) =>
+      resolveDeployPlan({
+        networkName,
+        envFile,
+        fileEnv,
+        processEnv: { ...fileEnv, ...extra },
+      });
+
+    it("names the settings it reads from the file alone for a fresh pair on a live network", function () {
+      expect([...FRESH_LIVE_FILE_ONLY_VARS].sort()).to.deep.equal(Object.keys(outside).sort());
+    });
+
+    it("passes when the file holds them all", function () {
+      const p = livePlan("baseSepolia", liveFile);
+      expect(p.oracle).to.equal(OTHER);
+      expect(p.domain).to.equal("tradable.app");
+    });
+
+    for (const name of Object.keys(outside)) {
+      it(`refuses ${name} set only in the root .env or the shell, naming it and the file, never its value`, function () {
+        for (const networkName of ["baseSepolia", "base"]) {
+          const fileEnv = { ...liveFile, [CONFIRM_VAR]: "1" };
+          delete fileEnv[name];
+          expect(() => livePlan(networkName, fileEnv, { [name]: outside[name] }), networkName)
+            .to.throw(Error)
+            .with.property("message")
+            .that.includes(`${name} is not set in ${envFile}`)
+            .and.not.includes(outside[name]);
+        }
+      });
+
+      it(`refuses ${name} that differs between the file and the shell, never printing either`, function () {
+        const fileEnv = { ...liveFile };
+        expect(() => livePlan("baseSepolia", fileEnv, { [name]: outside[name] }))
+          .to.throw(Error)
+          .with.property("message")
+          .that.includes(`${name} in the root .env or the shell differs from ${envFile}`)
+          .and.not.includes(outside[name]);
+      });
+    }
+
+    it("an upgrade does not ask: it reads none of them", function () {
+      const upgradeFile = {
+        DEPLOY_MODE: "upgrade",
+        AI_AGENT_CONTRACT_ADDRESS: ADDRESS,
+        AI_AGENT_ESCROW_CONTRACT_ADDRESS: ADDRESS,
+      };
+      expect(livePlan("baseSepolia", upgradeFile, outside).mode).to.equal("upgrade");
+    });
+
+    it("a local network still reads them from the merged environment, as the e2e bring-up writes only some to the file", function () {
+      const localFile = { DEPLOY_MODE: "fresh", TOKEN_CONTRACT_ADDRESS: ADDRESS };
+      const p = livePlan("localnet", localFile, { TREASURY_ADDRESS: outside.TREASURY_ADDRESS });
+      expect(p.treasury).to.equal(outside.TREASURY_ADDRESS);
+    });
+  });
+
+  it("refuses DRY_RUN=1 on a Sapphire network, whose deploy has no dry run, before anything is sent", function () {
+    for (const networkName of ["sapphire", "sapphire-testnet", "sapphire-localnet"]) {
+      expect(
+        () =>
+          resolveDeployPlan({
+            networkName,
+            envFile: undefined,
+            fileEnv: null,
+            processEnv: { DRY_RUN: "1" },
+          }),
+        networkName,
+      )
+        .to.throw(Error)
+        .with.property("message")
+        .that.includes("DRY_RUN=1")
+        .and.includes("fresh pair on an EVM network")
+        .and.includes("Nothing was sent");
+    }
+  });
+
+  it("leaves the Sapphire path as it was without DRY_RUN=1", function () {
+    for (const DRY_RUN of [undefined, "", "true"]) {
+      const p = resolveDeployPlan({
+        networkName: "sapphire-testnet",
+        envFile: undefined,
+        fileEnv: null,
+        processEnv: { DRY_RUN },
+      });
+      expect(p.isSapphire, JSON.stringify(DRY_RUN)).to.equal(true);
+    }
+  });
+
   it("gives the Sapphire path no mode", function () {
     const p = resolveDeployPlan({
       networkName: "sapphire-testnet",
@@ -315,6 +537,37 @@ describe("scripts/deploy — what it prints", function () {
     expect(source).to.not.match(/network\.config\.url/);
     expect(source).to.not.match(/rpcUrl/i);
   });
+
+  it("prints a failure's stack, never the whole error object, which can carry the request", function () {
+    for (const script of ["deploy.js", "authorize-oracle.js", "list-fee-token-exempt.js"]) {
+      const source = fs.readFileSync(path.join(__dirname, "..", "scripts", script), "utf8");
+      expect(source, script).to.not.match(/console\.error\(\s*error\s*\)/);
+      expect(source, script).to.match(/error\?\.stack/);
+    }
+  });
+});
+
+describe(".env.example — the deploy's settings are named", function () {
+  const template = fs.readFileSync(path.join(__dirname, "..", ".env.example"), "utf8");
+
+  for (const name of [
+    "DEPLOY_MODE",
+    "EXPECTED_FEE_TOKEN_SYMBOL",
+    "TREASURY_ADDRESS",
+    "ORACLE_ADDRESS",
+    "INITIAL_PROMPT_FEE",
+    "INITIAL_CANCELLATION_FEE",
+    "INITIAL_METADATA_FEE",
+    "INITIAL_BRANCH_FEE",
+  ]) {
+    it(`names ${name} with an empty value and a comment above it`, function () {
+      const lines = template.split("\n");
+      const at = lines.findIndex((line) => line.startsWith(`${name}=`));
+      expect(at, name).to.be.greaterThan(0);
+      expect(lines[at], name).to.equal(`${name}=`);
+      expect(lines[at - 1], name).to.match(/^#/);
+    });
+  }
 });
 
 describe("hardhat.config — Basescan verify endpoints", function () {
@@ -387,6 +640,15 @@ describe("package scripts — ROFL signing goes through the Keychain wrapper", f
         );
       }
     }
+  });
+
+  it("has a dry run of the deploy on each live Base network, which prints the plan and sends nothing", function () {
+    expect(scripts["deploy:base-testnet:dry"]).to.equal(
+      "DRY_RUN=1 ENV_FILE=.env.base-testnet hardhat run scripts/deploy.js --network baseSepolia",
+    );
+    expect(scripts["deploy:base-mainnet:dry"]).to.equal(
+      "DRY_RUN=1 ENV_FILE=.env.base-mainnet hardhat run scripts/deploy.js --network base",
+    );
   });
 
   it("deploy:base-mainnet still targets --network base from .env.base-mainnet (the guard is in deploy.js)", function () {

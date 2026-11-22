@@ -1,20 +1,17 @@
 const hre = require("hardhat");
-const dotenv = require("dotenv");
-const fs = require("fs");
 const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
+const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
+const { LOCAL_NETWORKS } = require("./lib/networks");
 
 // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so the process
 // environment holds both. DEPLOY_MODE and the pair's addresses are read again from ENV_FILE
-// alone (FILE_ONLY_VARS below).
+// alone on every EVM network (FILE_ONLY_VARS below), and so is every setting that wires a fresh
+// pair on a live network (FRESH_LIVE_FILE_ONLY_VARS).
 
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
-
-// Networks the deploy wallet runs on its own. Any other network counts as live, so a network
-// added later is checked rather than skipped.
-const LOCAL_NETWORKS = new Set(["hardhat", "localhost", "localnet"]);
 
 // --- Base mainnet guard -------------------------------------------------------------------
 // `deploy:base-mainnet` reads .env.base-mainnet, which ships with placeholder addresses until
@@ -42,6 +39,61 @@ const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const DEPLOY_MODES = Object.freeze(["fresh", "upgrade"]);
 const PAIR_VARS = Object.freeze(["AI_AGENT_CONTRACT_ADDRESS", "AI_AGENT_ESCROW_CONTRACT_ADDRESS"]);
 const FILE_ONLY_VARS = Object.freeze(["DEPLOY_MODE", ...PAIR_VARS]);
+// The fees a fresh escrow starts with, in wei of the fee token, by the plan's name for each.
+const FEE_VARS = Object.freeze({
+  prompt: "INITIAL_PROMPT_FEE",
+  cancellation: "INITIAL_CANCELLATION_FEE",
+  metadata: "INITIAL_METADATA_FEE",
+  branch: "INITIAL_BRANCH_FEE",
+});
+// Everything a fresh pair on a live network is wired with. One left out of ENV_FILE but set in
+// the root .env would otherwise be used, and the read-back would pass, since it compares the
+// chain with that same value. An upgrade reads none of them; a local network keeps the merged
+// environment, since the e2e bring-up writes only the token, the symbol, the mode and the pair
+// to the file and lets the rest fall back to the deploy wallet and the default fees.
+const FRESH_LIVE_FILE_ONLY_VARS = Object.freeze([
+  "TOKEN_CONTRACT_ADDRESS",
+  "TREASURY_ADDRESS",
+  "ORACLE_ADDRESS",
+  "EXPECTED_FEE_TOKEN_SYMBOL",
+  ...Object.values(FEE_VARS),
+  "DOMAIN",
+]);
+
+// What a local fresh pair charges when a fee is not set, in whole tokens of the fee token.
+const DEFAULT_FEES_IN_TOKENS = Object.freeze({
+  prompt: "1",
+  cancellation: "0.1",
+  metadata: "0.1",
+  branch: "0.5",
+});
+// The escrow's getter for each fee, and the label the plan prints.
+const FEE_GETTERS = Object.freeze({
+  prompt: "promptFee",
+  cancellation: "cancellationFee",
+  metadata: "metadataUpdateFee",
+  branch: "branchFee",
+});
+const FEE_LABELS = Object.freeze({
+  prompt: "Prompt fee",
+  cancellation: "Cancellation fee",
+  metadata: "Metadata fee",
+  branch: "Branch fee",
+});
+const WHOLE_WEI_RE = /^[0-9]+$/;
+
+/** Why a fee setting cannot be used, or null. The value is described by shape only. */
+function feeValueProblem(name, value) {
+  if (!isSet(value) || WHOLE_WEI_RE.test(String(value).trim())) return null;
+  return `${name} is not a whole number of wei (${describeShape(value)}): write the fee in wei, in decimal digits only, with no sign, point, exponent, separator or 0x (one token of 18 decimals is 1000000000000000000)`;
+}
+
+/** The settings read from ENV_FILE alone for this network and the mode the file names. */
+function fileOnlyNames({ networkName, fileEnv }) {
+  const fresh = String(fileEnv?.DEPLOY_MODE ?? "").trim() === "fresh";
+  if (!fresh || LOCAL_NETWORKS.has(networkName)) return FILE_ONLY_VARS;
+  return [...FILE_ONLY_VARS, ...FRESH_LIVE_FILE_ONLY_VARS];
+}
 
 /**
  * What stops a deploy, given the settings it would run with. `env` is the process environment
@@ -57,7 +109,8 @@ function deployProblems({ networkName, env }) {
     }
   }
   problems.push(...modeProblems({ networkName, env }));
-  if (networkName === MAINNET_NETWORK && env[CONFIRM_VAR] !== "1") {
+  // A dry run sends nothing, so it may show the plan before the confirm is given.
+  if (networkName === MAINNET_NETWORK && env[CONFIRM_VAR] !== "1" && env.DRY_RUN !== "1") {
     problems.push(
       `${CONFIRM_VAR} is ${describeShape(env[CONFIRM_VAR])}; a live deploy to ${MAINNET_NETWORK} needs exactly ${CONFIRM_VAR}=1 bun run deploy:base-mainnet`,
     );
@@ -91,6 +144,15 @@ function modeProblems({ networkName, env }) {
       "TOKEN_CONTRACT_ADDRESS is required for a fresh pair: the new escrow takes its fees in that token",
     );
   }
+  for (const name of Object.values(FEE_VARS)) {
+    const problem = feeValueProblem(name, env[name]);
+    if (problem) problems.push(problem);
+    if (!isSet(env[name]) && !LOCAL_NETWORKS.has(networkName)) {
+      problems.push(
+        `${name} must be set for a fresh pair on ${networkName}: it is the fee in wei that users pay, and the default is for local networks only`,
+      );
+    }
+  }
   if (!LOCAL_NETWORKS.has(networkName)) {
     if (!isSet(env.TREASURY_ADDRESS)) {
       problems.push(
@@ -107,28 +169,19 @@ function modeProblems({ networkName, env }) {
 }
 
 /**
- * FILE_ONLY_VARS must come from ENV_FILE: one the file leaves out but the root .env or the shell
- * sets would otherwise pick the mode or the pair. Values are never printed.
+ * The settings `fileOnlyNames` lists must come from ENV_FILE: one the file leaves out but the root
+ * .env or the shell sets would otherwise pick the mode, the pair or its wiring. Values are never
+ * printed.
  */
-function sourceProblems({ envFile, fileEnv, processEnv }) {
-  if (!envFile || !fileEnv) {
-    return [
-      `ENV_FILE is not set: on an EVM network ${FILE_ONLY_VARS.join(", ")} are read from the file it names alone. Run the deploy through its package script (for example bun run deploy:base-testnet)`,
-    ];
-  }
-  const trimmed = (value) => (isSet(value) ? String(value).trim() : undefined);
-  const problems = [];
-  for (const name of FILE_ONLY_VARS) {
-    const inFile = trimmed(fileEnv[name]);
-    const inEnv = trimmed(processEnv[name]);
-    if (inFile === inEnv) continue;
-    problems.push(
-      inFile === undefined
-        ? `${name} is not set in ${envFile} but is set in the root .env or the shell; it is read from ${envFile} alone, so remove it from the root .env and the shell, or set it in ${envFile}`
-        : `${name} in the root .env or the shell differs from ${envFile}; it is read from ${envFile} alone, so remove it from the root .env and the shell`,
-    );
-  }
-  return problems;
+function sourceProblems({ networkName, envFile, fileEnv, processEnv }) {
+  return fileOnlyProblems({
+    names: fileEnv ? fileOnlyNames({ networkName, fileEnv }) : FILE_ONLY_VARS,
+    envFile,
+    fileEnv,
+    processEnv,
+    howToRun:
+      "On an EVM network run the deploy through its package script (for example bun run deploy:base-testnet)",
+  });
 }
 
 function refusal(networkName, problems) {
@@ -149,14 +202,17 @@ const orNull = (value) => (isSet(value) ? String(value).trim() : null);
  */
 function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
   if (SAPPHIRE_NETWORKS.has(networkName)) {
+    // The Sapphire deploy has no dry run: going on would send a real deploy.
+    if (processEnv.DRY_RUN === "1") {
+      throw refusal(networkName, [
+        "DRY_RUN=1 is set, but the dry run exists only for a fresh pair on an EVM network; the Sapphire deploy has none. Unset DRY_RUN to deploy. Nothing was sent.",
+      ]);
+    }
     return { networkName, isSapphire: true };
   }
-  const env = { ...processEnv };
-  if (fileEnv) {
-    for (const name of FILE_ONLY_VARS) env[name] = fileEnv[name];
-  }
+  const env = withFileValues(processEnv, fileEnv, fileOnlyNames({ networkName, fileEnv }));
   const problems = [
-    ...sourceProblems({ envFile, fileEnv, processEnv }),
+    ...sourceProblems({ networkName, envFile, fileEnv, processEnv }),
     ...deployProblems({ networkName, env }),
   ];
   if (problems.length > 0) throw refusal(networkName, problems);
@@ -165,8 +221,9 @@ function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
     isSapphire: false,
     envFile,
     mode: env.DEPLOY_MODE,
+    dryRun: env.DRY_RUN === "1",
     live: !LOCAL_NETWORKS.has(networkName),
-    domain: env.DOMAIN,
+    domain: orNull(env.DOMAIN),
     token: orNull(env.TOKEN_CONTRACT_ADDRESS),
     treasury: orNull(env.TREASURY_ADDRESS),
     oracle: orNull(env.ORACLE_ADDRESS),
@@ -329,10 +386,96 @@ async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer }
     );
   }
 
+  problems.push(...(await feeProblems(ethers, { plan, aiAgentEscrow })));
+
   if (plan.expectedSymbol) {
     problems.push(...(await symbolProblems(ethers, plan)));
   }
   return problems;
+}
+
+/** Each fee the escrow holds that is not the planned one. */
+async function feeProblems(ethers, { plan, aiAgentEscrow }) {
+  let decimals;
+  try {
+    decimals = await readDecimals(ethers, plan.token);
+  } catch {
+    return [
+      `token.decimals() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}, so the fees were not compared`,
+    ];
+  }
+  const planned = plannedFees(ethers, plan, decimals);
+  const problems = [];
+  for (const [key, getter] of Object.entries(FEE_GETTERS)) {
+    const actual = await aiAgentEscrow[getter]();
+    const { wei, isDefault } = planned[key];
+    if (actual !== wei) {
+      problems.push(
+        `escrow.${getter}() is ${actual}, not ${isDefault ? `the default for ${FEE_VARS[key]}` : FEE_VARS[key]} ${wei}`,
+      );
+    }
+  }
+  return problems;
+}
+
+const ERC20_READS = Object.freeze([
+  "function symbol() view returns (string)",
+  "function decimals() view returns (uint8)",
+]);
+
+async function readDecimals(ethers, tokenAddress) {
+  const token = new ethers.Contract(tokenAddress, ERC20_READS, ethers.provider);
+  return Number(await token.decimals());
+}
+
+/**
+ * Each fee in wei, with whether it is the local default. The settings have been checked to be
+ * whole numbers of wei; the defaults are whole tokens, so they take the token's decimals.
+ */
+function plannedFees(ethers, plan, decimals) {
+  const fees = {};
+  for (const key of Object.keys(FEE_VARS)) {
+    const value = plan.fees?.[key];
+    fees[key] = isSet(value)
+      ? { wei: BigInt(String(value).trim()), isDefault: false }
+      : { wei: ethers.parseUnits(DEFAULT_FEES_IN_TOKENS[key], decimals), isDefault: true };
+  }
+  return fees;
+}
+
+/**
+ * What the token is, read before anything is sent: whether there is a contract at the address,
+ * its symbol (against EXPECTED_FEE_TOKEN_SYMBOL when the plan names one) and its decimals, which
+ * the plan's fees are shown in.
+ */
+async function readFeeToken(ethers, plan) {
+  const problems = [];
+  if ((await ethers.provider.getCode(plan.token)) === "0x") {
+    return {
+      problems: [`there is no contract at TOKEN_CONTRACT_ADDRESS ${plan.token}`],
+    };
+  }
+  const token = new ethers.Contract(plan.token, ERC20_READS, ethers.provider);
+  let symbol = null;
+  try {
+    symbol = await token.symbol();
+  } catch {
+    problems.push(`token.symbol() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}`);
+  }
+  if (symbol !== null && plan.expectedSymbol && symbol !== plan.expectedSymbol) {
+    problems.push(
+      `token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL`,
+    );
+  }
+  let decimals = null;
+  try {
+    decimals = await readDecimals(ethers, plan.token);
+  } catch {
+    problems.push(
+      `token.decimals() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}, so the fees cannot be shown in whole tokens`,
+    );
+  }
+  return { problems, symbol, decimals };
 }
 
 async function symbolProblems(ethers, plan) {
@@ -351,13 +494,18 @@ async function symbolProblems(ethers, plan) {
   return [`token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL`];
 }
 
+/** The line that records the new pair, so a second run upgrades it rather than deploying another. */
+function recordPairLine({ plan, agentAddress, escrowAddress }) {
+  return `In ${plan.envFile}: AI_AGENT_CONTRACT_ADDRESS=${agentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${escrowAddress}, DEPLOY_MODE=upgrade.`;
+}
+
 function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
   const run = `ENV_FILE=${plan.envFile} HARDHAT_NETWORK=${plan.networkName} node scripts/authorize-oracle.js`;
   return [
     chalk.yellow(
       `The deploy wallet ${deployer} is the agent's first oracle. Move the role to the oracle's own address before the ownership handover, in this order (docs/BASE_TESTNET_DEPLOY_RUNBOOK.md, section 1.1):`,
     ),
-    `  1. In ${plan.envFile}: AI_AGENT_CONTRACT_ADDRESS=${agentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${escrowAddress}, DEPLOY_MODE=upgrade.`,
+    `  1. ${recordPairLine({ plan, agentAddress, escrowAddress })}`,
     "  2. Start the oracle on this pair and read the signer= address from its [OracleKeys] start-up line.",
     `  3. ORACLE_ADDRESS=<signer> ${run} grant`,
     "  4. See one prompt answered by it, and take that answer's transaction hash.",
@@ -383,11 +531,28 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
       `ORACLE_ADDRESS is the deploy wallet ${deployer.address}. It is set so that the deploy key never holds the oracle role: name the address the oracle answers from, or leave it unset (the deploy wallet is then the first oracle, and scripts/authorize-oracle.js moves the role). Nothing was sent.`,
     );
   }
+  const feeSettingProblems = Object.entries(FEE_VARS)
+    .map(([key, name]) => feeValueProblem(name, plan.fees?.[key]))
+    .filter(Boolean);
+  const token = await readFeeToken(ethers, plan);
+  const before = [...feeSettingProblems, ...token.problems];
+  if (before.length > 0) {
+    throw new Error(`Fresh deploy refused:\n  - ${before.join("\n  - ")}\nNothing was sent.`);
+  }
   const oracle = plan.oracle ? ethers.getAddress(plan.oracle) : deployer.address;
   const treasury = plan.treasury ? ethers.getAddress(plan.treasury) : deployer.address;
-  log(`Deploying a fresh pair with the account: ${chalk.yellow(deployer.address)}`);
-  log(`First oracle: ${oracle}${plan.oracle ? " (ORACLE_ADDRESS)" : " (the deploy wallet)"}`);
-  log(`Treasury: ${treasury}${plan.treasury ? " (TREASURY_ADDRESS)" : " (the deploy wallet)"}`);
+  const fees = plannedFees(ethers, plan, token.decimals);
+  for (const line of planLines({ plan, deployer, oracle, treasury, token, fees, ethers })) {
+    log(line);
+  }
+  if (plan.dryRun) {
+    log(
+      chalk.yellow(
+        "DRY_RUN=1: nothing was sent. Run the deploy without DRY_RUN to send this plan (on Base mainnet with DEPLOY_MAINNET_CONFIRMED=1).",
+      ),
+    );
+    return null;
+  }
 
   const EVMAIAgent = await ethers.getContractFactory("EVMAIAgent", deployer);
   const EVMAIAgentEscrow = await ethers.getContractFactory("EVMAIAgentEscrow", deployer);
@@ -401,7 +566,6 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
   const agentAddress = await aiAgent.getAddress();
   log(`✅ EVMAIAgent proxy deployed to: ${chalk.cyan(agentAddress)}`);
 
-  const fee = (value, fallback) => value ?? ethers.parseEther(fallback);
   log("Deploying EVMAIAgentEscrow proxy...");
   const aiAgentEscrow = await upgrades.deployProxy(
     EVMAIAgentEscrow,
@@ -410,10 +574,10 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
       agentAddress,
       treasury,
       deployer.address,
-      fee(plan.fees?.prompt, "1"), // Default: 1 token
-      fee(plan.fees?.cancellation, "0.1"), // Default: 0.1 token
-      fee(plan.fees?.metadata, "0.1"), // Default: 0.1 token
-      fee(plan.fees?.branch, "0.5"), // Default: 0.5 token
+      fees.prompt.wei,
+      fees.cancellation.wei,
+      fees.metadata.wei,
+      fees.branch.wei,
     ],
     { initializer: "initialize", kind: "uups" },
   );
@@ -447,13 +611,36 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
   };
 }
 
+/**
+ * The plan as the operator reads it before anything is sent: who deploys, the token, the
+ * treasury, the first oracle and each fee in wei and in whole tokens. No fee is refused for its
+ * size: each is printed so that a fee off by a power of ten is seen here.
+ */
+function planLines({ plan, deployer, oracle, treasury, token, fees, ethers }) {
+  const lines = [
+    chalk.bold(`Fresh pair on ${plan.networkName}. Check every line before anything is sent:`),
+    `  Deploy wallet: ${deployer.address}`,
+    `  Fee token: ${plan.token} (symbol ${JSON.stringify(token.symbol)}, ${token.decimals} decimals)`,
+    `  Treasury: ${treasury}${plan.treasury ? " (TREASURY_ADDRESS)" : " (the deploy wallet)"}`,
+    `  First oracle: ${oracle}${plan.oracle ? " (ORACLE_ADDRESS)" : " (the deploy wallet)"}`,
+    `  Domain: ${plan.domain}`,
+  ];
+  for (const [key, name] of Object.entries(FEE_VARS)) {
+    const { wei, isDefault } = fees[key];
+    const tokens = ethers.formatUnits(wei, token.decimals);
+    const note = isDefault ? ` (default: ${name} is not set)` : "";
+    lines.push(`  ${FEE_LABELS[key]} (${name}): ${wei} wei = ${tokens} ${token.symbol}${note}`);
+  }
+  return lines;
+}
+
 function reportFreshPair({ plan, log, oracle, deployer, agentAddress, escrowAddress }) {
   const symbolNote = plan.expectedSymbol
     ? ", and the token's symbol is EXPECTED_FEE_TOKEN_SYMBOL"
     : "";
   log(
     chalk.green(
-      `✅ Read back: the two links, the token, the treasury, both owners and the oracle role are as planned${symbolNote}.`,
+      `✅ Read back: the two links, the token, the treasury, both owners, the oracle role and the four fees are as planned${symbolNote}.`,
     ),
   );
   if (!plan.expectedSymbol) {
@@ -463,6 +650,11 @@ function reportFreshPair({ plan, log, oracle, deployer, agentAddress, escrowAddr
   }
   if (plan.oracle) {
     log(`ORACLE_ADDRESS ${oracle} holds the oracle role; the deploy wallet does not.`);
+    log(
+      chalk.yellow(
+        `Record the pair now, so that a second run upgrades it rather than deploying another. ${recordPairLine({ plan, agentAddress, escrowAddress })}`,
+      ),
+    );
     return;
   }
   for (const line of handOverSteps({ plan, deployer, agentAddress, escrowAddress })) log(line);
@@ -579,18 +771,6 @@ async function verifyOnExplorer(networkName, addresses) {
   }
 }
 
-/** ENV_FILE parsed on its own, or null when it is not set. */
-function readEnvFile(envFile) {
-  if (!envFile) return null;
-  let text;
-  try {
-    text = fs.readFileSync(envFile);
-  } catch {
-    throw new Error(`ENV_FILE names ${envFile}, which cannot be read`);
-  }
-  return dotenv.parse(text);
-}
-
 async function main() {
   const networkName = hre.network.name;
   const envFile = process.env.ENV_FILE;
@@ -617,11 +797,20 @@ async function main() {
   }
 
   console.log(`\nDEPLOY_MODE=${plan.mode} (from ${envFile})`);
+  if (plan.dryRun && plan.mode !== "fresh") {
+    throw new Error(
+      "DRY_RUN=1 prints the plan of a fresh pair; an upgrade has no dry run. Nothing was sent.",
+    );
+  }
   const pair =
     plan.mode === "fresh"
       ? await deployFreshPair(hre, plan, { deployer })
       : await upgradePair(hre, plan);
 
+  if (!pair) {
+    console.log("\n--- Dry run finished ---");
+    return;
+  }
   if (plan.live) {
     await verifyOnExplorer(networkName, [
       ["EVMAIAgent", pair.aiAgentAddress],
@@ -634,6 +823,7 @@ async function main() {
 
 module.exports = {
   FILE_ONLY_VARS,
+  FRESH_LIVE_FILE_ONLY_VARS,
   DEPLOY_MODES,
   LOCAL_NETWORKS,
   resolveDeployPlan,
@@ -650,7 +840,8 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(error);
+    // The stack (message and frames) only: an ethers error object also carries the request.
+    console.error(chalk.red(error?.stack ?? String(error)));
     process.exitCode = 1;
   });
 }

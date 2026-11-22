@@ -73,8 +73,9 @@ describe("scripts/deploy — a fresh pair", function () {
     expect(text()).to.match(/EVMAIAgentEscrow proxy deployed to: 0x[0-9a-fA-F]{40}/);
   });
 
-  it("fails after deploying when the token's symbol is not EXPECTED_FEE_TOKEN_SYMBOL, and says which check failed", async function () {
-    const { able } = await loadFixture(tokensFixture);
+  it("refuses a token whose symbol is not EXPECTED_FEE_TOKEN_SYMBOL before anything is deployed", async function () {
+    const { able, deployer } = await loadFixture(tokensFixture);
+    const nonce = await ethers.provider.getTransactionCount(deployer.address);
 
     // The mock token's symbol is ABLE (contracts/mocks/MockAbleToken.sol).
     await expect(
@@ -83,8 +84,141 @@ describe("scripts/deploy — a fresh pair", function () {
         EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
       }),
     ).to.be.rejectedWith(
-      /token\.symbol\(\)[\s\S]*EXPECTED_FEE_TOKEN_SYMBOL[\s\S]*agent 0x[0-9a-fA-F]{40}/,
+      /token\.symbol\(\) is "ABLE", which is not EXPECTED_FEE_TOKEN_SYMBOL[\s\S]*Nothing was sent/,
     );
+    expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
+  });
+
+  it("refuses a TOKEN_CONTRACT_ADDRESS with no contract before anything is deployed", async function () {
+    const { deployer, treasury } = await loadFixture(tokensFixture);
+    const nonce = await ethers.provider.getTransactionCount(deployer.address);
+
+    await expect(deploy({ TOKEN_CONTRACT_ADDRESS: treasury.address })).to.be.rejectedWith(
+      /no contract at TOKEN_CONTRACT_ADDRESS[\s\S]*Nothing was sent/,
+    );
+    expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
+  });
+
+  describe("the fees", function () {
+    const FEES = {
+      INITIAL_PROMPT_FEE: "2500000000000000000",
+      INITIAL_CANCELLATION_FEE: "1",
+      INITIAL_METADATA_FEE: "0",
+      INITIAL_BRANCH_FEE: "750000000000000000000",
+    };
+
+    it("prints each fee in wei and in whole tokens before anything is deployed, and the escrow starts with them", async function () {
+      const { able } = await loadFixture(tokensFixture);
+
+      const { aiAgentEscrow, lines } = await deploy({
+        TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+        ...FEES,
+      });
+
+      const first = lines.findIndex((l) => l.includes("Deploying EVMAIAgent proxy"));
+      const before = lines.slice(0, first).join("\n");
+      expect(before).to.include(
+        "Prompt fee (INITIAL_PROMPT_FEE): 2500000000000000000 wei = 2.5 ABLE",
+      );
+      expect(before).to.include(
+        "Cancellation fee (INITIAL_CANCELLATION_FEE): 1 wei = 0.000000000000000001 ABLE",
+      );
+      expect(before).to.include("Metadata fee (INITIAL_METADATA_FEE): 0 wei = 0.0 ABLE");
+      expect(before).to.include(
+        "Branch fee (INITIAL_BRANCH_FEE): 750000000000000000000 wei = 750.0 ABLE",
+      );
+      expect(await aiAgentEscrow.promptFee()).to.equal(2500000000000000000n);
+      expect(await aiAgentEscrow.cancellationFee()).to.equal(1n);
+      expect(await aiAgentEscrow.metadataUpdateFee()).to.equal(0n);
+      expect(await aiAgentEscrow.branchFee()).to.equal(750000000000000000000n);
+    });
+
+    it("a dry run prints the whole plan and sends nothing", async function () {
+      const { able, deployer } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress(), ...FEES });
+      const nonce = await ethers.provider.getTransactionCount(deployer.address);
+      const lines = [];
+
+      const result = await deployFreshPair(
+        hre,
+        { ...plan, dryRun: true },
+        {
+          log: (line) => lines.push(String(line)),
+        },
+      );
+
+      const text = lines.join("\n");
+      expect(result).to.equal(null);
+      expect(text).to.include(
+        "Prompt fee (INITIAL_PROMPT_FEE): 2500000000000000000 wei = 2.5 ABLE",
+      );
+      expect(text).to.include("DRY_RUN=1: nothing was sent");
+      expect(text).to.not.include("Deploying EVMAIAgent proxy");
+      expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
+    });
+
+    it("prints the defaults a local network falls back to, marked as defaults", async function () {
+      const { able } = await loadFixture(tokensFixture);
+
+      const { aiAgentEscrow, text } = await deploy({
+        TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+      });
+
+      expect(text()).to.include(
+        "Prompt fee (INITIAL_PROMPT_FEE): 1000000000000000000 wei = 1.0 ABLE (default: INITIAL_PROMPT_FEE is not set)",
+      );
+      expect(await aiAgentEscrow.branchFee()).to.equal(ethers.parseEther("0.5"));
+    });
+
+    it("refuses a fee that is not a whole number of wei before anything is sent", async function () {
+      const { able, deployer } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+      const nonce = await ethers.provider.getTransactionCount(deployer.address);
+
+      await expect(
+        deployFreshPair(hre, { ...plan, fees: { ...plan.fees, prompt: "1.5" } }, { log: () => {} }),
+      ).to.be.rejectedWith(
+        /INITIAL_PROMPT_FEE is not a whole number of wei[\s\S]*Nothing was sent/,
+      );
+      expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
+    });
+
+    it("the read-back names each fee the escrow does not hold", async function () {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress(), ...FEES });
+      const pair = await deployFreshPair(hre, plan, { log: () => {} });
+      const [deployer] = await ethers.getSigners();
+
+      const problems = await freshPairProblems(hre, {
+        plan: {
+          ...plan,
+          fees: { prompt: "3", cancellation: "4", metadata: "5", branch: "6" },
+        },
+        ...pair,
+        deployer,
+      });
+
+      expect(problems).to.deep.equal([
+        "escrow.promptFee() is 2500000000000000000, not INITIAL_PROMPT_FEE 3",
+        "escrow.cancellationFee() is 1, not INITIAL_CANCELLATION_FEE 4",
+        "escrow.metadataUpdateFee() is 0, not INITIAL_METADATA_FEE 5",
+        "escrow.branchFee() is 750000000000000000000, not INITIAL_BRANCH_FEE 6",
+      ]);
+    });
+  });
+
+  it("says to record the pair and set DEPLOY_MODE=upgrade when ORACLE_ADDRESS is set too", async function () {
+    const { able, oracle } = await loadFixture(tokensFixture);
+
+    const { aiAgentAddress, aiAgentEscrowAddress, text } = await deploy({
+      TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+      ORACLE_ADDRESS: oracle.address,
+    });
+
+    expect(text()).to.include(
+      `In .env.test: AI_AGENT_CONTRACT_ADDRESS=${aiAgentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${aiAgentEscrowAddress}, DEPLOY_MODE=upgrade.`,
+    );
+    expect(text()).to.not.include("authorize-oracle.js grant");
   });
 
   it("refuses an ORACLE_ADDRESS that is the deploy wallet before anything is sent", async function () {
@@ -142,6 +276,68 @@ describe("scripts/deploy — a fresh pair", function () {
       expect(text).to.include("escrow.evmAIAgent()");
       expect(text).to.include("escrow.ableToken()");
       expect(text).to.include("escrow.treasury()");
+    });
+
+    async function pairWithOracle() {
+      const { able, oracle, treasury } = await loadFixture(tokensFixture);
+      const plan = planFor({
+        TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+        TREASURY_ADDRESS: treasury.address,
+        ORACLE_ADDRESS: oracle.address,
+      });
+      const pair = await deployFreshPair(hre, plan, { log: () => {} });
+      const [deployer, , , , stranger] = await ethers.getSigners();
+      return { plan, pair, deployer, oracle, stranger };
+    }
+
+    // Ownership moves in two steps: the new owner accepts.
+    async function handOver(contract, to) {
+      await (await contract.transferOwnership(to.address)).wait();
+      await (await contract.connect(to).acceptOwnership()).wait();
+    }
+
+    it("names each contract the deploy wallet does not own", async function () {
+      const { plan, pair, deployer, stranger } = await pairWithOracle();
+      await handOver(pair.aiAgent, stranger);
+      await handOver(pair.aiAgentEscrow, stranger);
+
+      const problems = await freshPairProblems(hre, { plan, ...pair, deployer });
+
+      expect(problems).to.have.lengthOf(2);
+      expect(problems[0]).to.equal(
+        `agent.owner() is ${stranger.address}, not the deploy wallet ${deployer.address}`,
+      );
+      expect(problems[1]).to.equal(
+        `escrow.owner() is ${stranger.address}, not the deploy wallet ${deployer.address}`,
+      );
+    });
+
+    it("names ORACLE_ADDRESS without the oracle role, and the deploy wallet with it", async function () {
+      const { plan, pair, deployer, oracle } = await pairWithOracle();
+      await (await pair.aiAgent.addOracle(deployer.address)).wait();
+      await (await pair.aiAgent.removeOracle(oracle.address)).wait();
+
+      const problems = await freshPairProblems(hre, { plan, ...pair, deployer });
+
+      expect(problems).to.deep.equal([
+        `agent.isOracle(${oracle.address}) is false: ORACLE_ADDRESS does not hold the oracle role`,
+        `agent.isOracle(${deployer.address}) is true: the deploy wallet holds the oracle role`,
+      ]);
+    });
+
+    it("names the deploy wallet without the oracle role when it is meant to be the first oracle", async function () {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+      const pair = await deployFreshPair(hre, plan, { log: () => {} });
+      const [deployer, , , , stranger] = await ethers.getSigners();
+      await (await pair.aiAgent.addOracle(stranger.address)).wait();
+      await (await pair.aiAgent.removeOracle(deployer.address)).wait();
+
+      const problems = await freshPairProblems(hre, { plan, ...pair, deployer });
+
+      expect(problems).to.deep.equal([
+        `agent.isOracle(${deployer.address}) is false: the deploy wallet does not hold the oracle role`,
+      ]);
     });
   });
 });

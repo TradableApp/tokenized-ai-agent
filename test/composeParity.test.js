@@ -10,6 +10,9 @@ const ROOT = path.join(__dirname, "..");
 const TESTNET = "compose.base-testnet.yaml";
 const MAINNET = "compose.base-mainnet.yaml";
 const ONLY_ON = Object.freeze({ [TESTNET]: [], [MAINNET]: [] });
+// Settings above this line are ROFL secrets, injected as ${NAME:-}; below it they are plaintext
+// in the bundle.
+const PLAINTEXT_DELIMITER = "=== 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===";
 
 /** The names in the oracle service's `environment:` list, in order. */
 function settingNames(file) {
@@ -51,5 +54,19 @@ describe("compose files — Base testnet and Base mainnet list the same settings
         .map((m) => m[1])
         .sort();
     expect(injected(MAINNET)).to.deep.equal(injected(TESTNET));
+  });
+
+  it("keeps every secret above the plaintext delimiter in both files", function () {
+    for (const file of [TESTNET, MAINNET]) {
+      const lines = fs.readFileSync(path.join(ROOT, file), "utf8").split("\n");
+      const delimiter = lines.findIndex((line) => line.includes(PLAINTEXT_DELIMITER));
+      expect(delimiter, `${file}: the delimiter line`).to.be.greaterThan(0);
+      const below = lines
+        .slice(delimiter + 1)
+        .map((line) => /^\s+-\s+([A-Za-z_][A-Za-z0-9_]*)=\$\{\1:-\}\s*$/.exec(line))
+        .filter(Boolean)
+        .map((m) => m[1]);
+      expect(below, `${file}: secrets below the delimiter`).to.deep.equal([]);
+    }
   });
 });
