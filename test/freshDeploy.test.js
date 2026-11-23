@@ -528,6 +528,29 @@ describe("scripts/deploy — a fresh pair", function () {
         .that.does.not.include("secret-key");
     });
 
+    it("the deploy reads its pair back at the link's block, so a lagging node does not fail it", async function () {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+
+      const pair = await deployFreshPair(hre, plan, { log: () => {}, readBackView: lagging });
+
+      expect(await pair.aiAgent.aiAgentEscrow()).to.equal(pair.aiAgentEscrowAddress);
+    });
+
+    it("a read-back that cannot read names the deployed pair and its link block", async function () {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+
+      await expect(
+        deployFreshPair(hre, plan, {
+          log: () => {},
+          readBackView: (contract) => lagging(contract, { failFirst: 1000 }),
+        }),
+      ).to.be.rejectedWith(
+        /could not read the pair at block \d+[\s\S]*deployed, at agent 0x[0-9a-fA-F]{40} and escrow 0x[0-9a-fA-F]{40}, and linked in block \d+/,
+      );
+    });
+
     it("on a local network reads once, with no wait", async function () {
       const { plan, pair, linkBlock, deployer } = await linkedPair();
       let sleeps = 0;

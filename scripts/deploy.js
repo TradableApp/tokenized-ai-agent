@@ -356,10 +356,14 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 /**
  * Reads the new pair back and lists every way it differs from the plan: the two links, the
  * escrow's token and treasury, both owners, who holds the oracle role, and the token's symbol
- * when the plan names one. An empty list means the pair is as planned.
+ * when the plan names one. An empty list means the pair is as planned. With `blockTag` every
+ * value is read at that block, so a node behind the one that mined the link cannot answer from
+ * before it.
  */
-async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer }) {
+async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer, blockTag }) {
   const { ethers } = env;
+  // Spread into each call: an override is passed only when there is a block to read at.
+  const at = blockTag === undefined ? [] : [{ blockTag }];
   const agentAddress = await aiAgent.getAddress();
   const escrowAddress = await aiAgentEscrow.getAddress();
   const problems = [];
@@ -368,57 +372,62 @@ async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer }
   };
 
   expectSame(
-    await aiAgent.aiAgentEscrow(),
+    await aiAgent.aiAgentEscrow(...at),
     escrowAddress,
     "agent.aiAgentEscrow()",
     "the new escrow",
   );
   expectSame(
-    await aiAgentEscrow.evmAIAgent(),
+    await aiAgentEscrow.evmAIAgent(...at),
     agentAddress,
     "escrow.evmAIAgent()",
     "the new agent",
   );
   expectSame(
-    await aiAgentEscrow.ableToken(),
+    await aiAgentEscrow.ableToken(...at),
     plan.token,
     "escrow.ableToken()",
     "TOKEN_CONTRACT_ADDRESS",
   );
   expectSame(
-    await aiAgentEscrow.treasury(),
+    await aiAgentEscrow.treasury(...at),
     plan.treasury ?? deployer.address,
     "escrow.treasury()",
     plan.treasury ? "TREASURY_ADDRESS" : "the deploy wallet",
   );
-  expectSame(await aiAgent.owner(), deployer.address, "agent.owner()", "the deploy wallet");
-  expectSame(await aiAgentEscrow.owner(), deployer.address, "escrow.owner()", "the deploy wallet");
+  expectSame(await aiAgent.owner(...at), deployer.address, "agent.owner()", "the deploy wallet");
+  expectSame(
+    await aiAgentEscrow.owner(...at),
+    deployer.address,
+    "escrow.owner()",
+    "the deploy wallet",
+  );
 
   const oracle = plan.oracle ?? deployer.address;
-  if (!(await aiAgent.isOracle(oracle))) {
+  if (!(await aiAgent.isOracle(oracle, ...at))) {
     problems.push(
       `agent.isOracle(${oracle}) is false: ${plan.oracle ? "ORACLE_ADDRESS" : "the deploy wallet"} does not hold the oracle role`,
     );
   }
-  if (plan.oracle && (await aiAgent.isOracle(deployer.address))) {
+  if (plan.oracle && (await aiAgent.isOracle(deployer.address, ...at))) {
     problems.push(
       `agent.isOracle(${deployer.address}) is true: the deploy wallet holds the oracle role`,
     );
   }
 
-  problems.push(...(await feeProblems(ethers, { plan, aiAgentEscrow })));
+  problems.push(...(await feeProblems(ethers, { plan, aiAgentEscrow, at })));
 
   if (plan.expectedSymbol) {
-    problems.push(...(await symbolProblems(ethers, plan)));
+    problems.push(...(await symbolProblems(ethers, plan, at)));
   }
   return problems;
 }
 
 /** Each fee the escrow holds that is not the planned one. */
-async function feeProblems(ethers, { plan, aiAgentEscrow }) {
+async function feeProblems(ethers, { plan, aiAgentEscrow, at = [] }) {
   let decimals;
   try {
-    decimals = await readDecimals(ethers, plan.token);
+    decimals = await readDecimals(ethers, plan.token, at);
   } catch {
     return [
       `token.decimals() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}, so the fees were not compared`,
@@ -427,7 +436,7 @@ async function feeProblems(ethers, { plan, aiAgentEscrow }) {
   const planned = plannedFees(ethers, plan, decimals);
   const problems = [];
   for (const [key, getter] of Object.entries(FEE_GETTERS)) {
-    const actual = await aiAgentEscrow[getter]();
+    const actual = await aiAgentEscrow[getter](...at);
     const { wei, isDefault } = planned[key];
     if (actual !== wei) {
       problems.push(
@@ -443,9 +452,9 @@ const ERC20_READS = Object.freeze([
   "function decimals() view returns (uint8)",
 ]);
 
-async function readDecimals(ethers, tokenAddress) {
+async function readDecimals(ethers, tokenAddress, at = []) {
   const token = new ethers.Contract(tokenAddress, ERC20_READS, ethers.provider);
-  return Number(await token.decimals());
+  return Number(await token.decimals(...at));
 }
 
 /**
@@ -498,7 +507,7 @@ async function readFeeToken(ethers, plan) {
   return { problems, symbol, decimals };
 }
 
-async function symbolProblems(ethers, plan) {
+async function symbolProblems(ethers, plan, at = []) {
   const token = new ethers.Contract(
     plan.token,
     ["function symbol() view returns (string)"],
@@ -506,12 +515,59 @@ async function symbolProblems(ethers, plan) {
   );
   let symbol;
   try {
-    symbol = await token.symbol();
+    symbol = await token.symbol(...at);
   } catch {
     return [`token.symbol() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}`];
   }
   if (symbol === plan.expectedSymbol) return [];
   return [`token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL`];
+}
+
+// How often a live read-back polls for the link's block, and reads the pair again after a read
+// that failed or differed, before it gives up.
+const READ_BACK_ATTEMPTS = 6;
+const READ_BACK_WAIT_MS = 2000;
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The fresh pair's read-back at `linkBlock`, the block that mined the link. A load-balanced public
+ * RPC can answer from a node behind the one that mined it, which would report a correct pair as
+ * unlinked; every value is read at that block instead, once the node answering has it. On a live
+ * network a read that fails or differs is made again, up to READ_BACK_ATTEMPTS times; at a pinned
+ * block a difference that stays is real. A local network reads once. Gives back the last list of
+ * problems a read gave, or throws when no read succeeded, naming the block and the error's code only (an
+ * ethers error can carry the request).
+ */
+async function readBackFreshPair(
+  env,
+  args,
+  {
+    linkBlock,
+    provider = env.ethers.provider,
+    sleep = () => wait(READ_BACK_WAIT_MS),
+    attempts = READ_BACK_ATTEMPTS,
+  },
+) {
+  const tries = LOCAL_NETWORKS.has(env.network.name) ? 1 : attempts;
+  for (let poll = 1; poll < tries && (await provider.getBlockNumber()) < linkBlock; poll += 1) {
+    await sleep();
+  }
+  let problems = null;
+  let failure = null;
+  for (let attempt = 1; attempt <= tries; attempt += 1) {
+    try {
+      problems = await freshPairProblems(env, { ...args, blockTag: linkBlock });
+      failure = null;
+      if (problems.length === 0) return problems;
+    } catch (error) {
+      failure = error;
+    }
+    if (attempt < tries) await sleep();
+  }
+  if (problems) return problems;
+  throw new Error(
+    `The read-back could not read the pair at block ${linkBlock} after ${tries} attempt(s) (${failure?.code ?? failure?.name ?? "error"}).`,
+  );
 }
 
 /** The line that records the new pair, so a second run upgrades it rather than deploying another. */
@@ -541,7 +597,11 @@ function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
  * wallet or the zero address as ORACLE_ADDRESS, and after the deploy when the read-back finds a
  * difference, naming each.
  */
-async function deployFreshPair(env, plan, { log = console.log, deployer: given } = {}) {
+async function deployFreshPair(
+  env,
+  plan,
+  { log = console.log, deployer: given, readBackView = (contract) => contract } = {},
+) {
   const { ethers, upgrades } = env;
   if (plan.mode !== "fresh") {
     throw new Error(
@@ -624,10 +684,28 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
     );
   }
   log("Linking AI Agent to Escrow contract...");
-  await sendOwnerCall(env, deployer, aiAgent.setAgentEscrow, [escrowAddress]);
+  const linkReceipt = await sendOwnerCall(env, deployer, aiAgent.setAgentEscrow, [escrowAddress]);
   log("✅ Link successful.");
 
-  const problems = await freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer });
+  // Read back at the link's block, so a node behind the one that mined it cannot fail a correct
+  // pair. `readBackView` lets a test stand in a node that lags.
+  let problems;
+  try {
+    problems = await readBackFreshPair(
+      env,
+      {
+        plan,
+        aiAgent: readBackView(aiAgent),
+        aiAgentEscrow: readBackView(aiAgentEscrow),
+        deployer,
+      },
+      { linkBlock: linkReceipt.blockNumber },
+    );
+  } catch (error) {
+    throw new Error(
+      `${error.message} The contracts were deployed, at agent ${agentAddress} and escrow ${escrowAddress}, and linked in block ${linkReceipt.blockNumber}: read them back at that block before pointing anything at them or deploying again.`,
+    );
+  }
   if (problems.length > 0) {
     throw new Error(
       `Fresh deploy read-back failed:\n  - ${problems.join("\n  - ")}\nThe contracts were deployed, at agent ${agentAddress} and escrow ${escrowAddress}: point nothing at them. Fix the setting and deploy a fresh pair again.`,
@@ -861,6 +939,7 @@ module.exports = {
   resolveDeployPlan,
   deployFreshPair,
   freshPairProblems,
+  readBackFreshPair,
   upgradePair,
   deployProblems,
   assertDeployAllowed,
