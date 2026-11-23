@@ -279,7 +279,12 @@ That file is **gitignored and not in this repo**, so you will not find it in a f
 on the deploy machine. base-mainnet is not provisioned, so the line is inert. Delete it when
 base-mainnet is provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
 
-Unsetting the key would silently demote **price** to the demo tier — which is why it stays set.
+The key stays set, and in the oracle it cannot be left out: on every network that is not local the
+oracle refuses to start without it (`COINGECKO_API_KEY is missing or empty`, or the example file's
+placeholder; `oracle/src/startupConfig.js`), so nothing is demoted. Only a local network, which is
+not asked for it, starts the tool server with no key, in the demo environment, and every price
+call then fails. In `sense-ai-core` an unset key starts its CoinGecko server in the demo
+environment with no key, and nothing there stops it.
 The rest of this subsection is historical: the news flag it points at is inert (see the §2
 warning). For the record, at the time it worked like this:
 `sense-ai-brain`'s `coinGeckoAdapter.ts` constructor read `COINGECKO_NEWS_ENABLED !== "false"`, and
