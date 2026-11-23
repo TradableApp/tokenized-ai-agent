@@ -7,6 +7,7 @@ const {
   runHandover,
   PHASES,
   resolveHandoverTarget,
+  resolveHandoverSettings,
   targetLines,
 } = require("../scripts/authorize-oracle");
 
@@ -427,5 +428,172 @@ describe("scripts/authorize-oracle — moving the oracle role off the deploy wal
       expect(text).to.include(`Fee token: ${TOKEN}`);
       expect(text).to.include(envFile);
     });
+  });
+});
+
+// The documented command runs the script with node, which loads hardhat.config.js, which loads
+// ENV_FILE with override: a line in the file replaces a value typed on the command line, even an
+// empty line such as the template's. These run that path in a child process, against a file of
+// their own, so what the operator typed and what the file holds can disagree as they would.
+describe("scripts/authorize-oracle — the settings as the documented command gives them", function () {
+  // Each child loads Hardhat itself.
+  this.timeout(60_000);
+
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { spawnSync } = require("child_process");
+
+  const ROOT = path.join(__dirname, "..");
+  const AGENT = "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D";
+  const TYPED = "0x00000000000000000000000000000000000000aa";
+  const STALE = "0x00000000000000000000000000000000000000bb";
+  const TYPED_HASH = `0x${"aa".repeat(32)}`;
+  const STALE_HASH = `0x${"bb".repeat(32)}`;
+  const SETTINGS = ["ENV_FILE", "HARDHAT_NETWORK", "ORACLE_ADDRESS", "ANSWER_TX_HASH"];
+
+  let dir;
+  before(function () {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "authorize-oracle-"));
+  });
+  after(function () {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Runs one phase with `fileLines` as ENV_FILE and `shell` as what was typed before it. */
+  function run(phase, { fileLines, shell }) {
+    const envFile = path.join(dir, `handover-${Math.random().toString(16).slice(2)}.settings`);
+    fs.writeFileSync(envFile, [`AI_AGENT_CONTRACT_ADDRESS=${AGENT}`, ...fileLines, ""].join("\n"));
+    const env = { ...process.env };
+    for (const name of SETTINGS) delete env[name];
+    const result = spawnSync(process.execPath, ["scripts/authorize-oracle.js", phase], {
+      cwd: ROOT,
+      env: { ...env, ...shell, ENV_FILE: envFile, HARDHAT_NETWORK: "hardhat" },
+      encoding: "utf8",
+    });
+    return { envFile, status: result.status, out: `${result.stdout}\n${result.stderr}` };
+  }
+
+  it("refuses an ORACLE_ADDRESS typed on the command line when ENV_FILE has the template's empty line", function () {
+    const { envFile, status, out } = run("grant", {
+      fileLines: ["ORACLE_ADDRESS="],
+      shell: { ORACLE_ADDRESS: TYPED },
+    });
+    expect(status).to.equal(1);
+    expect(out).to.include(`ORACLE_ADDRESS is not set in ${envFile}`);
+    expect(out).to.include(`set it in ${envFile}`);
+    expect(out).to.include("Nothing was sent");
+    expect(out).to.not.include(TYPED);
+  });
+
+  it("refuses an ORACLE_ADDRESS typed on the command line that differs from ENV_FILE's, never acting on either", function () {
+    const { envFile, status, out } = run("grant", {
+      fileLines: [`ORACLE_ADDRESS=${STALE}`],
+      shell: { ORACLE_ADDRESS: TYPED },
+    });
+    expect(status).to.equal(1);
+    expect(out).to.include(`ORACLE_ADDRESS in the root .env or the shell differs from ${envFile}`);
+    expect(out).to.include("Nothing was sent");
+    expect(out).to.not.include(TYPED);
+    expect(out).to.not.include(STALE);
+  });
+
+  it("refuses an empty ORACLE_ADDRESS in ENV_FILE before anything is read, naming the file to set it in", function () {
+    const { envFile, status, out } = run("grant", { fileLines: ["ORACLE_ADDRESS="], shell: {} });
+    expect(status).to.equal(1);
+    expect(out).to.include("ORACLE_ADDRESS is required");
+    expect(out).to.include(`set it in ${envFile}`);
+    expect(out).to.include("Nothing was sent");
+    // The agent address holds no contract here, so a read would fail with a decode error.
+    expect(out).to.not.match(/could not decode|BAD_DATA/);
+  });
+
+  it("refuses an ANSWER_TX_HASH typed on the command line that differs from ENV_FILE's", function () {
+    const { envFile, status, out } = run("retire-deployer", {
+      fileLines: [`ORACLE_ADDRESS=${STALE}`, `ANSWER_TX_HASH=${STALE_HASH}`],
+      shell: { ANSWER_TX_HASH: TYPED_HASH },
+    });
+    expect(status).to.equal(1);
+    expect(out).to.include(`ANSWER_TX_HASH in the root .env or the shell differs from ${envFile}`);
+    expect(out).to.not.include(TYPED_HASH);
+    expect(out).to.not.include(STALE_HASH);
+  });
+
+  it("refuses an ANSWER_TX_HASH typed on the command line when ENV_FILE has an empty line for it", function () {
+    const { envFile, status, out } = run("retire-deployer", {
+      fileLines: [`ORACLE_ADDRESS=${STALE}`, "ANSWER_TX_HASH="],
+      shell: { ANSWER_TX_HASH: TYPED_HASH },
+    });
+    expect(status).to.equal(1);
+    expect(out).to.include(`ANSWER_TX_HASH is not set in ${envFile}`);
+    expect(out).to.not.include(TYPED_HASH);
+  });
+
+  it("takes ORACLE_ADDRESS from ENV_FILE when the command line gives the same address or none", function () {
+    for (const shell of [{}, { ORACLE_ADDRESS: STALE }]) {
+      const { out } = run("grant", { fileLines: [`ORACLE_ADDRESS=${STALE}`], shell });
+      // Past the settings: the next step reads the agent, which holds no contract here.
+      expect(out).to.not.match(/ORACLE_ADDRESS (is required|is not set in|in the root \.env)/);
+      expect(out).to.match(/could not decode|BAD_DATA/);
+    }
+  });
+});
+
+describe("scripts/authorize-oracle — where the hand-over's own settings are read", function () {
+  const envFile = ".env.base-testnet";
+  const ORACLE = "0x00000000000000000000000000000000000000aa";
+  const OTHER = "0x00000000000000000000000000000000000000bb";
+
+  it("takes ORACLE_ADDRESS from ENV_FILE and names the file as where it is set", function () {
+    const fileEnv = { ORACLE_ADDRESS: ORACLE };
+    const { env, settingsFrom } = resolveHandoverSettings({
+      phase: "grant",
+      envFile,
+      fileEnv,
+      processEnv: fileEnv,
+      typedEnv: {},
+    });
+    expect(env.ORACLE_ADDRESS).to.equal(ORACLE);
+    expect(settingsFrom).to.equal(envFile);
+  });
+
+  it("refuses an ORACLE_ADDRESS that only the root .env sets, never printing it", function () {
+    expect(() =>
+      resolveHandoverSettings({
+        phase: "grant",
+        envFile,
+        fileEnv: {},
+        processEnv: { ORACLE_ADDRESS: OTHER },
+        typedEnv: {},
+      }),
+    )
+      .to.throw(Error)
+      .with.property("message")
+      .that.includes(`ORACLE_ADDRESS is not set in ${envFile}`)
+      .and.includes("Nothing was sent")
+      .and.not.includes(OTHER);
+  });
+
+  it("asks grant for ORACLE_ADDRESS alone, and retire-deployer for ANSWER_TX_HASH too", function () {
+    const typedEnv = { ANSWER_TX_HASH: `0x${"aa".repeat(32)}` };
+    const fileEnv = { ORACLE_ADDRESS: ORACLE };
+    const args = { envFile, fileEnv, processEnv: fileEnv, typedEnv };
+    expect(() => resolveHandoverSettings({ ...args, phase: "grant" })).to.not.throw();
+    expect(() => resolveHandoverSettings({ ...args, phase: "retire-deployer" })).to.throw(
+      /ANSWER_TX_HASH is not set in \.env\.base-testnet/,
+    );
+  });
+
+  it("reads the environment as it is when no ENV_FILE is named (a local run by hand)", function () {
+    const processEnv = { ORACLE_ADDRESS: ORACLE };
+    const { env, settingsFrom } = resolveHandoverSettings({
+      phase: "grant",
+      envFile: undefined,
+      fileEnv: null,
+      processEnv,
+      typedEnv: processEnv,
+    });
+    expect(env).to.equal(processEnv);
+    expect(settingsFrom).to.equal(undefined);
   });
 });

@@ -196,7 +196,8 @@ _Addresses of a deployed pair are filled on deploy day; none is committed here._
 > the domain. The token is checked and the plan, fees included, is printed before anything is
 > sent; `deploy:base-testnet:dry` / `deploy:base-mainnet:dry` print that plan and send nothing.
 > A fresh pair is read back after the deploy; the
-> oracle hand-over (`authorize-oracle:<network>`) and the fee token listing
+> oracle hand-over (`authorize-oracle:<network>`, whose `ORACLE_ADDRESS` and `ANSWER_TX_HASH`
+> are set in the env file, never typed before the command) and the fee token listing
 > (`list-fee-token-exempt:<network>`) follow, in the order of
 > [the runbook's "Fresh pair, in order"](docs/BASE_TESTNET_DEPLOY_RUNBOOK.md#12-fresh-pair-in-order).
 
