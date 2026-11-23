@@ -19,6 +19,7 @@ const {
   startStreamFromEnv,
   httpLimitsFor,
   readerQueueCap,
+  REPLAY_LIMITS,
 } = require("../src/stream/streamServer");
 const { readStreamConfig, SOCKET_BUDGET } = require("../src/stream/streamConfig");
 const { BUFFER_LIMITS } = require("../src/stream/frameBuffer");
@@ -60,6 +61,12 @@ function openAnswer(server, id, run = RUN_A, key = KEY) {
 function sendFrames(server, id, run, fromSeq, count) {
   for (let seq = fromSeq; seq < fromSeq + count; seq += 1) {
     server.frame(id, { run, seq, ciphertext: sealed() });
+  }
+}
+
+function sendFramesOf(server, id, run, fromSeq, count, ciphertext) {
+  for (let seq = fromSeq; seq < fromSeq + count; seq += 1) {
+    server.frame(id, { run, seq, ciphertext: ciphertext(seq) });
   }
 }
 
@@ -765,6 +772,101 @@ describe("streamServer", function () {
       const { text, ended } = await reading;
       expect(parseSse(text).events.map((e) => e.id)).to.deep.equal([`${RUN_A}.0`]);
       expect(ended).to.equal(false);
+    });
+  });
+
+  describe("replays of an answer's frames", () => {
+    // A frame larger than a tail: a replay that carries it is counted.
+    const big = () => sealed(20000);
+    const finishedWithBigFrame = (server, id = "42", run = RUN_A) => {
+      openAnswer(server, id, run);
+      server.frame(id, { run, seq: 0, ciphertext: sealed() });
+      server.frame(id, { run, seq: 1, ciphertext: big() });
+      server.frame(id, { run, seq: 2, ciphertext: sealed() });
+      server.close(id, { run, outcome: "answered" });
+    };
+    const replayOnce = async (base, options) => {
+      const res = await streamFetch(base, "42", { proof: streamProof(KEY, "42"), ...options });
+      if (res.status !== 200) return { status: res.status, res };
+      const { text } = await readUntil(res);
+      return { status: 200, ids: parseSse(text).events.map((e) => e.id) };
+    };
+
+    it("refuses a full replay of a finished answer past the limit with 429 and Retry-After", async () => {
+      const { server, base } = await serve();
+      finishedWithBigFrame(server);
+
+      for (let i = 0; i < REPLAY_LIMITS.maxCountedReplays; i += 1) {
+        const { status, ids } = await replayOnce(base);
+        expect(status, `replay ${i + 1}`).to.equal(200);
+        expect(ids).to.deep.equal([0, 1, 2].map((s) => `${RUN_A}.${s}`));
+      }
+      const refused = await replayOnce(base);
+      expect(refused.status).to.equal(429);
+      expect(refused.res.headers.get("retry-after")).to.equal(String(STREAM_REFUSALS.busy.retryAfterSeconds));
+      expect(await refused.res.json()).to.deep.equal({ error: "busy" });
+    });
+
+    it("still serves a reconnect that needs only the tail once full replays are refused", async () => {
+      const { server, base } = await serve();
+      finishedWithBigFrame(server);
+      for (let i = 0; i < REPLAY_LIMITS.maxCountedReplays; i += 1) await replayOnce(base);
+      expect((await replayOnce(base)).status).to.equal(429);
+
+      const tail = await replayOnce(base, { lastEventId: `${RUN_A}.1` });
+      expect(tail.status).to.equal(200);
+      expect(tail.ids).to.deep.equal([`${RUN_A}.2`]);
+    });
+
+    it("counts again from zero for a new run of the answer", async () => {
+      const { server, base } = await serve();
+      finishedWithBigFrame(server);
+      for (let i = 0; i < REPLAY_LIMITS.maxCountedReplays; i += 1) await replayOnce(base);
+      expect((await replayOnce(base)).status).to.equal(429);
+
+      finishedWithBigFrame(server, "42", RUN_B);
+      const next = await replayOnce(base);
+      expect(next.status).to.equal(200);
+      expect(next.ids).to.deep.equal([0, 1, 2].map((s) => `${RUN_B}.${s}`));
+    });
+
+    it("limits full replays of an open answer whose readers leave after reading", async () => {
+      const { server, base } = await serve();
+      openAnswer(server, "42");
+      server.frame("42", { run: RUN_A, seq: 0, ciphertext: big() });
+      const proof = streamProof(KEY, "42");
+
+      for (let i = 0; i < REPLAY_LIMITS.maxCountedReplays; i += 1) {
+        const res = await streamFetch(base, "42", { proof });
+        expect(res.status, `replay ${i + 1}`).to.equal(200);
+        await readUntil(res, { until: (t) => t.includes(`${RUN_A}.0`) });
+      }
+      const refused = await streamFetch(base, "42", { proof });
+      expect(refused.status).to.equal(429);
+    });
+
+    it("writes a large replay in slices, yielding between them, and a frame sent meanwhile follows it once, in order", async () => {
+      const { server, base } = await serve({}, { replaySliceBytes: 300 });
+      openAnswer(server, "42");
+      sendFramesOf(server, "42", RUN_A, 0, 6, () => sealed(200));
+      const realSetImmediate = global.setImmediate;
+      let slicesAfterTheFirst = 0;
+      sinon.stub(global, "setImmediate").callsFake((fn, ...args) => {
+        if (fn && fn.name === "continueReplay") {
+          slicesAfterTheFirst += 1;
+          // A live frame arrives while the replay is still being written.
+          if (slicesAfterTheFirst === 1) server.frame("42", { run: RUN_A, seq: 6, ciphertext: sealed(200) });
+        }
+        return realSetImmediate(fn, ...args);
+      });
+
+      const res = await streamFetch(base, "42", { proof: streamProof(KEY, "42") });
+      const { text } = await readUntil(res, { until: (t) => t.includes(`${RUN_A}.6`) });
+
+      expect(slicesAfterTheFirst).to.be.at.least(2);
+      expect(parseSse(text).events.map((e) => e.id)).to.deep.equal(
+        [0, 1, 2, 3, 4, 5, 6].map((s) => `${RUN_A}.${s}`),
+      );
     });
   });
 
