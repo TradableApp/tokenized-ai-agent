@@ -12,7 +12,7 @@ const {
   parseSseEventId,
   sseEventId,
 } = require("./streamContract");
-const { createFrameBuffer, BUFFER_LIMITS } = require("./frameBuffer");
+const { createFrameBuffer, BUFFER_LIMITS, REPLAY_LIMITS } = require("./frameBuffer");
 const { readStreamConfig, SOCKET_BUDGET } = require("./streamConfig");
 const { errorKind } = require("../errorDescription");
 
@@ -84,6 +84,12 @@ const KEEP_ALIVE_BUFFER_MS = 1000;
 const MS_PER_SECOND = 1000;
 /** A kind of server failure is logged again at most this often; every one is counted. */
 const FAILURE_LOG_INTERVAL_MS = 60 * 60 * 1000;
+/**
+ * How much of a replay is written before the event loop is let run: a run's replay can be about
+ * 1 MiB, and written in one go it would hold up the answer path for that long. Below this a
+ * replay is written at once, as each live frame is.
+ */
+const REPLAY_SLICE_BYTES = 64 * 1024;
 /** The kinds whose last log time is remembered; errorKind gives a short word, so few occur. */
 const MAX_FAILURE_KINDS = 32;
 /** How long shutdown waits for responses to finish before closing every socket. */
@@ -192,6 +198,8 @@ function httpLimitsFor() {
  * @param {typeof BUFFER_LIMITS} [options.bufferLimits]
  * @param {number} [options.backpressureMs]
  * @param {number} [options.pollWaitMs]
+ * @param {typeof REPLAY_LIMITS} [options.replayLimits]
+ * @param {number} [options.replaySliceBytes]
  * @param {Partial<ReturnType<typeof httpLimitsFor>>} [options.httpLimits] overrides, for tests
  * @param {() => number} [options.now] the clock that spaces failure log lines
  */
@@ -200,11 +208,13 @@ function createStreamServer({
   bufferLimits = BUFFER_LIMITS,
   backpressureMs = BACKPRESSURE_MS,
   pollWaitMs = STREAM_HTTP.pollWaitMs,
+  replayLimits = REPLAY_LIMITS,
+  replaySliceBytes = REPLAY_SLICE_BYTES,
   httpLimits = {},
   now = () => Date.now(),
 }) {
   const limits = { ...httpLimitsFor(), ...httpLimits };
-  const buffer = createFrameBuffer({ graceMs: config.graceMs, limits: bufferLimits });
+  const buffer = createFrameBuffer({ graceMs: config.graceMs, limits: bufferLimits, replayLimits });
   const allowedOrigins = new Set(config.allowedOrigins);
   const maxQueuedBytes = readerQueueCap(bufferLimits);
   const connections = new Set();
@@ -303,6 +313,7 @@ function createStreamServer({
     reader.ended = true;
     clearInterval(reader.heartbeat);
     clearTimeout(reader.lifetime);
+    clearImmediate(reader.replaySlice);
     // Non-null exactly while the reader is counted as waiting to drain, as in the drain handler.
     if (reader.drainTimer) {
       clearTimeout(reader.drainTimer);
@@ -346,39 +357,83 @@ function createStreamServer({
     });
   }
 
-  function openReader(req, res, id, mode, finished) {
+  /**
+   * Writes the replay `replaySliceBytes` at a time, letting the event loop run between slices,
+   * then calls `done`. Stops when the reader has ended. A slice that throws ends the reader: it
+   * runs outside the request handler's guard, and nothing here may reach the answer path.
+   */
+  function writeReplay(reader, frames, done) {
+    let next = 0;
+    const continueReplay = () => {
+      reader.replaySlice = null;
+      try {
+        let written = 0;
+        while (next < frames.length && written < replaySliceBytes && !reader.ended) {
+          const text = eventText(frames[next]);
+          next += 1;
+          write(reader, text);
+          written += text.length;
+        }
+        if (reader.ended) return;
+        if (next < frames.length) {
+          reader.replaySlice = setImmediate(continueReplay);
+          return;
+        }
+        done();
+      } catch (error) {
+        noteFailure(error);
+        destroy(reader);
+      }
+    };
+    continueReplay();
+  }
+
+  function openReader(req, res, id, mode, finished, replay) {
     res.writeHead(200, {
       ...corsHeaders(req),
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       "X-Accel-Buffering": "no",
     });
-    const reader = { id, res, ended: false, released: false, drainTimer: null };
+    const reader = { id, res, ended: false, released: false, drainTimer: null, replaySlice: null };
     connections.add(reader);
     readersPerAnswer.set(id, (readersPerAnswer.get(id) ?? 0) + 1);
     res.on("close", () => release(reader));
 
     write(reader, RETRY_LINE);
-    const replay = buffer.framesAfter(id, parseSseEventId(req.headers[LAST_EVENT_ID_HEADER]));
-    for (const frame of replay) write(reader, eventText(frame));
     if (finished || (mode === "poll" && replay.length > 0)) {
-      end(reader);
+      writeReplay(reader, replay, () => end(reader));
       return;
     }
 
-    reader.unsubscribe = buffer.subscribe(id, (event) => {
+    // Subscribed before the replay is written, so a frame that arrives while it is being written
+    // (in slices) is held and sent right after it: none is missed and none is sent twice.
+    let replaying = true;
+    const held = [];
+    const onEvent = (event) => {
       if (event.kind === "frame") {
         write(reader, eventText(event.frame));
         if (mode === "poll") end(reader);
       } else {
         end(reader);
       }
+    };
+    reader.unsubscribe = buffer.subscribe(id, (event) => {
+      if (replaying) held.push(event);
+      else onEvent(event);
     });
     reader.heartbeat = setInterval(() => write(reader, PING), config.heartbeatMs);
     reader.heartbeat.unref?.();
     const lifetimeMs = mode === "poll" ? Math.min(pollWaitMs, config.maxConnMs) : config.maxConnMs;
     reader.lifetime = setTimeout(() => end(reader), lifetimeMs);
     reader.lifetime.unref?.();
+    writeReplay(reader, replay, () => {
+      replaying = false;
+      for (const event of held.splice(0)) {
+        if (reader.ended) return;
+        onEvent(event);
+      }
+    });
   }
 
   // --- routing ---
@@ -412,7 +467,12 @@ function createStreamServer({
     if ((readersPerAnswer.get(id) ?? 0) >= config.maxConnPerAnswer) {
       return refuse(req, res, STREAM_REFUSALS.busy);
     }
-    return openReader(req, res, id, mode, found.state === "finished");
+    // A full replay is counted per run, and refused past the limit (see frameBuffer.js); a
+    // reconnect whose cursor leaves only a tail is not.
+    const replay = buffer.framesAfter(id, parseSseEventId(req.headers[LAST_EVENT_ID_HEADER]));
+    const replayBytes = replay.reduce((sum, frame) => sum + frame.ciphertext.length, 0);
+    if (!buffer.claimReplay(id, replayBytes)) return refuse(req, res, STREAM_REFUSALS.busy);
+    return openReader(req, res, id, mode, found.state === "finished", replay);
   }
 
   function route(req, res) {
@@ -622,4 +682,6 @@ module.exports = {
   httpLimitsFor,
   readerQueueCap,
   BACKPRESSURE_MS,
+  REPLAY_LIMITS,
+  REPLAY_SLICE_BYTES,
 };

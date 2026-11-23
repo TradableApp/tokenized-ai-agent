@@ -22,6 +22,13 @@ const { STREAM_HTTP, isSealedFrame, isSeq } = require("./streamContract");
  * does not fit is marked unavailable (503) until its next run: its readers wait for the stored
  * answer, which is unaffected.
  *
+ * WHY REPLAYS ARE COUNTED. A reader with the proof may disconnect as soon as it has read a run's
+ * frames and ask again, and every full replay is written on the event loop that answers every
+ * paid prompt. A reader needs a full replay only when it first joins a run (one per device, or
+ * after a reload); a reconnect sends its cursor and needs only the tail. So each run may be
+ * replayed in full `maxCountedReplays` times; a replay of at most `freeTailBytes` is never counted
+ * or refused, and a new run counts from zero. The stream server refuses past that with 429.
+ *
  * Nothing here throws to a caller, and nothing here is printed.
  */
 
@@ -33,6 +40,16 @@ const BUFFER_LIMITS = Object.freeze({
   maxTombstones: 4096,
 });
 
+/**
+ * Replays of one run larger than a tail: 8 full replays (a few devices, each reloading a few
+ * times) for at most 8 x the 1 MiB answer cap written per run. A tail is 16 KiB, the plaintext
+ * limit of every frame but the answer.
+ */
+const REPLAY_LIMITS = Object.freeze({
+  maxCountedReplays: 8,
+  freeTailBytes: 16 * 1024,
+});
+
 const TOMBSTONE_OUTCOMES = new Set(["answered", "abandoned"]);
 
 /**
@@ -40,15 +57,17 @@ const TOMBSTONE_OUTCOMES = new Set(["answered", "abandoned"]);
  * @param {number} options.graceMs how long a finished answer's frames are kept
  * @param {number} [options.tombstoneMs] how long a dropped answer answers "gone"
  * @param {typeof BUFFER_LIMITS} [options.limits]
+ * @param {typeof REPLAY_LIMITS} [options.replayLimits]
  * @param {() => number} [options.now]
  */
 function createFrameBuffer({
   graceMs,
   tombstoneMs = STREAM_HTTP.tombstoneMs,
   limits = BUFFER_LIMITS,
+  replayLimits = REPLAY_LIMITS,
   now = () => Date.now(),
 } = {}) {
-  /** id → { run, expectedProof, frames, bytes, state: open|finished|unavailable, outcome, timer, listeners } */
+  /** id → { run, expectedProof, frames, bytes, state: open|finished|unavailable, outcome, timer, listeners, countedReplays } */
   const answers = new Map();
   /** id → expiry time; "gone" (410). Insertion order is age order. */
   const tombstones = new Map();
@@ -156,7 +175,14 @@ function createFrameBuffer({
           notify(existing, { kind: "end" });
           existing.listeners.clear();
         }
-        Object.assign(existing, { run, expectedProof, state: "open", outcome: null, timer: null });
+        Object.assign(existing, {
+          run,
+          expectedProof,
+          state: "open",
+          outcome: null,
+          timer: null,
+          countedReplays: 0,
+        });
         return true;
       }
       while (answers.size >= limits.maxOpenAnswers) {
@@ -177,6 +203,7 @@ function createFrameBuffer({
         outcome: null,
         timer: null,
         listeners: new Set(),
+        countedReplays: 0,
       });
       return true;
     },
@@ -225,6 +252,19 @@ function createFrameBuffer({
       return entry.frames.slice(cursor.seq + 1);
     },
 
+    /**
+     * Whether a reader may now be sent a replay of `bytes` of the current run's frames. At most
+     * `freeTailBytes` is always allowed and not counted; more is counted, and refused (false, not
+     * counted) once `maxCountedReplays` replays of this run have been.
+     */
+    claimReplay(id, bytes) {
+      const entry = answers.get(id);
+      if (!entry || bytes <= replayLimits.freeTailBytes) return true;
+      if (entry.countedReplays >= replayLimits.maxCountedReplays) return false;
+      entry.countedReplays += 1;
+      return true;
+    },
+
     /** Calls `listener` with { kind: "frame", frame } and { kind: "end" }; returns unsubscribe. */
     subscribe(id, listener) {
       const entry = answers.get(id);
@@ -256,4 +296,4 @@ function createFrameBuffer({
   };
 }
 
-module.exports = { createFrameBuffer, BUFFER_LIMITS };
+module.exports = { createFrameBuffer, BUFFER_LIMITS, REPLAY_LIMITS };
