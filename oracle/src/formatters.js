@@ -64,10 +64,14 @@ function createConversationMetadataFile({ title, isDeleted, lastUpdatedAt }) {
  *   createdAt: number,
  *   role: 'user' | 'assistant',
  *   content: string | null,
- *   sources?: Array<{title: string, url: string}>,
- *   reasoning?: Array<{title: string, description: string}>,
+ *   sources?: Array<{title: string, url: string, attempt?: number}>,
+ *   reasoning?: Array<{title: string, description: string, attempt?: number}>,
+ *   answerAttempt?: number,
  *   reasoningDuration?: number
  * }} params
+ * `answerAttempt` (assistant only, left out when not given): the attempt that produced the
+ * answer, numbered as each reasoning step's and source's `attempt`; written only above 1, after a
+ * fallback tier answered. Items with a lower attempt belong to an earlier, failed attempt.
  * @returns {object} A valid MessageFile object.
  */
 function createMessageFile({
@@ -80,6 +84,7 @@ function createMessageFile({
   content,
   sources = [],
   reasoning = [],
+  answerAttempt,
   reasoningDuration,
 }) {
   const messageFile = {
@@ -95,6 +100,9 @@ function createMessageFile({
   if (role === "assistant") {
     messageFile.sources = sources;
     messageFile.reasoning = reasoning;
+    if (answerAttempt !== undefined) {
+      messageFile.answerAttempt = answerAttempt;
+    }
     if (reasoningDuration !== undefined) {
       messageFile.reasoningDuration = reasoningDuration;
     }

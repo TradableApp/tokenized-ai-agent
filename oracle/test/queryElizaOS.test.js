@@ -2,6 +2,8 @@ const { ethers } = require("ethers");
 const { withTestKeys } = require("./helpers/oracleTestKeys");
 
 const { expect } = require("chai");
+const { initInboundPrompt } = require("../src/inboundPrompt");
+const { createOfflineStream } = require("../src/stream/answerStream");
 const proxyquire = require("proxyquire").noCallThru();
 const sinon = require("sinon");
 
@@ -173,7 +175,26 @@ function loadOracleWithBrainConfigured(elizaStub, configured) {
   }));
 }
 
+/**
+ * Runs queryElizaOS with a stream, as the handlers do, and gives the reasoning that would be
+ * stored: the stream's record, read after its flush. The steps go to the stream as the thoughts
+ * arrive; the answer queryElizaOS returns carries none.
+ */
+async function storedReasoningOf(oracle, text) {
+  const stream = createOfflineStream();
+  await oracle.queryElizaOS(history(text), ROOM_ID, "entity-1", stream);
+  await stream.flush();
+  return stream.record().reasoning.map(({ title, description }) => ({ title, description }));
+}
+
 describe("queryElizaOS — provider-composed context", () => {
+  // Thoughts are sanitised before they are recorded (stream/thoughtSanitizer.js): the fence strip
+  // must be ready, and a thought the Brain finds too short to be a step ("t", "after") is dropped.
+  // Fixtures whose reasoning is asserted therefore carry a thought of real length.
+  before(async () => {
+    await initInboundPrompt();
+  });
+
   // The shape ElizaOS ACTUALLY composes: each provider's whole result — `{ ...result,
   // providerName }` — under state.data.providers[name], so the payload sits under `.data`.
   // The first version of this stub matched the parser's assumption instead, which made the test
@@ -221,13 +242,18 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(stub.captured.composeArgs.onlyInclude).to.equal(true);
   });
 
-  it("derives sources from what the run composed", async () => {
+  it("sends the sources the run composed to the stream, and returns none of its own", async () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
     const oracle = loadOracle(stub);
+    const stream = createOfflineStream();
 
-    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1", stream);
+    await stream.flush();
 
-    expect(result.sources).to.deep.equal([
+    // The stored sources are the stream's record, cleaned and cut to the contract's limits; the
+    // answer carries no uncleaned copy a caller could store by mistake.
+    expect(result.sources).to.deep.equal([]);
+    expect(stream.record().sources.map(({ title, url }) => ({ title, url }))).to.deep.equal([
       { title: "BTC ETF inflows accelerate", url: "https://example.test/a" },
       { title: "ETH staking yield dips", url: "https://example.test/b" },
     ]);
@@ -243,9 +269,9 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    const reasoning = await storedReasoningOf(oracle, "hi");
 
-    expect(result.reasoning[0]).to.deep.equal({
+    expect(reasoning[0]).to.deep.equal({
       title: "GET_ASSET_SENTIMENT",
       description: "Cache miss — fetching fresh metrics",
     });
@@ -253,7 +279,7 @@ describe("queryElizaOS — provider-composed context", () => {
     // test pass while the title was silently wrong: the stub fired ACTION_STARTED but never
     // ACTION_COMPLETED, so `currentAction` was never cleared and the un-actioned second thought
     // inherited the first thought's action.
-    expect(result.reasoning[1]).to.deep.equal({
+    expect(reasoning[1]).to.deep.equal({
       title: "Step 2",
       description: "Weighing the macro backdrop",
     });
@@ -303,10 +329,10 @@ describe("queryElizaOS — provider-composed context", () => {
     const oracle = loadOracle(stub);
     await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1").catch(() => {});
 
-    stub.setThoughts([{ thought: "after", action: "GET_ASSET_SENTIMENT" }]);
-    const result = await oracle.queryElizaOS(history("again"), ROOM_ID, "entity-1");
+    stub.setThoughts([{ thought: "Fetching the asset sentiment now", action: "GET_ASSET_SENTIMENT" }]);
+    const reasoning = await storedReasoningOf(oracle, "again");
 
-    expect(result.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
+    expect(reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
   });
 
   // One of the framework's lines that quotes the model's output is printed as an error.
@@ -377,9 +403,9 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    const answer = await oracle.queryElizaOS(history("BTC news?"), ROOM_ID, "entity-1");
+    const reasoning = await storedReasoningOf(oracle, "BTC news?");
 
-    expect(answer.reasoning.map(step => step.description)).to.deep.equal(["Reading today's headlines"]);
+    expect(reasoning.map((step) => step.description)).to.deep.equal(["Reading today's headlines"]);
   });
 
   describe("the tool server watch", () => {
@@ -606,10 +632,10 @@ describe("queryElizaOS — provider-composed context", () => {
     // two live runs in one room make soleRunIn() ambiguous, attribution is dropped, and the
     // title degrades to "Step 1".
     stub.ElizaOS.prototype.handleMessage = realHandleMessage;
-    stub.setThoughts([{ thought: "after", action: "GET_ASSET_SENTIMENT" }]);
+    stub.setThoughts([{ thought: "Fetching the asset sentiment now", action: "GET_ASSET_SENTIMENT" }]);
 
-    const result = await oracle.queryElizaOS(history("hi2"), ROOM_ID, "entity-1");
-    expect(result.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
+    const reasoning = await storedReasoningOf(oracle, "hi2");
+    expect(reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
   });
 
   it("re-registers provenance handlers when the runtime is replaced", async () => {
@@ -621,7 +647,7 @@ describe("queryElizaOS — provider-composed context", () => {
     // So the guard is keyed on the runtime INSTANCE, not on "have we ever registered".
     const stub = makeElizaStub({
       providerData,
-      thoughts: [{ thought: "t", action: "GET_ASSET_SENTIMENT" }],
+      thoughts: [{ thought: "Fetching the asset sentiment now", action: "GET_ASSET_SENTIMENT" }],
     });
     const oracle = loadOracle(stub);
 
@@ -630,7 +656,7 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(first.ownHandlers.ACTION_STARTED, "first runtime must be wired").to.be.a("function");
 
     stub.replaceRuntime();
-    const second = await oracle.queryElizaOS(history("second"), ROOM_ID, "entity-1");
+    const second = await storedReasoningOf(oracle, "second");
 
     const replaced = stub.captured.runtimes[1];
     expect(replaced, "the stub must have handed out a new runtime").to.not.equal(first);
@@ -638,7 +664,7 @@ describe("queryElizaOS — provider-composed context", () => {
       replaced.ownHandlers.ACTION_STARTED,
       "a replaced runtime must be wired too, or attribution dies silently",
     ).to.be.a("function");
-    expect(second.reasoning[0].title).to.equal("GET_ASSET_SENTIMENT");
+    expect(second[0].title).to.equal("GET_ASSET_SENTIMENT");
   });
 
   it("attributes nothing rather than wrongly when only half the handlers register", async () => {
@@ -670,9 +696,10 @@ describe("queryElizaOS — provider-composed context", () => {
     };
 
     const oracle = loadOracle(stub);
-    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    const reasoning = await storedReasoningOf(oracle, "hi");
 
-    for (const [i, step] of result.reasoning.entries()) {
+    expect(reasoning, "both thoughts are kept").to.have.length(2);
+    for (const [i, step] of reasoning.entries()) {
       expect(
         step.title,
         `step ${i + 1} must not carry an action label that can never be cleared`,
