@@ -21,7 +21,11 @@ const {
   readerQueueCap,
   REPLAY_LIMITS,
 } = require("../src/stream/streamServer");
-const { readStreamConfig, SOCKET_BUDGET } = require("../src/stream/streamConfig");
+const {
+  readStreamConfig,
+  SOCKET_BUDGET,
+  DEFAULT_ALLOWED_ORIGINS,
+} = require("../src/stream/streamConfig");
 const { BUFFER_LIMITS } = require("../src/stream/frameBuffer");
 
 /**
@@ -1382,6 +1386,23 @@ describe("streamServer", function () {
       });
       running.push(server);
       expect(["::", "0.0.0.0"]).to.include(server.address().address);
+    });
+
+    it("allows by default both hosts Firebase Hosting serves each hosted site on, and no local origin there", () => {
+      // .firebaserc in the dApp: testnet deploys site sense-ai-app-garrick, mainnet site sense-ai-app.
+      // Firebase Hosting serves every site on <site>.web.app and <site>.firebaseapp.com.
+      for (const [network, site] of [
+        ["baseSepolia", "sense-ai-app-garrick"],
+        ["base", "sense-ai-app"],
+      ]) {
+        expect(DEFAULT_ALLOWED_ORIGINS[network], network).to.include.members([
+          `https://${site}.web.app`,
+          `https://${site}.firebaseapp.com`,
+        ]);
+        for (const origin of DEFAULT_ALLOWED_ORIGINS[network]) {
+          expect(new URL(origin).protocol, `${network} ${origin}`).to.equal("https:");
+        }
+      }
     });
 
     it("reads STREAM_HOST as an IP address, every interface when unset", () => {
