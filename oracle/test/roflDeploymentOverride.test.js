@@ -233,6 +233,47 @@ describe("ROFL_DEPLOYMENT override", function () {
         expect(readCompose()).to.not.include(ENV_ADDRESS);
       });
 
+      // The placeholder and quote rules name the setting and describe its value by its length:
+      // a value is never printed, whatever it holds.
+      it("refuses a quoted value holding the address, naming the host first and printing neither", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          `DB_NOTE="${ENV_ADDRESS}"`,
+          "mcp=",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.not.include(ENV_ADDRESS);
+        const host = out.indexOf("DB_NOTE below the delimiter holds the POSTGRES_HOST value");
+        const quoted = out.indexOf("quoted —");
+        expect(host, out).to.be.greaterThan(-1);
+        expect(quoted, out).to.be.greaterThan(host);
+        expect(readLog(ws)).to.not.include("secret set");
+      });
+
+      it("never prints a quoted, placeholder or mcp value, only its length", function () {
+        writeEnvFile([
+          "PRIVATE_KEY=0xabc",
+          `POSTGRES_HOST=${ENV_ADDRESS}`,
+          MARKER,
+          "NETWORK_NAME=baseSepolia",
+          'API_TOKEN="tok-not-a-real-one"',
+          "SLACK_SECRET=your_slack_secret_here",
+          "mcp=db.example.org",
+        ]);
+        const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
+        expect(code, out).to.not.equal(0);
+        expect(out).to.not.include("tok-not-a-real-one");
+        expect(out).to.not.include("your_slack_secret_here");
+        expect(out).to.not.include("db.example.org");
+        expect(out).to.include("API_TOKEN (value not shown, 20 characters)");
+        expect(out).to.include("SLACK_SECRET (value not shown, 22 characters)");
+        expect(out).to.include("mcp (value not shown, 14 characters)");
+      });
+
       it("refuses a database address below the delimiter, without printing it", function () {
         writeEnvFile([
           "PRIVATE_KEY=0xabc",
