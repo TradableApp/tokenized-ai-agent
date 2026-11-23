@@ -87,6 +87,8 @@ async function probeDisk(diskPath) {
  * @param {Function} [deps.mirrorSnapshot] - payload-mirror counters; see storage/mirror.js
  * @param {Function} [deps.observeToolServers] - tool servers' state and call counts; see
  *   elizaos/toolServerWatch.js
+ * @param {Function} [deps.streamSnapshot] - live reasoning stream counts; see
+ *   stream/answerStream.js
  * @param {string} [deps.diskPath] - a real path to measure
  * @returns {Promise<object>} vitals, every field either a value or null
  */
@@ -101,6 +103,7 @@ async function collectVitals(deps = {}) {
     providerTally,
     mirrorSnapshot,
     observeToolServers,
+    streamSnapshot,
     diskPath,
   } = deps;
 
@@ -193,6 +196,10 @@ async function collectVitals(deps = {}) {
     // not `usable`, or `failed` or `rejectedRuns.toolError` climbing while `ok` stands still,
     // means answers are being written without live market data.
     toolServers: readSnapshot(observeToolServers),
+
+    // Cumulative live reasoning stream counts ({ framesBuilt, sinkFailures }), never an id.
+    // `sinkFailures` climbing means frames are built and stored but not reaching viewers.
+    stream: readSnapshot(streamSnapshot),
   };
 }
 

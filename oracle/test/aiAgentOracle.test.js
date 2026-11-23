@@ -325,6 +325,40 @@ describe("aiAgentOracle", function () {
       await aiAgentOracle.start();
     });
 
+    describe("the thought sanitiser's warm-up", () => {
+      const outbound = require("../src/outboundSanitizer");
+
+      afterEach(() => {
+        outbound._resetForTests();
+      });
+
+      it("loads the sanitiser at start-up, so the first prompt does not wait for the load", async () => {
+        const loader = sinon.stub().resolves({ sanitizeOutboundText: (text) => text });
+        outbound._setSanitizerForTests(null, { loader });
+
+        await aiAgentOracle.start();
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(loader.callCount).to.equal(1);
+      });
+
+      it("starts all the same when the warm-up cannot load the sanitiser", async () => {
+        outbound._setSanitizerForTests(null, { loadFails: true });
+        sinon.stub(console, "error");
+        const warn = sinon.stub(console, "warn");
+        const queryFilterStub = stubs["./contractUtility"].initializeOracle().contract.queryFilter;
+
+        await aiAgentOracle.start();
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(queryFilterStub.called, "start-up went on to the catch-up").to.equal(true);
+        const lines = warn.getCalls().map((c) => c.args.join(" "));
+        expect(
+          lines.some((line) => /sanitiser warm-up/i.test(line) && /unavailable/.test(line)),
+        ).to.equal(true);
+      });
+    });
+
     it("should start from the last processed block if a cursor is stored", async () => {
       // Setup: Cursor stored at 8500, latest block is 10000.
       await stateStore.advanceCursor(8500);

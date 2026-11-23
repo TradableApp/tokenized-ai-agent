@@ -106,6 +106,13 @@ describe("formatters", function () {
         reasoningDuration: 5,
       });
     });
+
+    it("keeps the attempt that answered on an assistant file, and never on a user file", () => {
+      const base = { id: "m", conversationId: "c", parentId: null, parentCID: null, createdAt: now, content: "x" };
+      expect(createMessageFile({ ...base, role: "assistant", answerAttempt: 2 }).answerAttempt).to.equal(2);
+      expect(createMessageFile({ ...base, role: "assistant" })).to.not.have.property("answerAttempt");
+      expect(createMessageFile({ ...base, role: "user", answerAttempt: 2 })).to.not.have.property("answerAttempt");
+    });
   });
 
   describe("generateKeywords", () => {

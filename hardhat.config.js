@@ -1,4 +1,9 @@
 const path = require("path");
+const { SNAPSHOT_VAR, captureTypedSettings } = require("./scripts/lib/typedSettings");
+
+// What the shell holds for the settings a script reads from what was typed alone (DRY_RUN and
+// the mainnet confirmations among them), recorded before either file below can replace it.
+const typedRecord = captureTypedSettings(process.env);
 
 // Load the base .env file first to get shared variables like RPC URLs
 require("dotenv").config({ path: path.resolve(__dirname, ".env") });
@@ -7,6 +12,8 @@ require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 if (process.env.ENV_FILE) {
   require("dotenv").config({ path: process.env.ENV_FILE, override: true });
 }
+// A file's line for the record itself does not replace it.
+process.env[SNAPSHOT_VAR] = typedRecord;
 
 require("@nomicfoundation/hardhat-toolbox");
 require("@openzeppelin/hardhat-upgrades");

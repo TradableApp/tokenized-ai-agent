@@ -313,6 +313,27 @@ describe("the rehearsal's treasury step and the escrow's token", function () {
         ).to.equal(true);
       });
 
+      // A standalone Hardhat node answers with its own text and puts the revert data one level
+      // down, in `data.data`.
+      it("is true for a Hardhat node's answer whose nested revert data is empty", function () {
+        const message =
+          "Error: Transaction reverted: function selector was not recognized and there's no fallback function";
+        expect(
+          isEmptyRevert(fromNode({ code: -32603, message, data: { message, data: "0x" } })),
+        ).to.equal(true);
+      });
+
+      it("is false for a Hardhat node's answer whose nested revert data is not empty", function () {
+        const message =
+          "Error: VM Exception while processing transaction: reverted with custom error";
+        expect(
+          isEmptyRevert(fromNode({ code: -32603, message, data: { message, data: "0x82b42900" } })),
+        ).to.equal(false);
+        expect(isEmptyRevert(fromNode({ code: -32603, message, data: { message } }))).to.equal(
+          false,
+        );
+      });
+
       it("is false for a revert with a reason after it, its data stripped", function () {
         const reason = fromNode({ code: -32000, message: "execution reverted: not allowed" });
         expect(isEmptyRevert(reason)).to.equal(false);

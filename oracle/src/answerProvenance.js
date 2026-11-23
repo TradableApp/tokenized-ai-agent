@@ -93,19 +93,35 @@ function reasoningFromThoughts(thoughts) {
   const steps = [];
 
   for (const entry of thoughts) {
-    const isString = typeof entry === "string";
-    const description = (isString ? entry : entry?.thought) ?? "";
-    const text = typeof description === "string" ? description.trim() : "";
-    if (!text) continue;
-
-    const action = !isString && typeof entry?.action === "string" ? entry.action.trim() : "";
-
     // Numbered against KEPT steps, not the input index, so dropping an empty thought does not
     // leave a gap in what the user sees.
-    steps.push({ title: action || `Step ${steps.length + 1}`, description: text });
+    const step = stepFromThought(entry, steps.length);
+    if (step) steps.push(step);
   }
 
   return steps;
 }
 
-module.exports = { sourcesFromState, reasoningFromThoughts, NEWS_PROVIDER };
+/**
+ * One thought as one reasoning step, or null when it has no text.
+ *
+ * The ONE conversion: the live stream (from each sanitised thought) and the stored
+ * record (reasoningFromThoughts) both use it, so a step cannot be titled one way live and another
+ * way in storage.
+ *
+ * @param {{thought?: string, action?: string}|string} entry
+ * @param {number} keptIndex how many steps of this run were kept before this one
+ * @returns {{title: string, description: string} | null}
+ */
+function stepFromThought(entry, keptIndex) {
+  const isString = typeof entry === "string";
+  const description = (isString ? entry : entry?.thought) ?? "";
+  const text = typeof description === "string" ? description.trim() : "";
+  if (!text) return null;
+
+  const action = !isString && typeof entry?.action === "string" ? entry.action.trim() : "";
+
+  return { title: action || `Step ${keptIndex + 1}`, description: text };
+}
+
+module.exports = { sourcesFromState, reasoningFromThoughts, stepFromThought, NEWS_PROVIDER };

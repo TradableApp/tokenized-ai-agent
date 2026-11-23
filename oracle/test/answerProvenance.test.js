@@ -1,6 +1,10 @@
 const { expect } = require("chai");
 
-const { sourcesFromState, reasoningFromThoughts } = require("../src/answerProvenance");
+const {
+  sourcesFromState,
+  reasoningFromThoughts,
+  stepFromThought,
+} = require("../src/answerProvenance");
 
 // Answer provenance — CU-86d3ud1va, part 2.
 //
@@ -141,6 +145,40 @@ describe("answer provenance", () => {
       expect(reasoningFromThoughts([{ thought: "   " }, { thought: "" }, {}])).to.deep.equal([]);
       expect(reasoningFromThoughts(undefined)).to.deep.equal([]);
       expect(reasoningFromThoughts("not an array")).to.deep.equal([]);
+    });
+  });
+
+  describe("stepFromThought (the one conversion the stream and the store share)", () => {
+    it("titles a thought by its action, or numbers it by its kept index", () => {
+      expect(stepFromThought({ thought: " Read the news. ", action: " GET_NEWS " }, 0)).to.deep.equal({
+        title: "GET_NEWS",
+        description: "Read the news.",
+      });
+      expect(stepFromThought({ thought: "No action here." }, 2)).to.deep.equal({
+        title: "Step 3",
+        description: "No action here.",
+      });
+      expect(stepFromThought("A bare string.", 0)).to.deep.equal({
+        title: "Step 1",
+        description: "A bare string.",
+      });
+    });
+
+    it("gives null for a thought with no text", () => {
+      expect(stepFromThought({ thought: "   " }, 0)).to.equal(null);
+      expect(stepFromThought(null, 0)).to.equal(null);
+      expect(stepFromThought({}, 0)).to.equal(null);
+    });
+
+    it("is what reasoningFromThoughts is built from", () => {
+      const thoughts = [{ thought: "One", action: "ACT" }, { thought: "" }, "Two", { thought: "Three" }];
+      const kept = [];
+      for (const entry of thoughts) {
+        const step = stepFromThought(entry, kept.length);
+        if (step) kept.push(step);
+      }
+
+      expect(reasoningFromThoughts(thoughts)).to.deep.equal(kept);
     });
   });
 });
