@@ -1596,6 +1596,24 @@ function storedExtrasFrom({ reasoning, sources, answerAttempt }, reasoningDurati
 }
 
 /**
+ * Whether this run's own submitAnswer transaction was mined and succeeded although waiting for its
+ * receipt threw (an RPC drop or a timeout after it landed). Read by the transaction's hash, so only
+ * this run's submission can count: a revert, a cancellation or another replica's answer leaves no
+ * successful receipt under it. Never asked for a `JobAlreadyFinalized` revert, which the handler's
+ * own branch keeps. Never throws: a receipt that cannot be read counts as not mined.
+ */
+async function minedDespiteFailedWait(error, txHash) {
+  if (typeof txHash !== "string" || txHash === "") return false;
+  if (isContractError(error, "JobAlreadyFinalized")) return false;
+  try {
+    const receipt = await provider.getTransactionReceipt(txHash);
+    return receipt?.status === 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Decides whether the oracle must initialise the conversation on storage (create the
  * ConversationFile + emit a non-empty conversationCID, which makes EVMAIAgent emit
  * ConversationAdded so the subgraph indexes the conversation).
@@ -2125,31 +2143,45 @@ async function handlePrompt(
       };
     }
 
-    // We lock the wallet to ensure Nonces are used sequentially.
-    await txMutex.runExclusive(async () => {
-      // Double-check finalization on-chain right before sending
-      // This catches race conditions where user cancelled while we were uploading
-      const isFinalized = await contract.isJobFinalized(answerMessageId);
+    // This run's own submitAnswer transaction once sent: if waiting for its receipt throws, its
+    // hash tells an answer that was mined anyway from one that was not.
+    let sentTxHash = null;
+    try {
+      // We lock the wallet to ensure Nonces are used sequentially.
+      await txMutex.runExclusive(async () => {
+        // Double-check finalization on-chain right before sending
+        // This catches race conditions where user cancelled while we were uploading
+        const isFinalized = await contract.isJobFinalized(answerMessageId);
 
-      if (isFinalized) {
+        if (isFinalized) {
+          console.log(
+            `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          );
+          return;
+        }
+        console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+
+        const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+        sentTxHash = tx.hash;
+
+        const receipt = await tx.wait();
+        // After the receipt: an unconfirmed submission is not an answer. Recording before
+        // confirmation would be the worse error; a wait that throws is settled below.
+        submitted = true;
         console.log(
-          `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
         );
-        return;
-      }
-      console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
-
-      const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
-
-      const receipt = await tx.wait();
-      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
-      // the connection drops after the tx lands but before this resolves, the escrow settles
-      // unrecorded. Recording before confirmation would be the worse error.
+      });
+    } catch (submitError) {
+      // The wait threw, but this run's own transaction may have landed: its receipt, read by
+      // hash, confirms it, and it is then this run's answer like any other. Otherwise the error
+      // goes on to the handler's catch unchanged (a cancellation, another replica, a failure).
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       submitted = true;
       console.log(
-        `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
+        `  ✅ Answer for prompt ${promptMessageId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
 
     // The answer frame goes only after THIS run's submitAnswer receipt: a retry re-runs the model
     // and uploads again, so an earlier upload is never the answer. Queued, never awaited.
@@ -2385,31 +2417,45 @@ async function handleRegeneration(
       searchDeltaCID: "",
     };
 
-    // We lock the wallet to ensure Nonces are used sequentially.
-    await txMutex.runExclusive(async () => {
-      // Double-check finalization on-chain right before sending
-      // This catches race conditions where user cancelled while we were uploading
-      const isFinalized = await contract.isJobFinalized(answerMessageId);
+    // This run's own submitAnswer transaction once sent: if waiting for its receipt throws, its
+    // hash tells an answer that was mined anyway from one that was not.
+    let sentTxHash = null;
+    try {
+      // We lock the wallet to ensure Nonces are used sequentially.
+      await txMutex.runExclusive(async () => {
+        // Double-check finalization on-chain right before sending
+        // This catches race conditions where user cancelled while we were uploading
+        const isFinalized = await contract.isJobFinalized(answerMessageId);
 
-      if (isFinalized) {
+        if (isFinalized) {
+          console.log(
+            `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          );
+          return;
+        }
+        console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+
+        const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+        sentTxHash = tx.hash;
+
+        const receipt = await tx.wait();
+        // After the receipt: an unconfirmed submission is not an answer. Recording before
+        // confirmation would be the worse error; a wait that throws is settled below.
+        submitted = true;
         console.log(
-          `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
         );
-        return;
-      }
-      console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
-
-      const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
-
-      const receipt = await tx.wait();
-      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
-      // the connection drops after the tx lands but before this resolves, the escrow settles
-      // unrecorded. Recording before confirmation would be the worse error.
+      });
+    } catch (submitError) {
+      // The wait threw, but this run's own transaction may have landed: its receipt, read by
+      // hash, confirms it, and it is then this run's answer like any other. Otherwise the error
+      // goes on to the handler's catch unchanged (a cancellation, another replica, a failure).
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       submitted = true;
       console.log(
-        `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
+        `  ✅ Regeneration for prompt ${promptMessageId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
 
     // After THIS run's receipt only (see handlePrompt). Queued, never awaited.
     if (submitted) {
