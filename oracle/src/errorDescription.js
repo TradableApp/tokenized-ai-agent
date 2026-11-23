@@ -45,8 +45,8 @@ const CUT = "…";
 
 /**
  * Any text as `describeError` writes an error's. In this order: the raw text is cut to
- * `MAX_RAW_INPUT`, dropping the token the cut falls in; the first line that is not blank is
- * taken; a failed query's text and values are dropped ("Failed query: <sql> params: <values>" is
+ * `MAX_RAW_INPUT`, dropping the token the cut falls in (when nothing else is left, the text is
+ * "[value removed]"); the first line that is not blank is taken; a failed query's text and values are dropped ("Failed query: <sql> params: <values>" is
  * "Failed query"); addresses, configured secrets and network peers are removed
  * (`withoutAddresses`); quoted values (a database quotes back the value it refused, a user name,
  * a file path) are removed, except a database identifier quoted right after the word that names
@@ -63,6 +63,8 @@ function describedText(text) {
   const { head, isCut } = bounded(String(text));
   const lines = head.split(/\r\n|\r|\n/);
   const index = lines.findIndex((each) => each.trim());
+  // The cut dropped the only token there was: say a value was removed rather than print nothing.
+  if (index < 0 && isCut) return VALUE_REMOVED;
   const line = index < 0 ? "" : lines[index];
   // Marked as cut only when the cut fell in the line that is described.
   const lineIsCut = isCut && index === lines.length - 1;

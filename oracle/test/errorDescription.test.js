@@ -8,6 +8,7 @@ const {
   errorKind,
   withoutAddresses,
   MAX_DESCRIBED_LENGTH,
+  MAX_RAW_INPUT,
 } = require("../src/errorDescription");
 // What stands where a network peer was (networkPeers.js).
 const PEER_REMOVED = "[peer removed]";
@@ -581,6 +582,14 @@ describe("describeError — one line of text, with nothing a reader outside the 
     expect(describeError(new Error("x ".repeat(5000))).length).to.be.at.most(MAX_DESCRIBED_LENGTH);
     expect(describeError(new Error("x".repeat(5000))).length).to.be.at.most(MAX_DESCRIBED_LENGTH);
     expect(MAX_DESCRIBED_LENGTH).to.be.within(100, 500);
+  });
+
+  it("says a value was removed when the cut leaves nothing of a long unbroken message", () => {
+    const blob = "A".repeat(MAX_RAW_INPUT + 1);
+
+    expect(describeError(new Error(blob))).to.equal("[value removed]");
+    expect(describedText(` \n${blob}`)).to.equal("[value removed]");
+    expect(describedText(""), "an empty text that was not cut stays empty").to.equal("");
   });
 
   it("never leaves part of a configured secret where the cap falls", () => {
