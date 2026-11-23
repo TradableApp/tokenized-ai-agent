@@ -1567,14 +1567,16 @@ async function flushStreamsForTest() {
 }
 
 /**
- * The reasoning, sources and duration an assistant MessageFile stores. Reasoning and sources come
- * from the stream's record, which is the projection of the frames it built: what was shown live is
- * what is stored. Empty lists are left out, as before.
+ * The reasoning, sources, answering attempt and duration an assistant MessageFile stores.
+ * Reasoning, sources and the attempt come from the stream's record, which is the projection of the
+ * frames it built: what was shown live is what is stored. Empty lists are left out, as before, and
+ * so is `answerAttempt` when it is 1 (no fallback tier was entered), so such a file is unchanged.
  */
-function storedExtrasFrom({ reasoning, sources }, reasoningDuration) {
+function storedExtrasFrom({ reasoning, sources, answerAttempt }, reasoningDuration) {
   return {
     ...(reasoning.length ? { reasoning } : {}),
     ...(sources.length ? { sources } : {}),
+    ...(answerAttempt > 1 ? { answerAttempt } : {}),
     ...(reasoningDuration !== undefined ? { reasoningDuration } : {}),
   };
 }

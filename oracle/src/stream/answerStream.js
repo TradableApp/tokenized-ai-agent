@@ -42,8 +42,8 @@ const { errorKind } = require("../errorDescription");
  * answer, one done), each bounded in size. A stream that cannot be built is replaced by an offline
  * one: the record still works and nothing is sent.
  *
- * Once `record()` has been read, no further step or sources frame is built, so nothing can be
- * shown live that the stored record does not hold.
+ * Once `record()` has been read, no further step, sources or attempt frame is built, so nothing
+ * can be shown live that the stored record does not hold.
  */
 
 /**
@@ -136,9 +136,16 @@ function cleanStep(value) {
   };
 }
 
+/**
+ * The stored record: every step and source built, each with its attempt, and `answerAttempt`,
+ * the attempt current when the record was read (the highest attempt any frame built carries; 1
+ * when no fallback tier was entered). The record is read once the answer is in, so that is the
+ * attempt that produced it, and every item with a lower attempt belongs to an earlier one.
+ */
 function projectRecord(frames) {
   const reasoning = [];
   const sources = [];
+  let answerAttempt = 1;
   for (const frame of frames) {
     if (frame.type === FRAME_TYPES.STEP) {
       const { title, description, attempt } = frame.data;
@@ -148,8 +155,11 @@ function projectRecord(frames) {
         sources.push({ title, url, attempt: frame.data.attempt });
       }
     }
+    if (frame.type === FRAME_TYPES.STEP || frame.type === FRAME_TYPES.SOURCES || frame.type === FRAME_TYPES.ATTEMPT) {
+      answerAttempt = Math.max(answerAttempt, frame.data.attempt);
+    }
   }
-  return { reasoning, sources };
+  return { reasoning, sources, answerAttempt };
 }
 
 function buildStream(options, deliver) {
@@ -369,11 +379,14 @@ function buildStream(options, deliver) {
       );
     },
 
-    /** A fallback tier started. Earlier steps stay; this is not a reset. */
+    /**
+     * A fallback tier started. Earlier steps stay; this is not a reset. Not after the record was
+     * read, so the attempt it stores as the answering one is the last one shown.
+     */
     attempt() {
       if (closing) return;
       enqueue(noop, () => {
-        if (ended || attempt >= LIMITS.maxAttempts) return;
+        if (sealed || ended || attempt >= LIMITS.maxAttempts) return;
         attempt += 1;
         emit(FRAME_TYPES.ATTEMPT, { attempt });
       });
@@ -426,7 +439,10 @@ function buildStream(options, deliver) {
       });
     },
 
-    /** The stored reasoning and sources: a projection of the frames built. Seals both. */
+    /**
+     * The stored reasoning, sources and answering attempt: a projection of the frames built.
+     * Seals all three.
+     */
     record() {
       sealed = true;
       return projectRecord(frames);
