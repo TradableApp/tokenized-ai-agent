@@ -6,6 +6,7 @@ const {
   resolveDeployPlan,
   deployFreshPair,
   freshPairProblems,
+  readBackFreshPair,
   upgradePair,
 } = require("../scripts/deploy");
 
@@ -80,6 +81,9 @@ describe("scripts/deploy — a fresh pair", function () {
     expect(text()).to.not.match(
       /(ORACLE_ADDRESS|ANSWER_TX_HASH)=<[^>]+> (ANSWER_TX_HASH=<[^>]+> )?ENV_FILE=/,
     );
+    // The next fresh deploy on a live network refuses a set ORACLE_ADDRESS, so the hand-over
+    // ends by emptying both settings again.
+    expect(text()).to.match(/empty ORACLE_ADDRESS and ANSWER_TX_HASH in \S+/);
     // The e2e bring-up reads the two addresses from these lines.
     expect(text()).to.match(/EVMAIAgent proxy deployed to: 0x[0-9a-fA-F]{40}/);
     expect(text()).to.match(/EVMAIAgentEscrow proxy deployed to: 0x[0-9a-fA-F]{40}/);
@@ -231,6 +235,19 @@ describe("scripts/deploy — a fresh pair", function () {
       `In .env.test: AI_AGENT_CONTRACT_ADDRESS=${aiAgentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${aiAgentEscrowAddress}, DEPLOY_MODE=upgrade.`,
     );
     expect(text()).to.not.include("authorize-oracle.js grant");
+  });
+
+  it("refuses a live plan that names a first oracle before anything is read or sent", async function () {
+    const { able, deployer, oracle } = await loadFixture(tokensFixture);
+    const nonce = await ethers.provider.getTransactionCount(deployer.address);
+    const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+
+    await expect(
+      deployFreshPair(hre, { ...plan, live: true, oracle: oracle.address }, { log: () => {} }),
+    ).to.be.rejectedWith(
+      /ORACLE_ADDRESS is set[\s\S]*derived from the new agent's address[\s\S]*Nothing was sent/,
+    );
+    expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
   });
 
   it("refuses an ORACLE_ADDRESS that is the deploy wallet before anything is sent", async function () {
@@ -389,6 +406,168 @@ describe("scripts/deploy — a fresh pair", function () {
       expect(problems).to.deep.equal([
         `agent.isOracle(${deployer.address}) is false: the deploy wallet does not hold the oracle role`,
       ]);
+    });
+  });
+  // A load-balanced public RPC can answer from a node behind the one that mined the link. These
+  // stand-ins answer an untagged read as of the block before the latest, as such a node would,
+  // and honour a read pinned to a block.
+  describe("the read-back after the link, on a node that lags", function () {
+    function lagging(contract, { failFirst = 0 } = {}) {
+      let failures = failFirst;
+      return new Proxy(contract, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          const fragment =
+            typeof prop === "string" && typeof value === "function"
+              ? target.interface.getFunction(prop)
+              : null;
+          if (!fragment) return typeof value === "function" ? value.bind(target) : value;
+          return async (...args) => {
+            if (args.length > fragment.inputs.length) {
+              if (failures > 0) {
+                failures -= 1;
+                throw new Error("header not found at https://rpc.example/secret-key");
+              }
+              return value(...args);
+            }
+            const latest = await ethers.provider.getBlockNumber();
+            return value(...args, { blockTag: latest - 1 });
+          };
+        },
+      });
+    }
+
+    async function linkedPair() {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+      const pair = await deployFreshPair(hre, plan, { log: () => {} });
+      // The link is the last transaction the deploy sent, and the in-process network mines one
+      // block per transaction.
+      const linkBlock = await ethers.provider.getBlockNumber();
+      const [deployer] = await ethers.getSigners();
+      return { plan, pair, linkBlock, deployer };
+    }
+
+    const live = { ethers, network: { name: "baseSepolia" } };
+    const noSleep = async () => {};
+
+    it("reads every value at the block it is given", async function () {
+      const { plan, pair, linkBlock, deployer } = await linkedPair();
+      const view = { aiAgent: lagging(pair.aiAgent), aiAgentEscrow: lagging(pair.aiAgentEscrow) };
+
+      // The stand-in lags: read at the latest block, the agent names no escrow yet.
+      const stale = await freshPairProblems(hre, { plan, ...view, deployer });
+      expect(stale.join("\n")).to.include("agent.aiAgentEscrow()");
+
+      expect(
+        await freshPairProblems(hre, { plan, ...view, deployer, blockTag: linkBlock }),
+      ).to.deep.equal([]);
+    });
+
+    it("waits until the node has the link's block, then passes a correct pair", async function () {
+      const { plan, pair, linkBlock, deployer } = await linkedPair();
+      let polls = 0;
+      const provider = {
+        getBlockNumber: async () => {
+          polls += 1;
+          return polls <= 2 ? linkBlock - 1 : linkBlock;
+        },
+      };
+      let sleeps = 0;
+
+      const problems = await readBackFreshPair(
+        live,
+        {
+          plan,
+          aiAgent: lagging(pair.aiAgent),
+          aiAgentEscrow: lagging(pair.aiAgentEscrow),
+          deployer,
+        },
+        { linkBlock, provider, sleep: async () => (sleeps += 1) },
+      );
+
+      expect(problems).to.deep.equal([]);
+      expect(polls).to.equal(3);
+      expect(sleeps).to.equal(2);
+    });
+
+    it("reads again when a read fails, and passes a correct pair", async function () {
+      const { plan, pair, linkBlock, deployer } = await linkedPair();
+
+      const problems = await readBackFreshPair(
+        live,
+        {
+          plan,
+          aiAgent: lagging(pair.aiAgent, { failFirst: 2 }),
+          aiAgentEscrow: lagging(pair.aiAgentEscrow),
+          deployer,
+        },
+        { linkBlock, provider: ethers.provider, sleep: noSleep },
+      );
+
+      expect(problems).to.deep.equal([]);
+    });
+
+    it("gives up after its attempts with a message that names the block, never the error's text", async function () {
+      const { plan, pair, linkBlock, deployer } = await linkedPair();
+
+      await expect(
+        readBackFreshPair(
+          live,
+          {
+            plan,
+            aiAgent: lagging(pair.aiAgent, { failFirst: 1000 }),
+            aiAgentEscrow: lagging(pair.aiAgentEscrow),
+            deployer,
+          },
+          { linkBlock, provider: ethers.provider, sleep: noSleep, attempts: 3 },
+        ),
+      )
+        .to.be.rejectedWith(new RegExp(`could not read the pair at block ${linkBlock}`))
+        .and.eventually.have.property("message")
+        .that.does.not.include("secret-key");
+    });
+
+    it("the deploy reads its pair back at the link's block, so a lagging node does not fail it", async function () {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+
+      const pair = await deployFreshPair(hre, plan, { log: () => {}, readBackView: lagging });
+
+      expect(await pair.aiAgent.aiAgentEscrow()).to.equal(pair.aiAgentEscrowAddress);
+    });
+
+    it("a read-back that cannot read names the deployed pair and its link block", async function () {
+      const { able } = await loadFixture(tokensFixture);
+      const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+
+      await expect(
+        deployFreshPair(hre, plan, {
+          log: () => {},
+          readBackView: (contract) => lagging(contract, { failFirst: 1000 }),
+        }),
+      ).to.be.rejectedWith(
+        /could not read the pair at block \d+[\s\S]*deployed, at agent 0x[0-9a-fA-F]{40} and escrow 0x[0-9a-fA-F]{40}, and linked in block \d+/,
+      );
+    });
+
+    it("on a local network reads once, with no wait", async function () {
+      const { plan, pair, linkBlock, deployer } = await linkedPair();
+      let sleeps = 0;
+
+      await expect(
+        readBackFreshPair(
+          hre,
+          {
+            plan,
+            aiAgent: lagging(pair.aiAgent, { failFirst: 1 }),
+            aiAgentEscrow: lagging(pair.aiAgentEscrow),
+            deployer,
+          },
+          { linkBlock, sleep: async () => (sleeps += 1) },
+        ),
+      ).to.be.rejectedWith(/could not read the pair/);
+      expect(sleeps).to.equal(0);
     });
   });
 });

@@ -3,12 +3,15 @@ const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
 const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
+const { typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const { LOCAL_NETWORKS } = require("./lib/networks");
 
 // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so the process
 // environment holds both. DEPLOY_MODE and the pair's addresses are read again from ENV_FILE
 // alone on every EVM network (FILE_ONLY_VARS below), and so is every setting that wires a fresh
-// pair on a live network (FRESH_LIVE_FILE_ONLY_VARS).
+// pair on a live network (FRESH_LIVE_FILE_ONLY_VARS). DRY_RUN and DEPLOY_MAINNET_CONFIRMED are
+// read from what was typed alone (TYPED_ONLY_VARS), recorded before the files loaded: a file
+// line that contradicts what was typed stops the deploy.
 
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
@@ -30,6 +33,8 @@ const ADDRESS_ENV_VARS = [
   "ORACLE_ADDRESS",
 ];
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+// Whether the deploy sends at all, so never from a file.
+const TYPED_ONLY_VARS = Object.freeze(["DRY_RUN", CONFIRM_VAR]);
 
 // --- Deploy mode --------------------------------------------------------------------------
 // `fresh` deploys a new agent and escrow and refuses while either pair address is set;
@@ -51,10 +56,11 @@ const FEE_VARS = Object.freeze({
 // chain with that same value. An upgrade reads none of them; a local network keeps the merged
 // environment, since the e2e bring-up writes only the token, the symbol, the mode and the pair
 // to the file and lets the rest fall back to the deploy wallet and the default fees.
+// ORACLE_ADDRESS is not among them: a fresh pair on a live network refuses it wherever it is set
+// (liveOracleProblem below).
 const FRESH_LIVE_FILE_ONLY_VARS = Object.freeze([
   "TOKEN_CONTRACT_ADDRESS",
   "TREASURY_ADDRESS",
-  "ORACLE_ADDRESS",
   "EXPECTED_FEE_TOKEN_SYMBOL",
   ...Object.values(FEE_VARS),
   "DOMAIN",
@@ -86,6 +92,18 @@ const WHOLE_WEI_RE = /^[0-9]+$/;
 function feeValueProblem(name, value) {
   if (!isSet(value) || WHOLE_WEI_RE.test(String(value).trim())) return null;
   return `${name} is not a whole number of wei (${describeShape(value)}): write the fee in wei, in decimal digits only, with no sign, point, exponent, separator or 0x (one token of 18 decimals is 1000000000000000000)`;
+}
+
+/**
+ * Why a fresh pair on a live network cannot take ORACLE_ADDRESS, or null. There the oracle's
+ * signer is derived from the new agent's address (oracle/src/oracleKeys.js), so an address set
+ * before the agent exists can only be another pair's signer: the new pair would grant it the role
+ * and nothing later would remove it. The deploy wallet is the first oracle instead, and the
+ * hand-over moves the role. The value is described by shape only.
+ */
+function liveOracleProblem(networkName, value) {
+  if (!isSet(value)) return null;
+  return `ORACLE_ADDRESS is set (${describeShape(value)}), but a fresh pair on ${networkName} takes no first oracle from it: there the oracle's signer is derived from the new agent's address, so an address set before the agent exists can only be another pair's signer. Empty ORACLE_ADDRESS (and ANSWER_TX_HASH) in ENV_FILE, and in the root .env and the shell if set there, and deploy again: the deploy wallet is the first oracle, and the deploy prints the hand-over (scripts/authorize-oracle.js grant, then retire-deployer) that moves the role to the new pair's signer once the oracle runs on it.`;
 }
 
 /** The settings read from ENV_FILE alone for this network and the mode the file names. */
@@ -154,6 +172,8 @@ function modeProblems({ networkName, env }) {
     }
   }
   if (!LOCAL_NETWORKS.has(networkName)) {
+    const oracleProblem = liveOracleProblem(networkName, env.ORACLE_ADDRESS);
+    if (oracleProblem) problems.push(oracleProblem);
     if (!isSet(env.TREASURY_ADDRESS)) {
       problems.push(
         `TREASURY_ADDRESS must be set for a fresh pair on ${networkName}: it is where fees accrue, and the deploy wallet fallback is for local networks only`,
@@ -203,20 +223,34 @@ const orNull = (value) => (isSet(value) ? String(value).trim() : null);
 
 /**
  * The deploy's plan from its settings, or a refusal listing every problem. `fileEnv` is ENV_FILE
- * parsed on its own (null when ENV_FILE is not set); `processEnv` is the process environment.
+ * parsed on its own (null when ENV_FILE is not set); `processEnv` is the process environment, with
+ * the files loaded; `typedEnv` is what the shell held before they loaded (typedSettings), which
+ * DRY_RUN and DEPLOY_MAINNET_CONFIRMED are read from. Without it they are read from `processEnv`.
  */
-function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
+function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv, typedEnv = processEnv }) {
+  const typedProblems = typedOnlyProblems({
+    names: TYPED_ONLY_VARS,
+    typedEnv,
+    processEnv,
+    envFile,
+  });
+  const typed = Object.fromEntries(TYPED_ONLY_VARS.map((name) => [name, typedEnv?.[name]]));
   if (SAPPHIRE_NETWORKS.has(networkName)) {
     // The Sapphire deploy has no dry run: going on would send a real deploy.
-    if (processEnv.DRY_RUN === "1") {
-      throw refusal(networkName, [
+    if (typed.DRY_RUN === "1") {
+      typedProblems.push(
         "DRY_RUN=1 is set, but the dry run exists only for a fresh pair on an EVM network; the Sapphire deploy has none. Unset DRY_RUN to deploy. Nothing was sent.",
-      ]);
+      );
     }
+    if (typedProblems.length > 0) throw refusal(networkName, typedProblems);
     return { networkName, isSapphire: true };
   }
-  const env = withFileValues(processEnv, fileEnv, fileOnlyNames({ networkName, fileEnv }));
+  const env = {
+    ...withFileValues(processEnv, fileEnv, fileOnlyNames({ networkName, fileEnv })),
+    ...typed,
+  };
   const problems = [
+    ...typedProblems,
     ...sourceProblems({ networkName, envFile, fileEnv, processEnv }),
     ...deployProblems({ networkName, env }),
   ];
@@ -341,10 +375,14 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 /**
  * Reads the new pair back and lists every way it differs from the plan: the two links, the
  * escrow's token and treasury, both owners, who holds the oracle role, and the token's symbol
- * when the plan names one. An empty list means the pair is as planned.
+ * when the plan names one. An empty list means the pair is as planned. With `blockTag` every
+ * value is read at that block, so a node behind the one that mined the link cannot answer from
+ * before it.
  */
-async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer }) {
+async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer, blockTag }) {
   const { ethers } = env;
+  // Spread into each call: an override is passed only when there is a block to read at.
+  const at = blockTag === undefined ? [] : [{ blockTag }];
   const agentAddress = await aiAgent.getAddress();
   const escrowAddress = await aiAgentEscrow.getAddress();
   const problems = [];
@@ -353,57 +391,62 @@ async function freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer }
   };
 
   expectSame(
-    await aiAgent.aiAgentEscrow(),
+    await aiAgent.aiAgentEscrow(...at),
     escrowAddress,
     "agent.aiAgentEscrow()",
     "the new escrow",
   );
   expectSame(
-    await aiAgentEscrow.evmAIAgent(),
+    await aiAgentEscrow.evmAIAgent(...at),
     agentAddress,
     "escrow.evmAIAgent()",
     "the new agent",
   );
   expectSame(
-    await aiAgentEscrow.ableToken(),
+    await aiAgentEscrow.ableToken(...at),
     plan.token,
     "escrow.ableToken()",
     "TOKEN_CONTRACT_ADDRESS",
   );
   expectSame(
-    await aiAgentEscrow.treasury(),
+    await aiAgentEscrow.treasury(...at),
     plan.treasury ?? deployer.address,
     "escrow.treasury()",
     plan.treasury ? "TREASURY_ADDRESS" : "the deploy wallet",
   );
-  expectSame(await aiAgent.owner(), deployer.address, "agent.owner()", "the deploy wallet");
-  expectSame(await aiAgentEscrow.owner(), deployer.address, "escrow.owner()", "the deploy wallet");
+  expectSame(await aiAgent.owner(...at), deployer.address, "agent.owner()", "the deploy wallet");
+  expectSame(
+    await aiAgentEscrow.owner(...at),
+    deployer.address,
+    "escrow.owner()",
+    "the deploy wallet",
+  );
 
   const oracle = plan.oracle ?? deployer.address;
-  if (!(await aiAgent.isOracle(oracle))) {
+  if (!(await aiAgent.isOracle(oracle, ...at))) {
     problems.push(
       `agent.isOracle(${oracle}) is false: ${plan.oracle ? "ORACLE_ADDRESS" : "the deploy wallet"} does not hold the oracle role`,
     );
   }
-  if (plan.oracle && (await aiAgent.isOracle(deployer.address))) {
+  if (plan.oracle && (await aiAgent.isOracle(deployer.address, ...at))) {
     problems.push(
       `agent.isOracle(${deployer.address}) is true: the deploy wallet holds the oracle role`,
     );
   }
 
-  problems.push(...(await feeProblems(ethers, { plan, aiAgentEscrow })));
+  problems.push(...(await feeProblems(ethers, { plan, aiAgentEscrow, at })));
 
   if (plan.expectedSymbol) {
-    problems.push(...(await symbolProblems(ethers, plan)));
+    problems.push(...(await symbolProblems(ethers, plan, at)));
   }
   return problems;
 }
 
 /** Each fee the escrow holds that is not the planned one. */
-async function feeProblems(ethers, { plan, aiAgentEscrow }) {
+async function feeProblems(ethers, { plan, aiAgentEscrow, at = [] }) {
   let decimals;
   try {
-    decimals = await readDecimals(ethers, plan.token);
+    decimals = await readDecimals(ethers, plan.token, at);
   } catch {
     return [
       `token.decimals() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}, so the fees were not compared`,
@@ -412,7 +455,7 @@ async function feeProblems(ethers, { plan, aiAgentEscrow }) {
   const planned = plannedFees(ethers, plan, decimals);
   const problems = [];
   for (const [key, getter] of Object.entries(FEE_GETTERS)) {
-    const actual = await aiAgentEscrow[getter]();
+    const actual = await aiAgentEscrow[getter](...at);
     const { wei, isDefault } = planned[key];
     if (actual !== wei) {
       problems.push(
@@ -428,9 +471,9 @@ const ERC20_READS = Object.freeze([
   "function decimals() view returns (uint8)",
 ]);
 
-async function readDecimals(ethers, tokenAddress) {
+async function readDecimals(ethers, tokenAddress, at = []) {
   const token = new ethers.Contract(tokenAddress, ERC20_READS, ethers.provider);
-  return Number(await token.decimals());
+  return Number(await token.decimals(...at));
 }
 
 /**
@@ -483,7 +526,7 @@ async function readFeeToken(ethers, plan) {
   return { problems, symbol, decimals };
 }
 
-async function symbolProblems(ethers, plan) {
+async function symbolProblems(ethers, plan, at = []) {
   const token = new ethers.Contract(
     plan.token,
     ["function symbol() view returns (string)"],
@@ -491,12 +534,59 @@ async function symbolProblems(ethers, plan) {
   );
   let symbol;
   try {
-    symbol = await token.symbol();
+    symbol = await token.symbol(...at);
   } catch {
     return [`token.symbol() could not be read from TOKEN_CONTRACT_ADDRESS ${plan.token}`];
   }
   if (symbol === plan.expectedSymbol) return [];
   return [`token.symbol() is ${JSON.stringify(symbol)}, which is not EXPECTED_FEE_TOKEN_SYMBOL`];
+}
+
+// How often a live read-back polls for the link's block, and reads the pair again after a read
+// that failed or differed, before it gives up.
+const READ_BACK_ATTEMPTS = 6;
+const READ_BACK_WAIT_MS = 2000;
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The fresh pair's read-back at `linkBlock`, the block that mined the link. A load-balanced public
+ * RPC can answer from a node behind the one that mined it, which would report a correct pair as
+ * unlinked; every value is read at that block instead, once the node answering has it. On a live
+ * network a read that fails or differs is made again, up to READ_BACK_ATTEMPTS times; at a pinned
+ * block a difference that stays is real. A local network reads once. Gives back the last list of
+ * problems a read gave, or throws when no read succeeded, naming the block and the error's code only (an
+ * ethers error can carry the request).
+ */
+async function readBackFreshPair(
+  env,
+  args,
+  {
+    linkBlock,
+    provider = env.ethers.provider,
+    sleep = () => wait(READ_BACK_WAIT_MS),
+    attempts = READ_BACK_ATTEMPTS,
+  },
+) {
+  const tries = LOCAL_NETWORKS.has(env.network.name) ? 1 : attempts;
+  for (let poll = 1; poll < tries && (await provider.getBlockNumber()) < linkBlock; poll += 1) {
+    await sleep();
+  }
+  let problems = null;
+  let failure = null;
+  for (let attempt = 1; attempt <= tries; attempt += 1) {
+    try {
+      problems = await freshPairProblems(env, { ...args, blockTag: linkBlock });
+      failure = null;
+      if (problems.length === 0) return problems;
+    } catch (error) {
+      failure = error;
+    }
+    if (attempt < tries) await sleep();
+  }
+  if (problems) return problems;
+  throw new Error(
+    `The read-back could not read the pair at block ${linkBlock} after ${tries} attempt(s) (${failure?.code ?? failure?.name ?? "error"}).`,
+  );
 }
 
 /** The line that records the new pair, so a second run upgrades it rather than deploying another. */
@@ -515,21 +605,30 @@ function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
     `  3. In ${plan.envFile}: ORACLE_ADDRESS=<signer>. Then: ${run} grant`,
     "  4. See one prompt answered by it, and take that answer's transaction hash.",
     `  5. In ${plan.envFile}: ANSWER_TX_HASH=<answer tx>. Then: ${run} retire-deployer`,
+    `  6. Then empty ORACLE_ADDRESS and ANSWER_TX_HASH in ${plan.envFile}: a fresh deploy on a live network refuses a set ORACLE_ADDRESS.`,
     `  The hand-over reads both settings from ${plan.envFile} alone and refuses one typed on the command line.`,
   ];
 }
 
 /**
  * Deploys a new agent and escrow, links them, and reads them back. Throws before sending
- * anything when the plan is not fresh or ORACLE_ADDRESS is the deploy wallet or the zero address, and after the
- * deploy when the read-back finds a difference, naming each.
+ * anything when the plan is not fresh, names a first oracle on a live network, or names the deploy
+ * wallet or the zero address as ORACLE_ADDRESS, and after the deploy when the read-back finds a
+ * difference, naming each.
  */
-async function deployFreshPair(env, plan, { log = console.log, deployer: given } = {}) {
+async function deployFreshPair(
+  env,
+  plan,
+  { log = console.log, deployer: given, readBackView = (contract) => contract } = {},
+) {
   const { ethers, upgrades } = env;
   if (plan.mode !== "fresh") {
     throw new Error(
       `deployFreshPair deploys a fresh pair only; this plan is DEPLOY_MODE=${plan.mode}`,
     );
+  }
+  if (plan.live && plan.oracle) {
+    throw new Error(`${liveOracleProblem(plan.networkName, plan.oracle)} Nothing was sent.`);
   }
   const deployer = given ?? (await ethers.getSigners())[0];
   if (plan.oracle && same(plan.oracle, deployer.address)) {
@@ -604,10 +703,28 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
     );
   }
   log("Linking AI Agent to Escrow contract...");
-  await sendOwnerCall(env, deployer, aiAgent.setAgentEscrow, [escrowAddress]);
+  const linkReceipt = await sendOwnerCall(env, deployer, aiAgent.setAgentEscrow, [escrowAddress]);
   log("✅ Link successful.");
 
-  const problems = await freshPairProblems(env, { plan, aiAgent, aiAgentEscrow, deployer });
+  // Read back at the link's block, so a node behind the one that mined it cannot fail a correct
+  // pair. `readBackView` lets a test stand in a node that lags.
+  let problems;
+  try {
+    problems = await readBackFreshPair(
+      env,
+      {
+        plan,
+        aiAgent: readBackView(aiAgent),
+        aiAgentEscrow: readBackView(aiAgentEscrow),
+        deployer,
+      },
+      { linkBlock: linkReceipt.blockNumber },
+    );
+  } catch (error) {
+    throw new Error(
+      `${error.message} The contracts were deployed, at agent ${agentAddress} and escrow ${escrowAddress}, and linked in block ${linkReceipt.blockNumber}: read them back at that block before pointing anything at them or deploying again.`,
+    );
+  }
   if (problems.length > 0) {
     throw new Error(
       `Fresh deploy read-back failed:\n  - ${problems.join("\n  - ")}\nThe contracts were deployed, at agent ${agentAddress} and escrow ${escrowAddress}: point nothing at them. Fix the setting and deploy a fresh pair again.`,
@@ -796,6 +913,8 @@ async function main() {
     envFile,
     fileEnv: isSapphire ? null : readEnvFile(envFile),
     processEnv: process.env,
+    // Recorded by hardhat.config.js before the env files loaded.
+    typedEnv: typedSettings(process.env),
   });
 
   console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
@@ -841,6 +960,7 @@ module.exports = {
   resolveDeployPlan,
   deployFreshPair,
   freshPairProblems,
+  readBackFreshPair,
   upgradePair,
   deployProblems,
   assertDeployAllowed,
@@ -848,6 +968,7 @@ module.exports = {
   needsOracleRoleMigration,
   CONFIRM_VAR,
   MAINNET_NETWORK,
+  TYPED_ONLY_VARS,
 };
 
 if (require.main === module) {

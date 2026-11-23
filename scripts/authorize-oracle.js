@@ -13,7 +13,9 @@
  *   bun run authorize-oracle:base-testnet grant
  *   bun run authorize-oracle:base-testnet retire-deployer
  *
- * On Base mainnet a phase that sends needs DEPLOY_MAINNET_CONFIRMED=1.
+ * On Base mainnet a phase that sends needs DEPLOY_MAINNET_CONFIRMED=1, typed before the command:
+ * it is read from what was typed alone, and a line for it in ENV_FILE or the root .env that
+ * contradicts that is refused before anything is read.
  *
  * On a live network the agent, the escrow and the token are read from ENV_FILE alone (one that
  * only the root .env or the shell sets is refused), and all three are printed before anything is
@@ -26,6 +28,7 @@ const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
 const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
+const { captureTypedSettings, typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
 
 const PHASES = Object.freeze(["grant", "retire-deployer"]);
@@ -261,11 +264,26 @@ function resolveHandoverTarget({ networkName, envFile, fileEnv, processEnv }) {
  * The environment the phase reads, with its own settings (HANDOVER_VARS) taken from ENV_FILE, or
  * a refusal listing every problem. Hardhat has already loaded ENV_FILE over the shell, so
  * `typedEnv` is what the shell held before that: a typed value that is not the file's is refused,
- * as is one only the root .env sets, and neither is printed. With no ENV_FILE (a local run by
- * hand) the environment is read as it is.
+ * as is one only the root .env sets, and neither is printed. The mainnet confirmation is the
+ * other way round: it is read from `typedEnv` alone, and a file that contradicts it is refused.
+ * With no ENV_FILE (a local run by hand) the rest of the environment is read as it is.
  */
 function resolveHandoverSettings({ phase, envFile, fileEnv, processEnv, typedEnv }) {
-  if (!envFile || !fileEnv) return { env: processEnv, settingsFrom: undefined };
+  const confirmProblems = typedOnlyProblems({
+    names: [CONFIRM_VAR],
+    typedEnv,
+    processEnv,
+    envFile,
+  });
+  if (confirmProblems.length > 0) {
+    throw new HandoverError(
+      `Oracle hand-over refused:\n  - ${confirmProblems.join("\n  - ")}\n${NOTHING_SENT}`,
+    );
+  }
+  const confirm = { [CONFIRM_VAR]: typedEnv?.[CONFIRM_VAR] };
+  if (!envFile || !fileEnv) {
+    return { env: { ...processEnv, ...confirm }, settingsFrom: undefined };
+  }
   const names = HANDOVER_VARS[phase] ?? [];
   const seen = { ...processEnv };
   for (const name of names) {
@@ -283,7 +301,10 @@ function resolveHandoverSettings({ phase, envFile, fileEnv, processEnv, typedEnv
       `Oracle hand-over refused:\n  - ${problems.join("\n  - ")}\n${NOTHING_SENT}`,
     );
   }
-  return { env: withFileValues(processEnv, fileEnv, names), settingsFrom: envFile };
+  return {
+    env: { ...withFileValues(processEnv, fileEnv, names), ...confirm },
+    settingsFrom: envFile,
+  };
 }
 
 /** The run's header: the network, the phase, the signer and the pair it acts on. */
@@ -299,27 +320,29 @@ function targetLines({ networkName, envFile, phase, signer, target }) {
 
 async function main() {
   // What the shell held before Hardhat loads ENV_FILE over it (hardhat.config.js, override).
-  const typedEnv = Object.fromEntries(
-    [...new Set(Object.values(HANDOVER_VARS).flat())].map((name) => [name, process.env[name]]),
-  );
+  // Taken afresh: this script is run with node, never forked by a Hardhat that recorded it.
+  captureTypedSettings(process.env, { fresh: true });
+  const typedEnv = typedSettings(process.env);
   const hre = require("hardhat");
   const { env: processEnv } = process;
   const networkName = hre.network.name;
   const phase = process.argv[2];
   const fileEnv = readEnvFile(processEnv.ENV_FILE);
-  const target = resolveHandoverTarget({
-    networkName,
-    envFile: processEnv.ENV_FILE,
-    fileEnv,
-    processEnv,
-  });
-  const { env, settingsFrom } = resolveHandoverSettings({
+  // The settings first: a file line that confirms a mainnet send stops the run at once.
+  const settings = resolveHandoverSettings({
     phase,
     envFile: processEnv.ENV_FILE,
     fileEnv,
     processEnv,
     typedEnv,
   });
+  const target = resolveHandoverTarget({
+    networkName,
+    envFile: processEnv.ENV_FILE,
+    fileEnv,
+    processEnv,
+  });
+  const { env, settingsFrom } = settings;
   const [signer] = await hre.ethers.getSigners();
   const log = (line) => console.log(line);
   for (const line of targetLines({
