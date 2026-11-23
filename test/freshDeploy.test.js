@@ -80,6 +80,9 @@ describe("scripts/deploy — a fresh pair", function () {
     expect(text()).to.not.match(
       /(ORACLE_ADDRESS|ANSWER_TX_HASH)=<[^>]+> (ANSWER_TX_HASH=<[^>]+> )?ENV_FILE=/,
     );
+    // The next fresh deploy on a live network refuses a set ORACLE_ADDRESS, so the hand-over
+    // ends by emptying both settings again.
+    expect(text()).to.match(/empty ORACLE_ADDRESS and ANSWER_TX_HASH in \S+/);
     // The e2e bring-up reads the two addresses from these lines.
     expect(text()).to.match(/EVMAIAgent proxy deployed to: 0x[0-9a-fA-F]{40}/);
     expect(text()).to.match(/EVMAIAgentEscrow proxy deployed to: 0x[0-9a-fA-F]{40}/);
@@ -231,6 +234,19 @@ describe("scripts/deploy — a fresh pair", function () {
       `In .env.test: AI_AGENT_CONTRACT_ADDRESS=${aiAgentAddress}, AI_AGENT_ESCROW_CONTRACT_ADDRESS=${aiAgentEscrowAddress}, DEPLOY_MODE=upgrade.`,
     );
     expect(text()).to.not.include("authorize-oracle.js grant");
+  });
+
+  it("refuses a live plan that names a first oracle before anything is read or sent", async function () {
+    const { able, deployer, oracle } = await loadFixture(tokensFixture);
+    const nonce = await ethers.provider.getTransactionCount(deployer.address);
+    const plan = planFor({ TOKEN_CONTRACT_ADDRESS: await able.getAddress() });
+
+    await expect(
+      deployFreshPair(hre, { ...plan, live: true, oracle: oracle.address }, { log: () => {} }),
+    ).to.be.rejectedWith(
+      /ORACLE_ADDRESS is set[\s\S]*derived from the new agent's address[\s\S]*Nothing was sent/,
+    );
+    expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
   });
 
   it("refuses an ORACLE_ADDRESS that is the deploy wallet before anything is sent", async function () {

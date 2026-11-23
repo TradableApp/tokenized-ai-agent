@@ -228,18 +228,46 @@ describe("scripts/deploy — DEPLOY_MODE says whether a new pair is deployed", f
     }
   });
 
-  it("ORACLE_ADDRESS, when set, must be an address, described by shape only", function () {
+  it("ORACLE_ADDRESS, when set on a local network, must be an address, described by shape only", function () {
+    const localFresh = { DEPLOY_MODE: "fresh", TOKEN_CONTRACT_ADDRESS: ADDRESS };
     const problems = deployProblems({
-      networkName: "baseSepolia",
-      env: { ...freshOnBase, ORACLE_ADDRESS: "0xnot-an-address" },
+      networkName: "localnet",
+      env: { ...localFresh, ORACLE_ADDRESS: "0xnot-an-address" },
     });
     expect(problems).to.have.lengthOf(1);
     expect(problems[0]).to.include("ORACLE_ADDRESS").and.not.include("0xnot-an-address");
     expect(
       deployProblems({
-        networkName: "baseSepolia",
-        env: { ...freshOnBase, ORACLE_ADDRESS: OTHER },
+        networkName: "localnet",
+        env: { ...localFresh, ORACLE_ADDRESS: OTHER },
       }),
+    ).to.deep.equal([]);
+  });
+
+  // On a live network the oracle's signer is derived from the new agent's address
+  // (oracle/src/oracleKeys.js), so an address set before the agent exists is another pair's.
+  it("a fresh pair on a live network refuses a set ORACLE_ADDRESS, naming it and what to do, never its value", function () {
+    for (const networkName of ["baseSepolia", "base"]) {
+      for (const value of [OTHER, "0xnot-an-address"]) {
+        const problems = deployProblems({
+          networkName,
+          env: { ...freshOnBase, ORACLE_ADDRESS: value },
+        });
+        const refusal = problems.find((p) => p.includes("derived from the new agent's address"));
+        expect(refusal, `${networkName} ${value}`).to.be.a("string");
+        expect(refusal)
+          .to.include("ORACLE_ADDRESS is set")
+          .and.include("the deploy wallet is the first oracle")
+          .and.include("authorize-oracle")
+          .and.include("ANSWER_TX_HASH");
+        expect(problems.join("\n")).to.not.include(value);
+      }
+    }
+  });
+
+  it("an upgrade on a live network does not read ORACLE_ADDRESS, so it is not refused there", function () {
+    expect(
+      deployProblems({ networkName: "baseSepolia", env: { ...resolved, ORACLE_ADDRESS: OTHER } }),
     ).to.deep.equal([]);
   });
 });
@@ -408,14 +436,38 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
       .that.includes("ENV_FILE");
   });
 
-  it("carries ORACLE_ADDRESS into the plan when set", function () {
-    expect(plan({ ...freshFile, ORACLE_ADDRESS: OTHER }).oracle).to.equal(OTHER);
+  it("carries ORACLE_ADDRESS into the plan of a fresh pair on a local network", function () {
+    const localFile = {
+      DEPLOY_MODE: "fresh",
+      TOKEN_CONTRACT_ADDRESS: ADDRESS,
+      ORACLE_ADDRESS: OTHER,
+    };
+    const p = resolveDeployPlan({
+      networkName: "localnet",
+      envFile,
+      fileEnv: localFile,
+      processEnv: localFile,
+    });
+    expect(p.oracle).to.equal(OTHER);
+  });
+
+  it("refuses ORACLE_ADDRESS for a fresh pair on a live network wherever it is set: the file, the root .env or the shell", function () {
+    for (const [fileEnv, extra] of [
+      [{ ...freshFile, ORACLE_ADDRESS: OTHER }, {}],
+      [freshFile, { ORACLE_ADDRESS: OTHER }],
+    ]) {
+      expect(() => plan(fileEnv, extra))
+        .to.throw(Error)
+        .with.property("message")
+        .that.includes("ORACLE_ADDRESS is set")
+        .and.includes("derived from the new agent's address")
+        .and.not.includes(OTHER);
+    }
   });
 
   describe("a fresh pair on a live network takes every setting that wires it from the file", function () {
     const liveFile = {
       ...freshFile,
-      ORACLE_ADDRESS: OTHER,
       DOMAIN: "tradable.app",
     };
     // A value only the root .env or the shell holds: one per setting, each distinct, so a
@@ -423,7 +475,6 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
     const outside = {
       TOKEN_CONTRACT_ADDRESS: "0x1111111111111111111111111111111111111111",
       TREASURY_ADDRESS: "0x2222222222222222222222222222222222222222",
-      ORACLE_ADDRESS: "0x3333333333333333333333333333333333333333",
       EXPECTED_FEE_TOKEN_SYMBOL: "ROOTSYMBOL",
       INITIAL_PROMPT_FEE: "7777777777",
       INITIAL_CANCELLATION_FEE: "6666666666",
@@ -445,7 +496,7 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
 
     it("passes when the file holds them all", function () {
       const p = livePlan("baseSepolia", liveFile);
-      expect(p.oracle).to.equal(OTHER);
+      expect(p.oracle).to.equal(null);
       expect(p.domain).to.equal("tradable.app");
     });
 
