@@ -1260,7 +1260,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
 
   // Handle, not roomId: two prompts for the SAME conversation can be in flight together
   // under the p-queue, and a room-keyed run would let the second clobber the first.
-  const runId = runProvenance.begin(roomId, { sources: composedSources });
+  const runId = runProvenance.begin(roomId);
   // Sources before inference, so before this attempt's first step (see answerStream).
   stream.sources(composedSources);
   const reasoningStart = Date.now();
@@ -1402,14 +1402,14 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
               // encrypted into an immutable MessageFile. See outboundSanitizer.js.
               const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
               if (finalResponseText) {
-                // What is stored comes from the stream's record, never from here: the steps went
-                // to the stream as the thoughts arrived, so `reasoning` is empty, as on every
-                // other tier (asAnswer). `sources` is what this run composed.
-                const { sources } = runProvenance.finish(runId);
+                // What is stored comes from the stream's record, never from here: the sources and
+                // steps went to the stream as they were known, so `reasoning` and `sources` are
+                // empty, as on every other tier (asAnswer).
+                runProvenance.finish(runId);
                 resolve({
                   text: finalResponseText.trim(),
                   reasoning: [],
-                  sources,
+                  sources: [],
                   reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
                 });
               } else {
@@ -1648,8 +1648,8 @@ function shouldInitializeConversation({
  *          answer returned here.
  * @returns {Promise<{text: string, reasoning: Array<{title: string, description: string}>, sources: Array<{title: string, url: string}>, reasoningDuration?: number}>}
  *          The normalized answer object (CU-86d3cfa41) — string-only provider
- *          paths carry empty reasoning/sources, and the ElizaOS path empty reasoning (its steps
- *          go to the live stream as they arrive).
+ *          paths carry empty reasoning/sources, and so does the ElizaOS path (its sources and
+ *          steps go to the live stream as they are known).
  */
 function asAnswer(text) {
   return { text, reasoning: [], sources: [] };

@@ -57,7 +57,7 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
    * be in flight together under the p-queue, and keying by room would let the second clobber the
    * first — attributing one user's thoughts to the other's answer, permanently.
    */
-  function begin(roomKey, { sources = [] } = {}) {
+  function begin(roomKey) {
     // Evict oldest first so a leaked run cannot displace live ones indefinitely.
     while (runs.size >= maxRuns) {
       const oldest = runs.keys().next().value;
@@ -68,7 +68,6 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     const runId = `run-${(nextRunId += 1)}`;
     runs.set(runId, {
       roomKey,
-      sources: Array.isArray(sources) ? sources : [],
       currentAction: "",
     });
 
@@ -123,19 +122,15 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
   }
 
   /**
-   * Ends a run and returns its sources, forgetting it.
+   * Ends a run, forgetting it. Returns nothing.
    *
-   * Used for RUN_ENDED and RUN_TIMEOUT alike. An unknown key yields the empty shape, so the
-   * answer path never has to branch on whether tracking happened. The run's reasoning is not
-   * here: a thought becomes a step in the live stream (`stream/answerStream.js`), from the
-   * thought and the action read with `currentActionOf` when it arrived.
+   * Used for RUN_ENDED and RUN_TIMEOUT alike; an unknown key is a no-op, so the answer path never
+   * has to branch on whether tracking happened. The run's sources and reasoning are not here:
+   * both go to the live stream (`stream/answerStream.js`), a thought with the action read with
+   * `currentActionOf` when it arrived, and what is stored is the stream's record.
    */
   function finish(runId) {
-    const run = runs.get(runId);
-    if (!run) return { sources: [] };
-
     forget(runId);
-    return { sources: run.sources };
   }
 
   /** Tracked run count — exposed so leak safety can be asserted rather than assumed. */
