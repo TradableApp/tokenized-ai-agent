@@ -116,8 +116,10 @@ Before step 2, check the console signs as the owner (an `ENV_FILE` setting overr
    Not Authorized" naming the `addOracle` call; that is expected until step 2. The
    `encryptionKey=` on that line is the key prompts must be encrypted to: if it differs from the
    key the dApp build names (`VITE_ORACLE_PUBLIC_KEY`) or the smoke test uses
-   (`SMOKE_ORACLE_PUBLIC_KEY`), update both before users prompt. A prompt encrypted to another
-   key is paid and cannot be answered.
+   (`SMOKE_ORACLE_PUBLIC_KEY`), update both before users prompt. After a fresh pair it always
+   differs: the key service derives both keys from the agent's address
+   (`keyIdsFor` in `oracle/src/oracleKeys.js`). A prompt encrypted to another key is paid and
+   cannot be answered.
 2. **Grant it the role.** `await (await agent.addOracle("<signer>")).wait()` — the receipt
    carries `RoleGranted` for `<signer>` (none if it already held the role; see step 0).
 3. **Check it holds the role.** `await agent.isOracle("<signer>")` must print `true`. If it does
@@ -150,6 +152,199 @@ Two checks repeat this from outside, and are worth setting:
   The wiring probe then asks the agent that the signer holds the role and that the deploy wallet
   does not; an unset one is reported as not checked, never as a pass. It fails on the deploy
   wallet until step 5 is done, so run it after step 5.
+
+### 1.2 Fresh pair, in order
+
+A fresh pair is a new agent and escrow, deployed with `DEPLOY_MODE=fresh`. Do the steps in order,
+and do not go on from a step that did not check out. The scripts named below refuse out of order
+where they can; the rest of the order is this list. Steps 0, 4, 9a and 10 cover the fee token
+when it is SenseToken (from the `sense-contracts` repository); an ordinary token needs only its
+address and symbol in step 1.
+
+0. **The fee token, when it is new** (in `sense-contracts`, see its README "Deploying"): its
+   `ENV_FILE` sets `TOKEN_NAME`, `TOKEN_SYMBOL`, `INITIAL_SUPPLY` (the whole supply in base units,
+   at least one whole token; it is minted once, to the owner, and cannot be undone) and
+   `OWNER_ADDRESS`. Run `bun run deploy:testnet` (mainnet: `DEPLOY_MAINNET_CONFIRMED=1 bun run
+   deploy:mainnet`); it prints `SenseToken proxy: <address>` and then verifies the source. Commit
+   the upgrades manifest it wrote in that repository (`.openzeppelin/base-sepolia.json`, on
+   mainnet `.openzeppelin/base.json`): a later upgrade of the token checks its storage layout
+   against it. The proxy address is `TOKEN_CONTRACT_ADDRESS` below and `TOKEN_SYMBOL` is
+   `EXPECTED_FEE_TOKEN_SYMBOL`.
+1. **Settings, in the network's `ENV_FILE`** (for example `.env.base-testnet`):
+   `DEPLOY_MODE=fresh`; `AI_AGENT_CONTRACT_ADDRESS` and `AI_AGENT_ESCROW_CONTRACT_ADDRESS` empty;
+   `TOKEN_CONTRACT_ADDRESS`; `TREASURY_ADDRESS`; `EXPECTED_FEE_TOKEN_SYMBOL` (the token's symbol);
+   `DOMAIN`; the four fees `INITIAL_PROMPT_FEE`, `INITIAL_CANCELLATION_FEE`,
+   `INITIAL_METADATA_FEE` and `INITIAL_BRANCH_FEE`, each in wei of the fee token as decimal digits
+   only (one token of 18 decimals is `1000000000000000000`; a point, sign, exponent or `0x` is
+   refused); and `ORACLE_ADDRESS` and `ANSWER_TX_HASH` empty. On a live network a fresh pair
+   refuses a set `ORACLE_ADDRESS` wherever it is set (this file, the root `.env` or the shell),
+   before anything is sent: the oracle's signer is derived from the new agent's address, so an
+   address set before the deploy can only be another pair's signer (most often the last pair's,
+   left in the file by its hand-over). The deploy wallet is the first oracle, and step 6 moves the
+   role. Only a local network takes `ORACLE_ADDRESS` as the first oracle. The mode and the two
+   pair addresses are read from `ENV_FILE` alone on every EVM network, and for a fresh pair on a
+   live network so is every other setting in this step: the deploy refuses one that the root
+   `.env` or the shell sets while the file leaves it out, so a value left out of the file cannot
+   come from the root file. When the file sets one, the file's value is used: Hardhat loads the
+   file over the shell, so a value typed before the command is replaced by the file's line without
+   notice, and the place to change a setting is the file. `DRY_RUN` and `DEPLOY_MAINNET_CONFIRMED`
+   are the other way round: they are read from what is typed before the command alone, and a line
+   for either in this file or the root `.env` that contradicts what was typed (set when nothing
+   was typed, or set otherwise) stops the deploy before anything is sent, so a dry run cannot
+   become a real deploy and the mainnet confirmation cannot come from a file. `fresh` refuses
+   either pair address; `upgrade` needs both and reads none of the other settings. On a live
+   network a fresh pair needs `TREASURY_ADDRESS`, `EXPECTED_FEE_TOKEN_SYMBOL`, `DOMAIN` and the
+   four fees;
+   only a local network falls back to the deploy wallet as treasury and to default fees (1, 0.1,
+   0.1 and 0.5 tokens), and takes these settings from the root `.env` as well as the file.
+2. **Dry run, then deploy:** first `bun run deploy:base-testnet:dry` (mainnet: `bun run
+   deploy:base-mainnet:dry`, which needs no confirm). It runs every check, reads the token (a
+   contract at the address, its symbol against `EXPECTED_FEE_TOKEN_SYMBOL`, its decimals) and
+   refuses on any difference, prints the plan and sends nothing. The plan names the deploy
+   wallet, the token with its symbol and decimals, the treasury, the first oracle, the domain, and
+   each fee in wei and in whole tokens. Check every line, the fees above all: no fee is refused
+   for its size, so a fee off by a power of ten shows only here. Then `bun run deploy:base-testnet`
+   (mainnet: `DEPLOY_MAINNET_CONFIRMED=1 bun run deploy:base-mainnet`), which makes the same checks,
+   prints the same plan and sends it. After the deploy it reads the pair back at the block that
+   mined the link (it waits until the node answering has that block and, on a live network,
+   reads again after a failed or differing read, a few times, before it gives up: a public RPC is
+   load-balanced, and a node one block behind would otherwise report a correct pair as unlinked)
+   and fails, naming each difference, unless `agent.aiAgentEscrow()` is
+   the new escrow, `escrow.evmAIAgent()` the new agent, `escrow.ableToken()` the token,
+   `escrow.treasury()` the treasury, the deploy wallet owns both, the deploy wallet holds the
+   oracle role, the four fees are the planned ones, and `token.symbol()` is
+   `EXPECTED_FEE_TOKEN_SYMBOL`. A read-back that found a difference leaves deployed contracts:
+   point nothing at them, fix the setting, deploy again. One that could not read at all names the
+   addresses and the link block: read the pair at that block yourself before deploying again. On
+   a live network the deploy wallet is always the first oracle (the signer is derived from the
+   agent's address, so it cannot exist before the deploy), and the script prints the hand-over
+   commands of step 6.
+3. **Record the pair:** in `ENV_FILE` set the two addresses it printed and `DEPLOY_MODE=upgrade`
+   (the deploy prints this line), so a second run upgrades this pair and never deploys another
+   beside it. Then commit the upgrades manifest the deploy wrote in this repository
+   (`.openzeppelin/base-sepolia.json`, on mainnet `.openzeppelin/base.json`; `.gitignore` ignores
+   only the local networks' files): it records the new proxies, their implementations and storage
+   layouts, and a later `DEPLOY_MODE=upgrade` from another checkout needs it to find and check
+   them.
+4. **List the escrow and the treasury on the fee token** (a token that moves only to or from
+   addresses its owner has listed; an ordinary token needs nothing, and the script says so):
+   `bun run list-fee-token-exempt:base-testnet`. On a live network it reads the agent, escrow,
+   token and `EXPECTED_FEE_TOKEN_SYMBOL` from `ENV_FILE` alone (all four are required) and prints
+   the network, agent, escrow and token before it reads anything. It checks that
+   `escrow.ableToken()` is the token and that the token's symbol is `EXPECTED_FEE_TOKEN_SYMBOL`,
+   lists whichever of the two is not listed, and reads both back. A token whose symbol is `SENSE`
+   (a token that keeps a list) but that answers as one with no list is refused, with or without
+   `--check`: it is not the token it says it is. When the signer is not
+   the token's owner (the Safe owns it on mainnet) it sends nothing and prints the calls as Safe
+   Transaction Builder JSON: save it as a file, load it in the owner Safe's Transaction Builder,
+   simulate, execute. An account that is the token's owner (a treasury that owns the token) is
+   listed again on every run, since the token reads its owner as exempt and a listing by name
+   cannot be told apart; on the Safe path it is in the printed batch every time. Then `bun run
+   list-fee-token-exempt:base-testnet --check`, which only reads and fails while either is
+   unlisted (run it again on run day). It passes an owner-treasury as exempt by ownership and says
+   its listing by name cannot be read, so run the listing itself, not only `--check`, before the
+   token's ownership moves (step 10).
+   On a test network the e2e runner pays its test accounts from a funding account of its own
+   (`TESTNET_TREASURY_ADDRESS` in `sense-ai-e2e`), which the script does not list: unless it is the
+   token's owner, the owner lists it too with `setTransferExempt(<funding account>, true)`. The
+   runner's wiring probe refuses a run while it is not listed.
+5. **Start the oracle on the new pair before the dApp moves to it.** Point the oracle's settings
+   at the new addresses and deploy it (§3). With no stored cursor for a pair the oracle looks back
+   only a few minutes before its first block, so a prompt sent to the new pair long before the
+   oracle starts is not seen. If an old pair is still answered, close and drain it first (see
+   "Moving prompts to a new agent and escrow" under Lessons learned).
+6. **Move the oracle role off the deploy wallet**, in the order of §1.1, with the script. On a live
+   network it reads the agent, escrow and token from `ENV_FILE` alone (all three are required) and
+   prints them before it reads anything. `ORACLE_ADDRESS` and `ANSWER_TX_HASH` are set in
+   `ENV_FILE` too, never typed before the command: Hardhat loads `ENV_FILE` over the shell, so a
+   typed value would be replaced by the file's line (the template's empty `ORACLE_ADDRESS=`
+   included). The script reads both from `ENV_FILE` alone and refuses, before it reads anything,
+   a typed value that is not the file's, one only the root `.env` sets, or an empty one, naming the
+   setting and the file and never printing the value:
+   - In `ENV_FILE` set `ORACLE_ADDRESS=<signer>` (from the oracle's `[OracleKeys] … signer=`
+     start-up line), then `bun run authorize-oracle:base-testnet grant`. It adds that signer and
+     checks `isOracle`, refuses an `ORACLE_ADDRESS` that is the signing wallet, and sends nothing
+     when the role is held. (Setting it now changes no deploy: the file is in `upgrade` mode since
+     step 3, and an upgrade does not use `ORACLE_ADDRESS`; it only refuses one that is not an
+     address.)
+   - Give the smoke wallet the fee token first: a new token's whole supply is with its owner, and
+     the prompt pays the prompt fee. Send it enough from the token's owner, or from the treasury
+     once it is listed (step 4); on mainnet, where the Safe may own the token, that is a Safe
+     transaction to plan for this point. Then send one prompt (the smoke test, §6, with the new
+     pair's `SMOKE_*`, including `SMOKE_ORACLE_PUBLIC_KEY` set to the new pair's `encryptionKey=`)
+     and take its answer's transaction hash (`answerTxHash` in `smoke-metrics.json`). This is the pair's first prompt:
+     a fresh agent counts message ids from 0 (conversation ids from 1), so the smoke prompt takes
+     message id 0 and its answer 1. Keep it first: no user's prompt is sent to the pair before the
+     dApp points at it (step 9), so id 0 always belongs to this operator prompt.
+   - In `ENV_FILE` set `ANSWER_TX_HASH=<answer tx>`, then `bun run authorize-oracle:base-testnet
+     retire-deployer`. It removes the deploy wallet's role only when `<signer>` holds the role and
+     the hash is a successful `submitAnswer` to this agent sent by `<signer>`; then
+     `isOracle(<deploy wallet>)` must be false and `isOracle(<signer>)` still true.
+   - Then empty `ORACLE_ADDRESS` and `ANSWER_TX_HASH` in `ENV_FILE` again (the deploy prints this
+     as its last hand-over step): the next fresh deploy on this network refuses a set
+     `ORACLE_ADDRESS`.
+   - Check who holds the role. The agent cannot list its oracles, so read its role events: on the
+     block explorer's Events tab for the agent proxy, `RoleGranted` and `RoleRevoked` whose `role` is
+     `ORACLE_ROLE` (`keccak256("ORACLE_ROLE")`, which the agent's `ORACLE_ROLE()` getter returns). On a fresh pair there are exactly two grants, the deploy wallet's (in
+     the deploy) and `<signer>`'s (from `grant`), and one revoke, the deploy wallet's. Any other
+     grant names an address that still answers for this pair until the owner removes it with
+     `removeOracle`. (A free-tier RPC caps `eth_getLogs` to a few blocks, so read them on the
+     explorer rather than through the RPC.)
+   Both phases are owner calls and refuse once the agent's owner is not the signing wallet: after
+   the handover the Safe sends `addOracle` / `removeOracle` itself. On Base mainnet either phase
+   needs `DEPLOY_MAINNET_CONFIRMED=1` typed before the command; a line for it in `ENV_FILE` or the
+   root `.env` is refused.
+7. **Never call `migrateOracleRole` on a fresh pair.** It is `reinitializer(2)`
+   (`contracts/EVMAIAgent.sol`) and exists only for a pair upgraded from the single-oracle
+   version; on a fresh pair it grants nothing and uses up version 2, which a later upgrade's own
+   `reinitializer(2)` would then be refused. The deploy script calls it only on an upgrade whose
+   agent still stores the old oracle. Never publish an encryption key from the deploy wallet.
+8. **Fees:** on a live network there are no default fees: the four `INITIAL_*_FEE` settings are
+   required (step 1), shown in step 2's plan and checked by the read-back. Change them with the
+   escrow's setters only when they should differ from that. (Only a local network falls back to
+   default fees.)
+9. **Point everything else at the new pair, in this order.** Every setting below changes with a
+   fresh pair, whether or not the token changed.
+   - **The subgraph first**, as a deployment of its own (its fee record is one per subgraph): in
+     `sense-ai-subgraph`, `config/base-testnet.json` or `config/base-mainnet.json` takes the agent
+     and escrow addresses and, for each, a `startBlock` no later than the block that created it,
+     which Basescan shows as the contract's creation transaction, so the events of the deploy
+     itself are indexed; the mainnet deploy refuses the file's placeholders. Deploy it and wait
+     until it has synced to the chain's head before the next step: a dApp build that points at a
+     subgraph still behind shows users an empty or partial history.
+   - **Then the dApp build**, published only once that subgraph is synced. Its settings for the
+     pair: `VITE_AGENT_CONTRACT_ADDRESS`, `VITE_ESCROW_CONTRACT_ADDRESS` and
+     `VITE_TOKEN_CONTRACT_ADDRESS`; `VITE_ORACLE_PUBLIC_KEY`, the `encryptionKey=` on the oracle's
+     `[OracleKeys]` start-up line when it runs on the new pair (§1.1 step 1; the key is derived
+     from the agent's address, so the old pair's key is always stale: a prompt encrypted to it is
+     paid on the new pair and the oracle cannot read it, so it waits unanswered until it is
+     refunded); `VITE_THE_GRAPH_API_URL`, the query URL of the new pair's subgraph deployment (the
+     old one indexes the old pair: its conversations would be read into the new pair's store, and
+     the new pair's answers would never appear); and `VITE_REASONING_STREAM_URL`, when the build
+     shows the live reasoning stream, the stream of the oracle that serves the new pair. The dApp
+     keeps one local database per agent (`SenseAI:<chainId>:<agent address>`), so a user's first
+     visit on the new build starts a new local store and syncs the new pair's history; the old
+     pair's conversations are not shown by it.
+   - **Then the smoke test's `SMOKE_*`** (its oracle key included) **and the e2e testnet
+     settings.**
+   9a. **Distribute the fee token** (SenseToken): the token's owner, or the treasury once it is
+   listed, sends it to the wallets that will pay, one at a time or in one batch from the Safe. A
+   wallet can pay only a listed address or the owner (the escrow, the treasury); it cannot send
+   to another wallet.
+10. **Hand ownership to the Safe last**, once step 6 is done: after it, only the Safe can list on
+    the token (if it owns it), change oracles or fees. When the deploy wallet owns the fee token,
+    first move the supply it still holds to the treasury (listed by name in step 4): after the
+    handover the old owner is no longer exempt and can send only to a listed address. Then
+    `transferOwnership(<Safe>)` from the owner and `acceptOwnership()` from the Safe; the owner's
+    exemption moves with it.
+
+**Exempt-list rules.** On a token that keeps a list, a transfer passes when either end is listed.
+List the escrow and the treasury by name, the treasury even when it is the token's owner. Every
+new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
+the treasury, as the admin rehearsal does) must be listed before it is set: an unlisted treasury
+refuses every fee a user pays straight to it (cancel, branch, rename or delete). The listing
+script and its `--check` cover the escrow and the treasury the escrow names now, not the e2e
+runner's funding account (step 4).
 
 ---
 
@@ -249,15 +444,18 @@ re-runnable as a canary.
 **Run it (from `oracle/`):**
 ```bash
 SMOKE_PRIVATE_KEY=0x<Tradable Test User 0x971c…8057 MetaMask private key> \
+SMOKE_ESCROW_ADDRESS=0x… SMOKE_AGENT_ADDRESS=0x… SMOKE_TOKEN_ADDRESS=0x… \
+SMOKE_ORACLE_PUBLIC_KEY=0x04… \
 bun run smoke:base-testnet
 ```
-Defaults for the RPC (`https://sepolia.base.org`), chainId (84532), the escrow/agent/ABLE
-addresses **and the oracle's ECIES `PUBLIC_KEY`** live in the `base-testnet` table in
-`oracle/scripts/smoke/env.js`. Every `SMOKE_*` variable overrides its table entry — set
-`SMOKE_ORACLE_PUBLIC_KEY` after a key rotation (a stale key means prompts land on-chain and are
-never answered). `SMOKE_ENV=base-mainnet` (`bun run smoke:base-mainnet`) switches to the mainnet
-RPC/chainId and **requires** `SMOKE_ESCROW_ADDRESS`, `SMOKE_AGENT_ADDRESS`,
-`SMOKE_TOKEN_ADDRESS` and `SMOKE_ORACLE_PUBLIC_KEY` by name — nothing is guessed on mainnet.
+The `base-testnet` table in `oracle/scripts/smoke/env.js` holds only the RPC
+(`https://sepolia.base.org`) and chainId (84532). The pair's escrow, agent and token addresses and
+the oracle's ECIES public key are **required** by name on every network
+(`SMOKE_ESCROW_ADDRESS`, `SMOKE_AGENT_ADDRESS`, `SMOKE_TOKEN_ADDRESS`,
+`SMOKE_ORACLE_PUBLIC_KEY`): a pair is deployed fresh, and a committed default would smoke the old
+one. Take the key from the oracle's `[OracleKeys] … encryptionKey=` start-up line (a stale key
+means prompts land on-chain and are never answered). `SMOKE_ENV=base-mainnet`
+(`bun run smoke:base-mainnet`) switches to the mainnet RPC/chainId and requires the same four.
 
 **Modes (run-day extensions, CU-14ym9bvdmjr):**
 
@@ -538,6 +736,19 @@ and waits for its one-hour refund.
   sent it), and the operator's procedure has a step for that.
 - The owner writes the switch with the operator script in the harness repository, which also
   holds the step-by-step procedure.
+- Once every prompt on the old pair is settled and the oracle has moved, remove the oracle role
+  from every address that holds it on the old agent: the owner (the Safe, after the handover)
+  calls `removeOracle(<address>)` on the old agent for each, read from its `RoleGranted` and
+  `RoleRevoked` events as in §1.2 step 6, and checks `isOracle(<address>)` is false for each
+  afterwards. Users' approvals to the old escrow and their spending limits on it stay in place
+  when a pair is retired, and an oracle of the old agent can still charge a user's limit through
+  that escrow (`initiateAgentJob` is oracle-only); with no oracle left on the old agent nothing
+  can. Refunds of the old pair's prompts need no oracle (`processRefund`), so they still work.
+- Tell users that their approval and limit on the old pair stay until they remove them. The
+  dApp's revoke acts only on the pair its build points at, so a build for the new pair cannot
+  remove them; a user removes them from a build that still points at the old pair, or from a
+  block explorer: `cancelSpendingLimit()` on the old escrow (refused while the user still has a
+  prompt pending there), then `approve(<old escrow>, 0)` on the token.
 
 ### Mainnet pre-flight additions (do before the first mainnet `rofl deploy`)
 
@@ -569,5 +780,10 @@ and waits for its one-hour refund.
 - Storage math: qcow2 = `storage.size` + 2048 MiB ≤ offer storage, or the app never registers a replica and `machine logs` 404s. Read `machine show` → `net.oasis.error` first.
 - `rofl deploy` without `--term hour` rents monthly.
 - Nothing in the TEE may depend on a runtime download (the Ollama model pull broke the whole bundle).
-- Public load-balanced RPCs serve stale reads; verify at the receipt block.
+- Public load-balanced RPCs serve stale reads; verify at the receipt block (the fresh deploy's
+  read-back and the admin rehearsal do).
+- A hand-over leaves `ORACLE_ADDRESS` and `ANSWER_TX_HASH` in the network's `ENV_FILE`; empty
+  both afterwards. The next fresh deploy on a live network refuses a set `ORACLE_ADDRESS`.
+- `DRY_RUN` and the mainnet confirmations are typed before the command, never written in an env
+  file: a line for one there that contradicts what was typed stops the script.
 - Sourcify-verify implementations or the Safe builder cannot decode proxy calls.
