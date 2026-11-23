@@ -194,6 +194,8 @@ function createFrameBuffer({
       if (!entry || run !== entry.run || entry.state === "finished") return false;
       entry.state = entry.state === "unavailable" ? "unavailable" : "finished";
       entry.outcome = outcome;
+      // An unavailable entry can be closed again: only the last close's timer may drop it.
+      clearTimeout(entry.timer);
       entry.timer = setTimeout(() => drop(id), graceMs);
       entry.timer.unref?.();
       if (entry.state === "finished") notify(entry, { kind: "end" });

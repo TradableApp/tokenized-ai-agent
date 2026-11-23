@@ -399,6 +399,10 @@ function createStreamServer({
       return refuse(req, res, STREAM_REFUSALS.unavailable);
     }
 
+    // Whether an answer is open, finished or has no room (404, 410, 503) is answered before the
+    // proof, by design: the dApp needs it to decide whether and when to retry, and answer ids are
+    // public on-chain. It does tell anyone which answers are being processed now; it never tells
+    // them anything about their frames.
     const found = buffer.lookup(id);
     if (found.state === "unknown") return refuse(req, res, STREAM_REFUSALS.notOpen);
     if (found.state === "gone") return refuse(req, res, STREAM_REFUSALS.finished);

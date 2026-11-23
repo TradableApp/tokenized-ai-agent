@@ -247,6 +247,27 @@ describe("frameBuffer", () => {
       small.dispose();
     });
 
+    it("keeps an unavailable answer for the grace period after its last close, with no earlier timer left to drop it", () => {
+      const small = createFrameBuffer({
+        graceMs: GRACE_MS,
+        limits: { ...BUFFER_LIMITS, maxAnswerBytes: frameBytes },
+      });
+      small.open("42", { run: RUN_A, replica: "deadbeef", expectedProof: PROOF });
+      small.append("42", { run: RUN_A, seq: 0, ciphertext: sealed(100) });
+      small.append("42", { run: RUN_A, seq: 1, ciphertext: sealed(100) });
+      expect(small.lookup("42").state).to.equal("unavailable");
+
+      small.close("42", { run: RUN_A, outcome: "answered" });
+      clock.tick(GRACE_MS / 2);
+      small.close("42", { run: RUN_A, outcome: "answered" });
+      clock.tick(GRACE_MS / 2 + 1);
+      expect(small.lookup("42").state, "not dropped by the first close's timer").to.equal("unavailable");
+
+      clock.tick(GRACE_MS / 2);
+      expect(small.lookup("42").state).to.equal("gone");
+      small.dispose();
+    });
+
     it("makes room under the total cap by dropping finished answers first", () => {
       const small = createFrameBuffer({
         graceMs: GRACE_MS,
