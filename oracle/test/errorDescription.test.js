@@ -761,8 +761,9 @@ describe("describeError — one line of text, with nothing a reader outside the 
     });
 
     it("keeps a missing schema, and a name qualified by its schema either way it is written", () => {
-      expect(describeError(pgError('schema "senseai" does not exist', "3F000"))).to.equal(
-        '3F000: schema "senseai" does not exist',
+      // A name no setting holds: a schema named as a configured database is removed instead.
+      expect(describeError(pgError('schema "ledger_archive" does not exist', "3F000"))).to.equal(
+        '3F000: schema "ledger_archive" does not exist',
       );
       expect(describedText('relation "public.failed_jobs" does not exist')).to.equal(
         'relation "public.failed_jobs" does not exist',
