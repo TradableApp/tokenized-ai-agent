@@ -65,6 +65,8 @@ function makeEliza(scriptFor) {
   const handlers = {};
   const runtime = {
     agentId: "agent-uuid",
+    // The runtime's own logger, which the oracle replaces with a cleaned one.
+    logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } },
     ensureConnection: sinon.stub().resolves(),
     createMemory: sinon.stub().resolves(),
     getMemoryById: sinon.stub().resolves(null),
