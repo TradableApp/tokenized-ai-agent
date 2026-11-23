@@ -2,7 +2,12 @@ const { expect } = require("chai");
 const hre = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
-const { resolveDeployPlan, deployFreshPair, freshPairProblems } = require("../scripts/deploy");
+const {
+  resolveDeployPlan,
+  deployFreshPair,
+  freshPairProblems,
+  upgradePair,
+} = require("../scripts/deploy");
 
 const { ethers, upgrades } = hre;
 
@@ -231,6 +236,22 @@ describe("scripts/deploy — a fresh pair", function () {
     expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
   });
 
+  it("refuses the zero address as ORACLE_ADDRESS before anything is sent, dry run included", async function () {
+    const { able, deployer } = await loadFixture(tokensFixture);
+    const nonce = await ethers.provider.getTransactionCount(deployer.address);
+
+    for (const extra of [{}, { DRY_RUN: "1" }]) {
+      await expect(
+        deploy({
+          TOKEN_CONTRACT_ADDRESS: await able.getAddress(),
+          ORACLE_ADDRESS: ethers.ZeroAddress,
+          ...extra,
+        }),
+      ).to.be.rejectedWith(/ORACLE_ADDRESS is the zero address[\s\S]*Nothing was sent/);
+    }
+    expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
+  });
+
   it("refuses a plan that is not fresh", async function () {
     const plan = resolveDeployPlan({
       networkName: "hardhat",
@@ -247,6 +268,29 @@ describe("scripts/deploy — a fresh pair", function () {
       },
     });
     await expect(deployFreshPair(hre, plan, { log: () => {} })).to.be.rejectedWith(/fresh/);
+  });
+
+  it("upgradePair refuses a dry-run plan itself, before anything is read or sent", async function () {
+    const [deployer] = await ethers.getSigners();
+    const nonce = await ethers.provider.getTransactionCount(deployer.address);
+    const env = {
+      DEPLOY_MODE: "upgrade",
+      DRY_RUN: "1",
+      AI_AGENT_CONTRACT_ADDRESS: ethers.ZeroAddress.replace(/0$/, "1"),
+      AI_AGENT_ESCROW_CONTRACT_ADDRESS: ethers.ZeroAddress.replace(/0$/, "2"),
+    };
+    const plan = resolveDeployPlan({
+      networkName: "hardhat",
+      envFile: ".env.test",
+      fileEnv: env,
+      processEnv: env,
+    });
+    const lines = [];
+    await expect(upgradePair(hre, plan, { log: (line) => lines.push(line) })).to.be.rejectedWith(
+      /an upgrade has no dry run[\s\S]*Nothing was sent/,
+    );
+    expect(lines).to.deep.equal([]);
+    expect(await ethers.provider.getTransactionCount(deployer.address)).to.equal(nonce);
   });
 
   describe("the read-back", function () {

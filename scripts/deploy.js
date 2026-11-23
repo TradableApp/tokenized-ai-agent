@@ -520,7 +520,7 @@ function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
 
 /**
  * Deploys a new agent and escrow, links them, and reads them back. Throws before sending
- * anything when the plan is not fresh or ORACLE_ADDRESS is the deploy wallet, and after the
+ * anything when the plan is not fresh or ORACLE_ADDRESS is the deploy wallet or the zero address, and after the
  * deploy when the read-back finds a difference, naming each.
  */
 async function deployFreshPair(env, plan, { log = console.log, deployer: given } = {}) {
@@ -534,6 +534,11 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
   if (plan.oracle && same(plan.oracle, deployer.address)) {
     throw new Error(
       `ORACLE_ADDRESS is the deploy wallet ${deployer.address}. It is set so that the deploy key never holds the oracle role: name the address the oracle answers from, or leave it unset (the deploy wallet is then the first oracle, and scripts/authorize-oracle.js moves the role). Nothing was sent.`,
+    );
+  }
+  if (plan.oracle && same(plan.oracle, ethers.ZeroAddress)) {
+    throw new Error(
+      "ORACLE_ADDRESS is the zero address, which no oracle can answer from (the agent's initializer would refuse it). Name the address the oracle answers from, or leave it unset. Nothing was sent.",
     );
   }
   const feeSettingProblems = Object.entries(FEE_VARS)
@@ -667,11 +672,16 @@ function reportFreshPair({ plan, log, oracle, deployer, agentAddress, escrowAddr
 
 // --- upgrade --------------------------------------------------------------------------------
 
-/** Upgrades both proxies the plan names. */
+/** Upgrades both proxies the plan names. Refuses a dry-run plan before anything is read or sent. */
 async function upgradePair(env, plan, { log = console.log } = {}) {
   const { ethers, upgrades } = env;
   if (plan.mode !== "upgrade") {
     throw new Error(`upgradePair upgrades a pair only; this plan is DEPLOY_MODE=${plan.mode}`);
+  }
+  if (plan.dryRun) {
+    throw new Error(
+      "DRY_RUN=1 prints the plan of a fresh pair; an upgrade has no dry run. Nothing was sent.",
+    );
   }
   const [deployer] = await ethers.getSigners();
   const EVMAIAgent = await ethers.getContractFactory("EVMAIAgent", deployer);
@@ -802,11 +812,7 @@ async function main() {
   }
 
   console.log(`\nDEPLOY_MODE=${plan.mode} (from ${envFile})`);
-  if (plan.dryRun && plan.mode !== "fresh") {
-    throw new Error(
-      "DRY_RUN=1 prints the plan of a fresh pair; an upgrade has no dry run. Nothing was sent.",
-    );
-  }
+  // An upgrade has no dry run: upgradePair refuses DRY_RUN=1 itself, before anything is read.
   const pair =
     plan.mode === "fresh"
       ? await deployFreshPair(hre, plan, { deployer })
