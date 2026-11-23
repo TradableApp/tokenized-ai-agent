@@ -20,3 +20,9 @@ rofl_is_quoted() {
     *) return 1 ;;
   esac
 }
+
+# A config value described by its shape only, for a refusal: its length, never its text. A value
+# below the delimiter can hold the database host or a credential put on the wrong side.
+rofl_value_shape() {
+  printf '(value not shown, %s characters)' "${#1}"
+}

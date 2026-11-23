@@ -250,6 +250,24 @@ ENV_YAML+="$CONFIG_YAML"
 . "$(dirname "$0")/rofl-config-patterns.sh"
 preflight_failures=""
 
+# First, any setting below the delimiter whose value holds the address, compared by value. A
+# loopback host is the same everywhere and says nothing, so it is not compared. No rule here
+# prints a value: the rules below name the setting and give its value's length only.
+case "$POSTGRES_HOST_VALUE" in
+  ""|localhost|127.*|::1|"[::1]") ;;
+  *)
+    while IFS= read -r cfg_line; do
+      [ -z "$cfg_line" ] && continue
+      cfg_key="${cfg_line%%=*}"
+      cfg_key="${cfg_key#      - }"
+      cfg_val="${cfg_line#*=}"
+      if [[ "$cfg_val" == *"$POSTGRES_HOST_VALUE"* ]]; then
+        preflight_failures+="  ✗ ${cfg_key} below the delimiter holds the POSTGRES_HOST value\n      the database address is a secret — keep it out of the plaintext config (value not shown)\n"
+      fi
+    done <<< "$(printf '%b' "$CONFIG_YAML")"
+    ;;
+esac
+
 while IFS= read -r cfg_line; do
   [ -z "$cfg_line" ] && continue
   cfg_key="${cfg_line%%=*}"
@@ -268,23 +286,23 @@ while IFS= read -r cfg_line; do
     # content, reachable by hand-editing — which SKIP_ENV_PARITY_CHECK=1 leaves unguarded.
     cfg_val="${cfg_val%"${cfg_val##*[^[:space:]]}"}"
     if [ -n "$cfg_val" ]; then
-      preflight_failures+="  ✗ mcp=${cfg_val}\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
+      preflight_failures+="  ✗ mcp $(rofl_value_shape "$cfg_val")\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
     fi
     continue
   fi
   [ -z "$cfg_val" ] && continue
 
   if printf '%s' "$cfg_val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then
-    preflight_failures+="  ✗ ${cfg_key}=${cfg_val}\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
+    preflight_failures+="  ✗ ${cfg_key} $(rofl_value_shape "$cfg_val")\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
   fi
   case "$cfg_val" in
     '"'*'"'|"'"*"'")
-      preflight_failures+="  ✗ ${cfg_key}=${cfg_val}\n      quoted — docker-compose keeps the quotes, so the container sees them as part of the value\n"
+      preflight_failures+="  ✗ ${cfg_key} $(rofl_value_shape "$cfg_val")\n      quoted — docker-compose keeps the quotes, so the container sees them as part of the value\n"
       ;;
   esac
 done <<< "$(printf '%b' "$CONFIG_YAML")"
 
-# The database address is a secret. Unlike the lines above, these never print a value.
+# The database address is a secret. These, like every rule here, never print a value.
 if [ -n "$POSTGRES_HOST_IN_CONFIG" ]; then
   preflight_failures+="  ✗ POSTGRES_HOST is set below the delimiter in ${POSTGRES_HOST_IN_CONFIG}\n      the database address is a secret — move it ABOVE the delimiter so it is injected, not written into the public compose\n"
 fi
@@ -302,22 +320,6 @@ while IFS= read -r entry; do
   fi
   preflight_failures+="  ✗ line ${where%% *} of ${entry#* in } (${where#* } the delimiter) has a key that is not upper-case snake case (text not shown)\n      write KEY=value with no prefix (no 'export'), in upper case, each value on one line — ${why}\n"
 done <<< "$(printf '%b' "$MALFORMED_KEYS")"
-# Any other setting below the delimiter whose value holds the address, compared by value. A
-# loopback host is the same everywhere and says nothing, so it is not compared.
-case "$POSTGRES_HOST_VALUE" in
-  ""|localhost|127.*|::1|"[::1]") ;;
-  *)
-    while IFS= read -r cfg_line; do
-      [ -z "$cfg_line" ] && continue
-      cfg_key="${cfg_line%%=*}"
-      cfg_key="${cfg_key#      - }"
-      cfg_val="${cfg_line#*=}"
-      if [[ "$cfg_val" == *"$POSTGRES_HOST_VALUE"* ]]; then
-        preflight_failures+="  ✗ ${cfg_key} below the delimiter holds the POSTGRES_HOST value\n      the database address is a secret — keep it out of the plaintext config (value not shown)\n"
-      fi
-    done <<< "$(printf '%b' "$CONFIG_YAML")"
-    ;;
-esac
 # Database settings with no host above the delimiter would boot an oracle with an empty host,
 # found only after the build, the update and the restart.
 if [ "$HAS_DATABASE_CONFIG" -eq 1 ] && [ -z "$POSTGRES_HOST_VALUE" ]; then
