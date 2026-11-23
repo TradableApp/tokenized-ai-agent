@@ -57,8 +57,9 @@ function recordingSink(events) {
 }
 
 /**
- * ElizaOS stand-in. Each prompt text maps to a script: the thoughts it emits, then either an
- * answer or a failure.
+ * ElizaOS stand-in. Each prompt text maps to a script: the intermediate responses it emits (a
+ * text with the action that wrote it, and a thought or not), the thoughts it emits, then either
+ * an answer or a failure.
  */
 function makeEliza(scriptFor) {
   const handlers = {};
@@ -92,6 +93,7 @@ function makeEliza(scriptFor) {
     }
     async handleMessage(_target, message, options) {
       const script = scriptFor(message.content.text);
+      for (const emission of script.intermediate ?? []) await options.onResponse(emission);
       for (const thought of script.thoughts ?? []) {
         if (script.gapMs) await new Promise((resolve) => setTimeout(resolve, script.gapMs));
         await options.onResponse({ thought });
@@ -452,6 +454,40 @@ describe("answer path and live stream", function () {
       ]);
       expect(frames.map((f) => f.type)).to.deep.equal(["reset", "step", "step", "attempt", "answer", "done"]);
       expect(frames[3].data).to.deep.equal({ attempt: 2 });
+      expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(projection(frames));
+    });
+
+    it("never puts an intermediate response text in any frame, only its thought as a step", async () => {
+      const INTERMEDIATE = [
+        "Let me look up the latest prices for you (first draft).",
+        "Here is what the tool returned so far (second draft).",
+      ];
+      const { oracle, sink, storedAnswer } = loadOracle({
+        scriptFor: () => ({
+          intermediate: [
+            { text: INTERMEDIATE[0], thought: "Fetching the current prices now.", actions: ["CALL_MCP_TOOL"] },
+            { text: INTERMEDIATE[1], actions: ["CALL_MCP_TOOL"] },
+          ],
+          thoughts: ["Weighing the macro backdrop today."],
+          answer: "Bitcoin looks firm this week.",
+        }),
+      });
+
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is BTC?"), "0xkey", fakeEvent());
+      await oracle.flushStreamsForTest();
+
+      const frames = sink.frames("457");
+      const [stored] = storedAnswer();
+      expect(stored.file.content).to.equal("Bitcoin looks firm this week.");
+      for (const text of INTERMEDIATE) {
+        for (const frame of frames) expect(JSON.stringify(frame), frame.type).to.not.include(text);
+        expect(JSON.stringify(stored.file)).to.not.include(text);
+      }
+      expect(frames.filter((f) => f.type === "step").map((f) => f.data.description)).to.deep.equal([
+        "Fetching the current prices now.",
+        "Weighing the macro backdrop today.",
+      ]);
+      expect(frames.find((f) => f.type === "answer").data.text).to.equal(stored.file.content);
       expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(projection(frames));
     });
 
