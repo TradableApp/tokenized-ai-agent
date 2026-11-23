@@ -212,6 +212,11 @@ function withoutAddresses(text) {
  * @param {unknown} error
  * @returns {Error}
  */
+// A V8 stack frame: "at" and a location (a file with its line and column, optionally with the
+// function's name before it in parentheses), or a frame with no file ("<anonymous>", "native",
+// "index N" for a promise combinator).
+const FRAME = /^\s+at (?:[^\n]* \()?(?:[^\s()][^()\n]*:\d+:\d+|<anonymous>|native|index \d+)\)?$/;
+
 function describedError(error) {
   const described = new Error(describeError(error));
   if (error === null || typeof error !== "object") return described;
@@ -224,8 +229,18 @@ function describedError(error) {
   if (typeof code === "string" && plainKind(code) !== null) described.code = code;
 
   const stack = readProperty(error, "stack");
+  const message = readProperty(error, "message");
+  // The stack starts with the name and the message, every line of it: those lines are skipped,
+  // so a line of the message that starts like a frame is not taken for one. Of the rest, only a
+  // line shaped as a frame is kept.
+  const messageLines = typeof message === "string" ? message.split("\n").length : 1;
   const frames =
-    typeof stack === "string" ? stack.split("\n").filter((line) => /^\s+at /.test(line)) : [];
+    typeof stack === "string"
+      ? stack
+          .split("\n")
+          .slice(messageLines)
+          .filter((line) => FRAME.test(line))
+      : [];
   described.stack = withoutAddresses(
     [`${described.name}: ${described.message}`, ...frames].join("\n"),
   );

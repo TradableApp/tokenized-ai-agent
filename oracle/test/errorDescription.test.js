@@ -304,9 +304,7 @@ describe("errorDescription — what an error is, without the address it was sent
 
       expect(error.stack).to.not.include("savings");
       expect(error.stack).to.not.include("y.js");
-      expect(error.stack.split("\n").slice(1)).to.deep.equal(
-        original.stack.split("\n").slice(3),
-      );
+      expect(error.stack.split("\n").slice(1)).to.deep.equal(original.stack.split("\n").slice(3));
     });
 
     it("keeps only lines shaped as a frame", () => {
