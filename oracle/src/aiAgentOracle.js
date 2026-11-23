@@ -19,9 +19,9 @@ if (process.env.ENV_FILE) {
 // Load the base .env.oracle file to fill in any missing non-secret variables.
 dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
-// Before the framework is loaded, which reads its log level once: its agent runtime prints
-// through a logger the oracle does not clean (frameworkLogLevel.js). After the env files, so a
-// stricter level the operator set there is kept.
+// Before the framework is loaded, which reads its log level once: its information and debug
+// lines are not printed at all (frameworkLogLevel.js). After the env files, so a stricter level
+// the operator set there is kept.
 holdFrameworkLogLevel();
 
 const {
@@ -319,8 +319,8 @@ const {
 const { createToolServerWatch } = require("./elizaos/toolServerWatch");
 const { MARKET_DATA_TOOLS } = require("./elizaos/marketDataTools");
 const {
-  isMutedFrameworkLog,
-  cleanedFrameworkArgs,
+  cleanedLogCall,
+  cleanRuntimeLogger,
   FRAMEWORK_LOG_LEVELS,
 } = require("./elizaos/mutedFrameworkLogs");
 
@@ -611,15 +611,12 @@ async function initializeEliza() {
   elizaOS = new ElizaOS();
 
   // Some of the framework's lines are not printed, and every other one is cleaned first. See
-  // mutedFrameworkLogs for which and why.
+  // mutedFrameworkLogs for which and why. The agent runtime's own logger is replaced the same
+  // way once the runtime is built (below).
   for (const level of FRAMEWORK_LOG_LEVELS) {
     const original = elizaLogger[level];
     if (typeof original !== "function") continue;
-    elizaLogger[level] = (...args) => {
-      if (!isMutedFrameworkLog(args, level)) {
-        original.apply(elizaLogger, cleanedFrameworkArgs(args));
-      }
-    };
+    elizaLogger[level] = cleanedLogCall(original.bind(elizaLogger), level);
   }
 
   // Add and start the SenseAI Agent. The order around it (clean what is stored, name the
@@ -671,6 +668,11 @@ async function initializeEliza() {
       startAgents: async (agentIds) => {
         senseAiAgentId = agentIds[0];
         console.log("senseAiAgentId", senseAiAgentId);
+
+        // The runtime's own logger, which warns with the start of the model's reply when it
+        // cannot read it, is cleaned before the agent starts and prints anything. Throws when it
+        // cannot be, and the agent is then not started.
+        for (const agentId of agentIds) cleanRuntimeLogger(elizaOS.getAgent(agentId));
 
         // Start the agent lifecycle
         // The Brain's connection stays HERE, in the host: brainContext builds it with the mTLS

@@ -46,6 +46,8 @@ function makeElizaStub({ providerData, thoughts }) {
     const own = { eventHandlers: {} };
     const runtime = {
       agentId: "agent-uuid",
+      // The runtime's own logger, which the oracle replaces with a cleaned one.
+      logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } },
       ownHandlers: own.eventHandlers,
       ensureConnection: sinon.stub().resolves(),
       createMemory: sinon.stub().resolves(),

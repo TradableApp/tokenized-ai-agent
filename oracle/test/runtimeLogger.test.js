@@ -72,16 +72,14 @@ describe("the agent runtime's own logger", function () {
   it("describes an error's message: its first line, without quoted values or addresses", function () {
     const original = recordingLogger();
 
-    load()
-      .cleanedLogger(original)
-      .error(
-        {
-          src: "agent",
-          error:
-            'Embedding failed for "what should I buy" at https://rpc.example/v2/aB3dE6gH9jK2mN5pQ8sT\nthe rest of the text',
-        },
-        "Embedding generation failed",
-      );
+    load().cleanedLogger(original).error(
+      {
+        src: "agent",
+        error:
+          'Embedding failed for "what should I buy" at https://rpc.example/v2/aB3dE6gH9jK2mN5pQ8sT\nthe rest of the text',
+      },
+      "Embedding generation failed",
+    );
 
     expect(original.calls[0][1]).to.deep.equal({
       src: "agent",

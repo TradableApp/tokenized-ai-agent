@@ -103,8 +103,9 @@ function createStubs(sessionKey) {
           return ["fake-agent-id"];
         }
         async startAgents() {}
+        // The runtime's own logger, which the oracle replaces with a cleaned one.
         getAgent() {
-          return null;
+          return { logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } } };
         }
       },
       elizaLogger: {

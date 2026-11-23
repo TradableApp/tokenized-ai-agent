@@ -4,9 +4,10 @@ const path = require("path");
 
 /**
  * The agent runtime the oracle starts has a logger of its own, which writes to the console
- * directly and is not the framework's shared logger that the oracle wraps and cleans. Its
- * information and debug lines can carry a query's text, its bound values and a peer, so the
- * oracle holds the framework at warning level: warnings and errors are still printed.
+ * directly and is not the framework's shared logger. The oracle cleans both (runtimeLogger.test.js
+ * for the runtime's), and also holds the framework at warning level, since information and debug
+ * lines can carry a query's text, its bound values and a peer: warnings and errors are still
+ * printed.
  */
 describe("the framework's log level", () => {
   // Read in each test, so the oracle tests below run whether or not this module loads.
