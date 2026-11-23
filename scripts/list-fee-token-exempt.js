@@ -80,18 +80,25 @@ function safeBatch({ chainId, safe, token, accounts, createdAt }) {
   };
 }
 
-/** Whether the token keeps a list, and if it does whether each address is on it. */
+/**
+ * Whether the token keeps a list, and if it does whether each address is on it. A token that
+ * answers for one address and reverts with no data for another is neither, and is refused.
+ */
 async function readListing({ token, accounts }) {
-  try {
-    const listed = {};
-    for (const [name, address] of Object.entries(accounts)) {
+  const listed = {};
+  for (const [name, address] of Object.entries(accounts)) {
+    try {
       listed[name] = (await token.isTransferExempt(address)) === true;
+    } catch (error) {
+      if (!isEmptyRevert(error)) throw error;
+      const answered = Object.keys(listed);
+      if (answered.length === 0) return { restricted: false, listed: null };
+      throw new ListingError(
+        `token.isTransferExempt answered for the ${answered.map((n) => `${n} ${accounts[n]}`).join(" and ")} but reverted with no data for the ${name} ${address}, so whether it keeps a list cannot be told. Check TOKEN_CONTRACT_ADDRESS and the token.`,
+      );
     }
-    return { restricted: true, listed };
-  } catch (error) {
-    if (isEmptyRevert(error)) return { restricted: false, listed: null };
-    throw error;
   }
+  return { restricted: true, listed };
 }
 
 /** The token's symbol, refused when it cannot be read or is not `expectedSymbol` (when set). */
