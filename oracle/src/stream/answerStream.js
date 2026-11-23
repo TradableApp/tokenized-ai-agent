@@ -77,6 +77,9 @@ const counters = {
   framesBuilt: 0,
   sinkFailures: 0,
   sealFailures: 0,
+  // Queued work whose result could not be applied (a step's numbering function that threw):
+  // nothing was sent or kept for it.
+  buildFailures: 0,
   thoughtsDropped: Object.fromEntries(THOUGHT_DROP_KINDS.map((kind) => [kind, 0])),
 };
 const streamCounters = Object.freeze({
@@ -289,7 +292,9 @@ function buildStream(options, deliver) {
         try {
           apply(outcome.value);
         } catch {
-          // A frame that cannot be built is skipped; nothing about it is printed.
+          // A frame that cannot be built is skipped, neither sent nor kept, and counted; nothing
+          // about it is printed (it could carry model text).
+          counters.buildFailures += 1;
         }
       });
   }
@@ -399,6 +404,9 @@ function buildStream(options, deliver) {
       closing = true;
       enqueue(noop, () => {
         if (ended) return;
+        // The sink is closed whether or not the done frame could be built or sealed (a seal
+        // failure is counted in emit): a run left open would hold its readers until it expires,
+        // and the stored answer is what they fall back to either way.
         emit(FRAME_TYPES.DONE, { outcome });
         ended = true;
         callSink("close", { run, outcome });
