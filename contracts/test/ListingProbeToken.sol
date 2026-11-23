@@ -3,16 +3,18 @@ pragma solidity ^0.8.24;
 
 /**
  * @dev Test only. A token stand-in for scripts/list-fee-token-exempt.js that answers the listing
- *      question in one of three wrong ways, chosen at deploy time: it never lists anyone (and
- *      accepts the call that should), it reverts with a reason, or it reverts with no data as a
- *      token with no such function does. It carries the symbol it is given and 18 decimals, so
+ *      question in one of four wrong ways, chosen at deploy time: it never lists anyone (and
+ *      accepts the call that should), it reverts with a reason, it reverts with no data as a
+ *      token with no such function does, or it answers for a contract and reverts with no data
+ *      for any other address. It carries the symbol it is given and 18 decimals, so
  *      a pair can be deployed against it. Nothing here is deployed outside tests.
  */
 contract ListingProbeToken {
   enum Answer {
     NeverListed,
     RevertsWithReason,
-    RevertsEmpty
+    RevertsEmpty,
+    AnswersOnlyForContracts
   }
 
   string public symbol;
@@ -29,7 +31,11 @@ contract ListingProbeToken {
     return 18;
   }
 
-  function isTransferExempt(address) external view returns (bool) {
+  function isTransferExempt(address account) external view returns (bool) {
+    if (answer == Answer.AnswersOnlyForContracts && account.code.length == 0) {
+      // solhint-disable-next-line reason-string
+      revert();
+    }
     if (answer == Answer.RevertsWithReason) {
       revert("listing unavailable");
     }

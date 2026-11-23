@@ -19,6 +19,7 @@ const {
 const NEVER_LISTED = 0;
 const REVERTS_WITH_REASON = 1;
 const REVERTS_EMPTY = 2;
+const ANSWERS_ONLY_FOR_CONTRACTS = 3;
 async function probeToken(symbol, answer) {
   const token = await (await ethers.getContractFactory("ListingProbeToken")).deploy(symbol, answer);
   await token.waitForDeployment();
@@ -29,6 +30,10 @@ async function neverListsFixture() {
 }
 async function revertsWithReasonFixture() {
   return probeToken("SENSE", REVERTS_WITH_REASON);
+}
+// A token that answers for the escrow (a contract) and as one with no list for the treasury.
+async function answersOnlyForEscrowFixture() {
+  return probeToken("PROBE", ANSWERS_ONLY_FOR_CONTRACTS);
 }
 // A token that calls itself SENSE but answers as one with no list.
 async function senseWithNoListFixture() {
@@ -313,6 +318,18 @@ describe("scripts/list-fee-token-exempt — listing the escrow and the treasury"
     await expect(run(fixture)).to.be.rejectedWith(/listing unavailable/);
     expect(await nonceOf(fixture.deployer)).to.equal(nonce);
   });
+
+  for (const check of [false, true]) {
+    it(`refuses a token that answers for the escrow but reverts with no data for the treasury (check=${check})`, async function () {
+      const fixture = await loadRehearsal(answersOnlyForEscrowFixture);
+      const nonce = await nonceOf(fixture.deployer);
+
+      await expect(run(fixture, { check })).to.be.rejectedWith(
+        /answered for the escrow 0x[0-9a-fA-F]{40} but reverted with no data for the treasury 0x[0-9a-fA-F]{40}/,
+      );
+      expect(await nonceOf(fixture.deployer)).to.equal(nonce);
+    });
+  }
 
   it("fails when an address still reads as not listed after it was listed", async function () {
     const fixture = await loadRehearsal(neverListsFixture);

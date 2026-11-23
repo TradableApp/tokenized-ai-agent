@@ -164,6 +164,11 @@ function modeProblems({ networkName, env }) {
         `EXPECTED_FEE_TOKEN_SYMBOL must be set for a fresh pair on ${networkName}: the deploy reads the token's symbol back and fails when it differs, so a pair is never left paying in the wrong token`,
       );
     }
+    if (!isSet(env.DOMAIN)) {
+      problems.push(
+        `DOMAIN must be set for a fresh pair on ${networkName}: it is the sign-in domain the new agent is initialised with`,
+      );
+    }
   }
   return problems;
 }
