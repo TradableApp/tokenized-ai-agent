@@ -51,10 +51,11 @@ const FEE_VARS = Object.freeze({
 // chain with that same value. An upgrade reads none of them; a local network keeps the merged
 // environment, since the e2e bring-up writes only the token, the symbol, the mode and the pair
 // to the file and lets the rest fall back to the deploy wallet and the default fees.
+// ORACLE_ADDRESS is not among them: a fresh pair on a live network refuses it wherever it is set
+// (liveOracleProblem below).
 const FRESH_LIVE_FILE_ONLY_VARS = Object.freeze([
   "TOKEN_CONTRACT_ADDRESS",
   "TREASURY_ADDRESS",
-  "ORACLE_ADDRESS",
   "EXPECTED_FEE_TOKEN_SYMBOL",
   ...Object.values(FEE_VARS),
   "DOMAIN",
@@ -86,6 +87,18 @@ const WHOLE_WEI_RE = /^[0-9]+$/;
 function feeValueProblem(name, value) {
   if (!isSet(value) || WHOLE_WEI_RE.test(String(value).trim())) return null;
   return `${name} is not a whole number of wei (${describeShape(value)}): write the fee in wei, in decimal digits only, with no sign, point, exponent, separator or 0x (one token of 18 decimals is 1000000000000000000)`;
+}
+
+/**
+ * Why a fresh pair on a live network cannot take ORACLE_ADDRESS, or null. There the oracle's
+ * signer is derived from the new agent's address (oracle/src/oracleKeys.js), so an address set
+ * before the agent exists can only be another pair's signer: the new pair would grant it the role
+ * and nothing later would remove it. The deploy wallet is the first oracle instead, and the
+ * hand-over moves the role. The value is described by shape only.
+ */
+function liveOracleProblem(networkName, value) {
+  if (!isSet(value)) return null;
+  return `ORACLE_ADDRESS is set (${describeShape(value)}), but a fresh pair on ${networkName} takes no first oracle from it: there the oracle's signer is derived from the new agent's address, so an address set before the agent exists can only be another pair's signer. Empty ORACLE_ADDRESS (and ANSWER_TX_HASH) in ENV_FILE, and in the root .env and the shell if set there, and deploy again: the deploy wallet is the first oracle, and the deploy prints the hand-over (scripts/authorize-oracle.js grant, then retire-deployer) that moves the role to the new pair's signer once the oracle runs on it.`;
 }
 
 /** The settings read from ENV_FILE alone for this network and the mode the file names. */
@@ -154,6 +167,8 @@ function modeProblems({ networkName, env }) {
     }
   }
   if (!LOCAL_NETWORKS.has(networkName)) {
+    const oracleProblem = liveOracleProblem(networkName, env.ORACLE_ADDRESS);
+    if (oracleProblem) problems.push(oracleProblem);
     if (!isSet(env.TREASURY_ADDRESS)) {
       problems.push(
         `TREASURY_ADDRESS must be set for a fresh pair on ${networkName}: it is where fees accrue, and the deploy wallet fallback is for local networks only`,
@@ -515,14 +530,16 @@ function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
     `  3. In ${plan.envFile}: ORACLE_ADDRESS=<signer>. Then: ${run} grant`,
     "  4. See one prompt answered by it, and take that answer's transaction hash.",
     `  5. In ${plan.envFile}: ANSWER_TX_HASH=<answer tx>. Then: ${run} retire-deployer`,
+    `  6. Then empty ORACLE_ADDRESS and ANSWER_TX_HASH in ${plan.envFile}: a fresh deploy on a live network refuses a set ORACLE_ADDRESS.`,
     `  The hand-over reads both settings from ${plan.envFile} alone and refuses one typed on the command line.`,
   ];
 }
 
 /**
  * Deploys a new agent and escrow, links them, and reads them back. Throws before sending
- * anything when the plan is not fresh or ORACLE_ADDRESS is the deploy wallet or the zero address, and after the
- * deploy when the read-back finds a difference, naming each.
+ * anything when the plan is not fresh, names a first oracle on a live network, or names the deploy
+ * wallet or the zero address as ORACLE_ADDRESS, and after the deploy when the read-back finds a
+ * difference, naming each.
  */
 async function deployFreshPair(env, plan, { log = console.log, deployer: given } = {}) {
   const { ethers, upgrades } = env;
@@ -530,6 +547,9 @@ async function deployFreshPair(env, plan, { log = console.log, deployer: given }
     throw new Error(
       `deployFreshPair deploys a fresh pair only; this plan is DEPLOY_MODE=${plan.mode}`,
     );
+  }
+  if (plan.live && plan.oracle) {
+    throw new Error(`${liveOracleProblem(plan.networkName, plan.oracle)} Nothing was sent.`);
   }
   const deployer = given ?? (await ethers.getSigners())[0];
   if (plan.oracle && same(plan.oracle, deployer.address)) {
