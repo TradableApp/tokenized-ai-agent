@@ -147,7 +147,7 @@ elif [ ! -f "$ENV_FILE" ]; then
 elif awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } !below && /^POSTGRES_HOST=/ { found = 1 } END { exit !found }' "$ENV_FILE"; then
   # Only the line ABOVE the delimiter is stamped: a line below it is written into the compose
   # as plaintext, so stamping a blank one there would recreate what rofl-set-secrets.sh refuses.
-  STAMPED_ENV=$(mktemp)
+  STAMPED_ENV="$TMP_DIR/stamped.env"   # inside the 0700 dir the EXIT trap removes, even on failure
   awk -v d="$SPLIT_DELIMITER" -v ip="$PUBLIC_IP" \
     'index($0, d) { below = 1 } !below && /^POSTGRES_HOST=/ { print "POSTGRES_HOST=" ip; next } { print }' \
     "$ENV_FILE" > "$STAMPED_ENV"
