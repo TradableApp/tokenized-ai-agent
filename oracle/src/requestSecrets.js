@@ -112,12 +112,19 @@ function requestSecretsIn(env) {
 
 // The settings that name the database's host on their own, outside an address.
 const HOST_SETTINGS = ["POSTGRES_HOST", "PGHOST"];
+// The database's own settings (its user, its database names, its host, …), whose values an error
+// line about a table is not to carry.
+const DATABASE_SETTING = /^(?:POSTGRES_|PG)[A-Z0-9_]*$/;
+// The schemes of a database address, whose path names the database.
+const DATABASE_SCHEME = /^postgres(?:ql)?:$/i;
 
 /**
  * Every configured value, of any length, that a database identifier kept in a described error
  * must not be (errorDescription.js keeps a quoted table or column name): each secret above, the
  * value of every setting named as a credential, the user name, password and host of every
- * configured address, and the database host, whole and label by label. Many are too short to
+ * configured address, the database a database address names, the value of every database
+ * setting (POSTGRES_*, PG*: its user and database names among them), and the database host,
+ * whole and label by label. Many are too short to
  * remove from every line; an identifier that equals one is removed all the same. In lower case.
  *
  * @param {Record<string, string | undefined>} env
@@ -143,9 +150,12 @@ function configuredNamesIn(env) {
       names.add(decoded(address.username));
       names.add(decoded(address.password));
       addHost(address.hostname);
+      if (DATABASE_SCHEME.test(address.protocol)) {
+        names.add(decoded(address.pathname.replace(/^\/+/, "").split("/")[0]));
+      }
     }
     const bare = raw.trim().replace(/^["']+|["']+$/g, "");
-    if (CREDENTIAL_SETTING.test(name)) names.add(bare);
+    if (CREDENTIAL_SETTING.test(name) || DATABASE_SETTING.test(name)) names.add(bare);
     if (HOST_SETTINGS.includes(name)) addHost(bare);
   }
   names.delete("");

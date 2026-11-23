@@ -127,8 +127,6 @@ const IDENTIFIER_WORDS = [
   "type",
   "function",
   "schema",
-  "sequence",
-  "view",
 ];
 // Run only on the few characters before the quote: the longest word, eight spaces and the one
 // character before the word that the look-behind reads.
@@ -137,7 +135,8 @@ const NAMED_BY_REACH = Math.max(...IDENTIFIER_WORDS.map((word) => word.length)) 
 
 /**
  * A quoted value as it stands in a described line: kept when it is a database identifier named
- * by the word before it and is not a configured value (a secret, the database host); otherwise
+ * by the word before it and is not a configured value (a secret, the database host, user or
+ * database name); otherwise
  * removed. A kept one still goes through the removals after this one (long hex, base64 runs).
  */
 function quotedValue(quoted, offset, text) {
