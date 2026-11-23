@@ -155,8 +155,19 @@ Two checks repeat this from outside, and are worth setting:
 
 A fresh pair is a new agent and escrow, deployed with `DEPLOY_MODE=fresh`. Do the steps in order,
 and do not go on from a step that did not check out. The scripts named below refuse out of order
-where they can; the rest of the order is this list.
+where they can; the rest of the order is this list. Steps 0, 4, 9a and 10 cover the fee token
+when it is SenseToken (from the `sense-contracts` repository); an ordinary token needs only its
+address and symbol in step 1.
 
+0. **The fee token, when it is new** (in `sense-contracts`, see its README "Deploying"): its
+   `ENV_FILE` sets `TOKEN_NAME`, `TOKEN_SYMBOL`, `INITIAL_SUPPLY` (the whole supply in base units,
+   at least one whole token; it is minted once, to the owner, and cannot be undone) and
+   `OWNER_ADDRESS`. Run `bun run deploy:testnet` (mainnet: `DEPLOY_MAINNET_CONFIRMED=1 bun run
+   deploy:mainnet`); it prints `SenseToken proxy: <address>` and then verifies the source. Commit
+   the upgrades manifest it wrote in that repository (`.openzeppelin/base-sepolia.json`, on
+   mainnet `.openzeppelin/base.json`): a later upgrade of the token checks its storage layout
+   against it. The proxy address is `TOKEN_CONTRACT_ADDRESS` below and `TOKEN_SYMBOL` is
+   `EXPECTED_FEE_TOKEN_SYMBOL`.
 1. **Settings, in the network's `ENV_FILE`** (for example `.env.base-testnet`):
    `DEPLOY_MODE=fresh`; `AI_AGENT_CONTRACT_ADDRESS` and `AI_AGENT_ESCROW_CONTRACT_ADDRESS` empty;
    `TOKEN_CONTRACT_ADDRESS`; `TREASURY_ADDRESS`; `EXPECTED_FEE_TOKEN_SYMBOL` (the token's symbol);
@@ -203,8 +214,17 @@ where they can; the rest of the order is this list.
    `--check`: it is not the token it says it is. When the signer is not
    the token's owner (the Safe owns it on mainnet) it sends nothing and prints the calls as Safe
    Transaction Builder JSON: save it as a file, load it in the owner Safe's Transaction Builder,
-   simulate, execute. Then `bun run list-fee-token-exempt:base-testnet --check`, which only reads
-   and fails while either is unlisted (run it again on run day).
+   simulate, execute. An account that is the token's owner (a treasury that owns the token) is
+   listed again on every run, since the token reads its owner as exempt and a listing by name
+   cannot be told apart; on the Safe path it is in the printed batch every time. Then `bun run
+   list-fee-token-exempt:base-testnet --check`, which only reads and fails while either is
+   unlisted (run it again on run day). It passes an owner-treasury as exempt by ownership and says
+   its listing by name cannot be read, so run the listing itself, not only `--check`, before the
+   token's ownership moves (step 10).
+   On a test network the e2e runner pays its test accounts from a funding account of its own
+   (`TESTNET_TREASURY_ADDRESS` in `sense-ai-e2e`), which the script does not list: unless it is the
+   token's owner, the owner lists it too with `setTransferExempt(<funding account>, true)`. The
+   runner's wiring probe refuses a run while it is not listed.
 5. **Start the oracle on the new pair before the dApp moves to it.** Point the oracle's settings
    at the new addresses and deploy it (§3). With no stored cursor for a pair the oracle looks back
    only a few minutes before its first block, so a prompt sent to the new pair long before the
@@ -225,7 +245,10 @@ where they can; the rest of the order is this list.
      step 3, and an upgrade does not use `ORACLE_ADDRESS`; it only refuses one that is not an
      address.)
    - Send one prompt (the smoke test, §6, with the new pair's `SMOKE_*`) and take its answer's
-     transaction hash (`answerTxHash` in `smoke-metrics.json`).
+     transaction hash (`answerTxHash` in `smoke-metrics.json`). This is the pair's first prompt:
+     a fresh agent counts message ids from 0 (conversation ids from 1), so the smoke prompt takes
+     message id 0 and its answer 1. Keep it first: no user's prompt is sent to the pair before the
+     dApp points at it (step 9), so id 0 always belongs to this operator prompt.
    - In `ENV_FILE` set `ANSWER_TX_HASH=<answer tx>`, then `bun run authorize-oracle:base-testnet
      retire-deployer`. It removes the deploy wallet's role only when `<signer>` holds the role and
      the hash is a successful `submitAnswer` to this agent sent by `<signer>`; then
@@ -238,20 +261,35 @@ where they can; the rest of the order is this list.
    version; on a fresh pair it grants nothing and uses up version 2, which a later upgrade's own
    `reinitializer(2)` would then be refused. The deploy script calls it only on an upgrade whose
    agent still stores the old oracle. Never publish an encryption key from the deploy wallet.
-8. **Fees:** change them with the escrow's setters only if the deploy's defaults (or the
-   `INITIAL_*_FEE` settings) are not wanted.
+8. **Fees:** on a live network there are no default fees: the four `INITIAL_*_FEE` settings are
+   required (step 1), shown in step 2's plan and checked by the read-back. Change them with the
+   escrow's setters only when they should differ from that. (Only a local network falls back to
+   default fees.)
 9. **Point everything else at the new pair:** the subgraph (a deployment of its own: its fee
-   record is one per subgraph), the dApp build's addresses, the smoke test's `SMOKE_*`, and the
-   e2e testnet settings.
+   record is one per subgraph; in `sense-ai-subgraph`, `config/base-testnet.json` or
+   `config/base-mainnet.json` takes the agent and escrow addresses and, for each, a `startBlock`
+   no later than the block that created it, which Basescan shows as the contract's creation
+   transaction, so the events of the deploy itself are indexed; the mainnet deploy refuses the
+   file's placeholders), the dApp build's addresses, the smoke test's `SMOKE_*`, and the e2e testnet
+   settings.
+   9a. **Distribute the fee token** (SenseToken): the token's owner, or the treasury once it is
+   listed, sends it to the wallets that will pay, one at a time or in one batch from the Safe. A
+   wallet can pay only a listed address or the owner (the escrow, the treasury); it cannot send
+   to another wallet.
 10. **Hand ownership to the Safe last**, once step 6 is done: after it, only the Safe can list on
-    the token (if it owns it), change oracles or fees.
+    the token (if it owns it), change oracles or fees. When the deploy wallet owns the fee token,
+    first move the supply it still holds to the treasury (listed by name in step 4): after the
+    handover the old owner is no longer exempt and can send only to a listed address. Then
+    `transferOwnership(<Safe>)` from the owner and `acceptOwnership()` from the Safe; the owner's
+    exemption moves with it.
 
 **Exempt-list rules.** On a token that keeps a list, a transfer passes when either end is listed.
 List the escrow and the treasury by name, the treasury even when it is the token's owner. Every
 new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
 the treasury, as the admin rehearsal does) must be listed before it is set: an unlisted treasury
 refuses every fee a user pays straight to it (cancel, branch, rename or delete). The listing
-script and its `--check` cover the escrow and the treasury the escrow names now.
+script and its `--check` cover the escrow and the treasury the escrow names now, not the e2e
+runner's funding account (step 4).
 
 ---
 
