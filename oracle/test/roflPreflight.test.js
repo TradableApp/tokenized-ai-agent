@@ -263,6 +263,29 @@ describe("rofl-preflight.sh", function () {
       });
     }
 
+    // A value paired with POSTGRES_HOST in any form a compose can take (a list item, quoted or
+    // not, or a mapping), other than the injection. Reported as true or false, never the value.
+    const pairsHostWithValue = (text) =>
+      /(?<!\$\{)POSTGRES_HOST[ \t]*[=:][ \t]*["']?[ \t]*(?!\$\{POSTGRES_HOST:-\})[^\s"'#]/.test(text);
+
+    it("finds a database address paired with POSTGRES_HOST in a list item, a quoted item or a mapping, of any shape", function () {
+      for (const text of [
+        "      - POSTGRES_HOST=10.1.2.3",
+        '      - "POSTGRES_HOST=db.internal.example"',
+        "      POSTGRES_HOST: db.internal.example",
+        "      POSTGRES_HOST: '2001:db8::8'",
+      ]) {
+        expect(pairsHostWithValue(text), "a literal is found").to.equal(true);
+      }
+      for (const text of [
+        "      - POSTGRES_HOST=${POSTGRES_HOST:-}",
+        "      POSTGRES_HOST: ${POSTGRES_HOST:-}",
+        "      - POSTGRES_HOST=\n      - PGPORT=5432",
+      ]) {
+        expect(pairsHostWithValue(text), "the injection or an empty value is not").to.equal(false);
+      }
+    });
+
     it("no tracked compose carries a literal POSTGRES_HOST", function () {
       expect(composeFiles).to.include("compose.base-testnet.yaml");
       for (const name of composeFiles) {
@@ -275,8 +298,8 @@ describe("rofl-preflight.sh", function () {
 
         // Reported by count, not content: the failing value is the thing being kept out.
         expect(literals.length, `${name} has a literal POSTGRES_HOST line`).to.equal(0);
-        const pairsWithIpv4 = /POSTGRES_HOST\s*[=:]\s*["']?\d{1,3}(\.\d{1,3}){3}/.test(text);
-        expect(pairsWithIpv4, `${name} pairs POSTGRES_HOST with an IPv4 address`).to.equal(false);
+        // The mapping and quoted forms the line filter above does not read.
+        expect(pairsHostWithValue(text), `${name} pairs POSTGRES_HOST with a value`).to.equal(false);
       }
     });
   });

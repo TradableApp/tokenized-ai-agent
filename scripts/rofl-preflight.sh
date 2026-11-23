@@ -155,7 +155,8 @@ while IFS= read -r line; do
   [[ "$val" == '${'* ]] && continue        # runtime-injected secret
 
   # The database address is a secret: this compose is tracked in a public repo, so a literal
-  # here publishes it. The value is not printed.
+  # here publishes it. The value is not printed. An empty value and the injected
+  # `${POSTGRES_HOST:-}` were passed just above, so only a non-empty literal reaches this.
   if [ "$key" = "POSTGRES_HOST" ]; then
     failures+="  ✗ POSTGRES_HOST has a literal value in the plaintext config\n      the database address is a secret — move it ABOVE the delimiter in the env file so it is injected as \${POSTGRES_HOST:-}\n"
     continue
