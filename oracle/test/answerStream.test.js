@@ -655,6 +655,7 @@ describe("answer stream", () => {
       const after = streamCounters.snapshot();
       expect(after.framesBuilt - before.framesBuilt).to.equal(2);
       expect(Object.keys(after).sort()).to.deep.equal([
+        "buildFailures",
         "framesBuilt",
         "sealFailures",
         "sinkFailures",
@@ -799,6 +800,29 @@ describe("answer stream", () => {
     });
   });
 
+  describe("a step that cannot be applied", () => {
+    it("is neither sent nor stored, is counted, and the steps after it still go", async () => {
+      const before = streamCounters.snapshot();
+      const { stream, sink } = newStream();
+
+      stream.step(step("One", "Applied."));
+      stream.step(async () => () => {
+        throw new Error("cannot number this step");
+      });
+      stream.step(step("Three", "Applied after it."));
+      await stream.flush();
+
+      expect(sink.frames().filter((f) => f.type === "step").map((f) => f.data.title)).to.deep.equal([
+        "One",
+        "Three",
+      ]);
+      expect(stream.record().reasoning.map((s) => s.title)).to.deep.equal(["One", "Three"]);
+      const after = streamCounters.snapshot();
+      expect(after.buildFailures - before.buildFailures).to.equal(1);
+      expect(after.sealFailures - before.sealFailures).to.equal(0);
+    });
+  });
+
   describe("sealing", () => {
     it("sends no sources frame, and does not retry a shorter list, when the sources cannot be sealed", async () => {
       let calls = 0;
@@ -843,6 +867,25 @@ describe("answer stream", () => {
       const ivs = calls.map((c) => c.info.ciphertext.split(".")[0]);
       expect(new Set(ivs).size).to.equal(ivs.length);
       for (const iv of ivs) expect(Buffer.from(iv, "base64")).to.have.length(12);
+    });
+
+    it("still closes the sink when the done frame cannot be sealed, so no reader is left waiting on an open run", async () => {
+      let calls = 0;
+      const ivSource = () => {
+        calls += 1;
+        if (calls === 3) throw new Error("no randomness");
+        return crypto.randomBytes(12);
+      };
+      const { stream, sink } = newStream({ ivSource });
+
+      stream.step(step("One", "Sealed."));
+      stream.done("answered");
+      await stream.flush();
+
+      expect(sink.frames().map((f) => f.type)).to.deep.equal(["reset", "step"]);
+      const closes = sink.calls.filter((c) => c.method === "close");
+      expect(closes).to.have.length(1);
+      expect(closes[0].info).to.deep.equal({ run: stream.run, outcome: "answered" });
     });
 
     it("takes no sequence number for a frame it could not seal, so the frames after it leave no gap", async () => {
