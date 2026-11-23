@@ -134,7 +134,11 @@ function loadOracle({ scriptFor = () => ({ thoughts: [], answer: "An answer." })
     },
   };
   const components = {
-    provider: { getNetwork: sinon.stub().resolves({ chainId: 1 }), getBlockNumber: sinon.stub().resolves(1) },
+    provider: {
+      getNetwork: sinon.stub().resolves({ chainId: 1 }),
+      getBlockNumber: sinon.stub().resolves(1),
+      getTransactionReceipt: sinon.stub().resolves(null),
+    },
     signer: { address: "0xOracleAddress" },
     contract,
     isSapphire: false,
@@ -203,8 +207,28 @@ function loadOracle({ scriptFor = () => ({ thoughts: [], answer: "An answer." })
       })
       .filter((u) => u && u.file.role === "assistant");
 
-  return { oracle, stubs, contract, sink, uploads, storedAnswer };
+  return { oracle, stubs, contract, provider: components.provider, sink, uploads, storedAnswer };
 }
+
+/**
+ * submitAnswer sends a transaction whose receipt wait throws (an RPC drop or a timeout), and the
+ * fallback check then finds the job finalized; `receipt` is what the node then returns for this
+ * run's own transaction hash.
+ */
+function receiptWaitFails({ contract, provider }, receipt) {
+  contract.submitAnswer.callsFake(async () => ({
+    hash: "0xOwnTx",
+    wait: async () => {
+      throw new Error("timeout waiting for the receipt");
+    },
+  }));
+  // Calls: start of the job, before storage, in the tx mutex, then the fallback check.
+  contract.isJobFinalized.onCall(3).resolves(true);
+  provider.getTransactionReceipt.withArgs("0xOwnTx").resolves(receipt);
+}
+
+const activityKinds = (stubs) =>
+  stubs["./answerActivity"].recordAnswerActivity.getCalls().map((call) => call.args[0].kind);
 
 /** What the stored record must be: the projection of the run's step and sources frames. */
 function projection(frames) {
@@ -596,6 +620,43 @@ describe("answer path and live stream", function () {
       expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
     });
 
+    it("ends answered, with the answer frame, when the receipt wait fails but this run's own submission was mined", async () => {
+      const loaded = loadOracle();
+      const { oracle, sink, stubs, provider, storedAnswer } = loaded;
+      receiptWaitFails(loaded, { hash: "0xOwnTx", status: 1 });
+
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.flushStreamsForTest();
+
+      const frames = sink.frames("457");
+      const [stored] = storedAnswer();
+      expect(provider.getTransactionReceipt.calledWith("0xOwnTx")).to.equal(true);
+      expect(frames.map((f) => f.type).slice(-2)).to.deep.equal(["answer", "done"]);
+      expect(frames.at(-1).data).to.deep.equal({ outcome: "answered" });
+      expect(frames.find((f) => f.type === "answer").data.text).to.equal(stored.file.content);
+      expect(frames.find((f) => f.type === "answer").data.answerMessageCID).to.equal(stored.cid);
+      expect(activityKinds(stubs)).to.deep.equal(["answer"]);
+    });
+
+    for (const [label, receipt] of [
+      ["reverted", { hash: "0xOwnTx", status: 0 }],
+      ["not found", null],
+    ]) {
+      it(`ends abandoned, with no answer frame, when the receipt wait fails and this run's submission was ${label}`, async () => {
+        const loaded = loadOracle();
+        const { oracle, sink, stubs } = loaded;
+        receiptWaitFails(loaded, receipt);
+
+        await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+        await oracle.flushStreamsForTest();
+
+        const frames = sink.frames("457");
+        expect(frames.some((f) => f.type === "answer")).to.equal(false);
+        expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
+        expect(activityKinds(stubs)).to.deep.equal([]);
+      });
+    }
+
     it("ends with done interrupted on a failed upload, and the retry is a new run that opens with reset retry", async () => {
       const { oracle, sink, stubs } = loadOracle();
       stubs["./storage/storage"].uploadData.onFirstCall().rejects(new Error("gateway down"));
@@ -844,6 +905,42 @@ describe("answer path and live stream", function () {
         expect(frames.map((f) => f.type)).to.deep.equal(["reset", "done"]);
         expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
       });
+
+      it("ends answered, with the answer frame, when the receipt wait fails but this run's own submission was mined", async () => {
+        const loaded = loadOracle();
+        const { oracle, sink, stubs, provider, storedAnswer } = loaded;
+        receiptWaitFails(loaded, { hash: "0xOwnTx", status: 1 });
+
+        await regenerate(oracle);
+        await oracle.flushStreamsForTest();
+
+        const frames = sink.frames("460");
+        const [stored] = storedAnswer();
+        expect(provider.getTransactionReceipt.calledWith("0xOwnTx")).to.equal(true);
+        expect(frames.map((f) => f.type).slice(-2)).to.deep.equal(["answer", "done"]);
+        expect(frames.at(-1).data).to.deep.equal({ outcome: "answered" });
+        expect(frames.find((f) => f.type === "answer").data.text).to.equal(stored.file.content);
+        expect(activityKinds(stubs)).to.deep.equal(["answer"]);
+      });
+
+      for (const [label, receipt] of [
+        ["reverted", { hash: "0xOwnTx", status: 0 }],
+        ["not found", null],
+      ]) {
+        it(`ends abandoned, with no answer frame, when the receipt wait fails and this run's submission was ${label}`, async () => {
+          const loaded = loadOracle();
+          const { oracle, sink, stubs } = loaded;
+          receiptWaitFails(loaded, receipt);
+
+          await regenerate(oracle);
+          await oracle.flushStreamsForTest();
+
+          const frames = sink.frames("460");
+          expect(frames.some((f) => f.type === "answer")).to.equal(false);
+          expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
+          expect(activityKinds(stubs)).to.deep.equal([]);
+        });
+      }
 
       it("ends with done interrupted on a failed upload, and the retry is a new run that opens with reset retry", async () => {
         const { oracle, sink, stubs } = loadOracle();
