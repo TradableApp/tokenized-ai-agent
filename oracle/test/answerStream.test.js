@@ -179,6 +179,46 @@ describe("answer stream", () => {
         2, 3, 4,
       ]);
     });
+
+    it("records the attempt that answered: 1 with no fallback", async () => {
+      const { stream } = newStream();
+
+      stream.step(step("One", "First provider, first step."));
+      await stream.flush();
+
+      expect(stream.record().answerAttempt).to.equal(1);
+    });
+
+    it("records the attempt that answered after a fallback, even when that tier sent no step", async () => {
+      const { stream, sink } = newStream();
+
+      stream.sources([source("A", "https://a.test/1")]);
+      stream.step(step("One", "First provider, first step."));
+      stream.attempt();
+      await stream.flush();
+
+      const record = stream.record();
+      expect(record.answerAttempt).to.equal(2);
+      expect(record.reasoning.map((s) => s.attempt)).to.deep.equal([1]);
+      expect(record.sources.map((s) => s.attempt)).to.deep.equal([1]);
+      // The same number the attempt frame carried: stored and streamed agree.
+      const attemptFrames = sink.frames().filter((f) => f.type === "attempt");
+      expect(attemptFrames.at(-1).data.attempt).to.equal(record.answerAttempt);
+    });
+
+    it("sends no attempt frame once the record has been read, so the recorded attempt stays the last one shown", async () => {
+      const { stream, sink } = newStream();
+
+      stream.step(step("One", "Read into the record."));
+      await stream.flush();
+      const record = stream.record();
+      stream.attempt();
+      await stream.flush();
+
+      expect(sink.frames().filter((f) => f.type === "attempt")).to.have.length(0);
+      expect(stream.record()).to.deep.equal(record);
+      expect(record.answerAttempt).to.equal(1);
+    });
   });
 
   describe("the record is a projection of the frames", () => {
@@ -200,6 +240,7 @@ describe("answer stream", () => {
         sources: frames
           .filter((f) => f.type === "sources")
           .flatMap((f) => f.data.sources.map((s) => ({ ...s, attempt: f.data.attempt }))),
+        answerAttempt: Math.max(1, ...frames.filter((f) => f.type === "attempt").map((f) => f.data.attempt)),
       };
       expect(stream.record()).to.deep.equal(projected);
       expect(projected.sources).to.have.length(3);
@@ -571,7 +612,7 @@ describe("answer stream", () => {
         stream.done(undefined);
       }).to.not.throw();
       await stream.flush();
-      expect(stream.record()).to.deep.equal({ reasoning: [], sources: [] });
+      expect(stream.record()).to.deep.equal({ reasoning: [], sources: [], answerAttempt: 1 });
     });
 
     it("gives an inert stream, not a throw, when it cannot be built", async () => {
@@ -640,6 +681,7 @@ describe("answer stream", () => {
       expect(stream.record()).to.deep.equal({
         reasoning: [{ title: "One", description: "Recorded offline.", attempt: 1 }],
         sources: [{ title: "A", url: "https://a.test", attempt: 1 }],
+        answerAttempt: 1,
       });
     });
   });

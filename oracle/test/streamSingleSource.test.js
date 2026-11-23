@@ -92,11 +92,12 @@ describe("stream single source (static)", () => {
   it("builds the stored extras only from the record and the duration it is given", () => {
     const parts = functionParts(ORACLE, "storedExtrasFrom");
     expect(parts, "storedExtrasFrom exists").to.not.equal(null);
-    expect(parts.params).to.equal("{ reasoning, sources }, reasoningDuration");
+    expect(parts.params).to.equal("{ reasoning, sources, answerAttempt }, reasoningDuration");
     const allowed = new Set([
       "return",
       "reasoning",
       "sources",
+      "answerAttempt",
       "reasoningDuration",
       "length",
       "undefined",
