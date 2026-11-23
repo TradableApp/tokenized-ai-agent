@@ -540,6 +540,24 @@ describe("scripts/authorize-oracle — the settings as the documented command gi
 });
 
 describe("scripts/authorize-oracle — where the hand-over's own settings are read", function () {
+  it("reads the mainnet confirmation from what was typed, and refuses a file that contradicts it", function () {
+    const fileEnv = { ORACLE_ADDRESS: "0x00000000000000000000000000000000000000aa" };
+    const args = { phase: "grant", envFile: ".env.base-mainnet", fileEnv };
+    const typed = resolveHandoverSettings({
+      ...args,
+      processEnv: { ...fileEnv, DEPLOY_MAINNET_CONFIRMED: "1" },
+      typedEnv: { DEPLOY_MAINNET_CONFIRMED: "1" },
+    });
+    expect(typed.env.DEPLOY_MAINNET_CONFIRMED).to.equal("1");
+    expect(() =>
+      resolveHandoverSettings({
+        ...args,
+        processEnv: { ...fileEnv, DEPLOY_MAINNET_CONFIRMED: "1" },
+        typedEnv: {},
+      }),
+    ).to.throw(/DEPLOY_MAINNET_CONFIRMED is set in \.env\.base-mainnet[\s\S]*Nothing was sent/);
+  });
+
   const envFile = ".env.base-testnet";
   const ORACLE = "0x00000000000000000000000000000000000000aa";
   const OTHER = "0x00000000000000000000000000000000000000bb";
@@ -593,7 +611,7 @@ describe("scripts/authorize-oracle — where the hand-over's own settings are re
       processEnv,
       typedEnv: processEnv,
     });
-    expect(env).to.equal(processEnv);
+    expect(env.ORACLE_ADDRESS).to.equal(ORACLE);
     expect(settingsFrom).to.equal(undefined);
   });
 });

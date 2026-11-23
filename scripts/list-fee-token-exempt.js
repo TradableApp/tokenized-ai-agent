@@ -28,6 +28,7 @@ const { ethers } = require("ethers");
 
 const { describeShape } = require("./lib/settingShape");
 const { readEnvFile } = require("./lib/envFile");
+const { captureTypedSettings, typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const { LOCAL_NETWORKS } = require("./lib/networks");
 const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
 const { isEmptyRevert } = require("./rehearsal/token");
@@ -278,8 +279,23 @@ function targetLines({ networkName, envFile, check, signer, target }) {
 }
 
 async function main() {
+  // What the shell held before Hardhat loads the env files over it (hardhat.config.js): the
+  // mainnet confirmation is read from that alone. Taken afresh: this script is run with node.
+  captureTypedSettings(process.env, { fresh: true });
+  const typedEnv = typedSettings(process.env);
   const hre = require("hardhat");
-  const { env } = process;
+  const confirmProblems = typedOnlyProblems({
+    names: [CONFIRM_VAR],
+    typedEnv,
+    processEnv: process.env,
+    envFile: process.env.ENV_FILE,
+  });
+  if (confirmProblems.length > 0) {
+    throw new ListingError(
+      `Fee token listing refused:\n  - ${confirmProblems.join("\n  - ")}\nNothing was sent.`,
+    );
+  }
+  const env = { ...process.env, [CONFIRM_VAR]: typedEnv[CONFIRM_VAR] };
   const networkName = hre.network.name;
   const unknown = process.argv.slice(2).filter((arg) => arg !== "--check");
   if (unknown.length > 0) {

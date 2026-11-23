@@ -3,12 +3,15 @@ const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
 const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
+const { typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const { LOCAL_NETWORKS } = require("./lib/networks");
 
 // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so the process
 // environment holds both. DEPLOY_MODE and the pair's addresses are read again from ENV_FILE
 // alone on every EVM network (FILE_ONLY_VARS below), and so is every setting that wires a fresh
-// pair on a live network (FRESH_LIVE_FILE_ONLY_VARS).
+// pair on a live network (FRESH_LIVE_FILE_ONLY_VARS). DRY_RUN and DEPLOY_MAINNET_CONFIRMED are
+// read from what was typed alone (TYPED_ONLY_VARS), recorded before the files loaded: a file
+// line that contradicts what was typed stops the deploy.
 
 // Define which networks are Sapphire-based.
 const SAPPHIRE_NETWORKS = new Set(["sapphire", "sapphire-testnet", "sapphire-localnet"]);
@@ -30,6 +33,8 @@ const ADDRESS_ENV_VARS = [
   "ORACLE_ADDRESS",
 ];
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+// Whether the deploy sends at all, so never from a file.
+const TYPED_ONLY_VARS = Object.freeze(["DRY_RUN", CONFIRM_VAR]);
 
 // --- Deploy mode --------------------------------------------------------------------------
 // `fresh` deploys a new agent and escrow and refuses while either pair address is set;
@@ -218,20 +223,34 @@ const orNull = (value) => (isSet(value) ? String(value).trim() : null);
 
 /**
  * The deploy's plan from its settings, or a refusal listing every problem. `fileEnv` is ENV_FILE
- * parsed on its own (null when ENV_FILE is not set); `processEnv` is the process environment.
+ * parsed on its own (null when ENV_FILE is not set); `processEnv` is the process environment, with
+ * the files loaded; `typedEnv` is what the shell held before they loaded (typedSettings), which
+ * DRY_RUN and DEPLOY_MAINNET_CONFIRMED are read from. Without it they are read from `processEnv`.
  */
-function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv }) {
+function resolveDeployPlan({ networkName, envFile, fileEnv, processEnv, typedEnv = processEnv }) {
+  const typedProblems = typedOnlyProblems({
+    names: TYPED_ONLY_VARS,
+    typedEnv,
+    processEnv,
+    envFile,
+  });
+  const typed = Object.fromEntries(TYPED_ONLY_VARS.map((name) => [name, typedEnv?.[name]]));
   if (SAPPHIRE_NETWORKS.has(networkName)) {
     // The Sapphire deploy has no dry run: going on would send a real deploy.
-    if (processEnv.DRY_RUN === "1") {
-      throw refusal(networkName, [
+    if (typed.DRY_RUN === "1") {
+      typedProblems.push(
         "DRY_RUN=1 is set, but the dry run exists only for a fresh pair on an EVM network; the Sapphire deploy has none. Unset DRY_RUN to deploy. Nothing was sent.",
-      ]);
+      );
     }
+    if (typedProblems.length > 0) throw refusal(networkName, typedProblems);
     return { networkName, isSapphire: true };
   }
-  const env = withFileValues(processEnv, fileEnv, fileOnlyNames({ networkName, fileEnv }));
+  const env = {
+    ...withFileValues(processEnv, fileEnv, fileOnlyNames({ networkName, fileEnv })),
+    ...typed,
+  };
   const problems = [
+    ...typedProblems,
     ...sourceProblems({ networkName, envFile, fileEnv, processEnv }),
     ...deployProblems({ networkName, env }),
   ];
@@ -894,6 +913,8 @@ async function main() {
     envFile,
     fileEnv: isSapphire ? null : readEnvFile(envFile),
     processEnv: process.env,
+    // Recorded by hardhat.config.js before the env files loaded.
+    typedEnv: typedSettings(process.env),
   });
 
   console.log(`\n--- Starting deployment to ${chalk.bold(networkName)} ---`);
@@ -947,6 +968,7 @@ module.exports = {
   needsOracleRoleMigration,
   CONFIRM_VAR,
   MAINNET_NETWORK,
+  TYPED_ONLY_VARS,
 };
 
 if (require.main === module) {
