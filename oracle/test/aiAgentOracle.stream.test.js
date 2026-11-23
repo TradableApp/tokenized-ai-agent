@@ -390,6 +390,8 @@ describe("answer path and live stream", function () {
       expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(projection(frames));
       expect(stored.file.reasoning).to.have.length(2);
       expect(stored.file.sources).to.have.length(1);
+      // No fallback: the file is what it was before attempts were recorded.
+      expect(stored.file).to.not.have.property("answerAttempt");
 
       const answer = frames.find((f) => f.type === "answer");
       expect(answer.data.text).to.equal(stored.file.content);
@@ -455,6 +457,9 @@ describe("answer path and live stream", function () {
       expect(frames.map((f) => f.type)).to.deep.equal(["reset", "step", "step", "attempt", "answer", "done"]);
       expect(frames[3].data).to.deep.equal({ attempt: 2 });
       expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(projection(frames));
+      // The file says ChainGPT's attempt answered, so a reader can tell ElizaOS's steps were earlier.
+      expect(stored.file.answerAttempt).to.equal(2);
+      expect(stored.file.answerAttempt).to.equal(frames[3].data.attempt);
     });
 
     it("never puts an intermediate response text in any frame, only its thought as a step", async () => {
