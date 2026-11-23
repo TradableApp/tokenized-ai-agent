@@ -117,7 +117,7 @@ KEEP_KEYS=""      # |KEY| the secrets that SHOULD stay on-chain (for orphan purg
 POSTGRES_HOST_IN_CONFIG=""  # env file that sets POSTGRES_HOST below the delimiter (refused)
 POSTGRES_HOST_VALUE=""      # the POSTGRES_HOST secret, compared by value, never printed
 DATABASE_URL_IN_CONFIG=""   # "KEY in FILE" lines: a postgres address below the delimiter (refused)
-MALFORMED_KEYS=""           # "LINE in FILE" lines: a key that is not upper-case snake case (refused)
+MALFORMED_KEYS=""           # "LINE SECTION in FILE" lines: a key that is not upper-case snake case (refused)
 HAS_DATABASE_CONFIG=0       # a non-empty POSTGRES_* setting below the delimiter
 
 is_seen()  { case "$SEEN_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
@@ -144,7 +144,8 @@ process_file() {
     # and what reads as its key is part of a secret. `mcp` is lower-case on purpose (see the
     # preflight below).
     if [ "$key" != "mcp" ] && ! [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
-      MALFORMED_KEYS+="${lineno} in ${file}\n"
+      if [ "$is_config" -eq 0 ]; then MALFORMED_KEYS+="${lineno} above in ${file}\n"
+      else MALFORMED_KEYS+="${lineno} below in ${file}\n"; fi
       continue
     fi
     is_seen "$key" && continue
@@ -293,7 +294,13 @@ while IFS= read -r entry; do
 done <<< "$(printf '%b' "$DATABASE_URL_IN_CONFIG")"
 while IFS= read -r entry; do
   [ -z "$entry" ] && continue
-  preflight_failures+="  ✗ line ${entry%% in *} of ${entry#* in } has a key that is not upper-case snake case (text not shown)\n      write KEY=value with no prefix (no 'export'), in upper case, each value on one line — compose would pass it on under a name nothing checks\n"
+  where="${entry%% in *}"
+  if [ "${where#* }" = "above" ]; then
+    why="nothing is pushed until every line above it is one whole setting"
+  else
+    why="compose would pass it on under a name nothing checks"
+  fi
+  preflight_failures+="  ✗ line ${where%% *} of ${entry#* in } (${where#* } the delimiter) has a key that is not upper-case snake case (text not shown)\n      write KEY=value with no prefix (no 'export'), in upper case, each value on one line — ${why}\n"
 done <<< "$(printf '%b' "$MALFORMED_KEYS")"
 # Any other setting below the delimiter whose value holds the address, compared by value. A
 # loopback host is the same everywhere and says nothing, so it is not compared.

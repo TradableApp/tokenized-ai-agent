@@ -262,7 +262,9 @@ describe("ROFL_DEPLOYMENT override", function () {
         const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
         expect(code, out).to.not.equal(0);
         expect(out).to.include("upper-case");
-        expect(out).to.match(/line 3 of /);
+        expect(out).to.match(/line 3 of .* \(above the delimiter\)/);
+        // Nothing above the delimiter reaches the compose, so the reason given is not the compose.
+        expect(out).to.not.include("compose would pass it on");
         expect(out).to.not.include("c2VjcmV0S2V5TGluZVR3bw");
         expect(readLog(ws)).to.not.include("secret set");
       });
@@ -280,6 +282,8 @@ describe("ROFL_DEPLOYMENT override", function () {
           const { code, out } = run(SET_SECRETS, ["base-testnet"], ws);
           expect(code, out).to.not.equal(0);
           expect(out).to.include("upper-case");
+          expect(out).to.match(/line 5 of .* \(below the delimiter\)/);
+          expect(out).to.include("compose would pass it on");
           expect(out).to.not.include(ENV_ADDRESS);
           expect(readLog(ws)).to.not.include("secret set");
           expect(readCompose()).to.not.include(ENV_ADDRESS);
