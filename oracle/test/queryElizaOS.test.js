@@ -242,13 +242,18 @@ describe("queryElizaOS — provider-composed context", () => {
     expect(stub.captured.composeArgs.onlyInclude).to.equal(true);
   });
 
-  it("derives sources from what the run composed", async () => {
+  it("sends the sources the run composed to the stream, and returns none of its own", async () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
     const oracle = loadOracle(stub);
+    const stream = createOfflineStream();
 
-    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1", stream);
+    await stream.flush();
 
-    expect(result.sources).to.deep.equal([
+    // The stored sources are the stream's record, cleaned and cut to the contract's limits; the
+    // answer carries no uncleaned copy a caller could store by mistake.
+    expect(result.sources).to.deep.equal([]);
+    expect(stream.record().sources.map(({ title, url }) => ({ title, url }))).to.deep.equal([
       { title: "BTC ETF inflows accelerate", url: "https://example.test/a" },
       { title: "ETH staking yield dips", url: "https://example.test/b" },
     ]);
