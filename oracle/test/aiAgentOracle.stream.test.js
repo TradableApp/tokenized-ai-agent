@@ -744,5 +744,110 @@ describe("answer path and live stream", function () {
       expect(frames.find((f) => f.type === "answer").data.text).to.equal(stored.file.content);
       expect({ reasoning: stored.file.reasoning, sources: stored.file.sources }).to.deep.equal(projection(frames));
     });
+
+    // The regeneration handler opens, flushes and ends its stream as handlePrompt does; each exit
+    // is pinned here too, so a done() dropped from one of its branches is caught.
+    const regenPayload = () =>
+      ethers.toUtf8Bytes(
+        encryptForOracle({ promptMessageCID: "bafy-prompt", originalAnswerMessageCID: "bafy-old", instructions: "shorter" }),
+      );
+    const regenerate = (oracle, payload = regenPayload()) =>
+      oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0xkey", fakeEvent());
+
+    describe("every exit ends the run", () => {
+      it("ends with done abandoned and no answer frame when submitAnswer reverts with JobAlreadyFinalized", async () => {
+        const { oracle, sink, contract } = loadOracle();
+        contract.submitAnswer.rejects(Object.assign(new Error("reverted"), { data: `${ALREADY_FINALIZED_SELECTOR}00` }));
+
+        await regenerate(oracle);
+        await oracle.flushStreamsForTest();
+
+        const frames = sink.frames("460");
+        expect(frames.some((f) => f.type === "answer")).to.equal(false);
+        expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
+      });
+
+      it("ends with done abandoned when the prompt is cancelled while the model runs", async () => {
+        const { oracle, sink, contract } = loadOracle();
+        contract.isJobFinalized.onFirstCall().resolves(false).onSecondCall().resolves(true);
+
+        await regenerate(oracle);
+        await oracle.flushStreamsForTest();
+
+        const frames = sink.frames("460");
+        expect(frames.some((f) => f.type === "answer")).to.equal(false);
+        expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
+        expect(contract.submitAnswer.called).to.equal(false);
+      });
+
+      it("ends with done abandoned when the job is finalized just before submission", async () => {
+        const { oracle, sink, contract } = loadOracle();
+        contract.isJobFinalized.onThirdCall().resolves(true);
+
+        await regenerate(oracle);
+        await oracle.flushStreamsForTest();
+
+        const frames = sink.frames("460");
+        expect(frames.some((f) => f.type === "answer")).to.equal(false);
+        expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
+        expect(contract.submitAnswer.called).to.equal(false);
+      });
+
+      it("ends with done abandoned for a payload that does not decrypt", async () => {
+        const { oracle, sink } = loadOracle();
+
+        await regenerate(oracle, ethers.toUtf8Bytes("not.anything")).catch(() => {});
+        await oracle.flushStreamsForTest();
+
+        const frames = sink.frames("460");
+        expect(frames.map((f) => f.type)).to.deep.equal(["reset", "done"]);
+        expect(frames.at(-1).data).to.deep.equal({ outcome: "abandoned" });
+      });
+
+      it("ends with done interrupted on a failed upload, and the retry is a new run that opens with reset retry", async () => {
+        const { oracle, sink, stubs } = loadOracle();
+        stubs["./storage/storage"].uploadData.onFirstCall().rejects(new Error("gateway down"));
+
+        let thrown;
+        await regenerate(oracle).catch((error) => {
+          thrown = error;
+        });
+        await oracle.flushStreamsForTest();
+        expect(thrown, "the failure still reaches the retry queue").to.exist;
+
+        await regenerate(oracle);
+        await oracle.flushStreamsForTest();
+
+        const frames = sink.frames("460");
+        const [first, second] = runsOf(frames);
+        expect(second, "a second run").to.exist;
+        const firstFrames = frames.filter((f) => f.run === first);
+        const secondFrames = frames.filter((f) => f.run === second);
+        expect(firstFrames[0].data).to.deep.equal({ reason: "start" });
+        expect(firstFrames.at(-1).data).to.deep.equal({ outcome: "interrupted" });
+        expect(secondFrames[0].data).to.deep.equal({ reason: "retry" });
+        expect(secondFrames.at(-1).data).to.deep.equal({ outcome: "answered" });
+        expect(frames.filter((f) => f.type === "answer")).to.have.length(1);
+      });
+    });
+
+    it("answers and stores the same record, without waiting, when the sink throws on every call", async () => {
+      const script = () => ({ thoughts: ["Reconsidering the previous answer now."], answer: "The same answer either way." });
+      const good = loadOracle({ scriptFor: script });
+      await regenerate(good.oracle);
+
+      const bad = loadOracle({ scriptFor: script });
+      const fail = () => {
+        throw new Error("sink");
+      };
+      bad.oracle.setStreamSink({ open: fail, frame: fail, close: fail });
+      const started = Date.now();
+      await regenerate(bad.oracle);
+
+      expect(Date.now() - started).to.be.lessThan(3000);
+      expect(bad.contract.submitAnswer.calledOnce).to.equal(true);
+      const strip = (f) => ({ content: f.content, reasoning: f.reasoning, sources: f.sources });
+      expect(strip(bad.storedAnswer()[0].file)).to.deep.equal(strip(good.storedAnswer()[0].file));
+    });
   });
 });
