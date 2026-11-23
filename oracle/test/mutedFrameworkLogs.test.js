@@ -155,6 +155,36 @@ describe("the framework log lines the oracle cleans before they are printed", fu
     expect(list[1], "the list given is not changed").to.equal(failure);
   });
 
+  // A structured line's text is the framework's to choose: the model's reply, a user's message.
+  // Only the fields that name a part of the system keep their text, and an error's is described.
+  it("drops every text field of a structured line but a name and an error", function () {
+    const [fields, text] = cleaned([
+      {
+        src: "plugin:bootstrap:action:follow_room",
+        agentId: "0b9d2c4e-1f3a-4b5c-8d7e-9f0a1b2c3d4e",
+        serverName: "coingecko_mcp_local",
+        response: "yes, since you asked about my savings",
+        content: { text: "a user's message" },
+        attempt: 2,
+      },
+      "Unclear boolean response, defaulting to false",
+    ]);
+
+    expect(text).to.equal("Unclear boolean response, defaulting to false");
+    expect(fields).to.deep.equal({
+      src: "plugin:bootstrap:action:follow_room",
+      agentId: "0b9d2c4e-1f3a-4b5c-8d7e-9f0a1b2c3d4e",
+      serverName: "coingecko_mcp_local",
+      attempt: 2,
+    });
+  });
+
+  it("prints a line of text as its first line, without quoted values", function () {
+    expect(cleaned(['[TEXT_LARGE] Error: refused "my question"\nthe model\'s words'])).to.deep.equal([
+      "[TEXT_LARGE] Error: refused [value removed]",
+    ]);
+  });
+
   it("does not change what it is given, and passes other values through", function () {
     const fields = { error: "connect ECONNREFUSED 192.0.2.10:5432" };
 
