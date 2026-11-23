@@ -782,8 +782,6 @@ describe("describeError — one line of text, with nothing a reader outside the 
         "type",
         "function",
         "schema",
-        "sequence",
-        "view",
       ]) {
         expect(describedText(`${word} "a_1" missing`)).to.equal(`${word} "a_1" missing`);
         expect(describedText(`${word.toUpperCase()} "a_1" missing`)).to.equal(
@@ -794,6 +792,13 @@ describe("describeError — one line of text, with nothing a reader outside the 
       expect(describedText(`relation${" ".repeat(8)}"x" missing`)).to.equal(
         `relation${" ".repeat(8)}"x" missing`,
       );
+    });
+
+    // The words are the agreed eight; a name quoted after any other word is removed.
+    it("removes a name quoted after sequence or view, which are not among the words", () => {
+      for (const word of ["sequence", "view", "SEQUENCE", "View"]) {
+        expect(describedText(`${word} "a_1" missing`)).to.equal(`${word} [value removed] missing`);
+      }
     });
 
     it("keeps a name of 63 characters and removes a longer one", () => {
@@ -912,6 +917,41 @@ describe("describeError — one line of text, with nothing a reader outside the 
 
       expect(describedText('relation "agent_db" does not exist')).to.equal(
         "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "failed_jobs" does not exist')).to.equal(
+        'relation "failed_jobs" does not exist',
+      );
+    });
+
+    // A database user or database name is not a secret, but an error line names the table it is
+    // about, never the configuration it runs with.
+    it("removes a name that is the configured database user or database, whatever its length", () => {
+      refreshRequestSecrets({
+        POSTGRES_USER: "oracle_user",
+        POSTGRES_DATABASE: "agent_db",
+        POSTGRES_AGENT_DATABASE: "agent_mem",
+        PGUSER: "pg_role",
+        PGDATABASE: "pg_db",
+      });
+
+      for (const name of ["oracle_user", "agent_db", "agent_mem", "pg_role", "pg_db"]) {
+        expect(describedText(`relation "${name}" does not exist`), name).to.equal(
+          "relation [value removed] does not exist",
+        );
+        expect(describedText(`relation "public"."${name}" does not exist`), name).to.equal(
+          "relation [value removed] does not exist",
+        );
+      }
+      expect(describedText('relation "failed_jobs" does not exist')).to.equal(
+        'relation "failed_jobs" does not exist',
+      );
+    });
+
+    it("removes a name that is the database a configured database address names", () => {
+      refreshRequestSecrets({ POSTGRES_URL: "postgresql://u:pw@db.internal:5432/agent_db?x=1" });
+
+      expect(describedText('schema "agent_db" does not exist')).to.equal(
+        "schema [value removed] does not exist",
       );
       expect(describedText('relation "failed_jobs" does not exist')).to.equal(
         'relation "failed_jobs" does not exist',
