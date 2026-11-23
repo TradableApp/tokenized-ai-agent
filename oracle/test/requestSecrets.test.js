@@ -118,6 +118,8 @@ describe("request secrets", () => {
       });
 
       expect(secrets).to.include("192.0.2.8");
+      // The URL parser gives an IPv6 host in brackets; both spellings are removed from text.
+      expect(secrets).to.include("[2001:db8::8]");
       expect(secrets).to.include("2001:db8::8");
     });
 
