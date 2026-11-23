@@ -7,22 +7,25 @@
  *                    ANSWER_TX_HASH is a submitAnswer to the agent sent by ORACLE_ADDRESS.
  *
  * Owner calls, signed by the deploy wallet until the ownership handover; once the Safe owns the
- * agent the script refuses and names the Safe's path. Run with the network and env file named:
+ * agent the script refuses and names the Safe's path. Set ORACLE_ADDRESS (and, for the second
+ * phase, ANSWER_TX_HASH) in the env file, then run the phase through its package script:
  *
- *   ORACLE_ADDRESS=0x… ENV_FILE=.env.base-testnet HARDHAT_NETWORK=baseSepolia node scripts/authorize-oracle.js grant
- *   ORACLE_ADDRESS=0x… ANSWER_TX_HASH=0x… ENV_FILE=… HARDHAT_NETWORK=… node scripts/authorize-oracle.js retire-deployer
+ *   bun run authorize-oracle:base-testnet grant
+ *   bun run authorize-oracle:base-testnet retire-deployer
  *
- * (or `bun run authorize-oracle:<network> <phase>`). On Base mainnet a phase that sends needs
- * DEPLOY_MAINNET_CONFIRMED=1.
+ * On Base mainnet a phase that sends needs DEPLOY_MAINNET_CONFIRMED=1.
  *
  * On a live network the agent, the escrow and the token are read from ENV_FILE alone (one that
  * only the root .env or the shell sets is refused), and all three are printed before anything is
- * read or sent. ORACLE_ADDRESS and ANSWER_TX_HASH are given on the command line, as above.
+ * read or sent. ORACLE_ADDRESS and ANSWER_TX_HASH are read from ENV_FILE alone on every network
+ * the package scripts name: Hardhat loads ENV_FILE over the shell, so a value typed on the command
+ * line would be replaced by the file's line, even an empty one. A typed value that is not the
+ * file's is refused instead, before anything is read.
  */
 const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
-const { readEnvFile } = require("./lib/envFile");
+const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
 const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
 
 const PHASES = Object.freeze(["grant", "retire-deployer"]);
@@ -30,6 +33,13 @@ const MAINNET_NETWORK = "base";
 const CONFIRM_VAR = "DEPLOY_MAINNET_CONFIRMED";
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+// The hand-over's own settings, by the phase that reads them.
+const HANDOVER_VARS = Object.freeze({
+  grant: Object.freeze(["ORACLE_ADDRESS"]),
+  "retire-deployer": Object.freeze(["ORACLE_ADDRESS", "ANSWER_TX_HASH"]),
+});
+const HOW_TO_RUN =
+  "Run it through its package script (for example bun run authorize-oracle:base-testnet grant).";
 
 /** One of the script's own refusals: its message says what happened and what to do. */
 class HandoverError extends Error {
@@ -42,11 +52,14 @@ class HandoverError extends Error {
 const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 const NOTHING_SENT = "Nothing was sent.";
 
-function oracleAddressFrom(env, signer) {
+/** Where a missing setting is to be set: the env file the run reads, or the environment. */
+const whereToSet = (settingsFrom) => settingsFrom ?? "the environment";
+
+function oracleAddressFrom(env, signer, settingsFrom) {
   const value = env.ORACLE_ADDRESS;
   if (!isSet(value)) {
     throw new HandoverError(
-      `ORACLE_ADDRESS is required: the address the oracle answers from (the signer= on its [OracleKeys] start-up line). ${NOTHING_SENT}`,
+      `ORACLE_ADDRESS is required: set it in ${whereToSet(settingsFrom)} to the address the oracle answers from (the signer= on its [OracleKeys] start-up line). ${NOTHING_SENT}`,
     );
   }
   if (!ADDRESS_RE.test(value)) {
@@ -99,10 +112,10 @@ async function grant({ agent, oracle, networkName, env, log }) {
 }
 
 /** Refuses unless `hash` is a mined, successful submitAnswer to the agent sent by `oracle`. */
-async function assertAnsweredBy({ agent, provider, oracle, hash }) {
+async function assertAnsweredBy({ agent, provider, oracle, hash, settingsFrom }) {
   if (!isSet(hash)) {
     throw new HandoverError(
-      `ANSWER_TX_HASH is required: the transaction of one answer the oracle sent from ORACLE_ADDRESS (the smoke test's answerTxHash). The deploy wallet's role is removed only after the oracle has answered as itself. ${NOTHING_SENT}`,
+      `ANSWER_TX_HASH is required: set it in ${whereToSet(settingsFrom)} to the transaction of one answer the oracle sent from ORACLE_ADDRESS (the smoke test's answerTxHash). The deploy wallet's role is removed only after the oracle has answered as itself. ${NOTHING_SENT}`,
     );
   }
   if (!TX_HASH_RE.test(hash)) {
@@ -143,13 +156,22 @@ async function assertAnsweredBy({ agent, provider, oracle, hash }) {
   }
 }
 
-async function retireDeployer({ agent, signer, oracle, provider, networkName, env, log }) {
+async function retireDeployer({
+  agent,
+  signer,
+  oracle,
+  provider,
+  networkName,
+  env,
+  settingsFrom,
+  log,
+}) {
   if (!(await agent.isOracle(oracle))) {
     throw new HandoverError(
       `ORACLE_ADDRESS ${oracle} does not hold the oracle role. Run the grant phase first: removing the deploy wallet's role now could leave the agent with no oracle, and users' prompts paid and unanswered. ${NOTHING_SENT}`,
     );
   }
-  await assertAnsweredBy({ agent, provider, oracle, hash: env.ANSWER_TX_HASH });
+  await assertAnsweredBy({ agent, provider, oracle, hash: env.ANSWER_TX_HASH, settingsFrom });
   if (!(await agent.isOracle(signer))) {
     log(`The deploy wallet ${signer} does not hold the oracle role. ${NOTHING_SENT}`);
     return { sent: [] };
@@ -176,17 +198,28 @@ async function retireDeployer({ agent, signer, oracle, provider, networkName, en
 
 /**
  * Runs one phase. `agent` is the EVMAIAgent contract; it is connected to `signer` here. Every
- * input is a parameter, so the refusals can be tested where the script runs them.
+ * input is a parameter, so the refusals can be tested where the script runs them. `settingsFrom`
+ * is the env file the settings were read from, named in a refusal of a missing one.
  */
-async function runHandover({ phase, agent, signer, provider, env, networkName, log }) {
+async function runHandover({
+  phase,
+  agent,
+  signer,
+  provider,
+  env,
+  networkName,
+  settingsFrom,
+  log,
+}) {
   if (!PHASES.includes(phase)) {
     throw new HandoverError(
-      `Name the phase: one of ${PHASES.join(", ")} (for example node scripts/authorize-oracle.js grant). ${NOTHING_SENT}`,
+      `Name the phase: one of ${PHASES.join(", ")} (for example bun run authorize-oracle:base-testnet grant). ${NOTHING_SENT}`,
     );
   }
+  // Checked before anything is read, so a missing or wrong setting stops the run at once.
+  const oracle = oracleAddressFrom(env, signer.address, settingsFrom);
   const connected = agent.connect(signer);
   await assertSignerOwnsAgent({ agent: connected, signer: signer.address });
-  const oracle = oracleAddressFrom(env, signer.address);
   const args = {
     agent: connected,
     signer: signer.address,
@@ -194,6 +227,7 @@ async function runHandover({ phase, agent, signer, provider, env, networkName, l
     provider,
     networkName,
     env,
+    settingsFrom,
     log,
   };
   return phase === "grant" ? grant(args) : retireDeployer(args);
@@ -213,8 +247,7 @@ function resolveHandoverTarget({ networkName, envFile, fileEnv, processEnv }) {
     addressKeys: Object.keys(PAIR_TARGET_VARS),
     requiredLive: Object.keys(PAIR_TARGET_VARS),
     requiredLocal: ["agent"],
-    howToRun:
-      "Run it through its package script (for example bun run authorize-oracle:base-testnet grant).",
+    howToRun: HOW_TO_RUN,
   });
   if (problems.length > 0) {
     throw new HandoverError(
@@ -222,6 +255,35 @@ function resolveHandoverTarget({ networkName, envFile, fileEnv, processEnv }) {
     );
   }
   return values;
+}
+
+/**
+ * The environment the phase reads, with its own settings (HANDOVER_VARS) taken from ENV_FILE, or
+ * a refusal listing every problem. Hardhat has already loaded ENV_FILE over the shell, so
+ * `typedEnv` is what the shell held before that: a typed value that is not the file's is refused,
+ * as is one only the root .env sets, and neither is printed. With no ENV_FILE (a local run by
+ * hand) the environment is read as it is.
+ */
+function resolveHandoverSettings({ phase, envFile, fileEnv, processEnv, typedEnv }) {
+  if (!envFile || !fileEnv) return { env: processEnv, settingsFrom: undefined };
+  const names = HANDOVER_VARS[phase] ?? [];
+  const seen = { ...processEnv };
+  for (const name of names) {
+    if (isSet(typedEnv?.[name])) seen[name] = typedEnv[name];
+  }
+  const problems = fileOnlyProblems({
+    names,
+    envFile,
+    fileEnv,
+    processEnv: seen,
+    howToRun: HOW_TO_RUN,
+  });
+  if (problems.length > 0) {
+    throw new HandoverError(
+      `Oracle hand-over refused:\n  - ${problems.join("\n  - ")}\n${NOTHING_SENT}`,
+    );
+  }
+  return { env: withFileValues(processEnv, fileEnv, names), settingsFrom: envFile };
 }
 
 /** The run's header: the network, the phase, the signer and the pair it acts on. */
@@ -236,21 +298,33 @@ function targetLines({ networkName, envFile, phase, signer, target }) {
 }
 
 async function main() {
+  // What the shell held before Hardhat loads ENV_FILE over it (hardhat.config.js, override).
+  const typedEnv = Object.fromEntries(
+    [...new Set(Object.values(HANDOVER_VARS).flat())].map((name) => [name, process.env[name]]),
+  );
   const hre = require("hardhat");
-  const { env } = process;
+  const { env: processEnv } = process;
   const networkName = hre.network.name;
+  const phase = process.argv[2];
+  const fileEnv = readEnvFile(processEnv.ENV_FILE);
   const target = resolveHandoverTarget({
     networkName,
-    envFile: env.ENV_FILE,
-    fileEnv: readEnvFile(env.ENV_FILE),
-    processEnv: env,
+    envFile: processEnv.ENV_FILE,
+    fileEnv,
+    processEnv,
+  });
+  const { env, settingsFrom } = resolveHandoverSettings({
+    phase,
+    envFile: processEnv.ENV_FILE,
+    fileEnv,
+    processEnv,
+    typedEnv,
   });
   const [signer] = await hre.ethers.getSigners();
-  const phase = process.argv[2];
   const log = (line) => console.log(line);
   for (const line of targetLines({
     networkName,
-    envFile: env.ENV_FILE,
+    envFile: processEnv.ENV_FILE,
     phase,
     signer: signer.address,
     target,
@@ -264,12 +338,21 @@ async function main() {
     signer,
     provider: hre.ethers.provider,
     env,
-    networkName: hre.network.name,
+    networkName,
+    settingsFrom,
     log,
   });
 }
 
-module.exports = { PHASES, runHandover, resolveHandoverTarget, targetLines, HandoverError };
+module.exports = {
+  PHASES,
+  HANDOVER_VARS,
+  runHandover,
+  resolveHandoverTarget,
+  resolveHandoverSettings,
+  targetLines,
+  HandoverError,
+};
 
 if (require.main === module) {
   main().catch((error) => {

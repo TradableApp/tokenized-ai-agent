@@ -73,6 +73,13 @@ describe("scripts/deploy — a fresh pair", function () {
     expect(await aiAgent.isOracle(deployer.address)).to.equal(true);
     expect(text()).to.include("scripts/authorize-oracle.js grant");
     expect(text()).to.include("scripts/authorize-oracle.js retire-deployer");
+    // The hand-over reads its settings from the env file, which Hardhat loads over the shell: a
+    // step that typed them before the command would be replaced by the file's line.
+    expect(text()).to.match(/In \S+: ORACLE_ADDRESS=<signer>/);
+    expect(text()).to.match(/In \S+: ANSWER_TX_HASH=<answer tx>/);
+    expect(text()).to.not.match(
+      /(ORACLE_ADDRESS|ANSWER_TX_HASH)=<[^>]+> (ANSWER_TX_HASH=<[^>]+> )?ENV_FILE=/,
+    );
     // The e2e bring-up reads the two addresses from these lines.
     expect(text()).to.match(/EVMAIAgent proxy deployed to: 0x[0-9a-fA-F]{40}/);
     expect(text()).to.match(/EVMAIAgentEscrow proxy deployed to: 0x[0-9a-fA-F]{40}/);

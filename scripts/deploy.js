@@ -512,9 +512,10 @@ function handOverSteps({ plan, deployer, agentAddress, escrowAddress }) {
     ),
     `  1. ${recordPairLine({ plan, agentAddress, escrowAddress })}`,
     "  2. Start the oracle on this pair and read the signer= address from its [OracleKeys] start-up line.",
-    `  3. ORACLE_ADDRESS=<signer> ${run} grant`,
+    `  3. In ${plan.envFile}: ORACLE_ADDRESS=<signer>. Then: ${run} grant`,
     "  4. See one prompt answered by it, and take that answer's transaction hash.",
-    `  5. ORACLE_ADDRESS=<signer> ANSWER_TX_HASH=<answer tx> ${run} retire-deployer`,
+    `  5. In ${plan.envFile}: ANSWER_TX_HASH=<answer tx>. Then: ${run} retire-deployer`,
+    `  The hand-over reads both settings from ${plan.envFile} alone and refuses one typed on the command line.`,
   ];
 }
 

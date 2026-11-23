@@ -7,6 +7,7 @@ const {
   runHandover,
   PHASES,
   resolveHandoverTarget,
+  resolveHandoverSettings,
   targetLines,
 } = require("../scripts/authorize-oracle");
 
@@ -535,5 +536,64 @@ describe("scripts/authorize-oracle — the settings as the documented command gi
       expect(out).to.not.match(/ORACLE_ADDRESS (is required|is not set in|in the root \.env)/);
       expect(out).to.match(/could not decode|BAD_DATA/);
     }
+  });
+});
+
+describe("scripts/authorize-oracle — where the hand-over's own settings are read", function () {
+  const envFile = ".env.base-testnet";
+  const ORACLE = "0x00000000000000000000000000000000000000aa";
+  const OTHER = "0x00000000000000000000000000000000000000bb";
+
+  it("takes ORACLE_ADDRESS from ENV_FILE and names the file as where it is set", function () {
+    const fileEnv = { ORACLE_ADDRESS: ORACLE };
+    const { env, settingsFrom } = resolveHandoverSettings({
+      phase: "grant",
+      envFile,
+      fileEnv,
+      processEnv: fileEnv,
+      typedEnv: {},
+    });
+    expect(env.ORACLE_ADDRESS).to.equal(ORACLE);
+    expect(settingsFrom).to.equal(envFile);
+  });
+
+  it("refuses an ORACLE_ADDRESS that only the root .env sets, never printing it", function () {
+    expect(() =>
+      resolveHandoverSettings({
+        phase: "grant",
+        envFile,
+        fileEnv: {},
+        processEnv: { ORACLE_ADDRESS: OTHER },
+        typedEnv: {},
+      }),
+    )
+      .to.throw(Error)
+      .with.property("message")
+      .that.includes(`ORACLE_ADDRESS is not set in ${envFile}`)
+      .and.includes("Nothing was sent")
+      .and.not.includes(OTHER);
+  });
+
+  it("asks grant for ORACLE_ADDRESS alone, and retire-deployer for ANSWER_TX_HASH too", function () {
+    const typedEnv = { ANSWER_TX_HASH: `0x${"aa".repeat(32)}` };
+    const fileEnv = { ORACLE_ADDRESS: ORACLE };
+    const args = { envFile, fileEnv, processEnv: fileEnv, typedEnv };
+    expect(() => resolveHandoverSettings({ ...args, phase: "grant" })).to.not.throw();
+    expect(() => resolveHandoverSettings({ ...args, phase: "retire-deployer" })).to.throw(
+      /ANSWER_TX_HASH is not set in \.env\.base-testnet/,
+    );
+  });
+
+  it("reads the environment as it is when no ENV_FILE is named (a local run by hand)", function () {
+    const processEnv = { ORACLE_ADDRESS: ORACLE };
+    const { env, settingsFrom } = resolveHandoverSettings({
+      phase: "grant",
+      envFile: undefined,
+      fileEnv: null,
+      processEnv,
+      typedEnv: processEnv,
+    });
+    expect(env).to.equal(processEnv);
+    expect(settingsFrom).to.equal(undefined);
   });
 });

@@ -212,16 +212,23 @@ where they can; the rest of the order is this list.
    "Moving prompts to a new agent and escrow" under Lessons learned).
 6. **Move the oracle role off the deploy wallet**, in the order of §1.1, with the script. On a live
    network it reads the agent, escrow and token from `ENV_FILE` alone (all three are required) and
-   prints them before it reads anything; `ORACLE_ADDRESS` and `ANSWER_TX_HASH` are given on the
-   command line:
-   - `ORACLE_ADDRESS=<signer> bun run authorize-oracle:base-testnet grant` adds the oracle's own
-     signer (from its `[OracleKeys] … signer=` start-up line) and checks `isOracle`. It refuses
-     an `ORACLE_ADDRESS` that is the signing wallet, and sends nothing when the role is held.
+   prints them before it reads anything. `ORACLE_ADDRESS` and `ANSWER_TX_HASH` are set in
+   `ENV_FILE` too, never typed before the command: Hardhat loads `ENV_FILE` over the shell, so a
+   typed value would be replaced by the file's line (the template's empty `ORACLE_ADDRESS=`
+   included). The script reads both from `ENV_FILE` alone and refuses, before it reads anything,
+   a typed value that is not the file's, one only the root `.env` sets, or an empty one, naming the
+   setting and the file and never printing the value:
+   - In `ENV_FILE` set `ORACLE_ADDRESS=<signer>` (from the oracle's `[OracleKeys] … signer=`
+     start-up line), then `bun run authorize-oracle:base-testnet grant`. It adds that signer and
+     checks `isOracle`, refuses an `ORACLE_ADDRESS` that is the signing wallet, and sends nothing
+     when the role is held. (Setting it now changes no deploy: the file is in `upgrade` mode since
+     step 3, and an upgrade does not use `ORACLE_ADDRESS`; it only refuses one that is not an
+     address.)
    - Send one prompt (the smoke test, §6, with the new pair's `SMOKE_*`) and take its answer's
      transaction hash (`answerTxHash` in `smoke-metrics.json`).
-   - `ORACLE_ADDRESS=<signer> ANSWER_TX_HASH=<answer tx> bun run authorize-oracle:base-testnet
-     retire-deployer` removes the deploy wallet's role only when `<signer>` holds the role and the
-     hash is a successful `submitAnswer` to this agent sent by `<signer>`; then
+   - In `ENV_FILE` set `ANSWER_TX_HASH=<answer tx>`, then `bun run authorize-oracle:base-testnet
+     retire-deployer`. It removes the deploy wallet's role only when `<signer>` holds the role and
+     the hash is a successful `submitAnswer` to this agent sent by `<signer>`; then
      `isOracle(<deploy wallet>)` must be false and `isOracle(<signer>)` still true.
    Both phases are owner calls and refuse once the agent's owner is not the signing wallet: after
    the handover the Safe sends `addOracle` / `removeOracle` itself. On Base mainnet either phase
