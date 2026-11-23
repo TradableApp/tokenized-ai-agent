@@ -670,6 +670,16 @@ describe("describeError — one line of text, with nothing a reader outside the 
     );
   });
 
+  it("keeps only the name and status of an error that carries a request or response body, whatever it is named", () => {
+    const renamed = Object.assign(new Error("upstream said: how do I short it"), {
+      name: "ProviderError",
+      responseBody: '{"error":"how do I short it"}',
+      statusCode: 502,
+    });
+
+    expect(describeError(renamed)).to.equal("ProviderError (status 502)");
+  });
+
   it("removes a bearer token, a JWT and a long base64 run", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJlLXRoYXQtaXMtbG9uZw";
     const base64 = "QWxhZGRpbjpvcGVuIHNlc2FtZSBhbmQgbW9yZSBieXRlcw2";

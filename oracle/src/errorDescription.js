@@ -316,6 +316,12 @@ function partsOf(error) {
   return { text: "unknown error", revert: "" };
 }
 
+/**
+ * A model provider's error: named AI_… by the AI SDK, or carrying a request or response body
+ * under the AI SDK's field names whatever it is named (a wrapper may rename it). The fields are
+ * read on purpose and not narrowed by the name: an error that carries a body may quote it in its
+ * message, and that body can be the user's prompt, so only its name and status are kept.
+ */
 function isModelProviderError(error) {
   const name = readProperty(error, "name");
   if (typeof name === "string" && name.length <= 64 && /^AI_[A-Za-z]+$/.test(name)) return true;

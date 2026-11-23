@@ -329,7 +329,10 @@ function parameterBodies(code, src) {
   return bodies;
 }
 
-// A settled promise's reason (`result.reason`), outside a description.
+// A settled promise's reason (`result.reason`), outside a description. Any `.reason` handed to a
+// sink is read as one, since the guard cannot tell a rejection's reason from a field of that name:
+// a logged object whose own `reason` is plain text needs the field named otherwise, or the value
+// wrapped in describeError.
 const SETTLED_REASON = /[\w$)\]]\s*\??\.\s*reason(?![\w$])/;
 
 /** What a sink at `at` hands on: a call's arguments, or a throw's expression. */
