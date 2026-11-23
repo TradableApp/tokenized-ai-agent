@@ -582,6 +582,73 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
   });
 });
 
+// Hardhat loads ENV_FILE over the shell, so a line there would replace what was typed. DRY_RUN
+// and the mainnet confirmation are read from what was typed alone (`typedEnv`, recorded before
+// the files load), and a file that contradicts it stops the deploy.
+describe("scripts/deploy — DRY_RUN and the mainnet confirmation come from what was typed", function () {
+  const envFile = ".env.base-testnet";
+  const plan = ({ networkName = "baseSepolia", loaded = {}, typed = {} } = {}) =>
+    resolveDeployPlan({
+      networkName,
+      envFile,
+      fileEnv: freshOnBase,
+      processEnv: { ...freshOnBase, [CONFIRM_VAR]: undefined, ...loaded },
+      typedEnv: typed,
+    });
+
+  it("a typed DRY_RUN=1 that the file replaces stops the deploy, so a dry run never sends", function () {
+    for (const loaded of ["0", ""]) {
+      expect(() => plan({ loaded: { DRY_RUN: loaded }, typed: { DRY_RUN: "1" } }), loaded)
+        .to.throw(Error)
+        .with.property("message")
+        .that.includes("DRY_RUN was typed on the command line")
+        .and.includes(envFile);
+    }
+  });
+
+  it("a DRY_RUN=1 that only a file sets is refused, not taken as a dry run", function () {
+    expect(() => plan({ loaded: { DRY_RUN: "1" } }))
+      .to.throw(Error)
+      .with.property("message")
+      .that.includes("DRY_RUN is set in");
+  });
+
+  it("takes the dry run from what was typed", function () {
+    expect(plan({ loaded: { DRY_RUN: "1" }, typed: { DRY_RUN: "1" } }).dryRun).to.equal(true);
+    expect(plan().dryRun).to.equal(false);
+  });
+
+  it("the mainnet confirmation never comes from a file", function () {
+    expect(() => plan({ networkName: "base", loaded: { [CONFIRM_VAR]: "1" } }))
+      .to.throw(Error)
+      .with.property("message")
+      .that.includes(`${CONFIRM_VAR} is set in`)
+      .and.includes(`needs exactly ${CONFIRM_VAR}=1`);
+    expect(
+      plan({
+        networkName: "base",
+        loaded: { [CONFIRM_VAR]: "1" },
+        typed: { [CONFIRM_VAR]: "1" },
+      }).mode,
+    ).to.equal("fresh");
+  });
+
+  it("refuses a typed DRY_RUN=1 on a Sapphire network as before, and a file's line there too", function () {
+    const sapphire = (processEnv, typedEnv) =>
+      resolveDeployPlan({
+        networkName: "sapphire-testnet",
+        envFile: undefined,
+        fileEnv: null,
+        processEnv,
+        typedEnv,
+      });
+    expect(() => sapphire({ DRY_RUN: "1" }, { DRY_RUN: "1" })).to.throw(
+      /the Sapphire deploy has none/,
+    );
+    expect(() => sapphire({ DRY_RUN: "1" }, {})).to.throw(/DRY_RUN is set in/);
+  });
+});
+
 describe("scripts/deploy — what it prints", function () {
   it("never reads the network's RPC address, which carries the provider's access key", function () {
     const source = fs.readFileSync(path.join(__dirname, "..", "scripts", "deploy.js"), "utf8");
