@@ -141,6 +141,20 @@ describe("the framework log lines the oracle cleans before they are printed", fu
     ]);
   });
 
+  it("cleans the text and error elements of a list, as it cleans a line's fields", function () {
+    const failure = new Error("connect ECONNREFUSED 198.51.100.4:5432");
+    const list = ["request to https://rpc.example/v2/aB3dE6gH9jK2mN5pQ8sT failed", failure, 3];
+
+    const [cleanedList] = cleaned([list]);
+
+    expect(cleanedList).to.deep.equal([
+      "request to [address removed] failed",
+      "connect ECONNREFUSED [peer removed]",
+      3,
+    ]);
+    expect(list[1], "the list given is not changed").to.equal(failure);
+  });
+
   it("does not change what it is given, and passes other values through", function () {
     const fields = { error: "connect ECONNREFUSED 192.0.2.10:5432" };
 

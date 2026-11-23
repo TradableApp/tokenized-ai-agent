@@ -80,29 +80,30 @@ const FRAMEWORK_LOG_LEVELS = [
 
 const cleanedText = (text) => withoutAddresses(withoutQueryDetail(text));
 
+/** A field of a structured line or an element of a list: its text cleaned, an error described. */
+function cleanedField(value) {
+  if (typeof value === "string") return cleanedText(value);
+  if (value instanceof Error) return describeError(value);
+  return value;
+}
+
 function cleanedArgument(arg) {
   if (typeof arg === "string") return cleanedText(arg);
   if (arg instanceof Error) return describeError(arg);
-  if (arg === null || typeof arg !== "object" || Array.isArray(arg)) return arg;
-  // The fields of a structured line, one level down: the plugins put the error's text there.
-  return Object.fromEntries(
-    Object.entries(arg).map(([key, value]) => [
-      key,
-      typeof value === "string"
-        ? cleanedText(value)
-        : value instanceof Error
-          ? describeError(value)
-          : value,
-    ]),
-  );
+  if (arg === null || typeof arg !== "object") return arg;
+  // The elements of a list and the fields of a structured line, one level down: the plugins put
+  // the error's text there.
+  if (Array.isArray(arg)) return arg.map(cleanedField);
+  return Object.fromEntries(Object.entries(arg).map(([key, value]) => [key, cleanedField(value)]));
 }
 
 /**
  * What the framework's logger was called with, cleaned: the framework and its database plugin
  * print errors themselves, a failed query with its text and its bound values, a peer it could not
- * reach. Text, and the text fields of a structured line, lose a failed query's text and values
- * and every address, configured secret and network peer (`withoutAddresses`); an error object is
- * printed as its description. Other values pass through. A copy; the arguments are not changed.
+ * reach. Text, and the text fields of a structured line or the text elements of a list, lose a
+ * failed query's text and values and every address, configured secret and network peer
+ * (`withoutAddresses`); an error object, there too, is printed as its description. Other values
+ * pass through. A copy; the arguments are not changed.
  *
  * This covers the framework's shared logger only (see the note above); the agent runtime's own
  * logger is not reached, and is held at warning level (frameworkLogLevel.js).
