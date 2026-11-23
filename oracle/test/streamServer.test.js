@@ -1353,6 +1353,44 @@ describe("streamServer", function () {
       expect(refused).to.equal(true);
     });
 
+    /** A port free a moment ago: listened on and closed again. */
+    async function freePort() {
+      const probe = net.createServer();
+      await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+      const { port } = probe.address();
+      await new Promise((resolve) => probe.close(resolve));
+      return port;
+    }
+
+    it("listens on STREAM_HOST when it is set", async () => {
+      const port = await freePort();
+      const server = await startStreamFromEnv({
+        env: { NETWORK_NAME: "base-localnet", STREAM_PORT: String(port), STREAM_HOST: "127.0.0.1" },
+        setSink: sinon.spy(),
+        processRef: fakeProcess(),
+      });
+      running.push(server);
+      expect(server.address()).to.include({ address: "127.0.0.1", port });
+    });
+
+    it("listens on every interface when STREAM_HOST is not set, as the container's published port needs", async () => {
+      const port = await freePort();
+      const server = await startStreamFromEnv({
+        env: { NETWORK_NAME: "base-localnet", STREAM_PORT: String(port) },
+        setSink: sinon.spy(),
+        processRef: fakeProcess(),
+      });
+      running.push(server);
+      expect(["::", "0.0.0.0"]).to.include(server.address().address);
+    });
+
+    it("reads STREAM_HOST as an IP address, every interface when unset", () => {
+      expect(readStreamConfig({}).host).to.equal(undefined);
+      expect(readStreamConfig({ STREAM_HOST: " 127.0.0.1 " }).host).to.equal("127.0.0.1");
+      expect(readStreamConfig({ STREAM_HOST: "::1" }).host).to.equal("::1");
+      expect(readStreamConfig({ STREAM_HOST: "0.0.0.0" }).host).to.equal("0.0.0.0");
+    });
+
     it("answers without a stream when the port cannot be had", async () => {
       const blocker = net.createServer();
       await new Promise((resolve) => blocker.listen(0, "127.0.0.1", resolve));

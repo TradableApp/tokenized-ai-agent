@@ -691,6 +691,7 @@ describe("startup config validation", () => {
             STREAM_MAX_CONN_MS: "240000",
             STREAM_MAX_CONN_PER_ANSWER: "4",
             STREAM_MAX_CONN_TOTAL: "200",
+            STREAM_HOST: "127.0.0.1",
           }),
         ),
       ).to.not.throw();
@@ -714,6 +715,10 @@ describe("startup config validation", () => {
       ["STREAM_ALLOWED_ORIGINS", "*"],
       ["STREAM_ALLOWED_ORIGINS", "ftp://files-0x5ec7e7.example"],
       ["STREAM_ALLOWED_ORIGINS", "https://user:pw-0x5ec7e7@a.example"],
+      ["STREAM_HOST", "host-0x5ec7e7.example"],
+      ["STREAM_HOST", "127.0.0.1:8787-0x5ec7e7"],
+      ["STREAM_HOST", "http://127.0.0.1/0x5ec7e7"],
+      ["STREAM_HOST", "300.1.1.1-0x5ec7e7"],
     ];
     for (const [name, value] of badValues) {
       it(`refuses ${name} set to something unusable, naming it but not its value (${name}=…)`, () => {
