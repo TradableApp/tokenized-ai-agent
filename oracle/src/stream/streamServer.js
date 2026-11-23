@@ -277,6 +277,7 @@ function createStreamServer({
     const body = JSON.stringify({ ok: true });
     res.writeHead(200, {
       ...CLOSE,
+      "Cache-Control": "no-store",
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(body),
     });
@@ -302,9 +303,12 @@ function createStreamServer({
     reader.ended = true;
     clearInterval(reader.heartbeat);
     clearTimeout(reader.lifetime);
-    clearTimeout(reader.drainTimer);
-    if (reader.drainTimer) waitingToDrain -= 1;
-    reader.drainTimer = null;
+    // Non-null exactly while the reader is counted as waiting to drain, as in the drain handler.
+    if (reader.drainTimer) {
+      clearTimeout(reader.drainTimer);
+      reader.drainTimer = null;
+      waitingToDrain -= 1;
+    }
     reader.unsubscribe?.();
     connections.delete(reader);
     const left = (readersPerAnswer.get(reader.id) ?? 1) - 1;

@@ -861,6 +861,9 @@ describe("streamServer", function () {
         await sleep(2);
       }
       expect(server.stats().connections, "the server destroyed the connection").to.equal(0);
+      expect(server.stats().waitingToDrain, "the destroyed reader is no longer counted").to.equal(
+        0,
+      );
       socket.destroy();
       // Destroyed well inside the 5 s loop limit: 100 ms after its socket stopped draining.
       expect(Date.now() - started).to.be.below(5000);
@@ -1046,10 +1049,11 @@ describe("streamServer", function () {
   });
 
   describe("everything else", () => {
-    it("answers /health with 200 and {ok:true}", async () => {
+    it("answers /health with 200 and {ok:true}, never to be cached", async () => {
       const { base } = await serve();
       const res = await fetch(`${base}${STREAM_HTTP.healthPath}`);
       expect(res.status).to.equal(200);
+      expect(res.headers.get("cache-control")).to.equal("no-store");
       expect(await res.json()).to.deep.equal({ ok: true });
     });
 
