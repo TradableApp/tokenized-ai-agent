@@ -41,9 +41,10 @@ const path = require("node:path");
  * It reads every source file under src/: each JavaScript file, and the TypeScript source of the
  * ElizaOS plugin (`elizaos/plugins/plugin-senseai/src`), which runs in the same TEE and prints to
  * the same log. Tests (`__tests__`), installed packages (`node_modules`), build output (`dist`)
- * and type declarations (`.d.ts`) are skipped, and so is the plugin's build script, which runs
- * on the machine that builds the image and never in the TEE. A new module is read without being
- * listed.
+ * and type declarations (`.d.ts`) are skipped, and so is the plugin's build script (`build.ts`,
+ * TypeScript outside its `src`), which runs on the machine that builds the image and never in the
+ * TEE. Its JavaScript under `scripts/` (`install-test-deps.js`) is read like any other file. A new
+ * module is read without being listed.
  */
 const SRC = path.join(__dirname, "..", "src");
 const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "__tests__"]);
@@ -604,6 +605,7 @@ describe("errors are described before they are handed on", () => {
     expect(GUARDED.some((file) => file.includes("__tests__"))).to.equal(false);
     expect(GUARDED.some((file) => file.endsWith(".d.ts"))).to.equal(false);
     expect(GUARDED).to.not.include("elizaos/plugins/plugin-senseai/build.ts");
+    expect(GUARDED).to.include("elizaos/plugins/plugin-senseai/scripts/install-test-deps.js");
   });
 
   it("fails on a raw print planted in any module it reads", () => {
