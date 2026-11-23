@@ -626,7 +626,7 @@ function createStreamServer({
  * @param {(sink: object) => void} options.setSink the oracle's setStreamSink
  * @param {NodeJS.Process} [options.processRef]
  * @param {{ port?: number, host?: string }} [options.listen] where to listen; the configured
- *   port on every interface by default
+ *   STREAM_PORT on STREAM_HOST (every interface when that is unset) by default
  * @returns {Promise<ReturnType<typeof createStreamServer> | null>}
  */
 async function startStreamFromEnv({
@@ -640,7 +640,7 @@ async function startStreamFromEnv({
 
   const server = createStreamServer({ config });
   try {
-    await server.listen(listen ?? { port: config.port });
+    await server.listen(listen ?? { port: config.port, host: config.host });
   } catch (error) {
     console.error(
       `[Stream] The live reasoning stream could not start (${errorKind(error)}); answering without it.`,

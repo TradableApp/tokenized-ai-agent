@@ -1,3 +1,5 @@
+const net = require("node:net");
+
 /**
  * The live reasoning stream server's settings: their defaults, what each may be, and the one
  * reader that turns the environment into the server's configuration.
@@ -13,6 +15,12 @@ const STREAM_SETTING_DEFAULTS = Object.freeze({
   STREAM_ENABLED: true,
   /** Not used by any service of the localnet harness. Published by every compose file. */
   STREAM_PORT: 8787,
+  /**
+   * The IP address to listen on; unset, every interface, which the container needs for its
+   * published port. The localnet harness, which runs the oracle on the developer's own machine,
+   * sets 127.0.0.1.
+   */
+  STREAM_HOST: undefined,
   /** How long a finished answer's frames are kept, for a second device that finds it late. */
   STREAM_GRACE_MS: 120000,
   STREAM_HEARTBEAT_MS: 15000,
@@ -114,6 +122,18 @@ function readOrigins(env, problems) {
   return entries;
 }
 
+/** An IPv4 or IPv6 address as `listen` takes it, or the default (every interface). */
+function readHost(env, problems) {
+  if (isBlank(env.STREAM_HOST)) return STREAM_SETTING_DEFAULTS.STREAM_HOST;
+  const raw = env.STREAM_HOST.trim();
+  if (net.isIP(raw) !== 0) return raw;
+  problems.push(
+    "STREAM_HOST is not an IP address: an IPv4 address such as 127.0.0.1 or an IPv6 address " +
+      "such as ::1, with no port, scheme or brackets",
+  );
+  return null;
+}
+
 function readEnabled(env, problems) {
   if (isBlank(env.STREAM_ENABLED)) return STREAM_SETTING_DEFAULTS.STREAM_ENABLED;
   const raw = env.STREAM_ENABLED.trim();
@@ -136,6 +156,7 @@ function parseStreamConfig(env = process.env) {
   const config = {
     enabled: true,
     port: readWhole(env, "STREAM_PORT", { min: 1, max: MAX_PORT }, problems),
+    host: readHost(env, problems),
     allowedOrigins: readOrigins(env, problems),
     graceMs: readWhole(env, "STREAM_GRACE_MS", ms, problems),
     heartbeatMs: readWhole(env, "STREAM_HEARTBEAT_MS", ms, problems),
