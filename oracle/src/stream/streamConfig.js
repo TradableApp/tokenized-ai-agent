@@ -21,7 +21,11 @@ const STREAM_SETTING_DEFAULTS = Object.freeze({
    * sets 127.0.0.1.
    */
   STREAM_HOST: undefined,
-  /** How long a finished answer's frames are kept, for a second device that finds it late. */
+  /**
+   * How long a finished answer's frames are kept, for a second device that finds it late. The
+   * dApp assumes this default as a constant (how long it follows an answer after its refund
+   * window), so changing it needs the dApp's constant changed too.
+   */
   STREAM_GRACE_MS: 120000,
   STREAM_HEARTBEAT_MS: 15000,
   STREAM_MAX_CONN_MS: 240000,

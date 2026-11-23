@@ -278,8 +278,10 @@ function createStreamServer({
   }
 
   /**
-   * Liveness for a person or the localnet harness (which asks it once at bring-up). No deployed
-   * healthcheck uses it: the compose files define none and restart only on exit, so a full
+   * Shows that the stream server is listening, for a person or the localnet harness (which polls
+   * it until it answers at bring-up, and asks again in its health check). It does not show that
+   * the oracle answers prompts: the server starts before the oracle's event processing does. No
+   * deployed healthcheck uses it: the compose files define none and restart only on exit, so a full
    * socket pool cannot get the oracle restarted. A healthcheck added later must not use this
    * public port.
    */

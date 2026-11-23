@@ -247,14 +247,45 @@ the container stay unreachable from outside. The server speaks plain HTTP: TLS i
 proxy's. A reader must send a proof that only the conversation's key can make, and gets
 ciphertext only.
 
-- **Read the stream URL.** `oasis rofl machine show --deployment base-testnet` (passphrase, as
-  above) prints what the machine publishes; the address the proxy gives port 8787 is the value of
-  the dApp's `VITE_REASONING_STREAM_URL` (origin only, no trailing slash). Which field holds it,
-  whether TLS ends at the proxy, and whether the URL survives a restart are measured in Phase 0
-  and recorded here then. The compose files carry no proxy annotation yet: its exact key is to be
-  read from the Oasis docs and cited by that measurement.
+- **Deploy order.** Once this oracle is deployed, stored answer files carry every attempt's
+  steps and sources (each tagged with its `attempt`, and `answerAttempt` after a fallback). A
+  dApp without the live reasoning overlay does not group them by attempt and shows a failed
+  tier's steps and sources as the answer's own, and the files are immutable. So the network's
+  hosted dApp with the live reasoning overlay ships **before, or together with**, this oracle.
+  The dApp is safe to ship first: with `VITE_REASONING_STREAM_URL` unset it opens no stream.
+- **Read the stream URL.** What the Oasis proxy documentation says (docs.oasis.io, ROFL
+  features, proxy; read 2026-11-21):
+  - a port published in compose is reachable through the ROFL proxy with **no annotation**;
+    `oasis rofl machine show --deployment base-testnet` (passphrase, as above) prints a `Proxy`
+    section with a domain and one URL per port, `https://p<port>.<machine domain>`, so this one is
+    `https://p8787.<machine domain>`;
+  - the proxy's modes, set per port by an annotation, are `terminate-tls` (the default: TLS ends
+    inside the enclave and the container gets plain HTTP, which is what this server speaks),
+    `passthrough` and `ignore`;
+  - a `custom_domain` can be set for a port (an annotation, plus the A and TXT records
+    `machine show` prints);
+  - the documentation says nothing about SSE, response buffering, timeouts or connection limits.
+
+  That URL (origin only, no trailing slash) is the dApp's `VITE_REASONING_STREAM_URL`. The dApp
+  reads it **at build time**, so a URL that changes needs the dApp rebuilt and redeployed; until
+  then the hosted dApp asks the old host, shows no live reasoning and reports nothing (the paid
+  answer still lands from storage). The machine domain carries the machine's id, so a new or
+  replaced machine changes a `p8787.<domain>` URL. Two ways to hold the URL, an owner decision:
+  - **the proxy's `p8787.<domain>` URL**: nothing to set up; every machine change is a dApp
+    rebuild and redeploy, done as part of that change;
+  - **a custom domain for 8787**: an annotation and two DNS records once; the URL survives a
+    machine change, and the records move to the new machine's address instead.
+
+  Still to be measured by the Phase 0 spike, and recorded here: that the proxy passes the event
+  stream unbuffered, how long it keeps a quiet connection against the 15 s heartbeat and the
+  240 s connection limit (if it buffers or cuts, the dApp's poll mode is the fallback), that it
+  forwards `Origin`, `Last-Event-ID` and the proof header and returns the server's CORS and
+  `Retry-After` headers unchanged, and whether the `p8787` URL survives a restart of the same
+  machine.
 - **Check the stream answers.** With `STREAM=<that origin>`:
-  - `curl -sS -w ' %{http_code}\n' "$STREAM/health"` → `{"ok":true} 200`
+  - `curl -sS -w ' %{http_code}\n' "$STREAM/health"` → `{"ok":true} 200` (the stream server is
+    listening; the oracle starts its event processing right after, so this alone does not show
+    prompts are being answered)
   - `curl -sS -w ' %{http_code}\n' "$STREAM/stream/1"` → `{"error":"bad-request"} 400` (no proof: it
     is the oracle's server answering, and nothing was opened)
   - `curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$STREAM/health"` → `404`
@@ -264,12 +295,18 @@ ciphertext only.
   A connection on any of them is a deploy blocker: compose publishes nothing but 8787.
 - **CORS.** Only the network's allowed origins can read it from a browser (`baseSepolia`:
   `https://sense-ai-app-garrick.web.app`, `https://sense-ai-app-garrick.firebaseapp.com`;
-  `base`: `https://senseai.tradable.app`, `https://sense-ai-app.web.app`; or
-  `STREAM_ALLOWED_ORIGINS`). `curl -sS -D - -o /dev/null -H 'Origin: https://sense-ai-app-garrick.web.app' "$STREAM/stream/1"`
+  `base`: `https://senseai.tradable.app`, `https://sense-ai-app.web.app`,
+  `https://sense-ai-app.firebaseapp.com`; or `STREAM_ALLOWED_ORIGINS`). An origin left out fails
+  **silently**: the browser refuses the response, the dApp treats it as a network error and
+  retries, and nothing is shown or reported. A local dev server (`bun run dev:testnet` on
+  localhost) is not on the testnet list. `curl -sS -D - -o /dev/null -H 'Origin: https://sense-ai-app-garrick.web.app' "$STREAM/stream/1"`
   shows `Access-Control-Allow-Origin` echoed; any other `Origin` gets no such header.
 - **Settings** (all optional; defaults in code, so no env file needs them): `STREAM_ENABLED`
-  (`true`), `STREAM_PORT` (8787; the compose files publish 8787, so leave it), `STREAM_ALLOWED_ORIGINS`,
-  `STREAM_GRACE_MS` (120000), `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (240000),
+  (`true`), `STREAM_PORT` (8787; the compose files publish 8787, so leave it), `STREAM_HOST`
+  (unset: every interface, which the container's published port needs; leave it unset here),
+  `STREAM_ALLOWED_ORIGINS`, `STREAM_GRACE_MS` (120000; the dApp assumes this value as a constant
+  for how long it follows an answer, so changing it needs the dApp's constant changed too),
+  `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (240000),
   `STREAM_MAX_CONN_PER_ANSWER` (4), `STREAM_MAX_CONN_TOTAL` (200, at most 256: a third of the
   server's socket budget of 768). Heartbeat, maximum connection time and the total cap are set
   from the Phase 0 measurement. A value that cannot work stops
@@ -296,6 +333,11 @@ own limits (`httpLimitsFor` in `streamServer.js`, `SOCKET_BUDGET` in `streamConf
   reopening sockets to hold many;
 - 31 requests per socket and 4 s for an idle keep-alive socket after an admitted stream ends.
 
+A caller with a valid proof is bounded per answer: at most `STREAM_MAX_CONN_PER_ANSWER` readers
+at once, and each run of an answer may be replayed in full 8 times; past that a replay larger
+than 16 KiB is refused with 429 (`Retry-After: 5`), while a reconnect that needs only the tail is
+always served. A replay is written 64 KiB at a time, with the event loop let run between slices.
+
 There is no per-address limit, on purpose: the reader's address is never read, and behind the
 proxy every caller may share one address. Nothing that uses this port decides the oracle's
 liveness: no compose file has a healthcheck (they restart only on exit), so a full pool cannot
@@ -316,6 +358,10 @@ an outside caller can reach. The Phase 0 load check must include, against the re
       `blockLag` stay as without the flood, existing readers keep receiving frames, a reader with
       a valid proof gets in within a few seconds of the flood easing, and
       `stream.server.refusedSockets` climbs.
+- [ ] A valid-proof replay loop: one wallet's proof for a long finished answer, requested again
+      and again from several sockets during its grace period. After the eighth full replay of
+      the run, further full replays get 429; prompt answer times and `blockLag` stay as without
+      the loop.
 - [ ] The oracle's descriptor use stays well below the container's limit throughout (no
       `EMFILE` in the log; the RPC and database connections keep working).
 - [ ] If prompt handling slows, record it: the next step is moving the server off the
