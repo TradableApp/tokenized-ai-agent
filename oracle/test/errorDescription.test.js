@@ -293,6 +293,42 @@ describe("errorDescription — what an error is, without the address it was sent
       ]);
     });
 
+    // The stack starts with the message, every line of it. A line of the message that starts
+    // like a frame is still the message, which the description has already left out.
+    it("keeps no line of the message, even one that starts like a frame", () => {
+      const original = new Error(
+        "upstream refused\n    at the user's request: what should I buy with my savings\n    at x (y.js:1:2)",
+      );
+
+      const error = describedError(original);
+
+      expect(error.stack).to.not.include("savings");
+      expect(error.stack).to.not.include("y.js");
+      expect(error.stack.split("\n").slice(1)).to.deep.equal(
+        original.stack.split("\n").slice(3),
+      );
+    });
+
+    it("keeps only lines shaped as a frame", () => {
+      const original = new Error("failed");
+      original.stack = [
+        "Error: failed",
+        "    at poll (/app/src/eventPoller.js:10:5)",
+        "    at the user's words, which are not a frame",
+        "    at new Promise (<anonymous>)",
+        "    at async Promise.all (index 0)",
+        "    at /app/src/index.js:3:7",
+      ].join("\n");
+
+      expect(describedError(original).stack.split("\n")).to.deep.equal([
+        "Error: failed",
+        "    at poll (/app/src/eventPoller.js:10:5)",
+        "    at new Promise (<anonymous>)",
+        "    at async Promise.all (index 0)",
+        "    at /app/src/index.js:3:7",
+      ]);
+    });
+
     it("keeps the original's name only when it is one short word, in the name and the stack", () => {
       const original = new Error("fetch failed");
       original.name = "FetchError https://rpc.example/v2/not-a-real-key";
