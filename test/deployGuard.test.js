@@ -36,6 +36,7 @@ const freshOnBase = {
   TOKEN_CONTRACT_ADDRESS: ADDRESS,
   TREASURY_ADDRESS: ADDRESS,
   EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
+  DOMAIN: "tradable.app",
   ...FEES,
   [CONFIRM_VAR]: "1",
 };
@@ -203,14 +204,14 @@ describe("scripts/deploy — DEPLOY_MODE says whether a new pair is deployed", f
     }
   });
 
-  it("fresh on a live network needs TREASURY_ADDRESS and EXPECTED_FEE_TOKEN_SYMBOL", function () {
+  it("fresh on a live network needs TREASURY_ADDRESS, EXPECTED_FEE_TOKEN_SYMBOL and DOMAIN", function () {
     for (const networkName of ["base", "baseSepolia"]) {
-      for (const missing of ["TREASURY_ADDRESS", "EXPECTED_FEE_TOKEN_SYMBOL"]) {
+      for (const missing of ["TREASURY_ADDRESS", "EXPECTED_FEE_TOKEN_SYMBOL", "DOMAIN"]) {
         const env = { ...freshOnBase };
         delete env[missing];
         const problems = deployProblems({ networkName, env });
         expect(problems, `${networkName} ${missing}`).to.have.lengthOf(1);
-        expect(problems[0]).to.include(missing);
+        expect(problems[0]).to.include(`${missing} must be set for a fresh pair on ${networkName}`);
       }
     }
   });
@@ -330,6 +331,7 @@ describe("scripts/deploy — the mode and the pair are read from ENV_FILE alone"
     TOKEN_CONTRACT_ADDRESS: ADDRESS,
     TREASURY_ADDRESS: ADDRESS,
     EXPECTED_FEE_TOKEN_SYMBOL: "SENSE",
+    DOMAIN: "tradable.app",
     ...FEES,
   };
   // Hardhat's config has already loaded the root .env and then ENV_FILE over it, so whatever

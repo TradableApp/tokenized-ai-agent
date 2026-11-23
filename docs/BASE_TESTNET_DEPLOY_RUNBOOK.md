@@ -169,7 +169,8 @@ where they can; the rest of the order is this list.
    deploy refuses when the root `.env` or the shell sets one the file does not (or sets it
    differently), so a value left out of the file cannot come from the root file. `fresh` refuses
    either pair address; `upgrade` needs both and reads none of the other settings. On a live
-   network a fresh pair needs `TREASURY_ADDRESS`, `EXPECTED_FEE_TOKEN_SYMBOL` and the four fees;
+   network a fresh pair needs `TREASURY_ADDRESS`, `EXPECTED_FEE_TOKEN_SYMBOL`, `DOMAIN` and the
+   four fees;
    only a local network falls back to the deploy wallet as treasury and to default fees (1, 0.1,
    0.1 and 0.5 tokens), and takes these settings from the root `.env` as well as the file.
 2. **Dry run, then deploy:** first `bun run deploy:base-testnet:dry` (mainnet: `bun run
