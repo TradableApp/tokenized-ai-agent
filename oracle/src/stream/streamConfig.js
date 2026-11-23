@@ -31,9 +31,12 @@ const STREAM_SETTING_DEFAULTS = Object.freeze({
 
 /**
  * The origins a browser may read the stream from, by NETWORK_NAME, when STREAM_ALLOWED_ORIGINS
- * is not set: the dApp's local dev server, the sandbox hosting site, and production. A network
- * not listed here (the Sapphire ones) gets none: the server still runs, and no browser can read
- * it until the setting names an origin.
+ * is not set: the dApp's local dev server, the sandbox hosting site, and production. Firebase
+ * Hosting serves each site on both `<site>.web.app` and `<site>.firebaseapp.com`, so both are
+ * listed. A network not listed here (the Sapphire ones) gets none: the server still runs, and no
+ * browser can read it until the setting names an origin. An origin left out fails silently in the
+ * browser: the preflight gets no Access-Control-Allow-Origin, and the dApp treats that as a
+ * network error and retries without showing anything.
  */
 const DEFAULT_ALLOWED_ORIGINS = Object.freeze({
   "base-localnet": Object.freeze(["http://localhost:3002", "http://127.0.0.1:3002"]),
@@ -41,7 +44,11 @@ const DEFAULT_ALLOWED_ORIGINS = Object.freeze({
     "https://sense-ai-app-garrick.web.app",
     "https://sense-ai-app-garrick.firebaseapp.com",
   ]),
-  base: Object.freeze(["https://senseai.tradable.app", "https://sense-ai-app.web.app"]),
+  base: Object.freeze([
+    "https://senseai.tradable.app",
+    "https://sense-ai-app.web.app",
+    "https://sense-ai-app.firebaseapp.com",
+  ]),
 });
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
