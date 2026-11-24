@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const { JWT } = require("google-auth-library");
 const { sendAlert } = require("../alerting");
+const { describeError, withoutAddresses } = require("../errorDescription");
 
 /**
  * Write-through mirror of every Autonomys payload CID to a public GCS bucket.
@@ -132,7 +133,7 @@ async function recordFailure(cid, reason, alert) {
           "Further failures are counted in the heartbeat vitals (payloadMirror) without alerting.",
       );
     } catch (alertError) {
-      console.error("[Payload Mirror] Alert delivery failed:", alertError.message);
+      console.error("[Payload Mirror] Alert delivery failed:", describeError(alertError));
     }
   }
 
@@ -196,12 +197,13 @@ async function mirrorPayload(cid, data, fileName, deps = {}) {
       }
 
       const detail = await response.text().catch(() => "");
-      lastReason = `HTTP ${response.status} ${detail}`.trim();
+      // The body is the service's text and can echo the request: addresses removed.
+      lastReason = withoutAddresses(`HTTP ${response.status} ${detail}`.trim());
       if (isPermanentStatus(response.status)) {
         return recordFailure(cid, lastReason, alert);
       }
     } catch (error) {
-      lastReason = error && error.message ? error.message : String(error);
+      lastReason = describeError(error);
     }
 
     if (attempt < MAX_ATTEMPTS - 1) {
@@ -222,8 +224,8 @@ async function mirrorInBackground(cid, data, fileName, deps = {}) {
   try {
     return await mirrorPayload(cid, data, fileName, deps);
   } catch (error) {
-    const reason = error && error.message ? error.message : String(error);
-    console.error(`[Payload Mirror] Unexpected error mirroring ${cid}:`, error);
+    const reason = describeError(error);
+    console.error(`[Payload Mirror] Unexpected error mirroring ${cid}: ${reason}`);
 
     return recordFailure(cid, `unexpected: ${reason}`, deps.alert || sendAlert);
   }

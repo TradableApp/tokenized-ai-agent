@@ -1,7 +1,7 @@
 'use strict';
 
 const { expect } = require('chai');
-const { scrubSensitiveData, redactedStandIn } = require('../src/sentryInit');
+const { scrubSensitiveData, scrubbedEvent, redactedStandIn } = require('../src/sentryInit');
 
 describe('sentryInit', () => {
   describe('scrubSensitiveData', () => {
@@ -104,6 +104,40 @@ describe('sentryInit', () => {
 
     it('does not throw out of the scrubber at any depth', () => {
       expect(() => scrubSensitiveData({ a: { b: { c: hostile() } } })).to.not.throw();
+    });
+  });
+
+  describe('scrubbedEvent', () => {
+    const event = () => ({
+      exception: {
+        values: [
+          { type: 'Error', value: 'connect ECONNREFUSED 192.0.2.10:5432\nparams: x' },
+          { type: 'AI_APICallError', value: 'user said: sell it all' },
+          { type: 'Error' },
+        ],
+      },
+      tags: { site: 'cursor_read_failed' },
+    });
+
+    it("describes each exception's message, and a model provider's error by its type", () => {
+      const values = scrubbedEvent(event()).exception.values;
+
+      expect(values[0].value).to.equal('connect ECONNREFUSED [peer removed]');
+      expect(values[1].value).to.equal('AI_APICallError');
+      expect(values[2]).to.deep.equal({ type: 'Error' });
+    });
+
+    it('keeps the rest of the event and does not change the one it is given', () => {
+      const original = event();
+
+      const scrubbed = scrubbedEvent(original);
+
+      expect(scrubbed.tags).to.deep.equal({ site: 'cursor_read_failed' });
+      expect(original.exception.values[0].value).to.include('192.0.2.10');
+    });
+
+    it('gives back an event with no exception as the scrubber does', () => {
+      expect(scrubbedEvent({ message: 'x' })).to.deep.equal({ message: 'x' });
     });
   });
 

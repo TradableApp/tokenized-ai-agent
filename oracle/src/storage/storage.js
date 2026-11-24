@@ -3,6 +3,7 @@ const autonomys = require("./autonomys");
 const ipfs = require("./ipfs");
 const mirror = require("./mirror");
 const crypto = require("crypto");
+const { describeError } = require("../errorDescription");
 
 // Mock storage in-memory cache (for USE_MOCK_STORAGE mode)
 const mockStorageCache = new Map();
@@ -212,7 +213,7 @@ async function queryTransactionByTags(tags) {
       return autoCid;
     }
   } catch (error) {
-    console.warn("Error querying Autonomys tags (continuing to fallback):", error.message);
+    console.warn("Error querying Autonomys tags (continuing to fallback):", describeError(error));
   }
 
   // Fallback to Legacy Provider (Arweave)
@@ -224,7 +225,7 @@ async function queryTransactionByTags(tags) {
       return arweaveCid;
     }
   } catch (error) {
-    console.warn("Error querying Arweave tags:", error.message);
+    console.warn("Error querying Arweave tags:", describeError(error));
   }
 
   return null;

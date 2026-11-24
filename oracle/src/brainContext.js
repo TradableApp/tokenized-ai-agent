@@ -12,6 +12,7 @@
  * - No `ctx.ai`: the oracle omits the AI capability — enrichment belongs to
  *   the Social body.
  */
+const { describeError } = require("./errorDescription");
 const { bootstrapPostgresFromEnv, isPostgresConfigured } = require("./postgresBootstrap");
 
 const NEWS_LIMIT = 6;
@@ -147,7 +148,7 @@ async function getMarketContext() {
     // Never fail the answer path over context — log and answer without it.
     // The initialized client is kept: a transient read/format failure must not
     // orphan a live pg Pool (init failures reset themselves in init()).
-    console.error(`[BrainContext] Market context unavailable: ${String(error?.message ?? error)}`);
+    console.error(`[BrainContext] Market context unavailable: ${describeError(error)}`);
     return null;
   }
 }
@@ -165,7 +166,7 @@ async function getHandles() {
     const state = await init();
     return state === "disabled" ? null : state;
   } catch (error) {
-    console.error(`[BrainContext] Handles unavailable: ${String(error?.message ?? error)}`);
+    console.error(`[BrainContext] Handles unavailable: ${describeError(error)}`);
     return null;
   }
 }

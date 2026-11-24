@@ -9,6 +9,7 @@ import {
 import { formatMacroEnvironment } from "@tradableapp/sense-ai-brain";
 
 import type { BrainService } from "../services/brain";
+import { describeError } from "../utils/errorDescription";
 
 const EMPTY: ProviderResult = { text: "", values: {}, data: {} };
 
@@ -46,11 +47,7 @@ export const macroSentimentProvider: Provider = {
     } catch (error) {
       // Swallowed deliberately: a provider that throws fails composeState for the entire turn,
       // so a database blip would cost the user their answer rather than just its context.
-      elizaLogger.error(
-        `[MacroSentiment] Error fetching macro state: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      elizaLogger.error(`[MacroSentiment] Error fetching macro state: ${describeError(error)}`);
       return EMPTY;
     }
   },
