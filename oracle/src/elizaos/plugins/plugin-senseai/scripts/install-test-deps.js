@@ -44,8 +44,10 @@ function installTestDependencies() {
       throw new Error('bun add command failed');
     }
     console.log('✓ Test dependencies installed successfully');
-  } catch (error) {
-    console.error('Failed to install test dependencies:', error.message);
+  } catch {
+    // bun's own output (inherited above) says what went wrong. The error is not printed: no
+    // error is printed anywhere under oracle/src without being described first.
+    console.error('Failed to install test dependencies.');
     process.exit(1);
   }
 }

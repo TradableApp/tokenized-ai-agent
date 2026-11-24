@@ -22,6 +22,8 @@
  * the env rather than pinning its own.
  */
 
+const { describeError } = require("./errorDescription");
+
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
 /** Low temperature for a classifier: we want the same label for the same question. */
@@ -124,7 +126,8 @@ async function generateContent({ model, contents, generationConfig, fetchImpl = 
  */
 async function classifyIntent(conversationHistory, { fetchImpl } = {}) {
   const latestMessage = conversationHistory[conversationHistory.length - 1]?.content ?? "";
-  console.log(`[Routing] Classifying intent for message: "${latestMessage.substring(0, 50)}..."`);
+  // The length only: the message is the user's decrypted prompt, and a log line is kept.
+  console.log(`[Routing] Classifying intent for a message of ${latestMessage.length} characters.`);
 
   try {
     const text = await generateContent({
@@ -144,7 +147,9 @@ async function classifyIntent(conversationHistory, { fetchImpl } = {}) {
 
     return category;
   } catch (err) {
-    console.error("[Routing] Classification failed, defaulting to MARKET path.", err);
+    console.error(
+      `[Routing] Classification failed, defaulting to MARKET path: ${describeError(err)}`,
+    );
 
     return "MARKET";
   }

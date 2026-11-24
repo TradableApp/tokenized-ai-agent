@@ -171,8 +171,9 @@ describe("aiAgentOracle", function () {
             return ["fake-agent-id"];
           }
           async startAgents() {}
+          // The runtime's own logger, which the oracle replaces with a cleaned one.
           getAgent() {
-            return null;
+            return { logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } } };
           }
         },
         elizaLogger: {
@@ -186,7 +187,10 @@ describe("aiAgentOracle", function () {
         createUniqueUuid: (_ns, s) => s,
         ChannelType: { DM: "DM", WORLD: "WORLD" },
       },
-      "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+      "./elizaos/plugins/plugin-senseai/dist/index.js": {
+        default: {},
+        setErrorDescriber: sinon.stub(),
+      },
       "./elizaos/character.js": {},
       "@sentry/node": {
         init: sinon.stub(),
@@ -236,6 +240,15 @@ describe("aiAgentOracle", function () {
     // any later file that requires aiAgentOracle fresh. Same pattern as e2e/helpers.js.
     if (originalAgentAddress === undefined) delete process.env.AI_AGENT_CONTRACT_ADDRESS;
     else process.env.AI_AGENT_CONTRACT_ADDRESS = originalAgentAddress;
+  });
+
+  it("hands the plugin the oracle's error describer when it is loaded", () => {
+    const { describeError } = require("../src/errorDescription");
+
+    sinon.assert.calledOnceWithExactly(
+      stubs["./elizaos/plugins/plugin-senseai/dist/index.js"].setErrorDescriber,
+      describeError,
+    );
   });
 
   describe("start", () => {
@@ -310,6 +323,40 @@ describe("aiAgentOracle", function () {
       provider.getBlockNumber.resolves(10000);
 
       await aiAgentOracle.start();
+    });
+
+    describe("the thought sanitiser's warm-up", () => {
+      const outbound = require("../src/outboundSanitizer");
+
+      afterEach(() => {
+        outbound._resetForTests();
+      });
+
+      it("loads the sanitiser at start-up, so the first prompt does not wait for the load", async () => {
+        const loader = sinon.stub().resolves({ sanitizeOutboundText: (text) => text });
+        outbound._setSanitizerForTests(null, { loader });
+
+        await aiAgentOracle.start();
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(loader.callCount).to.equal(1);
+      });
+
+      it("starts all the same when the warm-up cannot load the sanitiser", async () => {
+        outbound._setSanitizerForTests(null, { loadFails: true });
+        sinon.stub(console, "error");
+        const warn = sinon.stub(console, "warn");
+        const queryFilterStub = stubs["./contractUtility"].initializeOracle().contract.queryFilter;
+
+        await aiAgentOracle.start();
+        await new Promise((resolve) => setImmediate(resolve));
+
+        expect(queryFilterStub.called, "start-up went on to the catch-up").to.equal(true);
+        const lines = warn.getCalls().map((c) => c.args.join(" "));
+        expect(
+          lines.some((line) => /sanitiser warm-up/i.test(line) && /unavailable/.test(line)),
+        ).to.equal(true);
+      });
     });
 
     it("should start from the last processed block if a cursor is stored", async () => {
@@ -1685,6 +1732,27 @@ describe("aiAgentOracle", function () {
       const [requeued] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
       expect(requeued.attempts).to.equal(1);
       expect(requeued.lastError).to.include("Could not re-parse");
+    });
+
+    it("records a parse error of a retried event without the address it carries", async () => {
+      const key = "Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Jh1Gf0Ed";
+      await seedFailedJob();
+      const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
+      mockedProvider.getTransactionReceipt.resolves({
+        logs: [{ address: "0xMockedContractAddress", index: 0 }],
+      });
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      mockedContract.interface.parseLog.throws(
+        new Error(`could not decode, see https://rpc.example/v2/${key}`),
+      );
+
+      await aiAgentOracle.retryFailedJobs();
+
+      storeClock.ms += 24 * 60 * 60 * 1000;
+      const [requeued] = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+      expect(requeued.lastError).to.include("Could not re-parse");
+      expect(requeued.lastError).to.include("could not decode");
+      expect(requeued.lastError).to.not.include(key);
     });
 
     it("should correctly calculate exponential backoff for a failed retry", async () => {

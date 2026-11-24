@@ -4,9 +4,14 @@ const { ethers } = require("ethers");
 const {
   describeError,
   describedError,
+  describedText,
   errorKind,
   withoutAddresses,
+  MAX_DESCRIBED_LENGTH,
+  MAX_RAW_INPUT,
 } = require("../src/errorDescription");
+// What stands where a network peer was (networkPeers.js).
+const PEER_REMOVED = "[peer removed]";
 const { isTransientProviderError } = require("../src/errors");
 const { refusedByProvider } = require("./helpers/refusedByProvider");
 
@@ -288,15 +293,71 @@ describe("errorDescription — what an error is, without the address it was sent
       ]);
     });
 
-    it("removes an address carried by the original's name, from the name and the stack", () => {
+    // The stack starts with the message, every line of it. A line of the message that starts
+    // like a frame is still the message, which the description has already left out.
+    it("keeps no line of the message, even one that starts like a frame", () => {
+      const original = new Error(
+        "upstream refused\n    at the user's request: what should I buy with my savings\n    at x (y.js:1:2)",
+      );
+
+      const error = describedError(original);
+
+      expect(error.stack).to.not.include("savings");
+      expect(error.stack).to.not.include("y.js");
+      expect(error.stack.split("\n").slice(1)).to.deep.equal(original.stack.split("\n").slice(3));
+    });
+
+    it("keeps only lines shaped as a frame", () => {
+      const original = new Error("failed");
+      original.stack = [
+        "Error: failed",
+        "    at poll (/app/src/eventPoller.js:10:5)",
+        "    at the user's words, which are not a frame",
+        "    at new Promise (<anonymous>)",
+        "    at async Promise.all (index 0)",
+        "    at /app/src/index.js:3:7",
+      ].join("\n");
+
+      expect(describedError(original).stack.split("\n")).to.deep.equal([
+        "Error: failed",
+        "    at poll (/app/src/eventPoller.js:10:5)",
+        "    at new Promise (<anonymous>)",
+        "    at async Promise.all (index 0)",
+        "    at /app/src/index.js:3:7",
+      ]);
+    });
+
+    it("keeps the original's name only when it is one short word, in the name and the stack", () => {
       const original = new Error("fetch failed");
       original.name = "FetchError https://rpc.example/v2/not-a-real-key";
 
       const error = describedError(original);
 
-      expect(error.name).to.equal("FetchError [address removed]");
+      expect(error.name).to.equal("Error");
       expect(error.stack).to.not.include("not-a-real-key");
       expect(util.inspect(error, { depth: 10 })).to.not.include("not-a-real-key");
+      expect(describedError(new TypeError("x")).name).to.equal("TypeError");
+    });
+
+    it("keeps no network peer field of the original", () => {
+      const original = Object.assign(new Error("connect ECONNREFUSED 192.0.2.10:5432"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+        address: "192.0.2.10",
+        port: 5432,
+        hostname: "db.example.com",
+        host: "db.example.com",
+      });
+
+      const error = describedError(original);
+
+      expect(error.code).to.equal("ECONNREFUSED");
+      for (const field of ["address", "port", "hostname", "host"]) {
+        expect(error, field).to.not.have.property(field);
+      }
+      const shown = util.inspect(error, { depth: 10 });
+      expect(shown).to.not.include("192.0.2.10");
+      expect(shown).to.not.include("db.example.com");
     });
 
     it("keeps the code, which callers branch on", () => {
@@ -481,6 +542,454 @@ describe("isTransientProviderError — a provider request that a later attempt m
 
       expect(withoutAddresses("to other.example/v2/zY9xW8vU7tS6rQ5pO4nM refused")).to.equal(
         "to other.example/v2/zY9xW8vU7tS6rQ5pO4nM refused",
+      );
+    });
+  });
+});
+
+describe("describeError — one line of text, with nothing a reader outside the TEE may not see", () => {
+  const { refreshRequestSecrets } = require("../src/requestSecrets");
+
+  afterEach(() => refreshRequestSecrets(process.env));
+
+  describe("a failed connection", () => {
+    it("keeps the code and the call, and never the peer", () => {
+      const error = Object.assign(new Error("connect ECONNREFUSED 192.0.2.10:5432"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+        address: "192.0.2.10",
+        port: 5432,
+      });
+
+      expect(describeError(error)).to.equal(`connect ECONNREFUSED ${PEER_REMOVED}`);
+    });
+
+    it("keeps no peer from a name that does not resolve", () => {
+      const error = Object.assign(new Error("getaddrinfo ENOTFOUND db.example.com"), {
+        code: "ENOTFOUND",
+        hostname: "db.example.com",
+      });
+
+      expect(describeError(error)).to.equal(`getaddrinfo ENOTFOUND ${PEER_REMOVED}`);
+    });
+
+    it("keeps only the code of a connection tried at several addresses", () => {
+      const error = new AggregateError([new Error("connect ECONNREFUSED 2001:db8::10:5432")], "");
+      error.code = "ECONNREFUSED";
+
+      expect(describeError(error)).to.equal("ECONNREFUSED");
+    });
+
+    it("keeps no peer from a cause or from a peer named outside a known shape", () => {
+      const cause = Object.assign(new Error("connect ETIMEDOUT 198.51.100.7:5432"), {
+        code: "ETIMEDOUT",
+      });
+
+      expect(describeError(new Error("fetch failed", { cause }))).to.equal(
+        "fetch failed (cause: ETIMEDOUT)",
+      );
+      expect(describeError("cannot reach 203.0.113.9")).to.equal(`cannot reach ${PEER_REMOVED}`);
+    });
+
+    it("keeps no host from a TLS error", () => {
+      const error = Object.assign(
+        new Error(
+          "Hostname/IP does not match certificate's altnames: Host: db.example.com. is not in the cert's altnames: DNS:*.example.net",
+        ),
+        { code: "ERR_TLS_CERT_ALTNAME_INVALID", host: "db.example.com" },
+      );
+
+      const text = describeError(error);
+
+      expect(text).to.include("ERR_TLS_CERT_ALTNAME_INVALID");
+      expect(text).to.not.include("example.com");
+      expect(text).to.not.include("example.net");
+    });
+  });
+
+  it("is the first line only", () => {
+    expect(describeError(new Error("line one\nline two\nline three"))).to.equal("line one");
+    expect(describeError(new Error("line one\r\nline two"))).to.equal("line one");
+  });
+
+  it("is capped, after it is cleaned", () => {
+    expect(describeError(new Error("x ".repeat(5000))).length).to.be.at.most(MAX_DESCRIBED_LENGTH);
+    expect(describeError(new Error("x".repeat(5000))).length).to.be.at.most(MAX_DESCRIBED_LENGTH);
+    expect(MAX_DESCRIBED_LENGTH).to.be.within(100, 500);
+  });
+
+  it("says a value was removed when the cut leaves nothing of a long unbroken message", () => {
+    const blob = "A".repeat(MAX_RAW_INPUT + 1);
+
+    expect(describeError(new Error(blob))).to.equal("[value removed]");
+    expect(describedText(` \n${blob}`)).to.equal("[value removed]");
+    expect(describedText(""), "an empty text that was not cut stays empty").to.equal("");
+  });
+
+  it("never leaves part of a configured secret where the cap falls", () => {
+    const secret = "Kq7Lm2Np9Rs4Tv6Wx8Yz3Ab5Cd";
+    refreshRequestSecrets({ SOME_API_KEY: secret });
+
+    for (let lead = MAX_DESCRIBED_LENGTH - 30; lead < MAX_DESCRIBED_LENGTH + 5; lead += 1) {
+      const text = describeError(new Error(`${"a".repeat(lead)} ${secret} tail`));
+
+      expect(text, String(lead)).to.not.include(secret.slice(0, 6));
+    }
+  });
+
+  it("keeps the fact and the code of a failed query, never its text or its values", () => {
+    // The message the query builder gives, with the database's error as its cause.
+    const cause = Object.assign(new Error("duplicate key value violates unique constraint"), {
+      code: "23505",
+      detail: "Key (wallet)=(0x1111111111111111111111111111111111111111) already exists.",
+      where: "SQL statement",
+    });
+    const query = "insert into activity (wallet, prompt) values ($1, $2)";
+    const params = ["0x1111111111111111111111111111111111111111", "should I sell my coins"];
+    const error = new Error(`Failed query: ${query}\nparams: ${params}`, { cause });
+
+    const text = describeError(error);
+
+    expect(text).to.equal("Failed query (cause: 23505)");
+    expect(describedText(`Failed query: ${query} params: ${params}`)).to.equal("Failed query");
+  });
+
+  it("names the code of a database error and drops the values it quotes", () => {
+    const quoted = Object.assign(
+      new Error('invalid input syntax for type json: "my secret prompt about buying"'),
+      { code: "22P02" },
+    );
+    const user = Object.assign(new Error('password authentication failed for user "oracle"'), {
+      code: "28P01",
+    });
+
+    const quotedText = describeError(quoted);
+    const userText = describeError(user);
+
+    expect(quotedText).to.match(/^22P02: invalid input syntax for type json: /);
+    expect(quotedText).to.not.include("secret prompt");
+    expect(userText).to.match(/^28P01: password authentication failed for user /);
+    expect(userText).to.not.include("oracle");
+  });
+
+  it("drops a quoted file path, and keeps an apostrophe in a word", () => {
+    const text = describeError(
+      Object.assign(new Error("ENOENT: no such file or directory, open '/home/u/keys/k.pem'"), {
+        code: "ENOENT",
+      }),
+    );
+
+    expect(text).to.match(/^ENOENT: no such file or directory, open /);
+    expect(text).to.not.include("/home/u");
+    expect(describeError(new Error("can't reach the store"))).to.equal("can't reach the store");
+  });
+
+  it("never echoes the request or the response of a model provider", () => {
+    const error = Object.assign(
+      new Error("Invalid JSON payload received at 'contents[0]': user said: how do I short it"),
+      {
+        name: "AI_APICallError",
+        url: "https://models.example.com/v1/generate?key=Kq7Lm2Np9Rs4Tv6Wx8Yz",
+        requestBodyValues: { prompt: "how do I short it" },
+        responseBody: '{"error":"how do I short it"}',
+        statusCode: 400,
+      },
+    );
+
+    const text = describeError(error);
+
+    expect(text).to.equal("AI_APICallError (status 400)");
+    expect(describeError(Object.assign(new Error("x"), { name: "AI_RetryError" }))).to.equal(
+      "AI_RetryError",
+    );
+  });
+
+  it("keeps only the name and status of an error that carries a request or response body, whatever it is named", () => {
+    const renamed = Object.assign(new Error("upstream said: how do I short it"), {
+      name: "ProviderError",
+      responseBody: '{"error":"how do I short it"}',
+      statusCode: 502,
+    });
+
+    expect(describeError(renamed)).to.equal("ProviderError (status 502)");
+  });
+
+  it("removes a bearer token, a JWT and a long base64 run", () => {
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJlLXRoYXQtaXMtbG9uZw";
+    const base64 = "QWxhZGRpbjpvcGVuIHNlc2FtZSBhbmQgbW9yZSBieXRlcw2";
+
+    expect(describeError(new Error(`Authorization: Bearer ${jwt}`))).to.not.include("eyJ");
+    expect(describeError(new Error(`Authorization: Bearer abc.def-123_x`))).to.not.include(
+      "abc.def-123_x",
+    );
+    expect(describeError(new Error(`token ${jwt} expired`))).to.not.include("eyJ");
+    expect(describeError(new Error(`bad blob ${base64} here`))).to.equal(
+      "bad blob [value removed] here",
+    );
+  });
+
+  it("removes a wallet address and long hex from the message, and keeps revert data", () => {
+    const wallet = "0xAbCdEf0123456789abcdef0123456789ABCDEF01";
+
+    expect(describeError(new Error(`no plan for ${wallet}`))).to.equal(
+      "no plan for [value removed]",
+    );
+    expect(describeError(new Error(`blob ${"ab12".repeat(8)} bad`))).to.equal(
+      "blob [value removed] bad",
+    );
+    // A four-byte selector names the error and is kept.
+    expect(describeError(new Error("reverted with 0x82b42900"))).to.equal(
+      "reverted with 0x82b42900",
+    );
+    const revert = ethers.makeError("execution reverted (unknown custom error)", "CALL_EXCEPTION", {
+      data: `0x82b42900${"0".repeat(24)}${"11".repeat(20)}`,
+    });
+    expect(describeError(revert)).to.include(`(revert data 0x82b42900`);
+  });
+
+  it("removes an address whatever the case of its scheme", () => {
+    expect(describeError(new Error("GET HTTPS://RPC.EXAMPLE/v2/NOTAREALKEY failed"))).to.equal(
+      "GET [address removed] failed",
+    );
+  });
+
+  it("describes any text the same way, for text that is not an error's", () => {
+    expect(describedText("connect ECONNREFUSED 192.0.2.10:5432\nparams: x")).to.equal(
+      `connect ECONNREFUSED ${PEER_REMOVED}`,
+    );
+    expect(describedText(undefined)).to.equal("undefined");
+  });
+
+  // The schema is public, and a database error an operator cannot act on is no use: the name of
+  // the table, column, constraint or schema it is about is kept. Only that: a plain lower-case
+  // name, quoted right after the word that says what it names.
+  describe("a database identifier", () => {
+    const pgError = (message, code) => Object.assign(new Error(message), { code });
+
+    it("keeps the table of an undefined table", () => {
+      expect(describeError(pgError('relation "failed_jobs" does not exist', "42P01"))).to.equal(
+        '42P01: relation "failed_jobs" does not exist',
+      );
+    });
+
+    it("keeps the column of an undefined column, and the table it was looked for in", () => {
+      expect(describeError(pgError('column "last_error" does not exist', "42703"))).to.equal(
+        '42703: column "last_error" does not exist',
+      );
+      expect(
+        describeError(
+          pgError('column "last_error" of relation "failed_jobs" does not exist', "42703"),
+        ),
+      ).to.equal('42703: column "last_error" of relation "failed_jobs" does not exist');
+    });
+
+    it("keeps the constraint a duplicate violates, and never the key's values", () => {
+      const error = pgError(
+        'duplicate key value violates unique constraint "failed_jobs_pkey"\nKey (id)=(0x1111111111111111111111111111111111111111) already exists.',
+        "23505",
+      );
+
+      expect(describeError(error)).to.equal(
+        '23505: duplicate key value violates unique constraint "failed_jobs_pkey"',
+      );
+    });
+
+    it("keeps a missing schema, and a name qualified by its schema either way it is written", () => {
+      // A name no setting holds: a schema named as a configured database is removed instead.
+      expect(describeError(pgError('schema "ledger_archive" does not exist', "3F000"))).to.equal(
+        '3F000: schema "ledger_archive" does not exist',
+      );
+      expect(describedText('relation "public.failed_jobs" does not exist')).to.equal(
+        'relation "public.failed_jobs" does not exist',
+      );
+      expect(describedText('relation "public"."failed_jobs" does not exist')).to.equal(
+        'relation "public"."failed_jobs" does not exist',
+      );
+    });
+
+    it("keeps it after each word that names one, in any case, after up to eight spaces or tabs", () => {
+      for (const word of [
+        "relation",
+        "column",
+        "table",
+        "constraint",
+        "index",
+        "type",
+        "function",
+        "schema",
+      ]) {
+        expect(describedText(`${word} "a_1" missing`)).to.equal(`${word} "a_1" missing`);
+        expect(describedText(`${word.toUpperCase()} "a_1" missing`)).to.equal(
+          `${word.toUpperCase()} "a_1" missing`,
+        );
+      }
+      expect(describedText('relation\t"x" missing')).to.equal('relation\t"x" missing');
+      expect(describedText(`relation${" ".repeat(8)}"x" missing`)).to.equal(
+        `relation${" ".repeat(8)}"x" missing`,
+      );
+    });
+
+    // The words are the agreed eight; a name quoted after any other word is removed.
+    it("removes a name quoted after sequence or view, which are not among the words", () => {
+      for (const word of ["sequence", "view", "SEQUENCE", "View"]) {
+        expect(describedText(`${word} "a_1" missing`)).to.equal(`${word} [value removed] missing`);
+      }
+    });
+
+    it("keeps a name of 63 characters and removes a longer one", () => {
+      const longest = `n${"m".repeat(62)}`;
+
+      expect(describedText(`relation "${longest}" missing`)).to.equal(
+        `relation "${longest}" missing`,
+      );
+      expect(describedText(`relation "${longest}m" missing`)).to.equal(
+        "relation [value removed] missing",
+      );
+    });
+
+    it("removes a value after a word that names no identifier", () => {
+      expect(describedText('password authentication failed for user "oracle"')).to.equal(
+        "password authentication failed for user [value removed]",
+      );
+      expect(describedText('role "oracle_admin" does not exist')).to.equal(
+        "role [value removed] does not exist",
+      );
+      expect(describedText('database "senseai_agent" does not exist')).to.equal(
+        "database [value removed] does not exist",
+      );
+      expect(describedText('value "failed_jobs" is not allowed')).to.equal(
+        "value [value removed] is not allowed",
+      );
+      expect(describedText('Key (id)=("failed_jobs") already exists')).to.equal(
+        "Key (id)=([value removed]) already exists",
+      );
+    });
+
+    it("removes the host, user and database of a refused connection", () => {
+      const text = describedText(
+        'no pg_hba.conf entry for host "db_primary", user "oracle", database "senseai"',
+      );
+
+      expect(text).to.not.include("db_primary");
+      expect(text).to.not.include("oracle");
+      expect(text).to.not.include("senseai");
+    });
+
+    it("removes anything that is not a plain lower-case name, or not right after the word", () => {
+      expect(describedText("relation 'failed_jobs' does not exist")).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "Failed_Jobs" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "my secret prompt" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "1abc" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation named "failed_jobs" does not exist')).to.equal(
+        "relation named [value removed] does not exist",
+      );
+      expect(describedText('correlation "failed_jobs" missing')).to.equal(
+        "correlation [value removed] missing",
+      );
+      expect(describedText(`relation${" ".repeat(9)}"x" missing`)).to.equal(
+        `relation${" ".repeat(9)}[value removed] missing`,
+      );
+      expect(describedText('relation "a"."b"."c" missing')).to.not.include('"c"');
+      expect(describedText('relation "a.b.c" missing')).to.equal(
+        "relation [value removed] missing",
+      );
+      expect(describedText('relation"failed_jobs" missing')).to.equal(
+        "relation[value removed] missing",
+      );
+    });
+
+    // Every part of a qualified name is a name: a schema in front does not carry a value through.
+    it("removes a qualified name whose second part is not a plain name", () => {
+      expect(describedText('relation "public"."my secret prompt" missing')).to.equal(
+        "relation [value removed] missing",
+      );
+      expect(describedText('relation "public"."Failed_Jobs" missing')).to.equal(
+        "relation [value removed] missing",
+      );
+    });
+
+    it("still removes a kept name that is long hex or a long base64 run", () => {
+      expect(describedText('relation "deadbeefdeadbeefdeadbeef" missing')).to.not.include(
+        "deadbeef",
+      );
+      expect(
+        describedText('relation "a1_b2_c3_d4_e5_f6_g7_h8_i9_j0_k1_l2" missing'),
+      ).to.not.include("a1_b2");
+    });
+
+    it("still removes a name that is a configured secret", () => {
+      refreshRequestSecrets({ SOME_API_KEY: "sense_ai_internal_key" });
+
+      expect(describedText('relation "sense_ai_internal_key" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      // Secrets are removed before quoted values are read, so a name that holds one is not a
+      // plain name any more, and no part of it is kept.
+      expect(describedText('relation "x_sense_ai_internal_key_y" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+    });
+
+    it("still removes a name that is the configured database host, whatever its length", () => {
+      refreshRequestSecrets({ POSTGRES_HOST: "db_primary" });
+
+      expect(describedText('relation "db_primary" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "public"."db_primary" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+
+      refreshRequestSecrets({ POSTGRES_URL: "postgresql://u:pw@agent_db/senseai" });
+
+      expect(describedText('relation "agent_db" does not exist')).to.equal(
+        "relation [value removed] does not exist",
+      );
+      expect(describedText('relation "failed_jobs" does not exist')).to.equal(
+        'relation "failed_jobs" does not exist',
+      );
+    });
+
+    // A database user or database name is not a secret, but an error line names the table it is
+    // about, never the configuration it runs with.
+    it("removes a name that is the configured database user or database, whatever its length", () => {
+      refreshRequestSecrets({
+        POSTGRES_USER: "oracle_user",
+        POSTGRES_DATABASE: "agent_db",
+        POSTGRES_AGENT_DATABASE: "agent_mem",
+        PGUSER: "pg_role",
+        PGDATABASE: "pg_db",
+      });
+
+      for (const name of ["oracle_user", "agent_db", "agent_mem", "pg_role", "pg_db"]) {
+        expect(describedText(`relation "${name}" does not exist`), name).to.equal(
+          "relation [value removed] does not exist",
+        );
+        expect(describedText(`relation "public"."${name}" does not exist`), name).to.equal(
+          "relation [value removed] does not exist",
+        );
+      }
+      expect(describedText('relation "failed_jobs" does not exist')).to.equal(
+        'relation "failed_jobs" does not exist',
+      );
+    });
+
+    it("removes a name that is the database a configured database address names", () => {
+      refreshRequestSecrets({ POSTGRES_URL: "postgresql://u:pw@db.internal:5432/agent_db?x=1" });
+
+      expect(describedText('schema "agent_db" does not exist')).to.equal(
+        "schema [value removed] does not exist",
+      );
+      expect(describedText('relation "failed_jobs" does not exist')).to.equal(
+        'relation "failed_jobs" does not exist',
       );
     });
   });

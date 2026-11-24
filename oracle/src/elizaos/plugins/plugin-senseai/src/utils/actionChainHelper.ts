@@ -11,6 +11,7 @@ import {
   type State,
 } from "@elizaos/core";
 import { generateSanitized, sanitizeOutboundText } from "@tradableapp/sense-ai-brain";
+import { describeError } from "./errorDescription";
 import { XML_RETRY_NUDGE } from "./retryNudges";
 import { withTimeout } from "./withTimeout";
 
@@ -203,7 +204,7 @@ export async function handleChainSynthesis(
     );
   } catch (error) {
     elizaLogger.error(
-      `[ChainHelper] Synthesis failed: ${error instanceof Error ? error.message : String(error)}. Using fallback message.`
+      `[ChainHelper] Synthesis failed: ${describeError(error)}. Using fallback message.`,
     );
   }
 

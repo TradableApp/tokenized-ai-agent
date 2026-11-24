@@ -128,7 +128,60 @@ function requestSecretsIn(env) {
   return [...secrets];
 }
 
+// The settings that name the database's host on their own, outside an address.
+const HOST_SETTINGS = ["POSTGRES_HOST", "PGHOST"];
+// The database's own settings (its user, its database names, its host, …), whose values an error
+// line about a table is not to carry.
+const DATABASE_SETTING = /^(?:POSTGRES_|PG)[A-Z0-9_]*$/;
+// The schemes of a database address, whose path names the database: DATABASE_SCHEME, above.
+
+/**
+ * Every configured value, of any length, that a database identifier kept in a described error
+ * must not be (errorDescription.js keeps a quoted table or column name): each secret above, the
+ * value of every setting named as a credential, the user name, password and host of every
+ * configured address, the database a database address names, the value of every database
+ * setting (POSTGRES_*, PG*: its user and database names among them), and the database host,
+ * whole and label by label. Many are too short to
+ * remove from every line; an identifier that equals one is removed all the same. In lower case.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {Set<string>}
+ */
+function configuredNamesIn(env) {
+  const names = new Set(requestSecretsIn(env));
+  const addHost = (host) => {
+    names.add(host);
+    for (const label of host.split(".")) names.add(label);
+  };
+  for (const [name, raw] of Object.entries(env)) {
+    if (typeof raw !== "string") continue;
+    const parts = raw.split(/[\s,]+/).map((part) => part.replace(/^["']+|["']+$/g, ""));
+    for (const part of parts) {
+      if (!SCHEME.test(part)) continue;
+      let address;
+      try {
+        address = new URL(part);
+      } catch {
+        continue;
+      }
+      names.add(decoded(address.username));
+      names.add(decoded(address.password));
+      addHost(address.hostname);
+      if (DATABASE_SCHEME.test(address.protocol)) {
+        names.add(decoded(address.pathname.replace(/^\/+/, "").split("/")[0]));
+      }
+    }
+    const bare = raw.trim().replace(/^["']+|["']+$/g, "");
+    if (CREDENTIAL_SETTING.test(name) || DATABASE_SETTING.test(name)) names.add(bare);
+    if (HOST_SETTINGS.includes(name)) addHost(bare);
+  }
+  names.delete("");
+
+  return new Set([...names].map((each) => each.toLowerCase()));
+}
+
 let pattern = null;
+let configuredNames = new Set();
 
 /**
  * Reads the configuration again. Called once the environment is complete (the env files are
@@ -140,6 +193,16 @@ function refreshRequestSecrets(env = process.env) {
   // an address is read in lower case whatever case it was written in.
   const secrets = requestSecretsIn(env).sort((a, b) => b.length - a.length);
   pattern = secrets.length ? new RegExp(secrets.map(escapeForPattern).join("|"), "gi") : null;
+  configuredNames = configuredNamesIn(env);
+}
+
+/**
+ * Whether `name` is, in any case, one of the configured values `configuredNamesIn` collects.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isConfiguredName(name) {
+  return configuredNames.has(String(name).toLowerCase());
 }
 
 /** The text without any configured secret. Anything that is not a string is returned as it is. */
@@ -151,4 +214,9 @@ function withoutRequestSecrets(text) {
 
 refreshRequestSecrets();
 
-module.exports = { requestSecretsIn, refreshRequestSecrets, withoutRequestSecrets };
+module.exports = {
+  requestSecretsIn,
+  refreshRequestSecrets,
+  withoutRequestSecrets,
+  isConfiguredName,
+};

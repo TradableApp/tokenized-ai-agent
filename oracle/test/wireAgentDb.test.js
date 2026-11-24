@@ -30,7 +30,7 @@ function loadWithBootstrapStub(stub) {
   // require fails with `Cannot find module …/plugin-senseai/dist/index.js` on CI only.
   const mod = withTestKeys(proxyquire("../src/aiAgentOracle", {
     "./postgresBootstrap": stub,
-    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {}, setErrorDescriber: () => {} },
     "./elizaos/character.js": {},
   }));
   // Requiring the module runs dotenv.config() against the real ../.env.oracle, which

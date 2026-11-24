@@ -613,7 +613,7 @@ describe("startup config validation", () => {
     it("refuses a NETWORK_NAME with spaces around it", () => {
       expect(() => validateConfig(localEnv({ NETWORK_NAME: "base-localnet " }))).to.throw(
         ConfigError,
-        /NETWORK_NAME "base-localnet " has spaces around it/,
+        /NETWORK_NAME has spaces around it/,
       );
     });
 

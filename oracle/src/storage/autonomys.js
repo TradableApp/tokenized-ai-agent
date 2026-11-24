@@ -1,6 +1,7 @@
 const { createAutoDriveApi } = require("@autonomys/auto-drive");
 const { NetworkId } = require("@autonomys/auto-utils");
 const { sendAlert } = require("../alerting");
+const { describeError, describedError } = require("../errorDescription");
 const { RetryableError, isRetryableError } = require("../errors");
 const { isTransientUploadError, uploadWithRetry } = require("./uploadRetry");
 
@@ -91,11 +92,11 @@ async function checkAutoDriveCredits() {
       );
     }
   } catch (e) {
-    console.error("Failed to check Autonomys Auto Drive credits:", e);
+    console.error("Failed to check Autonomys Auto Drive credits:", describeError(e));
 
     await sendAlert(
       "Autonomys Credit Check Failed",
-      `Failed to check Autonomys credits. Error: ${e.message}`,
+      `Failed to check Autonomys credits. Error: ${describeError(e)}`,
     );
   }
 }
@@ -152,7 +153,7 @@ async function ensureCreditsAreSufficient(dataSizeBytes) {
       throw new Error(errorMessage);
     }
   } catch (e) {
-    console.error("Credit sufficiency check failed:", e);
+    console.error("Credit sufficiency check failed:", describeError(e));
 
     throw e;
   }
@@ -178,11 +179,10 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
     try {
       await ensureCreditsAreSufficient(dataBuffer.length);
     } catch (e) {
-      throw isTransientUploadError(e)
-        ? new RetryableError(`Autonomys credit check failed transiently: ${e.message}`, {
-            cause: e,
-          })
-        : e;
+      if (!isTransientUploadError(e)) throw e;
+      throw new RetryableError(`Autonomys credit check failed transiently: ${describeError(e)}`, {
+        cause: e,
+      });
     }
 
     // Extract metadata from tags
@@ -226,7 +226,7 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
       onRetry: (error, nextAttemptNumber) => {
         retryOptions.onRetry?.(error, nextAttemptNumber);
         console.warn(
-          `Autonomys upload attempt failed (${error.message}); retrying (attempt ${nextAttemptNumber})`,
+          `Autonomys upload attempt failed (${describeError(error)}); retrying (attempt ${nextAttemptNumber})`,
         );
       },
     });
@@ -234,14 +234,15 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
 
     return cid;
   } catch (e) {
-    const errorMessage = `Upload to Autonomys Auto Drive failed. Error: ${e.message}`;
+    const errorMessage = `Upload to Autonomys Auto Drive failed. Error: ${describeError(e)}`;
 
-    console.error(errorMessage, e);
+    console.error(errorMessage, describedError(e));
 
     // Exhausted retries are a provider outage the retry queue will absorb: a warning, so one
     // blip does not page as fatal. Anything else is a configuration or input fault: CRITICAL.
+    const queuedForRetry = isRetryableError(e);
     await sendAlert(
-      isRetryableError(e)
+      queuedForRetry
         ? "WARNING: Autonomys Upload Failed (transient, queued for retry)"
         : "CRITICAL: Autonomys Upload Failed",
       errorMessage,
@@ -273,9 +274,9 @@ async function fetchData(cid) {
     // Convert Buffer to String to match the Arweave implementation
     return fileBuffer.toString("utf-8");
   } catch (e) {
-    const errorMessage = `Failed to fetch CID ${cid} from Autonomys Auto Drive. Error: ${e.message}`;
+    const errorMessage = `Failed to fetch CID ${cid} from Autonomys Auto Drive. Error: ${describeError(e)}`;
 
-    console.error(errorMessage, e);
+    console.error(errorMessage, describedError(e));
 
     await sendAlert("Autonomys Download Failed", errorMessage);
 
@@ -327,7 +328,7 @@ async function queryTransactionByTags(tags) {
 
     return null;
   } catch (error) {
-    console.error("Error querying Autonomys Auto Drive for tags:", error);
+    console.error("Error querying Autonomys Auto Drive for tags:", describeError(error));
 
     return null;
   }
@@ -351,7 +352,7 @@ async function listMyFiles(page = 0, limit = 100) {
     );
     return myFiles;
   } catch (error) {
-    console.error("Error listing Autonomys files:", error);
+    console.error("Error listing Autonomys files:", describedError(error));
     throw error;
   }
 }

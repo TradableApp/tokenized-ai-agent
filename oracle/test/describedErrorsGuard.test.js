@@ -9,54 +9,104 @@ const path = require("node:path");
  * of `.then(...)`, as an arrow or a `function`, is therefore never handed whole, nor spread
  * (`{ ...error }`), to the console, a logger (any receiver ending in `console`, `log` or
  * `logger`, `this.logger` and `elizaLogger` included; `log`, `info`, `warn`, `error`, `debug`,
- * `trace`, `fatal`, `table`), `process.stderr.write` / `process.stdout.write`, an alert or a
- * thrown error: only what `describeError`, `describedError`, `errorKind` or `withoutAddresses`
- * make of it. Nor is a sink itself the callback (`.catch(console.error)`,
- * `.catch(this.logger.error)`, `.then(ok, console.error)`), which hands it the error whole. A
- * bare rethrow (`throw error;`) and `cause:` in a thrown error pass on the error to code that
- * branches on it, and are allowed.
+ * `trace`, `fatal`, `table`, `dir`, `assert`, `group`, `groupCollapsed`, `success`, `verbose`,
+ * `progress`; called with `.`, `?.` or a name in brackets), `process.stderr.write` /
+ * `process.stdout.write`, an alert or a thrown error: only what `describeError`,
+ * `describedError`, `errorKind` or `withoutAddresses` make of it. Nor is a sink itself the
+ * callback (`.catch(console.error)`, `.catch(this.logger.error)`, `.then(ok, console.error)`),
+ * which hands it the error whole. A bare rethrow (`throw error;`) and `cause:` in a thrown error
+ * pass on the error to code that branches on it, and are allowed; `cause:` anywhere else is
+ * handed on whole like any other field.
  *
- * What it does not see: the error copied to another name first (`const e2 = error`); a
- * destructured parameter (`catch ({ message })`, `.catch(({ message }) => …)`); a named handler
- * defined elsewhere (`.catch(handleFailure)`, `.then(task, task)`); a sink not listed above.
- * `Sentry.captureException(error)` is not a sink on purpose: the Sentry scrubber removes
- * addresses from every event it sends.
+ * The same holds for an error that arrives as an ordinary parameter: the first parameter of a
+ * handler for an event whose name speaks of an error, a rejection or an exception (`.on`,
+ * `.once`, `.addListener`, `.prependListener`; the process's crash handlers among them), and of
+ * a hook given as a property whose name starts with `on` and ends in what speaks of a failure
+ * (`onRetry`, `onError`, `onAlert`, `onLost`, `onUnavailable`, `onFailure`, …), as an arrow or a
+ * `function`, with or without more parameters after it. And a
+ * settled promise's `.reason` is never handed to a sink other than a throw, wherever it is.
+ *
+ * What it does not see: the error copied to another name first (`const e2 = error`); an error
+ * wrapped in a new one held in a variable and thrown later (`const wrapped = new Error(
+ * error.message); throw wrapped;`); a destructured parameter (`catch ({ message })`,
+ * `.catch(({ message }) => …)`); a named handler defined elsewhere (`.catch(handleFailure)`,
+ * `.then(task, task)`, `.on("error", onError)`); the console under another name (`const out =
+ * console`); a sink not listed above. `Sentry.captureException(error)` is not a sink on purpose:
+ * every event is cleaned before it is sent (sentryInit.js), an exception's message to one
+ * described line.
  *
  * Read from the source, because these lines sit in catch blocks that a unit test rarely reaches
  * (a store that fails while recording a failed retry), and one forgotten line is enough.
  *
- * It covers only the files in GUARDED: the oracle's main module and the modules that talk to the
- * chain and to the oracle's own database. Other modules under src/ are not read by it.
+ * It reads every source file under src/: each JavaScript file, and the TypeScript source of the
+ * ElizaOS plugin (`elizaos/plugins/plugin-senseai/src`), which runs in the same TEE and prints to
+ * the same log. Tests (`__tests__`), installed packages (`node_modules`), build output (`dist`)
+ * and type declarations (`.d.ts`) are skipped, and so is the plugin's build script (`build.ts`,
+ * TypeScript outside its `src`), which runs on the machine that builds the image and never in the
+ * TEE. Its JavaScript under `scripts/` (`install-test-deps.js`) is read like any other file. A new
+ * module is read without being listed.
  */
 const SRC = path.join(__dirname, "..", "src");
-const GUARDED = [
-  "aiAgentOracle.js",
-  "eventPoller.js",
-  "oracleRoleGate.js",
-  "oracleState/runtime.js",
-  "oracleState/store.js",
-  "oracleState/outageTracker.js",
-];
+const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "__tests__"]);
+const PLUGIN_SOURCE = "elizaos/plugins/plugin-senseai/src/";
+
+/** Every source file under `dir`, relative to it, in a stable order. */
+function sourceFiles(dir, prefix = "") {
+  const files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (!SKIPPED_DIRECTORIES.has(entry.name)) {
+        files.push(...sourceFiles(path.join(dir, entry.name), relative));
+      }
+    } else if (
+      entry.name.endsWith(".js") ||
+      (relative.startsWith(PLUGIN_SOURCE) &&
+        entry.name.endsWith(".ts") &&
+        !entry.name.endsWith(".d.ts"))
+    ) {
+      files.push(relative);
+    }
+  }
+  return files.sort();
+}
+
+const GUARDED = sourceFiles(SRC);
 
 const HELPERS = ["describeError", "describedError", "errorKind", "withoutAddresses"];
-const LOG_METHODS = "log|info|warn|error|debug|trace|fatal|table";
+const LOG_METHODS =
+  "log|info|warn|error|debug|trace|fatal|table|dir|assert|groupCollapsed|group|success|verbose|progress";
 const STD_WRITE = "process\\s*\\.\\s*std(?:err|out)\\s*\\.\\s*write";
+const LOGGER = "\\b[\\w$]*(?:console|[Ll]og|[Ll]ogger)\\s*";
+const OPTIONAL_CALL = "\\s*(?:\\?\\.\\s*)?\\(";
+// The method's name in brackets is literal text, blanked in the code view: any name counts.
 const SINK = new RegExp(
-  `\\b[\\w$]*(?:console|[Ll]og|[Ll]ogger)\\s*\\.\\s*(?:${LOG_METHODS})\\s*\\(|\\b${STD_WRITE}\\s*\\(|\\b(?:sendAlert|alert)\\s*\\(|\\bthrow\\b`,
+  [
+    `${LOGGER}(?:\\?\\.|\\.)\\s*(?:${LOG_METHODS})${OPTIONAL_CALL}`,
+    `${LOGGER}(?:\\?\\.\\s*)?\\[\\s*["'\`][^"'\`\\n]*["'\`]\\s*\\]${OPTIONAL_CALL}`,
+    `\\b${STD_WRITE}\\s*\\(`,
+    "\\b(?:sendAlert|alert)\\s*\\(",
+    "\\bthrow\\b",
+  ].join("|"),
   "g",
 );
-const CATCH_BLOCK = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
-const CATCH_CALLBACK = /\.catch\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/g;
+const CATCH_BLOCK = /\bcatch\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)\s*\{/g;
+const CATCH_CALLBACK =
+  /\.catch\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)?\s*=>/g;
 const CATCH_FUNCTION =
-  /\.catch\(\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/g;
+  /\.catch\(\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)\s*\{/g;
+// TypeScript may give the caught name a type (`catch (error: unknown)`, `(e: Error) =>`); the
+// name is still what is read.
 // A sink given as the callback itself, bound or not: it is called with the error whole. The
 // receiver may be any chain of names (`this.logger`, `elizaLogger`).
 const SINK_REFERENCE = `(?:(?:[\\w$]+\\s*\\.\\s*)+(?:${LOG_METHODS})|${STD_WRITE}|sendAlert|alert)\\s*(?:\\.\\s*bind\\s*\\([^()]*\\)\\s*)?`;
 const POINT_FREE_SINK = new RegExp(`\\.catch\\(\\s*${SINK_REFERENCE}\\)`, "g");
 const POINT_FREE_ARGUMENT = new RegExp(`^\\s*${SINK_REFERENCE}$`);
 // The same callbacks as above, read from the start of a `.then` rejection argument.
-const ARROW_HANDLER = /^\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>/;
-const FUNCTION_HANDLER = /^\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{/;
+const ARROW_HANDLER =
+  /^\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)?\s*=>/;
+const FUNCTION_HANDLER =
+  /^\s*(?:async\s+)?function\b\s*[\w$]*\s*\(\s*([A-Za-z_$][\w$]*)(?:\s*:\s*[\w$.<>\[\]|& ]+?)?\s*\)\s*\{/;
 // After these, a "/" starts a regular expression rather than dividing.
 const BEFORE_REGEX = new Set([..."(,=:[!&|?{};+-*%<>~^"]);
 
@@ -210,6 +260,81 @@ function catchBodies(code) {
   return [...bodies, ...thenRejections(code).bodies];
 }
 
+// A handler for an event whose name speaks of an error: its first parameter is one.
+const EVENT_HANDLER = /\.(?:on|once|addListener|prependListener)\(\s*["'`]/g;
+const ERROR_EVENT = /error|rejection|exception/i;
+// A hook given as a property whose name speaks of an error, a retry, a failure, an alert, a loss
+// or an outage: `onRetry: (error) => …`, `onLost: async function (error) {…}`. Other hooks
+// (`onResponse`, `onProgress`) are handed something else first.
+const HOOK_PROPERTY =
+  /(?<![\w$.])on(?=[A-Z])[\w$]*?(?:Error|Retry|Fail|Failure|Failed|Alert|Lost|Unavailable|Reject|Rejected|Rejection|Exception|Crash)\s*:\s*/g;
+const IDENTIFIER = /^\s*([A-Za-z_$][\w$]*)/;
+
+/**
+ * The first parameter and the body of a handler that starts at `start` (an arrow or a
+ * `function`, with any number of parameters), or null when it is neither or its first
+ * parameter is destructured.
+ */
+function handlerAt(code, start, limit) {
+  const text = code.slice(start, limit);
+  const single = text.match(/^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>/);
+  let name;
+  let after;
+  if (single) {
+    name = single[1];
+    after = start + single[0].length;
+  } else {
+    const head = text.match(/^\s*(?:async\s*)?(function\b\s*[\w$]*\s*)?\(/);
+    if (!head) return null;
+    const open = start + head[0].length - 1;
+    const close = closeOf(code, open);
+    const first = code.slice(open + 1, close - 1).match(IDENTIFIER);
+    if (!first) return null;
+    name = first[1];
+    const rest = code.slice(close, limit);
+    const arrow = head[1] ? rest.match(/^\s*(?=\{)/) : rest.match(/^\s*(?::[^=]*?)?=>/);
+    if (!arrow) return null;
+    after = close + arrow[0].length;
+  }
+  const bodyStart = after + (code.slice(after).match(/^\s*/)?.[0].length ?? 0);
+  if (code[bodyStart] === "{") return { name, start: bodyStart, end: closeOf(code, bodyStart) };
+  // A concise arrow body ends at a comma, a semicolon or a bracket it did not open.
+  let level = 0;
+  let end = bodyStart;
+  for (; end < limit; end += 1) {
+    if ("([{".includes(code[end])) level += 1;
+    else if (")]}".includes(code[end])) {
+      if (level === 0) break;
+      level -= 1;
+    } else if ((code[end] === "," || code[end] === ";") && level === 0) break;
+  }
+  return { name, start: bodyStart, end };
+}
+
+/** Each handler for an error event, and each hook property, with its first parameter's name. */
+function parameterBodies(code, src) {
+  const bodies = [];
+  for (const match of code.matchAll(EVENT_HANDLER)) {
+    const open = match.index + match[0].indexOf("(");
+    const args = callArguments(code, open);
+    // The event's name is literal text: read from the source, which has the same offsets.
+    if (args.length < 2 || !ERROR_EVENT.test(src.slice(args[0].start, args[0].end))) continue;
+    const handler = handlerAt(code, args[1].start, args[1].end);
+    if (handler) bodies.push(handler);
+  }
+  for (const match of code.matchAll(HOOK_PROPERTY)) {
+    const handler = handlerAt(code, match.index + match[0].length, code.length);
+    if (handler) bodies.push(handler);
+  }
+  return bodies;
+}
+
+// A settled promise's reason (`result.reason`), outside a description. Any `.reason` handed to a
+// sink is read as one, since the guard cannot tell a rejection's reason from a field of that name:
+// a logged object whose own `reason` is plain text needs the field named otherwise, or the value
+// wrapped in describeError.
+const SETTLED_REASON = /[\w$)\]]\s*\??\.\s*reason(?![\w$])/;
+
 /** What a sink at `at` hands on: a call's arguments, or a throw's expression. */
 function sinkArguments(code, at, sink, end) {
   if (sink.startsWith("throw")) {
@@ -268,7 +393,14 @@ function offenders(src) {
     const line = lineOf(index);
     found.add(`${line}: ${lines[line - 1].trim()}`);
   }
-  for (const { name, start, end } of catchBodies(code)) {
+  const sinks = new RegExp(SINK.source, "g");
+  for (let match = sinks.exec(code); match; match = sinks.exec(code)) {
+    const args = sinkArguments(code, match.index, match[0], code.length);
+    if (args.throws || !SETTLED_REASON.test(withoutHelperCalls(args.text))) continue;
+    const line = lineOf(match.index);
+    found.add(`${line}: ${lines[line - 1].trim()}`);
+  }
+  for (const { name, start, end } of [...catchBodies(code), ...parameterBodies(code, src)]) {
     const body = code.slice(0, end);
     const sinks = new RegExp(SINK.source, "g");
     sinks.lastIndex = start;
@@ -368,6 +500,96 @@ const FIXTURES = [
   ["a .then with named handlers", "p.then(task, task);", false],
   ["a named handler of its own", "p.catch(handleFailure);", false],
   ["a point-free call in a comment", "// p.catch(console.error);\np.catch(handleFailure);", false],
+  ["an optional logger call", inCatch("logger.warn?.(`failed: ${error.stack}`);"), true],
+  ["a typed catch name", inCatch("logger.error('failed', error);", "error: unknown"), true],
+  [
+    "a typed catch name described",
+    inCatch("logger.error(describeError(error));", "error: unknown"),
+    false,
+  ],
+  ["a typed .catch callback", "p.catch((e: Error) => console.error('failed', e));", true],
+  [
+    "a typed async .catch callback",
+    "p.catch(async (e: unknown) => {\n  logger.warn(`x ${e}`);\n});",
+    true,
+  ],
+  ["a typed .then rejection", "p.then(ok, (e: unknown) => console.error(e));", true],
+  ["a typed function callback", "p.catch(function (e: unknown) {\n  console.error(e);\n});", true],
+  [
+    "a message cast in a thrown error",
+    inCatch("throw new Error(`x: ${(error as Error).message}`);", "error: unknown"),
+    true,
+  ],
+  // A cause passes an error on only in a thrown error; in a print it is printed whole.
+  ["a cause in a print", inCatch('console.error("x", { cause: error });'), true],
+  ["a cause in an alert", inCatch("await sendAlert({ text: 'down', cause: error });"), true],
+  // An error that arrives as an ordinary parameter: a crash handler, an error event, a hook.
+  [
+    "a raw print in an unhandled rejection handler",
+    'process.on("unhandledRejection", (reason) => {\n  console.error("[Fatal]", reason);\n});',
+    true,
+  ],
+  [
+    "a raw print in an uncaught exception handler",
+    'process.on("uncaughtException", function (error) {\n  console.error(error);\n});',
+    true,
+  ],
+  [
+    "a described crash handler",
+    'process.on("uncaughtException", (error) => {\n  console.error(describedError(error));\n});',
+    false,
+  ],
+  ["a raw print of an error event", "socket.on('error', (err) => console.error(err));", true],
+  [
+    "a raw alert from a one-off error event",
+    "pool.once('error', async (err) => {\n  await sendAlert(`pool: ${err.message}`);\n});",
+    true,
+  ],
+  ["a print of an ordinary event", "stream.on('data', (chunk) => console.log(chunk));", false],
+  [
+    "a raw print in a retry hook",
+    "upload(f, { onRetry: (error) => console.warn(error.message) });",
+    true,
+  ],
+  [
+    "a raw alert in a hook with more parameters",
+    "track({ onAlert: (error, { failures }) => sendAlert('x', `${failures} ${error.message}`) });",
+    true,
+  ],
+  [
+    "a raw print in a hook written as a function",
+    "track({ onLost: async function (error) {\n  console.error(error);\n} });",
+    true,
+  ],
+  [
+    "a described retry hook",
+    "upload(f, { onRetry: (error) => console.warn(describeError(error)) });",
+    false,
+  ],
+  [
+    "a hook with no error to print",
+    "track({ onRecover: ({ failures }) => console.log(failures) });",
+    false,
+  ],
+  [
+    "a settled promise's reason printed whole",
+    "for (const r of results) if (r.status === 'rejected') console.error(r.reason);",
+    true,
+  ],
+  [
+    "a settled promise's reason described",
+    "for (const r of results) console.error(describeError(r.reason));",
+    false,
+  ],
+  // More of the console and of the framework's logger.
+  ["console.dir", inCatch("console.dir(error);"), true],
+  ["console.assert", inCatch("console.assert(false, error.message);"), true],
+  ["console.group", inCatch("console.group(error.message);"), true],
+  ["logger.success", inCatch("logger.success(error);"), true],
+  ["logger.verbose", inCatch("elizaLogger.verbose(error.message);"), true],
+  ["logger.progress", inCatch("logger.progress(`x ${error}`);"), true],
+  ["an optional console member", inCatch("console?.error(error);"), true],
+  ["a console method by its name in brackets", inCatch('console["error"](error);'), true],
 ];
 
 describe("errors are described before they are handed on", () => {
@@ -375,9 +597,28 @@ describe("errors are described before they are handed on", () => {
     it(`${file} never hands a caught error on whole`, () => {
       const found = offenders(fs.readFileSync(path.join(SRC, file), "utf8"));
 
-      expect(found.map((line) => `${file}:${line}`)).to.deep.equal([]);
+      expect(found.map((line) => `${file}:${line}`).join("\n")).to.equal("");
     });
   }
+
+  it("reads every source file under src, the plugin's TypeScript included", () => {
+    expect(GUARDED).to.include("index.js");
+    expect(GUARDED).to.include("storage/autonomys.js");
+    expect(GUARDED).to.include("elizaos/plugins/plugin-senseai/src/services/brain.ts");
+    expect(GUARDED.some((file) => file.includes("__tests__"))).to.equal(false);
+    expect(GUARDED.some((file) => file.endsWith(".d.ts"))).to.equal(false);
+    expect(GUARDED).to.not.include("elizaos/plugins/plugin-senseai/build.ts");
+    expect(GUARDED).to.include("elizaos/plugins/plugin-senseai/scripts/install-test-deps.js");
+  });
+
+  it("fails on a raw print planted in any module it reads", () => {
+    const planted =
+      "\ntry {\n  run();\n} catch (plantedError) {\n  console.error('failed', plantedError);\n}\n";
+    for (const file of GUARDED) {
+      const src = fs.readFileSync(path.join(SRC, file), "utf8");
+      expect(offenders(src + planted).length, file).to.be.greaterThan(offenders(src).length);
+    }
+  });
 
   for (const [form, src, flagged] of FIXTURES) {
     it(`${flagged ? "catches" : "allows"} ${form}`, () => {

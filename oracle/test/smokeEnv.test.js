@@ -11,6 +11,13 @@ const KEY_A = `0x${"11".repeat(32)}`;
 const KEY_B = `0x${"22".repeat(32)}`;
 const KEY_C = `0x${"33".repeat(32)}`;
 const ORACLE_PUB = `04${"ab".repeat(64)}`;
+// No network has committed addresses, so every run names its pair.
+const PAIR = Object.freeze({
+  SMOKE_ESCROW_ADDRESS: "0x0000000000000000000000000000000000000e5c",
+  SMOKE_AGENT_ADDRESS: "0x0000000000000000000000000000000000000a9e",
+  SMOKE_TOKEN_ADDRESS: "0x0000000000000000000000000000000000000070",
+  SMOKE_ORACLE_PUBLIC_KEY: `0x04${"cd".repeat(64)}`,
+});
 
 /** chai's `.to.throw(fn)` treats a function as a constructor, so capture the error by hand. */
 const thrownBy = (fn) => {
@@ -23,14 +30,14 @@ const thrownBy = (fn) => {
 };
 
 describe("smoke: SMOKE_ENV tables", () => {
-  it("base-testnet carries today's defaults", () => {
+  it("base-testnet carries the RPC and chain id only — a new pair is named, never assumed", () => {
     const t = SMOKE_ENVS["base-testnet"];
     expect(t.rpcUrl).to.equal("https://sepolia.base.org");
     expect(t.chainId).to.equal(84532);
-    expect(t.escrow).to.equal("0x36ec08471F2b995024967204D7542713cFaf5Fa4");
-    expect(t.agent).to.equal("0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D");
-    expect(t.token).to.equal("0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80");
-    expect(t.oraclePublicKey).to.match(/^0x04[0-9a-f]{128}$/);
+    expect(t.escrow).to.equal(undefined);
+    expect(t.agent).to.equal(undefined);
+    expect(t.token).to.equal(undefined);
+    expect(t.oraclePublicKey).to.equal(undefined);
   });
 
   it("base-mainnet carries the RPC and chain id only — addresses are required, not guessed", () => {
@@ -45,12 +52,15 @@ describe("smoke: SMOKE_ENV tables", () => {
 });
 
 describe("smoke: resolveSmokeConfig", () => {
-  it("defaults to base-testnet and fills every address from the table", () => {
-    const c = resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A });
+  it("defaults to base-testnet and takes every address from SMOKE_*", () => {
+    const c = resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A });
     expect(c.envName).to.equal("base-testnet");
+    expect(c.rpcUrl).to.equal("https://sepolia.base.org");
     expect(c.chainId).to.equal(84532);
-    expect(c.escrow).to.equal(SMOKE_ENVS["base-testnet"].escrow);
-    expect(c.oraclePublicKey).to.equal(SMOKE_ENVS["base-testnet"].oraclePublicKey);
+    expect(c.escrow).to.equal(PAIR.SMOKE_ESCROW_ADDRESS);
+    expect(c.agent).to.equal(PAIR.SMOKE_AGENT_ADDRESS);
+    expect(c.token).to.equal(PAIR.SMOKE_TOKEN_ADDRESS);
+    expect(c.oraclePublicKey).to.equal(PAIR.SMOKE_ORACLE_PUBLIC_KEY);
     expect(c.privateKeys).to.deep.equal([KEY_A]);
     expect(c.burst).to.equal(1);
     expect(c.injection).to.equal(false);
@@ -59,8 +69,22 @@ describe("smoke: resolveSmokeConfig", () => {
     expect(c.metricsFile).to.equal("smoke-metrics.json");
   });
 
+  it("base-testnet with no SMOKE_* pair fails once, naming every missing variable", () => {
+    const err = thrownBy(() => resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }));
+    for (const name of [
+      "SMOKE_ESCROW_ADDRESS",
+      "SMOKE_AGENT_ADDRESS",
+      "SMOKE_TOKEN_ADDRESS",
+      "SMOKE_ORACLE_PUBLIC_KEY",
+    ]) {
+      expect(err.message).to.include(name);
+    }
+    expect(err.message).not.to.include(KEY_A);
+  });
+
   it("explicit SMOKE_* values win over the table", () => {
     const c = resolveSmokeConfig({
+      ...PAIR,
       SMOKE_PRIVATE_KEY: KEY_A,
       SMOKE_RPC_URL: "https://rpc.example/v2/k",
       SMOKE_CHAIN_ID: "84532",
@@ -92,19 +116,24 @@ describe("smoke: resolveSmokeConfig", () => {
 
   it("rejects an unknown SMOKE_ENV by name and lists the known ones", () => {
     expect(() =>
-      resolveSmokeConfig({ SMOKE_ENV: "base-goerli", SMOKE_PRIVATE_KEY: KEY_A }),
+      resolveSmokeConfig({ ...PAIR, SMOKE_ENV: "base-goerli", SMOKE_PRIVATE_KEY: KEY_A }),
     ).to.throw(/base-goerli.*base-testnet.*base-mainnet/s);
   });
 
   it("keeps the three-state SMOKE_ASSET rule: set-but-empty disables, custom prompt without asset means none", () => {
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_ASSET: "" }).asset).to.equal(
-      undefined,
-    );
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_PROMPT: "Tell me about Solana" }).asset,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_ASSET: "" }).asset,
     ).to.equal(undefined);
     expect(
       resolveSmokeConfig({
+        ...PAIR,
+        SMOKE_PRIVATE_KEY: KEY_A,
+        SMOKE_PROMPT: "Tell me about Solana",
+      }).asset,
+    ).to.equal(undefined);
+    expect(
+      resolveSmokeConfig({
+        ...PAIR,
         SMOKE_PRIVATE_KEY: KEY_A,
         SMOKE_PROMPT: "Tell me about Solana",
         SMOKE_ASSET: "Solana",
@@ -115,6 +144,7 @@ describe("smoke: resolveSmokeConfig", () => {
   describe("burst", () => {
     it("SMOKE_BURST=N needs N keys in SMOKE_PRIVATE_KEYS, one account per prompt", () => {
       const c = resolveSmokeConfig({
+        ...PAIR,
         SMOKE_BURST: "3",
         SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}, ${KEY_C}`,
       });
@@ -124,49 +154,54 @@ describe("smoke: resolveSmokeConfig", () => {
 
     it("fewer keys than the burst size fails by count, not by key", () => {
       const err = thrownBy(() =>
-        resolveSmokeConfig({ SMOKE_BURST: "3", SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}` }),
+        resolveSmokeConfig({ ...PAIR, SMOKE_BURST: "3", SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}` }),
       );
       expect(err.message).to.match(/SMOKE_BURST=3.*2 key/s);
       expect(err.message).not.to.include(KEY_A.slice(2, 20));
     });
 
     it("SMOKE_PRIVATE_KEYS alone (no burst) means a single prompt from the first key", () => {
-      const c = resolveSmokeConfig({ SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}` });
+      const c = resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEYS: `${KEY_A},${KEY_B}` });
       expect(c.burst).to.equal(1);
       expect(c.privateKeys).to.deep.equal([KEY_A, KEY_B]);
     });
 
     it("rejects a non-integer or zero burst and a missing key", () => {
-      expect(() => resolveSmokeConfig({ SMOKE_BURST: "0", SMOKE_PRIVATE_KEY: KEY_A })).to.throw(
-        /SMOKE_BURST/,
-      );
-      expect(() => resolveSmokeConfig({ SMOKE_BURST: "two", SMOKE_PRIVATE_KEY: KEY_A })).to.throw(
-        /SMOKE_BURST/,
-      );
-      expect(() => resolveSmokeConfig({})).to.throw(/SMOKE_PRIVATE_KEY/);
+      expect(() =>
+        resolveSmokeConfig({ ...PAIR, SMOKE_BURST: "0", SMOKE_PRIVATE_KEY: KEY_A }),
+      ).to.throw(/SMOKE_BURST/);
+      expect(() =>
+        resolveSmokeConfig({ ...PAIR, SMOKE_BURST: "two", SMOKE_PRIVATE_KEY: KEY_A }),
+      ).to.throw(/SMOKE_BURST/);
+      expect(() => resolveSmokeConfig({ ...PAIR })).to.throw(/SMOKE_PRIVATE_KEY/);
     });
   });
 
   it("refuses non-numeric or non-positive timeouts by name instead of letting NaN disable them", () => {
     for (const name of ["SMOKE_TIMEOUT_MS", "SMOKE_POLL_MS", "SMOKE_FETCH_TIMEOUT_MS"]) {
-      const err = thrownBy(() => resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, [name]: "abc" }));
+      const err = thrownBy(() =>
+        resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, [name]: "abc" }),
+      );
       expect(err.message).to.include(name);
       expect(err.message).not.to.include("abc");
-      expect(() => resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, [name]: "0" })).to.throw(name);
+      expect(() => resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, [name]: "0" })).to.throw(
+        name,
+      );
     }
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_POLL_MS: "2500" }).pollMs).to.equal(
-      2500,
-    );
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).timeoutMs).to.equal(300_000);
+    expect(
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_POLL_MS: "2500" }).pollMs,
+    ).to.equal(2500);
+    expect(resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A }).timeoutMs).to.equal(300_000);
   });
 
   it("requires SMOKE_TIMEOUT_MS to be a whole number of milliseconds (restart checks budget minutes)", () => {
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_TIMEOUT_MS: "900000" }).timeoutMs,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_TIMEOUT_MS: "900000" })
+        .timeoutMs,
     ).to.equal(900_000);
     for (const bad of ["1.5", "2e5"]) {
       const err = thrownBy(() =>
-        resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_TIMEOUT_MS: bad }),
+        resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_TIMEOUT_MS: bad }),
       );
       expect(err.message).to.match(
         /SMOKE_TIMEOUT_MS must be a positive whole number of milliseconds/,
@@ -175,16 +210,16 @@ describe("smoke: resolveSmokeConfig", () => {
   });
 
   it("defaults SMOKE_SETTLE_MS to 0 (settle window off) and accepts a whole number of milliseconds", () => {
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).settleMs).to.equal(0);
+    expect(resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A }).settleMs).to.equal(0);
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: "0" }).settleMs,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: "0" }).settleMs,
     ).to.equal(0);
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: "120000" }).settleMs,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: "120000" }).settleMs,
     ).to.equal(120_000);
     for (const bad of ["-1", "1.5", "soon"]) {
       const err = thrownBy(() =>
-        resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: bad }),
+        resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SETTLE_MS: bad }),
       );
       expect(err.message).to.match(/SMOKE_SETTLE_MS must be a whole number of milliseconds/);
       expect(err.message).not.to.include("soon");
@@ -192,25 +227,31 @@ describe("smoke: resolveSmokeConfig", () => {
   });
 
   it("leaves SMOKE_SUBMITTED_FILE unset unless it is given a non-empty path", () => {
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).submittedFile).to.equal(undefined);
+    expect(resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A }).submittedFile).to.equal(
+      undefined,
+    );
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SUBMITTED_FILE: "" }).submittedFile,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SUBMITTED_FILE: "" })
+        .submittedFile,
     ).to.equal(undefined);
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_SUBMITTED_FILE: "/run/submitted.json" })
-        .submittedFile,
+      resolveSmokeConfig({
+        ...PAIR,
+        SMOKE_PRIVATE_KEY: KEY_A,
+        SMOKE_SUBMITTED_FILE: "/run/submitted.json",
+      }).submittedFile,
     ).to.equal("/run/submitted.json");
   });
 
   it("caps each eth_getLogs window at SMOKE_LOGS_BLOCK_RANGE blocks, default 10 (Alchemy free tier)", () => {
-    expect(resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A }).logsBlockRange).to.equal(10);
+    expect(resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A }).logsBlockRange).to.equal(10);
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_LOGS_BLOCK_RANGE: "400" })
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_LOGS_BLOCK_RANGE: "400" })
         .logsBlockRange,
     ).to.equal(400);
     for (const bad of ["0", "-5", "2.5", "lots"]) {
       const err = thrownBy(() =>
-        resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_LOGS_BLOCK_RANGE: bad }),
+        resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_LOGS_BLOCK_RANGE: bad }),
       );
       expect(err.message).to.match(
         /SMOKE_LOGS_BLOCK_RANGE must be a positive whole number of blocks/,
@@ -221,7 +262,7 @@ describe("smoke: resolveSmokeConfig", () => {
 
   it("never echoes a SMOKE_BURST value in its error", () => {
     const err = thrownBy(() =>
-      resolveSmokeConfig({ SMOKE_BURST: "sk-not-a-number", SMOKE_PRIVATE_KEY: KEY_A }),
+      resolveSmokeConfig({ ...PAIR, SMOKE_BURST: "sk-not-a-number", SMOKE_PRIVATE_KEY: KEY_A }),
     );
     expect(err.message).to.include("SMOKE_BURST");
     expect(err.message).not.to.include("sk-not");
@@ -229,13 +270,13 @@ describe("smoke: resolveSmokeConfig", () => {
 
   it("SMOKE_INJECTION=1 (or true) switches the injection prompt on", () => {
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "1" }).injection,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "1" }).injection,
     ).to.equal(true);
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "true" }).injection,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "true" }).injection,
     ).to.equal(true);
     expect(
-      resolveSmokeConfig({ SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "0" }).injection,
+      resolveSmokeConfig({ ...PAIR, SMOKE_PRIVATE_KEY: KEY_A, SMOKE_INJECTION: "0" }).injection,
     ).to.equal(false);
   });
 });

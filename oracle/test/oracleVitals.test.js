@@ -99,6 +99,24 @@ describe("collectVitals", () => {
     expect(broken.toolServers).to.equal(null);
   });
 
+  it("carries the live stream's counts, with no ids, and null when none is observed or it throws", async () => {
+    const { collectVitals } = load();
+    const counts = { framesBuilt: 12, sinkFailures: 1 };
+
+    const withCounts = await collectVitals({ ...OK_DEPS(), streamSnapshot: () => counts });
+    expect(withCounts.stream).to.deep.equal(counts);
+
+    expect((await collectVitals(OK_DEPS())).stream).to.equal(null);
+
+    const broken = await collectVitals({
+      ...OK_DEPS(),
+      streamSnapshot: () => {
+        throw new Error("gone");
+      },
+    });
+    expect(broken.stream).to.equal(null);
+  });
+
   it("carries the cumulative AI tier mix, and null when no tally is injected", async () => {
     const { collectVitals } = load();
     const deps = OK_DEPS();
