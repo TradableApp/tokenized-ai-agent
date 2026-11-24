@@ -9,6 +9,7 @@ import {
 import { formatNewsTicker } from "@tradableapp/sense-ai-brain";
 
 import type { BrainService } from "../services/brain";
+import { describeError } from "../utils/errorDescription";
 
 const EMPTY: ProviderResult = { text: "", values: {}, data: {} };
 const NEWS_LIMIT = 10;
@@ -98,9 +99,7 @@ ${NEWS_BLOCK_INSTRUCTIONS}
       };
     } catch (error) {
       elizaLogger.error(
-        `[MarketIntelligence] Error building news context: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `[MarketIntelligence] Error building news context: ${describeError(error)}`,
       );
       return EMPTY;
     }

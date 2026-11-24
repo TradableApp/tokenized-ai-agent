@@ -24,11 +24,8 @@ services:
       - CHAIN_GPT_API_KEY=${CHAIN_GPT_API_KEY:-}
       - TRADABLE_API_ACCESS_TOKEN=${TRADABLE_API_ACCESS_TOKEN:-}
       - GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
-      - COINGECKO_PRO_API_KEY=${COINGECKO_PRO_API_KEY:-}
+      - PAYLOAD_MIRROR_SA_KEY=${PAYLOAD_MIRROR_SA_KEY:-}
       - BASE_SEPOLIA_TESTNET_RPC=${BASE_SEPOLIA_TESTNET_RPC:-}
       - SLACK_ACCESS_TOKEN=${SLACK_ACCESS_TOKEN:-}
       - SEND_GRID_API_KEY=${SEND_GRID_API_KEY:-}
@@ -40,7 +37,6 @@ services:
       # === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===
       # =============================================================================
       - NETWORK_NAME=base
-      - EVM_CHAINS=mainnet,sepolia,base,arbitrum,polygon
       - PUBLIC_KEY=your_rofl_worker_public_key_here
       - TOKEN_CONTRACT_ADDRESS=0xYourERC20TokenAddressHere
       - AI_AGENT_CONTRACT_ADDRESS=0xYourAIAgentAddressHere
@@ -66,6 +62,7 @@ services:
       - TEXT_EMBEDDING_MODEL=gemini-embedding-001
       - EMBEDDING_PROVIDER=google
       - EMBEDDING_DIMENSION=3072
+      - EVM_CHAINS=mainnet,sepolia,base,arbitrum,polygon
       - AI_CONTEXT_MESSAGES_LIMIT=20
       - LOG_LEVEL=warn
       - mcp=
@@ -75,6 +72,7 @@ services:
       - CMC_ENABLED=false
       - CFGI_ENABLED=false
       - POSTGRES_HOST=34.27.181.47
+      - PAYLOAD_MIRROR_BUCKET=tradable-app-senseai-payloads
       - BASE_MAINNET_RPC=https://mainnet.base.org
       - SAPPHIRE_MAINNET_RPC=https://sapphire.oasis.io
       - SAPPHIRE_TESTNET_RPC=https://testnet.sapphire.oasis.io

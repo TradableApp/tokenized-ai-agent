@@ -11,23 +11,36 @@ const TRANSFER_RULE_ABI = ["function isTransferExempt(address account) view retu
 const BARE_REVERT = /^execution reverted$/i;
 
 /**
+ * The revert data an error carries. A standalone Hardhat node puts it one level down, beside
+ * its own message (`data: { message, data }`); an object with no `data` of its own is returned
+ * as it is, which is not an empty revert.
+ */
+function revertData(error) {
+  const { data } = error;
+  if (data !== null && typeof data === "object" && "data" in data) return data.data;
+  return data;
+}
+
+/**
  * True when a call reverted with no data at all: what a contract with no such function and no
  * fallback answers. Exactly two shapes count: data of exactly `0x`, or no data and a message
  * that is the node's bare revert text. A revert with data or with a reason is the contract's
  * own answer, and a node that refused or failed the request is no answer; neither is taken for
  * a missing function.
  *
- * The error comes in three forms. ethers turns a JSON-RPC error into CALL_EXCEPTION with the
+ * The error comes in four forms. ethers turns a JSON-RPC error into CALL_EXCEPTION with the
  * node's own error under `info.error`. Hardhat's HTTP provider throws a ProviderError carrying
- * the node's numeric code and message, and `data` only when the node sent it. The in-process
+ * the node's numeric code and message, and `data` only when the node sent it. A standalone
+ * Hardhat node sends its own message and nests the data (`revertData`). The in-process
  * Hardhat network throws its own error with the empty data. Any other ethers code is refused,
  * and so is the bare text on an error with no code: nothing says a node answered.
  */
 function isEmptyRevert(error) {
   if (error === null || typeof error !== "object") return false;
   if (typeof error.code === "string" && error.code !== "CALL_EXCEPTION") return false;
-  if (error.data === "0x") return true;
-  if (error.data !== undefined && error.data !== null) return false;
+  const data = revertData(error);
+  if (data === "0x") return true;
+  if (data !== undefined && data !== null) return false;
   // The text alone proves nothing: it counts only on an error whose code says a node answered.
   const fromEthers = error.code === "CALL_EXCEPTION";
   if (!fromEthers && typeof error.code !== "number") return false;

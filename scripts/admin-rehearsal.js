@@ -30,6 +30,7 @@ const {
   runPlan,
 } = require("./rehearsal/steps");
 const { treasuryRefusal, holdUnstarted, refusedRun } = require("./rehearsal/token");
+const { typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const {
   isLiveNetwork,
   signerRoleNote,
@@ -753,12 +754,19 @@ async function confirmPhase({
   );
 }
 
+// Whether the rehearsal sends at all, so read from what was typed alone, never from a file line.
+const TYPED_ONLY_VARS = Object.freeze(["DRY_RUN", "REHEARSAL_MAINNET_CONFIRMED"]);
+
 /**
  * Every input is a parameter, so the guards can be tested where the script runs them. Run as a
- * script, it takes the process environment, Hardhat's network and the real contracts.
+ * script, it takes the process environment, Hardhat's network and the real contracts, and reads
+ * DRY_RUN and REHEARSAL_MAINNET_CONFIRMED from what was typed (recorded by hardhat.config.js
+ * before the env files loaded); `typed` stands in for that record, and an `env` given without one
+ * is read as typed.
  */
 async function main({
   env = process.env,
+  typed = env === process.env ? typedSettings(env) : env,
   networkName = hre.network.name,
   loadEnvFile = loadEnv,
   getSigners = () => ethers.getSigners(),
@@ -767,13 +775,22 @@ async function main({
   confirm = confirmPhase,
 } = {}) {
   loadEnvFile(env);
+  const typedProblems = typedOnlyProblems({
+    names: TYPED_ONLY_VARS,
+    typedEnv: typed,
+    processEnv: env,
+    envFile: env.ENV_FILE,
+  });
+  if (typedProblems.length > 0) {
+    throw new RehearsalError(`Rehearsal refused: ${typedProblems.join("; ")}. Nothing was sent.`);
+  }
   const phase = env.REHEARSAL_PHASE || "forward";
   if (!PHASES.has(phase)) {
     throw new RehearsalError(`REHEARSAL_PHASE must be one of ${[...PHASES].join(", ")}`);
   }
-  const dryRun = env.DRY_RUN === "1";
+  const dryRun = typed.DRY_RUN === "1";
   assertPhaseCanDryRun({ phase, dryRun });
-  assertMainnetConfirmed({ networkName, dryRun, confirmed: env.REHEARSAL_MAINNET_CONFIRMED });
+  assertMainnetConfirmed({ networkName, dryRun, confirmed: typed.REHEARSAL_MAINNET_CONFIRMED });
   const log = (line) => console.log(line);
 
   const [signer] = await getSigners();

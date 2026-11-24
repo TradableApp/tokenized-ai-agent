@@ -11,6 +11,7 @@ import {
 } from "@elizaos/core";
 import type { BrainService } from "../services/brain";
 import { handleChainSynthesis } from "../utils/actionChainHelper";
+import { describeError } from "../utils/errorDescription";
 
 /**
  * PORTED FROM sense-ai-core as a LITERAL COPY of
@@ -326,7 +327,9 @@ export const analyzeAssetSentimentAction: Action = {
 
       return actionResult;
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      // Described: the result's `error` is logged by the runtime and kept with the action's
+      // result, so it must carry no request address either.
+      const errorMessage = describeError(error);
       elizaLogger.error("[AnalyzeAssetSentimentAction] Error:", errorMessage);
 
       return {

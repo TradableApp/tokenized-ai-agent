@@ -18,6 +18,8 @@ import type {
   NewsSearchOptions,
 } from "@tradableapp/sense-ai-brain";
 
+import { describeError } from "../utils/errorDescription";
+
 /**
  * The oracle's adapter onto the shared Brain.
  *
@@ -74,9 +76,7 @@ async function handles() {
     return await accessor();
   } catch (error) {
     elizaLogger.error(
-      `[Brain] Handles unavailable, answering without market context: ${String(
-        (error as any)?.message ?? error,
-      )}`,
+      `[Brain] Handles unavailable, answering without market context: ${describeError(error)}`,
     );
     return null;
   }
@@ -112,7 +112,7 @@ export class BrainService extends Service {
     try {
       return (await h.sentimentEngine.getLatestMacro()) as GlobalMacroData | null;
     } catch (error) {
-      elizaLogger.error(`[Brain] Macro read failed: ${String((error as any)?.message ?? error)}`);
+      elizaLogger.error(`[Brain] Macro read failed: ${describeError(error)}`);
       return null;
     }
   }
@@ -172,7 +172,7 @@ export class BrainService extends Service {
       // is the one brainContext built, not something reinvented here.
       return (await h.brain.getLatestEnrichedNews(h.ctx, limit)) as EnrichedNewsRow[];
     } catch (error) {
-      elizaLogger.error(`[Brain] News read failed: ${String((error as any)?.message ?? error)}`);
+      elizaLogger.error(`[Brain] News read failed: ${describeError(error)}`);
       return [];
     }
   }

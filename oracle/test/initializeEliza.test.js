@@ -40,6 +40,8 @@ function makeFramework({
 
   const runtime = {
     agentId: "agent-uuid",
+    // The runtime's own logger, which the oracle replaces with a cleaned one.
+    logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } },
     ensureConnection: sinon.stub().resolves(),
     createMemory: sinon.stub().resolves(),
     getMemoryById: sinon.stub().resolves(null),
@@ -100,7 +102,7 @@ function loadOracle(framework, extraStubs = {}) {
         ChannelType: { DM: "DM", WORLD: "WORLD" },
         EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
       },
-      "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+      "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {}, setErrorDescriber: () => {} },
       "./elizaos/character.js": CHARACTER,
       // The watch of the tool service is not what these tests are about, and left real it would
       // keep looking for a service the stand-in does not have.

@@ -1,5 +1,7 @@
 "use strict";
 
+const { describeError } = require("./errorDescription");
+
 /**
  * The events that ask the oracle for work, and one log query that finds all of them.
  *
@@ -56,7 +58,7 @@ async function queryOracleWorkEvents(contract, fromBlock, toBlock, { onUndecodab
     );
     // The report may throw or return a promise that rejects; neither may lose the other events.
     const reportFailed = (error) =>
-      console.error(`[Poll] Reporting an undecodable log failed: ${error?.message}`);
+      console.error(`[Poll] Reporting an undecodable log failed: ${describeError(error)}`);
     try {
       Promise.resolve(onUndecodable?.(log)).catch(reportFailed);
     } catch (error) {

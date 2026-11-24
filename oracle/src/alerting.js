@@ -1,6 +1,6 @@
 const { WebClient } = require("@slack/web-api");
 
-const { withoutAddresses } = require("./errorDescription");
+const { describeError, withoutAddresses } = require("./errorDescription");
 
 /**
  * Sends a formatted alert message to a specified Slack channel.
@@ -22,7 +22,7 @@ async function sendSlackAlert(title, message) {
     await slack.chat.postMessage({ channel, text });
     console.log("Successfully sent Slack alert.");
   } catch (error) {
-    console.error("Failed to send Slack alert:", error.message);
+    console.error("Failed to send Slack alert:", describeError(error));
   }
 }
 
@@ -104,7 +104,7 @@ async function sendEmailAlert(title, message) {
     }
     console.log("Successfully sent email alert.");
   } catch (error) {
-    console.error("Failed to send email alert:", error.message);
+    console.error("Failed to send email alert:", describeError(error));
   }
 }
 

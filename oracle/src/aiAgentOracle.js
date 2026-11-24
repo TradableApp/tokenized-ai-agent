@@ -8,6 +8,22 @@ const crypto = require("crypto");
 const { default: PQueue } = require("p-queue");
 const { Mutex } = require("async-mutex");
 const { LRUCache } = require("lru-cache");
+const { holdFrameworkLogLevel } = require("./elizaos/frameworkLogLevel");
+
+// --- Configuration & Initialization ---
+
+// Load the specific environment file first for precedence.
+if (process.env.ENV_FILE) {
+  dotenv.config({ path: process.env.ENV_FILE });
+}
+// Load the base .env.oracle file to fill in any missing non-secret variables.
+dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
+
+// Before the framework is loaded, which reads its log level once: its information and debug
+// lines are not printed at all (frameworkLogLevel.js). After the env files, so a stricter level
+// the operator set there is kept.
+holdFrameworkLogLevel();
+
 const {
   ElizaOS,
   stringToUuid,
@@ -54,19 +70,23 @@ const {
   createPollBackoff,
 } = require("./pollBackoff");
 const { describeError, describedError, errorKind } = require("./errorDescription");
+
+// The plugin logs to the same place as the oracle: it describes its errors with the oracle's own
+// describer, which knows the secret parts of every configured address. Handed over here, when the
+// plugin is loaded, so it is in place before the agent and its actions are built in `start`.
+// Without it the plugin gives an error's kind alone, and a failed action's result would lose its
+// cause; a build without the seam is a stale build, so the oracle refuses to load it.
+if (typeof senseaiPluginModule.setErrorDescriber !== "function") {
+  throw new Error(
+    "setErrorDescriber missing from the plugin build — rebuild plugin-senseai (bun run build) " +
+      "from this source before starting the oracle.",
+  );
+}
+senseaiPluginModule.setErrorDescriber(describeError);
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
 const { createRoleGate } = require("./oracleRoleGate");
-
-// --- Configuration & Initialization ---
-
-// Load the specific environment file first for precedence.
-if (process.env.ENV_FILE) {
-  dotenv.config({ path: process.env.ENV_FILE });
-}
-// Load the base .env.oracle file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
@@ -309,7 +329,11 @@ const {
 } = require("./answerSelection");
 const { createToolServerWatch } = require("./elizaos/toolServerWatch");
 const { MARKET_DATA_TOOLS } = require("./elizaos/marketDataTools");
-const { isMutedFrameworkLog } = require("./elizaos/mutedFrameworkLogs");
+const {
+  cleanedLogCall,
+  cleanRuntimeLogger,
+  FRAMEWORK_LOG_LEVELS,
+} = require("./elizaos/mutedFrameworkLogs");
 
 const toolServerWatch = createToolServerWatch({
   expectedTools: MARKET_DATA_TOOLS,
@@ -629,13 +653,13 @@ async function initializeEliza() {
   // Create the orchestrator
   elizaOS = new ElizaOS();
 
-  // Some of the framework's lines are not printed. See mutedFrameworkLogs for which and why.
-  for (const level of ["info", "log", "warn", "error"]) {
+  // Some of the framework's lines are not printed, and every other one is cleaned first. See
+  // mutedFrameworkLogs for which and why. The agent runtime's own logger is replaced the same
+  // way once the runtime is built (below).
+  for (const level of FRAMEWORK_LOG_LEVELS) {
     const original = elizaLogger[level];
     if (typeof original !== "function") continue;
-    elizaLogger[level] = (...args) => {
-      if (!isMutedFrameworkLog(args, level)) original.apply(elizaLogger, args);
-    };
+    elizaLogger[level] = cleanedLogCall(original.bind(elizaLogger), level);
   }
 
   // Add and start the SenseAI Agent. The order around it (clean what is stored, name the
@@ -687,6 +711,11 @@ async function initializeEliza() {
       startAgents: async (agentIds) => {
         senseAiAgentId = agentIds[0];
         console.log("senseAiAgentId", senseAiAgentId);
+
+        // The runtime's own logger, which warns with the start of the model's reply when it
+        // cannot read it, is cleaned before the agent starts and prints anything. Throws when it
+        // cannot be, and the agent is then not started.
+        for (const agentId of agentIds) cleanRuntimeLogger(elizaOS.getAgent(agentId));
 
         // Start the agent lifecycle
         // The Brain's connection stays HERE, in the host: brainContext builds it with the mTLS
@@ -2923,7 +2952,7 @@ async function loadEventForRetry(job) {
   }
   if (!match) {
     throw new Error(
-      `Could not re-parse event '${job.eventName}' from transaction receipt.${parseError ? ` Parse error: ${parseError.message}` : ""}`,
+      `Could not re-parse event '${job.eventName}' from transaction receipt.${parseError ? ` Parse error: ${describeError(parseError)}` : ""}`,
       parseError ? { cause: parseError } : undefined,
     );
   }
