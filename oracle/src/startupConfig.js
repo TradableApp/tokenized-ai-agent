@@ -24,6 +24,7 @@ const { SUPPORTED_NETWORKS } = require("./contractUtility");
 const { keyModeFor } = require("./oracleKeys");
 const { DEFAULT_POLL_BACKOFF_CAP_MS, DEFAULT_POLL_INTERVAL_MS } = require("./pollBackoff");
 const { REQUIRED_BASE_KEYS, CERT_KEY_PAIRS } = require("./postgresBootstrap");
+const { streamConfigProblems } = require("./stream/streamConfig");
 
 /**
  * Thrown when the process must not continue. Typed so callers can distinguish it from bugs.
@@ -349,6 +350,9 @@ function validateConfig(env = process.env) {
 
   validatePayloadMirror(env, problems);
   validatePollSettings(env, problems);
+  // The live reasoning stream's STREAM_* settings: all optional, each named and never printed
+  // when it cannot work. The rules live with the server (stream/streamConfig.js).
+  problems.push(...streamConfigProblems(env));
 
   // The agent's market data comes through a tool server that needs this key. Without it the
   // server still starts and lists its tools, and then fails every call, so the gap shows only in

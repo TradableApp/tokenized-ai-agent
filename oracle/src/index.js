@@ -60,6 +60,13 @@ async function main() {
   // eslint-disable-next-line global-require
   const oracle = require("./aiAgentOracle");
   oracle.configure(keys);
+  // The live reasoning stream server, before anything can answer a prompt, so every run's
+  // frames reach it. Switched off (STREAM_ENABLED=false), it opens nothing and the oracle runs
+  // exactly as it does without it; a port it cannot have is logged and the oracle answers
+  // without it.
+  // eslint-disable-next-line global-require
+  const { startStreamFromEnv } = require("./stream/streamServer");
+  await startStreamFromEnv({ setSink: oracle.setStreamSink });
   console.log("Starting Node.js ROFL Oracle Service...");
   await oracle.start();
 }
