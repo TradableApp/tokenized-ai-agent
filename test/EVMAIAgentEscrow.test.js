@@ -232,7 +232,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         await escrow
           .connect(user)
           .setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-        await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       });
 
       it("should revert if user tries to set a new spending limit", async function () {
@@ -262,7 +262,11 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     it("should handle a new prompt, reserving a new conversation ID", async function () {
       const newConversationId = 1; // From mock agent's counter
       const expectedAnswerId = 1;
-      await expect(escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY))
+      await expect(
+        escrow
+          .connect(user)
+          .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
+      )
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedAnswerId, user.address, PROMPT_FEE);
       expect(await mockAgent.lastConversationId()).to.equal(newConversationId);
@@ -279,7 +283,14 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       await expect(
         escrow
           .connect(user)
-          .initiateRegeneration(conversationId, 98, 99, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+          .initiateRegeneration(
+            conversationId,
+            98,
+            99,
+            MOCK_ENCRYPTED_PAYLOAD,
+            MOCK_ROFL_KEY,
+            ethers.MaxUint256,
+          ),
       )
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedNewAnswerId, user.address, PROMPT_FEE);
@@ -320,7 +331,9 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
 
     it("should handle a metadata update request", async function () {
       const initialTreasuryBalance = await mockToken.balanceOf(treasury.address);
-      await escrow.connect(user).initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       expect(await mockToken.balanceOf(treasury.address)).to.equal(
         initialTreasuryBalance + METADATA_FEE,
       );
@@ -335,7 +348,9 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     it("should handle a branch request, reserving a new conversation ID", async function () {
       const initialTreasuryBalance = await mockToken.balanceOf(treasury.address);
       const newConversationId = 1; // From mock agent's counter
-      await escrow.connect(user).initiateBranch(123, 456, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiateBranch(123, 456, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       expect(await mockToken.balanceOf(treasury.address)).to.equal(
         initialTreasuryBalance + BRANCH_FEE,
       );
@@ -353,7 +368,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     it("should revert if user has no active spending limit", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
 
@@ -363,7 +378,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       await time.increase(3601);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
     });
 
@@ -373,7 +388,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       await escrow.connect(user).setSpendingLimit(lowAllowance, (await time.latest()) + 3600);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
     });
   });
@@ -386,13 +401,13 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, mockToken, user, unauthorizedUser, deployer } = fixtures);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
     });
 
     it("should allow a user to cancel a prompt", async function () {
       await time.increase(5);
       const initialUserBalance = await mockToken.balanceOf(user.address);
-      await expect(escrow.connect(user).cancelPrompt(answerMessageId))
+      await expect(escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256))
         .to.emit(escrow, "PromptCancelled")
         .withArgs(user.address, answerMessageId);
       const expectedUserBalance = initialUserBalance + PROMPT_FEE - CANCELLATION_FEE;
@@ -422,13 +437,13 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
     it("should revert if a non-owner tries to cancel", async function () {
       await time.increase(5);
       await expect(
-        escrow.connect(unauthorizedUser).cancelPrompt(answerMessageId),
+        escrow.connect(unauthorizedUser).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NotPromptOwner");
     });
 
     it("should revert if cancelling before timeout", async function () {
       await expect(
-        escrow.connect(user).cancelPrompt(answerMessageId),
+        escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "PromptNotCancellableYet");
     });
 
@@ -438,26 +453,26 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       ).to.be.revertedWithCustomError(escrow, "PromptNotRefundableYet");
     });
 
-    it("should revert cancelPrompt if user cannot afford the cancellation fee", async function () {
-      const { escrow, user, mockToken, deployer } = await loadFixture(deployEscrowFixture);
+    it("charges no more than was escrowed when the cancellation fee is above the prompt fee", async function () {
+      const { escrow, user, mockToken, deployer, treasury } =
+        await loadFixture(deployEscrowFixture);
 
-      // Update Cancellation Fee to be greater than Prompt Fee for this specific test logic
       const HIGH_CANCEL_FEE = ethers.parseEther("11"); // Higher than PROMPT_FEE (10)
       await escrow.connect(deployer).setCancellationFee(HIGH_CANCEL_FEE);
 
       await mockToken.connect(user).approve(await escrow.getAddress(), PROMPT_FEE);
       await escrow.connect(user).setSpendingLimit(PROMPT_FEE, (await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
+      const balanceAfterPrompt = await mockToken.balanceOf(user.address);
 
       await time.increase(5);
 
-      // Attempt cancel.
-      // 1. Refund Prompt (10). Spent becomes 0.
-      // 2. Check: Allowance (10) < Spent (0) + CancelFee (11). True. Revert.
-      await expect(escrow.connect(user).cancelPrompt(1)).to.be.revertedWithCustomError(
-        escrow,
-        "InsufficientSpendingLimitAllowance",
-      );
+      // The fee comes out of the escrowed 10, so the limit, the approval and the balance are not
+      // asked. A fee of 11 is cut to the 10 escrowed: the treasury gets 10 and the user nothing.
+      await escrow.connect(user).cancelPrompt(1, ethers.MaxUint256);
+
+      expect(await mockToken.balanceOf(treasury.address)).to.equal(PROMPT_FEE);
+      expect(await mockToken.balanceOf(user.address)).to.equal(balanceAfterPrompt);
     });
 
     context("Refund Failure Paths", function () {
@@ -490,7 +505,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
       const { escrow, mockAgent, mockToken, user, treasury } =
         await loadFixture(deployEscrowFixture);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       const answerMessageId = 1;
 
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
@@ -533,7 +548,7 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
         await escrow
           .connect(user)
           .setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-        await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
 
         agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
         await ethers.provider.send("hardhat_setBalance", [
@@ -557,10 +572,9 @@ describe("EVMAIAgentEscrow (Upgradable)", function () {
 
       it("should revert if cancelling a completed escrow", async function () {
         await time.increase(5);
-        await expect(escrow.connect(user).cancelPrompt(escrowId)).to.be.revertedWithCustomError(
-          escrow,
-          "EscrowNotPending",
-        );
+        await expect(
+          escrow.connect(user).cancelPrompt(escrowId, ethers.MaxUint256),
+        ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
       });
 
       it("should revert if refunding a completed escrow", async function () {

@@ -82,7 +82,9 @@ describe("Oracle role — several oracles can be authorized at once", function (
 
     /** Submits a prompt and returns the ids the oracle needs to answer it. */
     async function submitPrompt(aiAgent, escrow, user) {
-      const receipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+      const receipt = await (
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+      ).wait();
       const topic = aiAgent.interface.getEvent("PromptSubmitted").topicHash;
       const log = receipt.logs.find((l) => l.topics[0] === topic);
       if (!log) throw new Error("PromptSubmitted not found in the initiatePrompt receipt");

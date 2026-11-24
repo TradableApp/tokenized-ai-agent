@@ -68,9 +68,12 @@ describe("Regeneration lock — released however the regeneration ends", functio
         await escrow.connect(user).setSpendingLimit(ALLOWANCE, (await time.latest()) + 100000);
         return { aiAgent, escrow, user, oracle, keeper };
       },
-      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+      prompt: (escrow, user) =>
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       regenerate: (escrow, user, conversationId, promptId, answerId) =>
-        escrow.connect(user).initiateRegeneration(conversationId, promptId, answerId, "0x", "0x"),
+        escrow
+          .connect(user)
+          .initiateRegeneration(conversationId, promptId, answerId, "0x", "0x", ethers.MaxUint256),
     },
     Sapphire: {
       async deploy() {
@@ -96,9 +99,12 @@ describe("Regeneration lock — released however the regeneration ends", functio
         await escrow.connect(user).setSpendingLimit((await time.latest()) + 100000);
         return { aiAgent, escrow, user, oracle, keeper };
       },
-      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "payload"),
+      prompt: (escrow, user) =>
+        escrow.connect(user).initiatePrompt(0, "payload", ethers.MaxUint256),
       regenerate: (escrow, user, conversationId, promptId, answerId) =>
-        escrow.connect(user).initiateRegeneration(conversationId, promptId, answerId, "payload"),
+        escrow
+          .connect(user)
+          .initiateRegeneration(conversationId, promptId, answerId, "payload", ethers.MaxUint256),
     },
   };
 
@@ -154,7 +160,7 @@ describe("Regeneration lock — released however the regeneration ends", functio
           await loadFixture(pendingRegenerationFixture);
         await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
 
-        await escrow.connect(user).cancelPrompt(regenAnswerId);
+        await escrow.connect(user).cancelPrompt(regenAnswerId, ethers.MaxUint256);
 
         expect(await aiAgent.isRegenerationPending(promptMessageId)).to.equal(false);
         await expect(regenerate()).to.not.be.reverted;
@@ -201,7 +207,7 @@ describe("Regeneration lock — released however the regeneration ends", functio
           await loadFixture(twoPendingRegenerationsFixture);
         await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
 
-        await escrow.connect(user).cancelPrompt(regenAnswerId);
+        await escrow.connect(user).cancelPrompt(regenAnswerId, ethers.MaxUint256);
 
         expect(await aiAgent.isRegenerationPending(promptMessageId)).to.equal(false);
         expect(await aiAgent.isRegenerationPending(otherPromptId)).to.equal(true);
@@ -246,7 +252,7 @@ describe("Regeneration lock — released however the regeneration ends", functio
         const otherAnswerId = parseEvent(receipt, escrow, "PaymentEscrowed").args[0];
         await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
 
-        await escrow.connect(user).cancelPrompt(otherAnswerId);
+        await escrow.connect(user).cancelPrompt(otherAnswerId, ethers.MaxUint256);
 
         expect(await aiAgent.isRegenerationPending(promptMessageId)).to.equal(true);
       });

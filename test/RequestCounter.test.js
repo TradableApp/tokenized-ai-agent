@@ -65,13 +65,18 @@ describe("Request counter — every oracle-bound request is counted with its blo
         await escrow.connect(user).setSpendingLimit(ALLOWANCE, (await time.latest()) + 100000);
         return { aiAgent, escrow, user, oracle, keeper };
       },
-      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+      prompt: (escrow, user) =>
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       regenerate: (escrow, user, conversationId, promptId, answerId) =>
-        escrow.connect(user).initiateRegeneration(conversationId, promptId, answerId, "0x", "0x"),
+        escrow
+          .connect(user)
+          .initiateRegeneration(conversationId, promptId, answerId, "0x", "0x", ethers.MaxUint256),
       branch: (escrow, user, conversationId, messageId) =>
-        escrow.connect(user).initiateBranch(conversationId, messageId, "0x", "0x"),
+        escrow
+          .connect(user)
+          .initiateBranch(conversationId, messageId, "0x", "0x", ethers.MaxUint256),
       metadata: (escrow, user, conversationId) =>
-        escrow.connect(user).initiateMetadataUpdate(conversationId, "0x", "0x"),
+        escrow.connect(user).initiateMetadataUpdate(conversationId, "0x", "0x", ethers.MaxUint256),
       agentJob: (escrow, oracle, user) =>
         escrow.connect(oracle).initiateAgentJob(user.address, 0, "0x", "0x"),
     },
@@ -99,13 +104,18 @@ describe("Request counter — every oracle-bound request is counted with its blo
         await escrow.connect(user).setSpendingLimit((await time.latest()) + 100000);
         return { aiAgent, escrow, user, oracle, keeper };
       },
-      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "payload"),
+      prompt: (escrow, user) =>
+        escrow.connect(user).initiatePrompt(0, "payload", ethers.MaxUint256),
       regenerate: (escrow, user, conversationId, promptId, answerId) =>
-        escrow.connect(user).initiateRegeneration(conversationId, promptId, answerId, "payload"),
+        escrow
+          .connect(user)
+          .initiateRegeneration(conversationId, promptId, answerId, "payload", ethers.MaxUint256),
       branch: (escrow, user, conversationId, messageId) =>
-        escrow.connect(user).initiateBranch(conversationId, messageId, "payload"),
+        escrow
+          .connect(user)
+          .initiateBranch(conversationId, messageId, "payload", ethers.MaxUint256),
       metadata: (escrow, user, conversationId) =>
-        escrow.connect(user).initiateMetadataUpdate(conversationId, "payload"),
+        escrow.connect(user).initiateMetadataUpdate(conversationId, "payload", ethers.MaxUint256),
       agentJob: (escrow, oracle, user) =>
         escrow.connect(oracle).initiateAgentJob(user.address, 0, "payload"),
     },
@@ -277,7 +287,10 @@ describe("Request counter — every oracle-bound request is counted with its blo
         await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
         await escrow
           .connect(user)
-          .cancelPrompt(parseEvent(cancelReceipt, escrow, "PaymentEscrowed").args[0]);
+          .cancelPrompt(
+            parseEvent(cancelReceipt, escrow, "PaymentEscrowed").args[0],
+            ethers.MaxUint256,
+          );
         await time.increase(Number(await escrow.REFUND_TIMEOUT()) + 1);
         await escrow
           .connect(keeper)

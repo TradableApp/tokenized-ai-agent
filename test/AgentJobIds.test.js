@@ -70,7 +70,8 @@ describe("Agent job ids — one id space with prompts", function () {
         }
         return { aiAgent, escrow, promptUser, jobUser, oracle, keeper };
       },
-      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+      prompt: (escrow, user) =>
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       agentJob: (escrow, oracle, user) =>
         escrow.connect(oracle).initiateAgentJob(user.address, 0, "0x", "0x"),
     },
@@ -100,7 +101,8 @@ describe("Agent job ids — one id space with prompts", function () {
         }
         return { aiAgent, escrow, promptUser, jobUser, oracle, keeper };
       },
-      prompt: (escrow, user) => escrow.connect(user).initiatePrompt(0, "payload"),
+      prompt: (escrow, user) =>
+        escrow.connect(user).initiatePrompt(0, "payload", ethers.MaxUint256),
       agentJob: (escrow, oracle, user) =>
         escrow.connect(oracle).initiateAgentJob(user.address, 0, "payload"),
     },
@@ -162,9 +164,9 @@ describe("Agent job ids — one id space with prompts", function () {
         await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
 
         await expect(
-          escrow.connect(promptUser).cancelPrompt(triggerIds[0]),
+          escrow.connect(promptUser).cancelPrompt(triggerIds[0], ethers.MaxUint256),
         ).to.be.revertedWithCustomError(escrow, "NotPromptOwner");
-        await expect(escrow.connect(jobUser).cancelPrompt(triggerIds[0]))
+        await expect(escrow.connect(jobUser).cancelPrompt(triggerIds[0], ethers.MaxUint256))
           .to.emit(aiAgent, "PromptCancelled")
           .withArgs(jobUser.address, triggerIds[0]);
         expect(await escrow.pendingEscrowCount(jobUser.address)).to.equal(BigInt(AGENT_JOBS - 1));

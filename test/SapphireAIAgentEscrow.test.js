@@ -182,7 +182,7 @@ describe("SapphireAIAgentEscrow", function () {
         escrow = fixtures.escrow;
         user = fixtures.user;
         await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
-        await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
+        await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256);
       });
 
       it("should revert if user tries to set a new spending limit", async function () {
@@ -214,7 +214,7 @@ describe("SapphireAIAgentEscrow", function () {
       const expectedAnswerId = 1;
       const initialDeposit = await escrow.deposits(user.address);
 
-      await expect(escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD))
+      await expect(escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256))
         .to.emit(escrow, "PaymentEscrowed")
         .withArgs(expectedAnswerId, user.address, PROMPT_FEE);
 
@@ -237,6 +237,7 @@ describe("SapphireAIAgentEscrow", function () {
             promptMessageId,
             previousAnswerMessageId,
             MOCK_PAYLOAD,
+            ethers.MaxUint256,
           ),
       )
         .to.emit(escrow, "PaymentEscrowed")
@@ -273,7 +274,9 @@ describe("SapphireAIAgentEscrow", function () {
       const initialDeposit = await escrow.deposits(user.address);
       const initialTreasuryBalance = await ethers.provider.getBalance(treasury.address);
 
-      await escrow.connect(user).initiateMetadataUpdate(conversationId, MOCK_PAYLOAD);
+      await escrow
+        .connect(user)
+        .initiateMetadataUpdate(conversationId, MOCK_PAYLOAD, ethers.MaxUint256);
 
       expect(await escrow.deposits(user.address)).to.equal(initialDeposit - METADATA_FEE);
       expect(await ethers.provider.getBalance(treasury.address)).to.equal(
@@ -291,7 +294,12 @@ describe("SapphireAIAgentEscrow", function () {
 
       await escrow
         .connect(user)
-        .initiateBranch(originalConversationId, branchPointMessageId, MOCK_PAYLOAD);
+        .initiateBranch(
+          originalConversationId,
+          branchPointMessageId,
+          MOCK_PAYLOAD,
+          ethers.MaxUint256,
+        );
 
       expect(await escrow.deposits(user.address)).to.equal(initialDeposit - BRANCH_FEE);
       expect(await ethers.provider.getBalance(treasury.address)).to.equal(
@@ -306,7 +314,7 @@ describe("SapphireAIAgentEscrow", function () {
     it("should revert if user has no active spending limit", async function () {
       const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture); // Use a fresh user
       await expect(
-        escrow.connect(unauthorizedUser).initiatePrompt(0, MOCK_PAYLOAD),
+        escrow.connect(unauthorizedUser).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
 
@@ -315,7 +323,7 @@ describe("SapphireAIAgentEscrow", function () {
       await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
       await time.increase(3601);
       await expect(
-        escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD),
+        escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
     });
 
@@ -323,7 +331,7 @@ describe("SapphireAIAgentEscrow", function () {
       const { escrow, unauthorizedUser } = await loadFixture(deployEscrowFixture);
       await escrow.connect(unauthorizedUser).setSpendingLimit((await time.latest()) + 3600);
       await expect(
-        escrow.connect(unauthorizedUser).initiatePrompt(0, MOCK_PAYLOAD),
+        escrow.connect(unauthorizedUser).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientDeposit");
     });
   });
@@ -336,14 +344,14 @@ describe("SapphireAIAgentEscrow", function () {
       const fixtures = await loadFixture(deployEscrowFixture);
       ({ escrow, mockAgent, user, unauthorizedUser, treasury } = fixtures);
       await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
+      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256);
     });
 
     it("should allow a user to cancel a prompt", async function () {
       await time.increase(5);
       const initialDeposit = await escrow.deposits(user.address);
       const initialTreasuryBalance = await ethers.provider.getBalance(treasury.address);
-      await expect(escrow.connect(user).cancelPrompt(answerMessageId)).to.emit(
+      await expect(escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256)).to.emit(
         escrow,
         "PromptCancelled",
       );
@@ -364,13 +372,13 @@ describe("SapphireAIAgentEscrow", function () {
     it("should revert if a non-owner tries to cancel", async function () {
       await time.increase(5);
       await expect(
-        escrow.connect(unauthorizedUser).cancelPrompt(answerMessageId),
+        escrow.connect(unauthorizedUser).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NotPromptOwner");
     });
 
     it("should revert if cancelling before timeout", async function () {
       await expect(
-        escrow.connect(user).cancelPrompt(answerMessageId),
+        escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "PromptNotCancellableYet");
     });
 
@@ -385,12 +393,11 @@ describe("SapphireAIAgentEscrow", function () {
       await escrow.connect(user).withdraw(INITIAL_DEPOSIT); // Withdraw all funds
       await escrow.connect(user).deposit({ value: PROMPT_FEE }); // Deposit just enough for the prompt
       await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
+      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256);
       await time.increase(5);
-      await expect(escrow.connect(user).cancelPrompt(1)).to.be.revertedWithCustomError(
-        escrow,
-        "InsufficientDeposit",
-      );
+      await expect(
+        escrow.connect(user).cancelPrompt(1, ethers.MaxUint256),
+      ).to.be.revertedWithCustomError(escrow, "InsufficientDeposit");
     });
 
     context("Refund Failure Paths", function () {
@@ -419,7 +426,7 @@ describe("SapphireAIAgentEscrow", function () {
     it("should allow the agent to finalize payment", async function () {
       const { escrow, mockAgent, user, treasury } = await loadFixture(deployEscrowFixture);
       await escrow.connect(user).setSpendingLimit((await time.latest()) + 3600);
-      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
+      await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256);
       const answerMessageId = 1;
       const initialTreasuryBalance = await ethers.provider.getBalance(treasury.address);
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
@@ -460,7 +467,7 @@ describe("SapphireAIAgentEscrow", function () {
         const fixtures = await loadFixture(deployEscrowFixture);
         ({ escrow, mockAgent, user } = fixtures);
         await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
-        await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD);
+        await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256);
 
         agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
         await ethers.provider.send("hardhat_setBalance", [
@@ -484,10 +491,9 @@ describe("SapphireAIAgentEscrow", function () {
 
       it("should revert if cancelling a completed escrow", async function () {
         await time.increase(5);
-        await expect(escrow.connect(user).cancelPrompt(escrowId)).to.be.revertedWithCustomError(
-          escrow,
-          "EscrowNotPending",
-        );
+        await expect(
+          escrow.connect(user).cancelPrompt(escrowId, ethers.MaxUint256),
+        ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
       });
     });
   });

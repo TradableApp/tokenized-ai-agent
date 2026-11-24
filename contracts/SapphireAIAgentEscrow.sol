@@ -160,6 +160,10 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   error NotPromptOwner();
 
   // Spending Limit Errors
+  /// @notice Reverts if the fee for an action is above the most its caller agreed to pay.
+  /// @param fee The fee the action costs now.
+  /// @param maxFee The most the caller agreed to pay.
+  error FeeAboveMaximum(uint256 fee, uint256 maxFee);
   /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
   error NoActiveSpendingLimit();
   /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
@@ -370,8 +374,10 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @dev If _conversationId is 0, it reserves a new conversation ID.
    * @param _conversationId The ID of the conversation. Pass 0 to start a new conversation.
    * @param _payload The plaintext user prompt intended for the TEE.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
-  function initiatePrompt(uint256 _conversationId, string calldata _payload) external {
+  function initiatePrompt(uint256 _conversationId, string calldata _payload, uint256 _maxFee) external {
+    _checkMaxFee(promptFee, _maxFee);
     _processEscrowPayment(msg.sender, promptFee);
 
     uint256 conversationId = _conversationId;
@@ -406,13 +412,16 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @param _promptMessageId The ID of the user's prompt that is being regenerated.
    * @param _previousAnswerMessageId The ID of the specific AI answer the user wants to regenerate from.
    * @param _payload The plaintext instructions for the TEE (e.g., "make it more concise").
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
   function initiateRegeneration(
     uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _previousAnswerMessageId,
-    string calldata _payload
+    string calldata _payload,
+    uint256 _maxFee
   ) external {
+    _checkMaxFee(promptFee, _maxFee);
     _processEscrowPayment(msg.sender, promptFee);
 
     uint256 answerMessageId = sapphireAIAgent.reserveMessageId();
@@ -477,12 +486,15 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @param _originalConversationId The ID of the conversation being branched from.
    * @param _branchPointMessageId The ID of the message where the branch occurs.
    * @param _payload The plaintext context (e.g., original title) for the TEE.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
   function initiateBranch(
     uint256 _originalConversationId,
     uint256 _branchPointMessageId,
-    string calldata _payload
+    string calldata _payload,
+    uint256 _maxFee
   ) external {
+    _checkMaxFee(branchFee, _maxFee);
     _processDirectPayment(msg.sender, branchFee);
 
     uint256 newConversationId = sapphireAIAgent.reserveConversationId();
@@ -503,8 +515,10 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    *      cancellation exists to stop the oracle, so one the agent never hears of is refused, and
    *      the user's exit is then `processRefund` after the refund timeout.
    * @param _answerMessageId The ID of the answer message to cancel.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
-  function cancelPrompt(uint256 _answerMessageId) external {
+  function cancelPrompt(uint256 _answerMessageId, uint256 _maxFee) external {
+    _checkMaxFee(cancellationFee, _maxFee);
     uint256 escrowId = _answerMessageId;
     Escrow storage escrow = escrows[escrowId];
 
@@ -537,8 +551,10 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @dev Charges a fixed `metadataUpdateFee` from the user's deposit.
    * @param _conversationId The ID of the conversation to update.
    * @param _payload The plaintext ABI-encoded update instructions for the TEE.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
-  function initiateMetadataUpdate(uint256 _conversationId, string calldata _payload) external {
+  function initiateMetadataUpdate(uint256 _conversationId, string calldata _payload, uint256 _maxFee) external {
+    _checkMaxFee(metadataUpdateFee, _maxFee);
     _processDirectPayment(msg.sender, metadataUpdateFee);
 
     sapphireAIAgent.submitMetadataUpdate(msg.sender, _conversationId, _payload);
@@ -627,6 +643,17 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   }
 
   // --- Internal Helper Functions ---
+
+  /**
+   * @notice Reverts when a fee is above the most its caller agreed to pay.
+   * @param _fee The fee the action costs now.
+   * @param _maxFee The most the caller agreed to pay.
+   */
+  function _checkMaxFee(uint256 _fee, uint256 _maxFee) private pure {
+    if (_fee > _maxFee) {
+      revert FeeAboveMaximum(_fee, _maxFee);
+    }
+  }
 
   /**
    * @notice Handles spending limit checks and state changes for an escrowed payment.

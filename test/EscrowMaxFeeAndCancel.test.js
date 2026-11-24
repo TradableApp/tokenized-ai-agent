@@ -116,8 +116,8 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
     async function withPendingPrompt() {
       const ctx = await plain();
       await ctx.escrow.connect(ctx.user).initiatePrompt(0, PAYLOAD, KEY, PROMPT_FEE);
-      // The mock agent hands out message ids from 1: prompt 1, answer 2. The answer id keys the escrow.
-      const answerMessageId = 2n;
+      // The mock agent hands out message ids from 0: prompt 0, answer 1. The answer id keys the escrow.
+      const answerMessageId = 1n;
       await time.increase(5);
       return { ...ctx, answerMessageId };
     }
@@ -163,7 +163,7 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
       expect(await ctx.token.balanceOf(ctx.user.address)).to.equal(0n);
       await time.increase(5);
 
-      await ctx.escrow.connect(ctx.user).cancelPrompt(2, CANCELLATION_FEE);
+      await ctx.escrow.connect(ctx.user).cancelPrompt(1, CANCELLATION_FEE);
 
       // 10 escrowed, 1 to the treasury, 9 back to the empty wallet.
       expect(await ctx.token.balanceOf(ctx.user.address)).to.equal(PROMPT_FEE - CANCELLATION_FEE);
@@ -216,8 +216,8 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
   describe("the escrow record is written before any token moves", function () {
     it("a token that looks back at the escrow while a prompt's payment is pulled sees the record", async function () {
       const ctx = await loadFixture(reentrant);
-      // The mock agent hands out message ids from 1: prompt 1, answer 2.
-      const answerMessageId = 2n;
+      // The mock agent hands out message ids from 0: prompt 0, answer 1.
+      const answerMessageId = 1n;
       await ctx.token.arm(
         await ctx.escrow.getAddress(),
         ctx.escrow.interface.encodeFunctionData("escrows", [answerMessageId]),
@@ -236,8 +236,8 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
 
     it("the same holds for a regeneration", async function () {
       const ctx = await loadFixture(reentrant);
-      // No prompt came first in this fixture, so the regeneration's answer takes message id 1.
-      const answerMessageId = 1n;
+      // No prompt came first in this fixture, so the regeneration's answer takes message id 0.
+      const answerMessageId = 0n;
       await ctx.token.arm(
         await ctx.escrow.getAddress(),
         ctx.escrow.interface.encodeFunctionData("escrows", [answerMessageId]),
@@ -252,5 +252,100 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
       expect(seenUser).to.equal(ctx.user.address);
       expect(seenAmount).to.equal(PROMPT_FEE);
     });
+  });
+});
+
+// The Sapphire escrow charges a deposit and has the same owner-set fees, so its paying calls take
+// the same maximum.
+describe("SapphireAIAgentEscrow: a paying call names its maximum fee", function () {
+  const DEPOSIT = ethers.parseEther("100");
+  const PROMPT_FEE = ethers.parseEther("10");
+  const CANCELLATION_FEE = ethers.parseEther("1");
+  const METADATA_FEE = ethers.parseEther("0.5");
+  const BRANCH_FEE = ethers.parseEther("2");
+  const PAYLOAD = "a confidential payload";
+
+  async function deploy() {
+    const [deployer, user, oracle, treasury] = await ethers.getSigners();
+    const mockAgent = await (
+      await ethers.getContractFactory("MockSapphireAIAgent")
+    ).deploy(oracle.address);
+    const escrow = await (
+      await ethers.getContractFactory("SapphireAIAgentEscrow")
+    ).deploy(
+      await mockAgent.getAddress(),
+      treasury.address,
+      deployer.address,
+      PROMPT_FEE,
+      CANCELLATION_FEE,
+      METADATA_FEE,
+      BRANCH_FEE,
+    );
+    await escrow.connect(user).deposit({ value: DEPOSIT });
+    await escrow.connect(user).setSpendingLimit((await time.latest()) + 86400);
+    return { escrow, deployer, user };
+  }
+
+  const calls = [
+    [
+      "initiatePrompt",
+      "setPromptFee",
+      PROMPT_FEE,
+      (e, u, max) => e.connect(u).initiatePrompt(0, PAYLOAD, max),
+    ],
+    [
+      "initiateRegeneration",
+      "setPromptFee",
+      PROMPT_FEE,
+      (e, u, max) => e.connect(u).initiateRegeneration(1, 1, 2, PAYLOAD, max),
+    ],
+    [
+      "initiateBranch",
+      "setBranchFee",
+      BRANCH_FEE,
+      (e, u, max) => e.connect(u).initiateBranch(1, 1, PAYLOAD, max),
+    ],
+    [
+      "initiateMetadataUpdate",
+      "setMetadataUpdateFee",
+      METADATA_FEE,
+      (e, u, max) => e.connect(u).initiateMetadataUpdate(1, PAYLOAD, max),
+    ],
+  ];
+
+  for (const [name, setter, fee, send] of calls) {
+    it(`${name} charges nothing when the fee was raised above the caller's maximum`, async function () {
+      const { escrow, deployer, user } = await loadFixture(deploy);
+      // One wei above what the user read.
+      await escrow.connect(deployer)[setter](fee + 1n);
+
+      await expect(send(escrow, user, fee))
+        .to.be.revertedWithCustomError(escrow, "FeeAboveMaximum")
+        .withArgs(fee + 1n, fee);
+      expect(await escrow.deposits(user.address)).to.equal(DEPOSIT);
+    });
+
+    it(`${name} goes through at exactly the fee`, async function () {
+      const { escrow, user } = await loadFixture(deploy);
+
+      await send(escrow, user, fee);
+
+      // The deposit of 100 is charged the fee once.
+      expect(await escrow.deposits(user.address)).to.equal(DEPOSIT - fee);
+    });
+  }
+
+  it("cancelPrompt is refused when the cancellation fee was raised above the caller's maximum", async function () {
+    const { escrow, deployer, user } = await loadFixture(deploy);
+    await escrow.connect(user).initiatePrompt(0, PAYLOAD, PROMPT_FEE);
+    await time.increase(5);
+    await escrow.connect(deployer).setCancellationFee(CANCELLATION_FEE + 1n);
+
+    // The mock agent hands out message ids from 0: prompt 0, answer 1.
+    await expect(escrow.connect(user).cancelPrompt(1, CANCELLATION_FEE))
+      .to.be.revertedWithCustomError(escrow, "FeeAboveMaximum")
+      .withArgs(CANCELLATION_FEE + 1n, CANCELLATION_FEE);
+    // The deposit still holds 100 less the escrowed 10.
+    expect(await escrow.deposits(user.address)).to.equal(DEPOSIT - PROMPT_FEE);
   });
 });

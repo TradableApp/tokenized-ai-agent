@@ -163,6 +163,14 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
 
   /**
+   * @notice Emitted with the amounts of a cancellation: both leave the escrow's own balance.
+   * @param escrowId The unique ID of the cancelled escrow.
+   * @param fee The cancellation fee sent to the treasury (never more than was escrowed).
+   * @param returned The rest of the escrowed amount, sent back to the user.
+   */
+  event CancellationSettled(uint256 indexed escrowId, uint256 fee, uint256 returned);
+
+  /**
    * @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
    * @param user The address of the user who paid.
    * @param amount The fee transferred to the treasury.
@@ -192,6 +200,10 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
   error SpendingLimitExpired();
   /// @notice Reverts if a user's remaining allowance is insufficient to cover a fee.
   error InsufficientSpendingLimitAllowance();
+  /// @notice Reverts if the fee for an action is above the most its caller agreed to pay.
+  /// @param fee The fee the action costs now.
+  /// @param maxFee The most the caller agreed to pay.
+  error FeeAboveMaximum(uint256 fee, uint256 maxFee);
   /// @notice Reverts if a spending limit is set to zero.
   error ZeroSpendingLimit();
   /// @notice Reverts if a spending limit is set with an expiration in the past.
@@ -400,13 +412,17 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
    * @param _conversationId The ID of the conversation. Pass 0 to start a new conversation.
    * @param _encryptedPayload The encrypted user prompt intended for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the prompt fee is above it.
    */
   function initiatePrompt(
     uint256 _conversationId,
     bytes calldata _encryptedPayload,
-    bytes calldata _roflEncryptedKey
+    bytes calldata _roflEncryptedKey,
+    uint256 _maxFee
   ) external {
-    _processEscrowPayment(msg.sender, promptFee);
+    uint256 fee = promptFee;
+    _checkMaxFee(fee, _maxFee);
+    _chargeEscrowPayment(msg.sender, fee);
 
     uint256 conversationId = _conversationId;
     if (conversationId == 0) {
@@ -416,14 +432,7 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
     uint256 promptMessageId = evmAIAgent.reserveMessageId();
     uint256 answerMessageId = evmAIAgent.reserveMessageId();
     uint256 escrowId = answerMessageId;
-    escrows[escrowId] = Escrow({
-      user: msg.sender,
-      amount: promptFee,
-      createdAt: block.timestamp,
-      status: EscrowStatus.PENDING
-    });
-
-    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
+    _openEscrow(escrowId, msg.sender, fee);
     evmAIAgent.submitPrompt(
       msg.sender,
       conversationId,
@@ -442,26 +451,23 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
    * @param _previousAnswerMessageId The ID of the specific AI answer the user wants to regenerate from.
    * @param _encryptedPayload The encrypted instructions for the TEE (e.g., "make it more concise").
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the prompt fee is above it.
    */
   function initiateRegeneration(
     uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _previousAnswerMessageId,
     bytes calldata _encryptedPayload,
-    bytes calldata _roflEncryptedKey
+    bytes calldata _roflEncryptedKey,
+    uint256 _maxFee
   ) external {
-    _processEscrowPayment(msg.sender, promptFee);
+    uint256 fee = promptFee;
+    _checkMaxFee(fee, _maxFee);
+    _chargeEscrowPayment(msg.sender, fee);
 
     uint256 answerMessageId = evmAIAgent.reserveMessageId();
     uint256 escrowId = answerMessageId;
-    escrows[escrowId] = Escrow({
-      user: msg.sender,
-      amount: promptFee,
-      createdAt: block.timestamp,
-      status: EscrowStatus.PENDING
-    });
-
-    emit PaymentEscrowed(escrowId, msg.sender, promptFee);
+    _openEscrow(escrowId, msg.sender, fee);
     evmAIAgent.submitRegenerationRequest(
       msg.sender,
       _conversationId,
@@ -491,7 +497,8 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
     bytes calldata _encryptedPayload,
     bytes calldata _roflEncryptedKey
   ) external onlyOracle {
-    _processEscrowPayment(_user, promptFee);
+    uint256 fee = promptFee;
+    _chargeEscrowPayment(_user, fee);
 
     uint256 jobId = _jobId;
     if (jobId == 0) {
@@ -500,14 +507,7 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
 
     uint256 triggerId = evmAIAgent.reserveTriggerId();
     uint256 escrowId = triggerId;
-    escrows[escrowId] = Escrow({
-      user: _user,
-      amount: promptFee,
-      createdAt: block.timestamp,
-      status: EscrowStatus.PENDING
-    });
-
-    emit PaymentEscrowed(escrowId, _user, promptFee);
+    _openEscrow(escrowId, _user, fee);
     evmAIAgent.submitAgentJob(_user, jobId, triggerId, _encryptedPayload, _roflEncryptedKey);
   }
 
@@ -518,14 +518,18 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
    * @param _branchPointMessageId The ID of the message where the branch occurs.
    * @param _encryptedPayload The encrypted context (e.g., original title) for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the branch fee is above it.
    */
   function initiateBranch(
     uint256 _originalConversationId,
     uint256 _branchPointMessageId,
     bytes calldata _encryptedPayload,
-    bytes calldata _roflEncryptedKey
+    bytes calldata _roflEncryptedKey,
+    uint256 _maxFee
   ) external {
-    _processDirectPayment(msg.sender, branchFee);
+    uint256 fee = branchFee;
+    _checkMaxFee(fee, _maxFee);
+    _processDirectPayment(msg.sender, fee);
 
     uint256 newConversationId = evmAIAgent.reserveConversationId();
 
@@ -541,16 +545,20 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
 
   /**
    * @notice Allows a user to cancel their own pending prompt.
-   * @dev Charges a fixed `cancellationFee` and refunds the original `promptFee`.
+   * @dev The cancellation fee comes out of the escrowed amount: the treasury is paid the fee and
+   *      the user the rest, both from this contract's balance. Nothing is pulled from the user's
+   *      wallet, so a cancellation needs no remaining limit, token approval or balance. The fee
+   *      charged is never more than was escrowed. The plan stays charged the fee and gets the
+   *      rest back.
    *      Unlike `processRefund`, this reverts if the agent cannot record the cancellation: a
    *      cancellation exists to stop the oracle, so one the agent never hears of is refused, and
    *      the user's exit is then `processRefund` after the refund timeout.
    * @param _answerMessageId The ID of the answer message to cancel.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee charged is above it.
    */
-  function cancelPrompt(uint256 _answerMessageId) external {
+  function cancelPrompt(uint256 _answerMessageId, uint256 _maxFee) external {
     uint256 escrowId = _answerMessageId;
     Escrow storage escrow = escrows[escrowId];
-    SpendingLimit storage sub = spendingLimits[msg.sender];
 
     if (escrow.user != msg.sender) {
       revert NotPromptOwner();
@@ -562,24 +570,30 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
       revert PromptNotCancellableYet();
     }
 
-    sub.spentAmount -= escrow.amount;
-
-    if (sub.allowance < sub.spentAmount + cancellationFee) {
-      revert InsufficientSpendingLimitAllowance();
+    uint256 amount = escrow.amount;
+    uint256 fee = cancellationFee;
+    if (fee > amount) {
+      fee = amount;
     }
+    _checkMaxFee(fee, _maxFee);
+    uint256 returned = amount - fee;
 
-    sub.spentAmount += cancellationFee;
-
-    // EFFECTS BEFORE INTERACTIONS. Both state writes now land before any external call, matching
-    // finalizePayment and processRefund. Previously they sat between the two token calls, so an
-    // observer re-entering mid-cancel saw an escrow that still read PENDING.
+    // EFFECTS BEFORE INTERACTIONS: every state write lands before any external call, matching
+    // finalizePayment and processRefund. The plan was charged `amount` when the prompt was sent
+    // and gets `returned` back, so `fee` stays spent.
+    spendingLimits[msg.sender].spentAmount -= returned;
     --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
 
-    ableToken.safeTransferFrom(msg.sender, treasury, cancellationFee);
-    evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
-    ableToken.safeTransfer(escrow.user, escrow.amount);
+    emit CancellationSettled(escrowId, fee, returned);
     emit PromptCancelled(msg.sender, _answerMessageId);
+    evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
+    if (fee != 0) {
+      ableToken.safeTransfer(treasury, fee);
+    }
+    if (returned != 0) {
+      ableToken.safeTransfer(msg.sender, returned);
+    }
   }
 
   /**
@@ -588,13 +602,17 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
    * @param _conversationId The ID of the conversation to update.
    * @param _encryptedPayload The encrypted ABI-encoded update instructions for the TEE.
    * @param _roflEncryptedKey The session key, encrypted for the ROFL worker.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the metadata update fee is above it.
    */
   function initiateMetadataUpdate(
     uint256 _conversationId,
     bytes calldata _encryptedPayload,
-    bytes calldata _roflEncryptedKey
+    bytes calldata _roflEncryptedKey,
+    uint256 _maxFee
   ) external {
-    _processDirectPayment(msg.sender, metadataUpdateFee);
+    uint256 fee = metadataUpdateFee;
+    _checkMaxFee(fee, _maxFee);
+    _processDirectPayment(msg.sender, fee);
 
     evmAIAgent.submitMetadataUpdate(
       msg.sender,
@@ -691,12 +709,23 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
   // --- Internal Helper Functions ---
 
   /**
-   * @notice Internal function to handle the spending limit checks and state changes for an escrowed payment.
-   * @dev This is an internal function and cannot be called directly.
+   * @notice Reverts when a fee is above the most its caller agreed to pay.
+   * @param _fee The fee the action costs now.
+   * @param _maxFee The most the caller agreed to pay.
+   */
+  function _checkMaxFee(uint256 _fee, uint256 _maxFee) private pure {
+    if (_fee > _maxFee) {
+      revert FeeAboveMaximum(_fee, _maxFee);
+    }
+  }
+
+  /**
+   * @notice Checks the user's spending limit and books an escrowed payment against it.
+   * @dev Moves no tokens: `_openEscrow` pulls the payment once the escrow record is written.
    * @param _user The user address initiating the action.
    * @param _fee The fee for the action.
    */
-  function _processEscrowPayment(address _user, uint256 _fee) private {
+  function _chargeEscrowPayment(address _user, uint256 _fee) private {
     SpendingLimit storage sub = spendingLimits[_user];
 
     if (sub.expiresAt == 0) {
@@ -712,6 +741,24 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
 
     sub.spentAmount += _fee;
     ++pendingEscrowCount[_user];
+  }
+
+  /**
+   * @notice Writes the escrow record and then pulls the payment into this contract.
+   * @dev The record is written first, so a token that calls out while it is transferred sees
+   *      the escrow as it will be.
+   * @param _escrowId The unique ID of the escrow.
+   * @param _user The user who pays.
+   * @param _fee The amount escrowed.
+   */
+  function _openEscrow(uint256 _escrowId, address _user, uint256 _fee) private {
+    escrows[_escrowId] = Escrow({
+      user: _user,
+      amount: _fee,
+      createdAt: block.timestamp,
+      status: EscrowStatus.PENDING
+    });
+    emit PaymentEscrowed(_escrowId, _user, _fee);
     ableToken.safeTransferFrom(_user, address(this), _fee);
   }
 

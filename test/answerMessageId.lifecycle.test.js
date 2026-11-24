@@ -57,7 +57,7 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
       const expiresAt = (await time.latest()) + 3600;
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      const tx = await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       const receipt = await tx.wait();
 
       // Extract answerMessageId from PaymentEscrowed (escrow contract)
@@ -90,7 +90,7 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
       // Step 1: initiate prompt — captures answerMessageId
-      const initTx = await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      const initTx = await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       const initReceipt = await initTx.wait();
 
       const escrowIface = escrow.interface;
@@ -131,7 +131,7 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
-      const initTx = await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      const initTx = await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       const initReceipt = await initTx.wait();
 
       const escrowIface = escrow.interface;
@@ -145,7 +145,7 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
 
       const agentIface = aiAgent.interface;
 
-      await expect(escrow.connect(user).cancelPrompt(answerMessageId))
+      await expect(escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256))
         .to.emit(escrow, "PromptCancelled")
         .withArgs(user.address, answerMessageId)
         .and.to.emit(aiAgent, "PromptCancelled")
@@ -163,7 +163,7 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
       // First prompt
-      const tx1 = await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      const tx1 = await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       const receipt1 = await tx1.wait();
       const escrowIface = escrow.interface;
       const agentIface = aiAgent.interface;
@@ -187,7 +187,9 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
 
       // Second prompt — use existing conversationId (already owned by user)
       const conversationId1 = agentIface.parseLog(agentLog1).args[1];
-      const tx2 = await escrow.connect(user).initiatePrompt(conversationId1, "0x", "0x");
+      const tx2 = await escrow
+        .connect(user)
+        .initiatePrompt(conversationId1, "0x", "0x", ethers.MaxUint256);
       const receipt2 = await tx2.wait();
 
       const escrowLog2 = receipt2.logs.find((l) => l.topics[0] === paymentEscrowedTopic);
@@ -223,7 +225,7 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
       const expiresAt = (await time.latest()) + 3600;
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
-      const initTx = await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      const initTx = await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       const initReceipt = await initTx.wait();
 
       const escrowIface = escrow.interface;
@@ -246,7 +248,7 @@ describe("Suite 2 — answerMessageId as Universal Linking Key", function () {
       const { escrow, user, deployer } = await loadFixture(deployFullFixture);
       const expiresAt = (await time.latest()) + 3600;
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
 
       const V2Factory = await ethers.getContractFactory("EVMAIAgentEscrowV2");
       const upgradedEscrow = await upgrades.upgradeProxy(await escrow.getAddress(), V2Factory, {

@@ -60,7 +60,7 @@ describe("Suite 4 — CidBundle Field Order and Event Emission", function () {
     const limitTx = await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
     await limitTx.wait();
 
-    const tx = await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+    const tx = await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
     const receipt = await tx.wait();
 
     const escrowIface = escrow.interface;
@@ -221,7 +221,7 @@ describe("Suite 4 — CidBundle Field Order and Event Emission", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
       // First prompt: new conversation (conversationId = 0 → auto-assigned)
-      const tx1 = await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      const tx1 = await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       const receipt1 = await tx1.wait();
 
       const escrowIface = escrow.interface;
@@ -255,7 +255,9 @@ describe("Suite 4 — CidBundle Field Order and Event Emission", function () {
         .undefined;
 
       // Second prompt: same conversation, no conversationCID
-      const tx2 = await escrow.connect(user).initiatePrompt(conversationId1, "0x", "0x");
+      const tx2 = await escrow
+        .connect(user)
+        .initiatePrompt(conversationId1, "0x", "0x", ethers.MaxUint256);
       const receipt2 = await tx2.wait();
 
       const escrowLog2 = receipt2.logs.find(

@@ -79,7 +79,9 @@ describe("E2E: Escrow Lifecycle", function () {
       const escrowAddr = await escrow.getAddress();
       const escrowBalBefore = await token.balanceOf(escrowAddr);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
 
       // Phase 1: tokens moved from user to escrow contract
@@ -106,12 +108,14 @@ describe("E2E: Escrow Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
 
       await expect(
-        escrow.connect(user).cancelPrompt(answerMessageId),
+        escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "PromptNotCancellableYet");
     });
 
@@ -124,13 +128,15 @@ describe("E2E: Escrow Lifecycle", function () {
       const userBalBefore = await token.balanceOf(user.address);
       const treasuryBalBefore = await token.balanceOf(treasury.address);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
 
       await time.increase(5);
 
-      await expect(escrow.connect(user).cancelPrompt(answerMessageId))
+      await expect(escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256))
         .to.emit(escrow, "PromptCancelled")
         .withArgs(user.address, answerMessageId);
 
@@ -151,13 +157,15 @@ describe("E2E: Escrow Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
       const promptMessageId = extractEventArgs(receipt, aiAgent.interface, "PromptSubmitted")[2];
 
       await time.increase(5);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       await expect(
         aiAgent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, cidBundle),
@@ -170,14 +178,16 @@ describe("E2E: Escrow Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
 
       await time.increase(5);
 
       await expect(
-        escrow.connect(keeper).cancelPrompt(answerMessageId),
+        escrow.connect(keeper).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NotPromptOwner");
     });
   });
@@ -189,7 +199,9 @@ describe("E2E: Escrow Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
 
@@ -208,7 +220,9 @@ describe("E2E: Escrow Lifecycle", function () {
 
       const userBalBefore = await token.balanceOf(user.address);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
 
@@ -233,7 +247,9 @@ describe("E2E: Escrow Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
 
@@ -254,7 +270,9 @@ describe("E2E: Escrow Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
       const promptMessageId = extractEventArgs(receipt, aiAgent.interface, "PromptSubmitted")[2];
@@ -281,7 +299,9 @@ describe("E2E: Escrow Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx1 = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx1 = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt1 = await tx1.wait();
       const agentArgs = extractEventArgs(receipt1, aiAgent.interface, "PromptSubmitted");
       const conversationId = agentArgs[1];
@@ -289,7 +309,7 @@ describe("E2E: Escrow Lifecycle", function () {
 
       const branchTx = await escrow
         .connect(user)
-        .initiateBranch(conversationId, promptMessageId, "0x1234", "0x5678");
+        .initiateBranch(conversationId, promptMessageId, "0x1234", "0x5678", ethers.MaxUint256);
       const branchReceipt = await branchTx.wait();
 
       const branchTopic = aiAgent.interface.getEvent("BranchRequested").topicHash;

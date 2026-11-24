@@ -50,11 +50,13 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
     it("finalizePayment reverts after cancelPrompt", async function () {
       const { escrow, mockAgent, user } = await loadFixture(deployFixture);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       const answerMessageId = 1;
 
       await time.increase(5);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
       await ethers.provider.send("hardhat_setBalance", [
@@ -69,11 +71,13 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
     it("processRefund reverts after cancelPrompt", async function () {
       const { escrow, user } = await loadFixture(deployFixture);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       const answerMessageId = 1;
 
       await time.increase(5);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       await time.increase(3601);
       await expect(escrow.processRefund(answerMessageId)).to.be.revertedWithCustomError(
@@ -87,7 +91,9 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
     it("cancelPrompt reverts after finalizePayment", async function () {
       const { escrow, mockAgent, user } = await loadFixture(deployFixture);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       const answerMessageId = 1;
 
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
@@ -99,14 +105,16 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
 
       await time.increase(5);
       await expect(
-        escrow.connect(user).cancelPrompt(answerMessageId),
+        escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "EscrowNotPending");
     });
 
     it("processRefund reverts after finalizePayment", async function () {
       const { escrow, mockAgent, user } = await loadFixture(deployFixture);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       const answerMessageId = 1;
 
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());
@@ -128,7 +136,9 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
     it("initiateMetadataUpdate reverts with NoActiveSpendingLimit", async function () {
       const { escrow, user } = await loadFixture(deployFixture);
       await expect(
-        escrow.connect(user).initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
 
@@ -137,7 +147,9 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
       await time.increase(3601);
       await expect(
-        escrow.connect(user).initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
     });
 
@@ -146,14 +158,18 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       const tinyAllowance = METADATA_FEE - 1n;
       await escrow.connect(user).setSpendingLimit(tinyAllowance, (await time.latest()) + 3600);
       await expect(
-        escrow.connect(user).initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiateMetadataUpdate(1, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
     });
 
     it("initiateBranch reverts with NoActiveSpendingLimit", async function () {
       const { escrow, user } = await loadFixture(deployFixture);
       await expect(
-        escrow.connect(user).initiateBranch(1, 2, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiateBranch(1, 2, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
 
@@ -162,7 +178,9 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 3600);
       await time.increase(3601);
       await expect(
-        escrow.connect(user).initiateBranch(1, 2, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiateBranch(1, 2, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
     });
 
@@ -171,7 +189,9 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       const tinyAllowance = BRANCH_FEE - 1n;
       await escrow.connect(user).setSpendingLimit(tinyAllowance, (await time.latest()) + 3600);
       await expect(
-        escrow.connect(user).initiateBranch(1, 2, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiateBranch(1, 2, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
     });
   });
@@ -181,10 +201,14 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       const { escrow, user } = await loadFixture(deployFixture);
       const exactAllowance = PROMPT_FEE + PROMPT_FEE - 1n;
       await escrow.connect(user).setSpendingLimit(exactAllowance, (await time.latest()) + 3600);
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY),
+        escrow
+          .connect(user)
+          .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
     });
 
@@ -192,9 +216,14 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       const { escrow, user } = await loadFixture(deployFixture);
       const exactAllowance = PROMPT_FEE * 2n;
       await escrow.connect(user).setSpendingLimit(exactAllowance, (await time.latest()) + 3600);
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
-      await expect(escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY)).to
-        .not.be.reverted;
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
+      await expect(
+        escrow
+          .connect(user)
+          .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256),
+      ).to.not.be.reverted;
     });
   });
 
@@ -206,16 +235,20 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       const escrowAddr = await escrow.getAddress();
       const userStartBalance = await mockToken.balanceOf(user.address);
 
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       const firstAnswerId = 1;
       expect(await mockToken.balanceOf(escrowAddr)).to.equal(PROMPT_FEE);
 
       await time.increase(5);
-      await escrow.connect(user).cancelPrompt(firstAnswerId);
+      await escrow.connect(user).cancelPrompt(firstAnswerId, ethers.MaxUint256);
       expect(await mockToken.balanceOf(escrowAddr)).to.equal(0);
       expect(await mockToken.balanceOf(user.address)).to.equal(userStartBalance - CANCELLATION_FEE);
 
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       const secondAnswerId = 3;
       expect(await mockToken.balanceOf(escrowAddr)).to.equal(PROMPT_FEE);
 
@@ -238,12 +271,16 @@ describe("EVMAIAgentEscrow — Security Edge Cases", function () {
       const { escrow, mockAgent, user } = await loadFixture(deployFixture);
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
 
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
-      await escrow.connect(user).initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
+      await escrow
+        .connect(user)
+        .initiatePrompt(0, MOCK_ENCRYPTED_PAYLOAD, MOCK_ROFL_KEY, ethers.MaxUint256);
       expect(await escrow.pendingEscrowCount(user.address)).to.equal(2);
 
       await time.increase(5);
-      await escrow.connect(user).cancelPrompt(1);
+      await escrow.connect(user).cancelPrompt(1, ethers.MaxUint256);
       expect(await escrow.pendingEscrowCount(user.address)).to.equal(1);
 
       const agentSigner = await ethers.getImpersonatedSigner(await mockAgent.getAddress());

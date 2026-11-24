@@ -51,10 +51,7 @@ describe("SapphireAIAgentEscrow — a re-entrant treasury cannot reach the user'
 
   /** Runs `entry` once with the treasury armed to re-enter, and reports what the callback saw. */
   async function attemptReentry(escrow, treasury, user, entry, args) {
-    await treasury.arm(
-      await escrow.getAddress(),
-      escrow.interface.encodeFunctionData(entry, args),
-    );
+    await treasury.arm(await escrow.getAddress(), escrow.interface.encodeFunctionData(entry, args));
     await escrow.connect(user)[entry](...args);
 
     expect(await treasury.reentryAttempted(), "the treasury callback never fired").to.be.true;
@@ -72,6 +69,7 @@ describe("SapphireAIAgentEscrow — a re-entrant treasury cannot reach the user'
       1n,
       1n,
       "re-entrant",
+      ethers.MaxUint256,
     ]);
 
     expect(succeeded, "the re-entry went through").to.be.false;
@@ -89,10 +87,13 @@ describe("SapphireAIAgentEscrow — a re-entrant treasury cannot reach the user'
   // the prompt owner, which the payout recipient cannot be.
   it("cannot be re-entered through the cancelPrompt payout", async function () {
     const { escrow, treasury, user } = await loadFixture(deployFixture);
-    await escrow.connect(user).initiatePrompt(0, "prompt");
+    await escrow.connect(user).initiatePrompt(0, "prompt", ethers.MaxUint256);
     await time.increase(5);
 
-    const { succeeded, reason } = await attemptReentry(escrow, treasury, user, "cancelPrompt", [1n]);
+    const { succeeded, reason } = await attemptReentry(escrow, treasury, user, "cancelPrompt", [
+      1n,
+      ethers.MaxUint256,
+    ]);
 
     expect(succeeded, "the re-entry went through").to.be.false;
     expect(reason, "the treasury is not the prompt owner").to.equal("NotPromptOwner");
@@ -107,7 +108,7 @@ describe("SapphireAIAgentEscrow — a re-entrant treasury cannot reach the user'
       treasury,
       user,
       "initiateMetadataUpdate",
-      [1n, "re-entrant"],
+      [1n, "re-entrant", ethers.MaxUint256],
     );
 
     expect(succeeded, "the re-entry went through").to.be.false;
