@@ -23,7 +23,7 @@ run is green.**
   | EVMAIAgentEscrow | `0x36ec08471F2b995024967204D7542713cFaf5Fa4` |
   | ABLE token (ERC-20 payment) | `0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80` |
 - **Cloud SQL:** the oracle reads the **same** warm cache as the social body —
-  instance `sense-ai-app-garrick`, DB `senseai` (verified: same `34.60.147.27`).
+  instance `sense-ai-app-garrick`, DB `senseai` (verified: same address; it is a secret, read it with `gcloud sql instances describe`, never write it here).
   Per-deployment mTLS cert `rofl-oracle-base-testnet` (distinct from the social
   body's `rofl-testnet`); minted by the init script.
 
@@ -408,14 +408,15 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
   Sapphire-testnet head is ~`32.97M`.) — *me*
 - [ ] **A.2 Cloud SQL wiring — ONE-TIME (you; gcloud auth):** `bun run rofl:init:cloud-sql:base-testnet`.
   Mints cert `rofl-oracle-base-testnet` on `sense-ai-app-garrick`, pushes the 4 Postgres
-  secrets to the `base-testnet` deployment, stamps `POSTGRES_HOST`. Idempotent.
+  secrets to the `base-testnet` deployment, stamps `POSTGRES_HOST` (it sits above the delimiter: the database address is a secret). Idempotent.
 - [ ] **A.3 Build the oracle image (me):** `bun run image:build:base-testnet` (`Dockerfile.oracle`, multi-stage — builds Brain + inner-plugin dists in-image).
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
 - [ ] **A.5 Sync secrets (me; gcloud for any SM keys):** `bun run rofl:set:base-testnet`.
 - [ ] **A.6 Build the ORC (me):** `bun run rofl:build:base-testnet`. Re-verify the trust root survived (re-apply A.1 values if the build rewrote it).
 - [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6`. NOT the `.orc` (gitignored build artifact).
-  **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` remains the last-deployed snapshot; the per-env files are its sources.
+  **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential, and the database address, is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` is the copy of the per-env file the last build used (`rofl:build` copies it); the per-env files are its sources, and a change to them (the database address injected, for one) reaches what runs only with the next `rofl update`.
 - [ ] **A.8 Push on-chain (me; wrapper):** `bun run oasis:unlock rofl update --deployment base-testnet --account oasis_testnet --gas-limit 200000` (not `rofl:update:base-testnet` — that re-runs `rofl:set` and churns every ciphertext).
+  ⚠️ **Once, after the change that made `POSTGRES_HOST` a secret:** run A.5 (`rofl:set`) before this step even for a manifest-only push. The compose now injects `POSTGRES_HOST` from a ROFL secret; until `rofl:set` has pushed that secret, the oracle starts with an empty host and refuses at boot (`missing: POSTGRES_HOST`). `rofl:set` itself refuses database settings with no `POSTGRES_HOST` above the delimiter.
 - [ ] **A.9 Deploy (me; wrapper, only when Garrick says go — it rents the machine):** `bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
 
 ---

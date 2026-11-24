@@ -24,6 +24,10 @@
 #   silently takes the wrong branch. sense-ai-core shipped exactly that on mainnet.
 #   `mcp` is the one deliberate exception (emitted bare on purpose).
 #
+#   POSTGRES_HOST — the database address is a secret, because this compose is tracked in a
+#   public repo. Any literal value in the plaintext block fails; it belongs above the
+#   delimiter, where it is injected as ${POSTGRES_HOST:-}.
+#
 # Secrets are NOT checked: they are `${VAR:-}` placeholders here by design, resolved
 # at runtime from the ROFL manifest, so a missing one fails closed rather than shipping.
 set -euo pipefail
@@ -149,6 +153,14 @@ while IFS= read -r line; do
   [ -z "$val" ] && continue
 
   [[ "$val" == '${'* ]] && continue        # runtime-injected secret
+
+  # The database address is a secret: this compose is tracked in a public repo, so a literal
+  # here publishes it. The value is not printed. An empty value and the injected
+  # `${POSTGRES_HOST:-}` were passed just above, so only a non-empty literal reaches this.
+  if [ "$key" = "POSTGRES_HOST" ]; then
+    failures+="  ✗ POSTGRES_HOST has a literal value in the plaintext config\n      the database address is a secret — move it ABOVE the delimiter in the env file so it is injected as \${POSTGRES_HOST:-}\n"
+    continue
+  fi
 
   # Recorded for the presence assertions after the loop, and recorded HERE — after BOTH the
   # empty-value and runtime-injection guards — because the assert below claims the key is

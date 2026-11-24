@@ -22,6 +22,7 @@ services:
       - GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY:-}
       - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
       - PAYLOAD_MIRROR_SA_KEY=${PAYLOAD_MIRROR_SA_KEY:-}
+      - POSTGRES_HOST=${POSTGRES_HOST:-}
       - BASE_SEPOLIA_TESTNET_RPC=${BASE_SEPOLIA_TESTNET_RPC:-}
       - SLACK_ACCESS_TOKEN=${SLACK_ACCESS_TOKEN:-}
       - SEND_GRID_API_KEY=${SEND_GRID_API_KEY:-}
@@ -67,7 +68,6 @@ services:
       - SANTIMENT_ENABLED=false
       - CMC_ENABLED=false
       - CFGI_ENABLED=false
-      - POSTGRES_HOST=34.27.181.47
       - PAYLOAD_MIRROR_BUCKET=tradable-app-senseai-payloads
       - BASE_MAINNET_RPC=https://mainnet.base.org
       - SAPPHIRE_MAINNET_RPC=https://sapphire.oasis.io
