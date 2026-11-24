@@ -4,7 +4,7 @@ End-to-end guide for running the full SenseAI stack on a local Hardhat node. Cov
 
 | Repo | Role |
 |---|---|
-| `able-contracts` | AbleToken ERC-20 payment token |
+| `able-contracts` | `AbleToken`, the fee token this guide deploys locally (an ordinary ERC-20; the escrow takes whichever token it is initialised with) |
 | `tokenized-ai-agent` | Smart contracts (EVMAIAgent + Escrow) and oracle |
 | `sense-ai-subgraph` | The Graph indexer for on-chain events |
 | `sense-ai-dapp` | React/Vite frontend |
@@ -76,7 +76,8 @@ Open `tokenized-ai-agent/.env.base-localnet` and set:
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 USER_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
 DOMAIN=localhost
-# Leave PUBLIC_KEY and contract addresses blank for now
+DEPLOY_MODE=fresh
+# Leave AI_AGENT_CONTRACT_ADDRESS and AI_AGENT_ESCROW_CONTRACT_ADDRESS empty for now
 ```
 
 ---
@@ -84,6 +85,8 @@ DOMAIN=localhost
 ## Phase 2 — Deploy contracts
 
 ### Step 3 — Deploy AbleToken (Tab 1)
+
+> To run locally with `SenseToken` (SenseAI's fee token, from `sense-contracts`) instead: deploy it with `bun run deploy:localnet` in `sense-contracts` (it reads `sense-contracts/.env.localnet`: `TOKEN_NAME`, `TOKEN_SYMBOL`, `INITIAL_SUPPLY` in wei, and `OWNER_ADDRESS`, which receives the whole supply; set it to Account #0 so Step 7's transfer is allowed, since the token moves only to or from its owner or a listed address), use its printed proxy address everywhere this guide uses the token address (the addresses below then differ), set `VITE_FEE_TOKEN=SENSE` in the dApp, and after Step 4 list the escrow and the treasury on it with `bun run list-fee-token-exempt:base-localnet` (as the token's owner).
 
 The `able-contracts/.env.localnet` already has the Hardhat account #0 keys pre-filled. Verify it has `INITIAL_SUPPLY` set (check against `.env.example` — it should be `1000000000000000000000000000`).
 
@@ -100,7 +103,7 @@ Output:
 ✅ AbleToken proxy deployed to: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 ```
 
-Copy the proxy address. This is your `TOKEN_CONTRACT_ADDRESS`.
+Copy the proxy address. This is your `TOKEN_CONTRACT_ADDRESS`: set it now in `tokenized-ai-agent/.env.base-localnet` → `TOKEN_CONTRACT_ADDRESS`, since the `DEPLOY_MODE=fresh` deploy in Step 4 refuses without it.
 
 ---
 
@@ -136,11 +139,7 @@ Output:
 🔷 Uncompressed Public Key: 0x04<128 hex chars>
 ```
 
-Copy the **Uncompressed Public Key** (starts with `0x04`, 132 chars total). Paste it into **three places**:
-
-1. `tokenized-ai-agent/.env.base-localnet` → `PUBLIC_KEY=0x04...`
-2. `oracle/.env.oracle.base-localnet` → `PUBLIC_KEY=0x04...`
-3. `sense-ai-dapp/.env.localnet` → `VITE_ORACLE_PUBLIC_KEY=0x04...`
+Copy the **Uncompressed Public Key** (starts with `0x04`, 132 chars total) into `sense-ai-dapp/.env.localnet` → `VITE_ORACLE_PUBLIC_KEY=0x04...`. On a local network the oracle derives the same key from its `PRIVATE_KEY` (`oracle/src/oracleKeys.js`); it reads no `PUBLIC_KEY` setting.
 
 ---
 
@@ -151,12 +150,12 @@ Copy the **Uncompressed Public Key** (starts with `0x04`, 132 chars total). Past
 TOKEN_CONTRACT_ADDRESS=0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 AI_AGENT_CONTRACT_ADDRESS=0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
 AI_AGENT_ESCROW_CONTRACT_ADDRESS=0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
+DEPLOY_MODE=upgrade
 ```
 
 **`oracle/.env.oracle.base-localnet`** — copy keys and addresses:
 ```sh
 PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-PUBLIC_KEY=0x04<from Step 5>
 IRYS_PAYMENT_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 TOKEN_CONTRACT_ADDRESS=0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 AI_AGENT_CONTRACT_ADDRESS=0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
@@ -171,6 +170,7 @@ VITE_TOKEN_CONTRACT_ADDRESS=0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 VITE_AGENT_CONTRACT_ADDRESS=0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
 VITE_ESCROW_CONTRACT_ADDRESS=0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
 VITE_THE_GRAPH_API_URL=http://localhost:8000/subgraphs/name/sense-ai
+VITE_FEE_TOKEN=ABLE
 ```
 
 ---
@@ -187,7 +187,7 @@ bunx hardhat console --network localnet
 Inside the console:
 
 ```js
-const token = await ethers.getContractAt("AbleToken", "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512")
+const token = await ethers.getContractAt("@openzeppelin/contracts/token/ERC20/IERC20.sol:IERC20", "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512")
 const [owner] = await ethers.getSigners()
 await token.transfer("0x70997970C51812dc3A010C7d01b50e0d17dc79C8", ethers.parseEther("100"))
 // Verify balance

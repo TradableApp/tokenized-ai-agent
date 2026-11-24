@@ -244,30 +244,33 @@ different: the oracle does construct `SentimentEngine`, so `SANTIMENT_ENABLED` a
 with price lookups:
 
 ```js
-// sense-ai-core/src/character.ts:96-98  ·  oracle/src/elizaos/character.js:58-60
+// sense-ai-core/src/character.ts:96-98
 COINGECKO_PRO_API_KEY: process.env.COINGECKO_API_KEY || "",
 COINGECKO_ENVIRONMENT: process.env.COINGECKO_API_KEY ? "pro" : "demo",
 ```
+
+In the oracle the same two names are the environment of the CoinGecko tool server it starts,
+filled from `COINGECKO_API_KEY` (`oracle/src/elizaos/coingeckoToolServer.js:38-47`).
 
 **`COINGECKO_PRO_API_KEY` is NOT an env var you set — setting it changes nothing at runtime.** The
 snippet above is the trap: `COINGECKO_PRO_API_KEY` is the name of the *ElizaOS setting*, and it is
 populated from `process.env.COINGECKO_API_KEY`. **No code path that runs** reads
 `process.env.COINGECKO_PRO_API_KEY`.
 
-**Where it came from.** `oracle/src/aiAgentOracle.js:384-388` holds a commented-out
+**Where it came from.** `oracle/src/aiAgentOracle.js:631-635` holds a commented-out
 `plugin-coingecko` loader that *did* read it:
 
 ```js
 // We use the @elizaos/plugin-mcp to connect to Coingecko MCP server instead
 // ...(process.env.COINGECKO_API_KEY?.trim() &&
 // process.env.COINGECKO_PRO_API_KEY?.trim()
-//   ? ['@elizaos/plugin-coingecko']
+//   ? ["@elizaos/plugin-coingecko"]
 //   : []),
 ```
 
 That code does not run. It is almost certainly why the env var was set in the first place: the
 plugin was replaced with the MCP approach, the check was commented out, and the env entry
-survived. Recorded so a reader tracing only `character.js:58` does not conclude they have missed a
+survived. Recorded so a reader tracing only `coingeckoToolServer.js:45` does not conclude they have missed a
 consumer — and so the var is not re-added if anyone un-comments that loader, which would need only
 `COINGECKO_API_KEY` anyway.
 
@@ -276,7 +279,12 @@ That file is **gitignored and not in this repo**, so you will not find it in a f
 on the deploy machine. base-mainnet is not provisioned, so the line is inert. Delete it when
 base-mainnet is provisioned rather than copying it forward, and set only `COINGECKO_API_KEY`.
 
-Unsetting the key would silently demote **price** to the demo tier — which is why it stays set.
+The key stays set, and in the oracle it cannot be left out: on every network that is not local the
+oracle refuses to start without it (`COINGECKO_API_KEY is missing or empty`, or the example file's
+placeholder; `oracle/src/startupConfig.js`), so nothing is demoted. Only a local network, which is
+not asked for it, starts the tool server with no key, in the demo environment, and every price
+call then fails. In `sense-ai-core` an unset key starts its CoinGecko server in the demo
+environment with no key, and nothing there stops it.
 The rest of this subsection is historical: the news flag it points at is inert (see the §2
 warning). For the record, at the time it worked like this:
 `sense-ai-brain`'s `coinGeckoAdapter.ts` constructor read `COINGECKO_NEWS_ENABLED !== "false"`, and

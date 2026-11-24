@@ -1,12 +1,8 @@
-# Oracle Brain — Base-testnet ROFL deploy + smoke-test runbook (Phase 4)
+# Oracle — Base-testnet ROFL deploy + smoke-test runbook
 
-**Goal:** deploy the Brain-migrated oracle to **Base-testnet ROFL** and prove, with an
-automated smoke test, that it answers dApp prompts with real Brain analysis
-(`reasoning[]` + `sources[]`). Final phase of the Oracle Brain migration
-(**CU-86d3dwme6**); closes **CU-86d3cfa41** after the smoke test passes. The smoke
-script (`oracle/scripts/base-testnet-smoke.js`) lives on branch
-`test/oracle-base-testnet-smoke_CU-86d3dwme6` (PR #57) — **don't merge it until the
-run is green.**
+**Goal:** deploy the oracle to **Base-testnet ROFL** and prove, with an automated smoke test
+(`oracle/scripts/base-testnet-smoke.js`), that it answers dApp prompts with real Brain analysis
+(`reasoning[]` + `sources[]`).
 
 ---
 
@@ -16,14 +12,11 @@ run is green.**
   admin `oasis_testnet`). The oracle **inside** it listens to **Base Sepolia**
   (chainId 84532) contract events — EVM family → ECIES encryption (not Sapphire's
   protocol-level TEE encryption).
-- **Contracts already live on Base Sepolia** — no redeploy:
-  | Contract | Address |
-  |---|---|
-  | EVMAIAgent | `0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D` |
-  | EVMAIAgentEscrow | `0x36ec08471F2b995024967204D7542713cFaf5Fa4` |
-  | ABLE token (ERC-20 payment) | `0xD77FF82e661C3838a59ea78bbF31F8c4c2BD8A80` |
+- **Contracts:** a fresh agent and escrow pair on Base Sepolia, deployed from the current
+  contracts in the order of [§1.2](#12-fresh-pair-in-order). Its addresses and the fee token's
+  are filled on deploy day.
 - **Cloud SQL:** the oracle reads the **same** warm cache as the social body —
-  instance `sense-ai-app-garrick`, DB `senseai` (verified: same address; it is a secret, read it with `gcloud sql instances describe`, never write it here).
+  the Cloud SQL instance (name and address are in the operator's private notes), DB `senseai`.
   Per-deployment mTLS cert `rofl-oracle-base-testnet` (distinct from the social
   body's `rofl-testnet`); minted by the init script.
 
@@ -31,23 +24,20 @@ run is green.**
 
 ## 1. Wallets & currencies (the important part)
 
-Three wallets. **You do NOT need to create a new one** — the two Base wallets already
-exist and hold funds; only ETH top-up on the test wallet is likely needed.
+Three wallets, plus the oracle's own address, which the ROFL key service makes.
 
 | Wallet | Address | Role | Currency it needs | Status / source |
 |---|---|---|---|---|
 | **Oasis testnet** (`oasis_testnet`) | (your oasis CLI account) | **ROFL admin** — signs `rofl:update` / `rofl:deploy` on Sapphire testnet + rents the TEE machine | **Sapphire testnet ROSE (TEST)** — gas + `playground_short` rental (5 TEST/hr) | Top up from the **Oasis testnet faucet** (a few TEST for a couple of hours). |
-| **Tradable Deploy Wallet** | `0x0DEC482E804965F53da3d7094c5E0fd8B3dA9a12` | **Deployed the contracts + token and owns both proxies until the handover**; holds 999.99M ABLE. It does **not** run the oracle on Base Sepolia: there the oracle's signing key and its encryption key both come from the ROFL key service (`oracle/src/oracleKeys.js`; `PRIVATE_KEY` must not be set), and the oracle prints its own address at start-up (`[OracleKeys] mode=rofl … signer=0x…`). The deploy wallet was given the oracle role at deployment. Before the handover the owner moves the role to the oracle's own address and only then removes the deploy wallet's, in the order in [§1.1](#11-moving-the-oracle-role-to-the-rofl-signer-in-this-order). Never publish an encryption key from it. | **Base Sepolia ETH** (owner transactions) | Had **0.0493 ETH** on 2026-07-20. It's the ABLE source if the test wallet ever needs more. |
-| **Test / user wallet** — Tradable Test User (MetaMask) | `0x971c5a2058eecEd3D3C177A9bFdA7ddFafDe8057` | **Submits the prompt** — `approve` → `setSpendingLimit` → `initiatePrompt` (3 txs). | **Base Sepolia ETH** (gas ×3) + **ABLE** (prompt fee = **1 ABLE**) | **FUNDED ✅ — 0.0499 ETH + 9,897 ABLE** (no top-up). Export its MetaMask private key for `SMOKE_PRIVATE_KEY` at run time. (Replaces the public hardhat #0 key, whose funds got swept.) |
+| **Tradable Deploy Wallet** | `0x0DEC482E804965F53da3d7094c5E0fd8B3dA9a12` | **Deploys the pair and owns both proxies until the handover.** It does **not** run the oracle on Base Sepolia: there the oracle's signing key and its encryption key both come from the ROFL key service (`oracle/src/oracleKeys.js`; `PRIVATE_KEY` must not be set), and the oracle prints its own address at start-up (`[OracleKeys] mode=rofl … signer=0x…`). The deploy wallet was given the oracle role at deployment. Before the handover the owner moves the role to the oracle's own address and only then removes the deploy wallet's, in the order in [§1.1](#11-moving-the-oracle-role-to-the-rofl-signer-in-this-order). Never publish an encryption key from it. | **Base Sepolia ETH** (owner transactions) | Check its balance before deploy day. |
+| **Test / user wallet** — Tradable Test User (MetaMask) | `0x971c5a2058eecEd3D3C177A9bFdA7ddFafDe8057` | **Submits the prompt** — `approve` → `setSpendingLimit` → `initiatePrompt` (3 txs). | **Base Sepolia ETH** (gas ×3) + the pair's **fee token** (at least the escrow's `promptFee()`) | Export its MetaMask private key for `SMOKE_PRIVATE_KEY` at run time. |
 
-**Funding status — ALL SORTED (verified 2026-07-20), no top-ups needed:**
-- `oasis_testnet` (Sapphire testnet): **88.58 TEST** — deploy gas ~0.02 + rental 5 TEST/hr → ~17 h runway. ✅
-- Test wallet `0x971c…8057`: **0.0499 ETH + 9,897 ABLE**. ✅
-- Deploy wallet `0x0DEC…9a12`: **0.0493 ETH** for owner transactions. ✅ The oracle's own address (printed at start-up) pays the answer gas and must hold Base Sepolia ETH too.
+The oracle's own address (printed at start-up) pays the answer gas and must hold Base Sepolia ETH
+too. Check every balance before deploy day.
 
 The **only** run-time input from you: the Test User wallet's **private key** (MetaMask → Account details → Show private key) passed as `SMOKE_PRIVATE_KEY`.
 
-**Do we need the deployment wallet?** Only as the owner (until the handover) and the ABLE treasury. It is not the oracle: the oracle answers from the address the ROFL key service gives it, which is the one that needs Base Sepolia ETH for answer gas. Do not keep the deploy wallet's oracle role for the oracle's sake; it is removed before the handover, and only after the oracle's own address holds the role (§1.1).
+**Do we need the deployment wallet?** Only as the owner (until the handover). It is not the oracle: the oracle answers from the address the ROFL key service gives it, which is the one that needs Base Sepolia ETH for answer gas. Do not keep the deploy wallet's oracle role for the oracle's sake; it is removed before the handover, and only after the oracle's own address holds the role (§1.1).
 
 ### 1.1 Moving the oracle role to the ROFL signer (in this order)
 
@@ -232,14 +222,15 @@ address and symbol in step 1.
    token and `EXPECTED_FEE_TOKEN_SYMBOL` from `ENV_FILE` alone (all four are required) and prints
    the network, agent, escrow and token before it reads anything. It checks that
    `escrow.ableToken()` is the token and that the token's symbol is `EXPECTED_FEE_TOKEN_SYMBOL`,
-   lists whichever of the two is not listed, and reads both back. A token whose symbol is `SENSE`
+   lists whichever of the two is not listed, and reads both back. An account that is the token's
+   owner is listed by name on every run, since `isTransferExempt` is true for the owner and the
+   by-name list cannot be read, so it stays listed when ownership moves (see the exempt-list rules
+   below); a second run therefore sends one transaction for an owner-treasury and none otherwise. A token whose symbol is `SENSE`
    (a token that keeps a list) but that answers as one with no list is refused, with or without
    `--check`: it is not the token it says it is. When the signer is not
    the token's owner (the Safe owns it on mainnet) it sends nothing and prints the calls as Safe
    Transaction Builder JSON: save it as a file, load it in the owner Safe's Transaction Builder,
-   simulate, execute. An account that is the token's owner (a treasury that owns the token) is
-   listed again on every run, since the token reads its owner as exempt and a listing by name
-   cannot be told apart; on the Safe path it is in the printed batch every time. Then `bun run
+   simulate, execute. On that path an owner-treasury is in the printed batch every time. Then `bun run
    list-fee-token-exempt:base-testnet --check`, which only reads and fails while either is
    unlisted (run it again on run day). It passes an owner-treasury as exempt by ownership and says
    its listing by name cannot be read, so run the listing itself, not only `--check`, before the
@@ -339,8 +330,11 @@ address and symbol in step 1.
     exemption moves with it.
 
 **Exempt-list rules.** On a token that keeps a list, a transfer passes when either end is listed.
-List the escrow and the treasury by name, the treasury even when it is the token's owner. Every
-new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
+List the escrow and the treasury by name, the treasury even when it is the token's owner: the
+owner is exempt by being the owner, and that exemption moves with ownership, so only the by-name
+listing keeps the treasury exempt once ownership moves (to the Safe on mainnet). The listing
+script does this: it lists an account that is the owner on every run.
+Every new escrow needs its own listing, and a new treasury (`setTreasury`, or a Safe that will become
 the treasury, as the admin rehearsal does) must be listed before it is set: an unlisted treasury
 refuses every fee a user pays straight to it (cancel, branch, rename or delete). The listing
 script and its `--check` cover the escrow and the treasury the escrow names now, not the e2e
@@ -350,10 +344,9 @@ runner's funding account (step 4).
 
 ## 2. Pre-flight (local, no deploy)
 - [ ] `main` current; submodule + Brain dist built: `git submodule update --init --recursive && bun run prepare:brain`.
-- [ ] Contracts compiled: `bun run compile` (root). Oracle unit tests green: `cd oracle && bun test` (195 passing).
-- [ ] Checkout the smoke branch so the test tooling is present: `git checkout test/oracle-base-testnet-smoke_CU-86d3dwme6`.
+- [ ] Contracts compiled: `bun run compile` (root). Oracle unit tests green: `cd oracle && bun run test` (mocha; `bun test` would run Bun's own runner instead).
 - [ ] `oracle/.env.oracle.base-testnet` sanity (run via `!` — guarded):
-  - Contract addresses = the Base Sepolia set above; `NETWORK_NAME=baseSepolia`.
+  - Contract addresses = the fresh pair's (§1.2); `NETWORK_NAME=baseSepolia`.
   - `BRAIN_CONTEXT_ENABLED` **not** `false` (absent/true → Brain reads the warm cache).
   - Postgres config present: `POSTGRES_PORT=5432`, `POSTGRES_DATABASE=senseai`, `POSTGRES_USER=senseai` (HOST stamped by the init script in Phase A.2). Secrets (`POSTGRES_CLIENT_CERT/KEY/PASSWORD/SERVER_CA_CERT`) are pushed by the init script — leave as placeholders.
   - `mcp=` present-and-empty/unquoted if the oracle loads the MCP plugin.
@@ -370,9 +363,9 @@ time. All `bun run` from the **repo root**.
 ### Non-interactive Oasis CLI — the passphrase is in the Keychain, use the wrapper
 
 Every signing step below (`rofl update`, `rofl deploy`, `rofl machine …`) prompts for the
-account passphrase on a TTY. **Do not type it and do not stop to ask for it.** Garrick keeps
-the passphrases in the macOS login Keychain, one item per CLI account —
-`oasis-passphrase-oasis_testnet` and `oasis-passphrase-oasis_mainnet` — and
+account passphrase on a TTY. **Do not type it and do not stop to ask for it.** The operator keeps
+the passphrases in the macOS login Keychain, one item per CLI account — the operator's
+keychain item for the `oasis_testnet` passphrase and the one for the `oasis_mainnet` passphrase — and
 `scripts/oasis-unlock.exp` feeds them to any `oasis` command, answers the terminal probe
 and the y/N confirmations, and never prints the secret:
 
@@ -407,29 +400,29 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
   under `deployments.base-testnet.trust_root` in `rofl.yaml`. (Committed is `27756069`;
   Sapphire-testnet head is ~`32.97M`.) — *me*
 - [ ] **A.2 Cloud SQL wiring — ONE-TIME (you; gcloud auth):** `bun run rofl:init:cloud-sql:base-testnet`.
-  Mints cert `rofl-oracle-base-testnet` on `sense-ai-app-garrick`, pushes the 4 Postgres
+  Mints cert `rofl-oracle-base-testnet` on the Cloud SQL instance (name and address are in the operator's private notes), pushes the 4 Postgres
   secrets to the `base-testnet` deployment, stamps `POSTGRES_HOST` (it sits above the delimiter: the database address is a secret). Idempotent.
 - [ ] **A.3 Build the oracle image (me):** `bun run image:build:base-testnet` (`Dockerfile.oracle`, multi-stage — builds Brain + inner-plugin dists in-image).
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
 - [ ] **A.5 Sync secrets (me; gcloud for any SM keys):** `bun run rofl:set:base-testnet`.
 - [ ] **A.6 Build the ORC (me):** `bun run rofl:build:base-testnet`. Re-verify the trust root survived (re-apply A.1 values if the build rewrote it).
-- [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** branch `chore/oracle-base-testnet-deploy_CU-86d3dwme6`. NOT the `.orc` (gitignored build artifact).
+- [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** on a manifest branch. NOT the `.orc` (gitignored build artifact).
   **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential, and the database address, is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` is the copy of the per-env file the last build used (`rofl:build` copies it); the per-env files are its sources, and a change to them (the database address injected, for one) reaches what runs only with the next `rofl update`.
 - [ ] **A.8 Push on-chain (me; wrapper):** `bun run oasis:unlock rofl update --deployment base-testnet --account oasis_testnet --gas-limit 200000` (not `rofl:update:base-testnet` — that re-runs `rofl:set` and churns every ciphertext).
   ⚠️ **Once, after the change that made `POSTGRES_HOST` a secret:** run A.5 (`rofl:set`) before this step even for a manifest-only push. The compose now injects `POSTGRES_HOST` from a ROFL secret; until `rofl:set` has pushed that secret, the oracle starts with an empty host and refuses at boot (`missing: POSTGRES_HOST`). `rofl:set` itself refuses database settings with no `POSTGRES_HOST` above the delimiter.
-- [ ] **A.9 Deploy (me; wrapper, only when Garrick says go — it rents the machine):** `bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
+- [ ] **A.9 Deploy (me; wrapper, only when the operator says go — it rents the machine):** `bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
 
 ---
 
 ## 4. Phase B — Fund the test wallet
-- [x] **Nothing to fund** — all three wallets verified funded (2026-07-20): test wallet `0x971c…8057` (0.0499 ETH + 9,897 ABLE), `oasis_testnet` (88.58 TEST), deploy wallet `0x0DEC…9a12` (0.0493 ETH). Just have the Test User's private key ready for `SMOKE_PRIVATE_KEY`.
+- [ ] The test wallet holds Base Sepolia ETH and the pair's fee token (§1); the oracle's own address holds Base Sepolia ETH; `oasis_testnet` holds TEST for the rental. Have the Test User's private key ready for `SMOKE_PRIVATE_KEY`.
 
 ---
 
 ## 5. Phase C — Boot verification (`oasis rofl machine logs --deployment base-testnet` → tmp file; passphrase)
 - [ ] `✓ Project built successfully` (multi-stage re-bundle in the TEE).
 - [ ] Trust root verified — **no light-block loop** (confirms A.1).
-- [ ] `[BrainContext]` — **NOT** `market context disabled`; Cloud SQL mTLS connects to `sense-ai-app-garrick`.
+- [ ] `[BrainContext]` — **NOT** `market context disabled`; Cloud SQL mTLS connects to the Cloud SQL instance (name and address are in the operator's private notes).
 - [ ] Oracle event listener up, polling **Base Sepolia**; ElizaOS + senseai plugin load; MCP registers (if used); no default-agent fallback.
 - [ ] Log-reading note: `oasis rofl machine logs` wraps app stdout as `module":"runtime" level":"warn"`; the app's real level is the text prefix in `msg` — filter on that, not the JSON level.
 - [ ] `[Stream] Serving live reasoning on port 8787.` (absent only when `STREAM_ENABLED=false`; `[Stream] The live reasoning stream could not start (…)` means the oracle answers without it).
@@ -588,7 +581,7 @@ one. Take the key from the oracle's `[OracleKeys] … encryptionKey=` start-up l
 means prompts land on-chain and are never answered). `SMOKE_ENV=base-mainnet`
 (`bun run smoke:base-mainnet`) switches to the mainnet RPC/chainId and requires the same four.
 
-**Modes (run-day extensions, CU-14ym9bvdmjr):**
+**Modes (run-day extensions):**
 
 | Variable | Effect |
 |---|---|
@@ -616,17 +609,17 @@ the oracle; out of scope here.
 
 **Exactly what it does, step by step:**
 1. **Connect + guard** — connects to Base Sepolia, asserts `chainId == 84532` **before spending** (a wrong RPC can't burn real tokens).
-2. **Balances + fee** — reads `promptFee()`, ETH + ABLE balances; hard-fails on zero ETH, warns on low.
+2. **Balances + fee** — reads `promptFee()`, ETH and fee token balances; hard-fails on zero ETH, warns on low.
 3. **Plan setup** — `token.approve(escrow, …)` then `escrow.setSpendingLimit(…, +1 day)` (skips if already active).
-4. **Encrypt** — generates a random 32-byte session key, AES-256-GCM-encrypts the prompt payload (`{promptText, isNewConversation, …}`), and ECIES-encrypts the session key to the oracle's `PUBLIC_KEY` (reusing the oracle's own `src/ecies.js` → wire-format guaranteed to match).
+4. **Encrypt** — generates a random 32-byte session key, AES-256-GCM-encrypts the prompt payload (`{promptText, isNewConversation, …}`), and ECIES-encrypts the session key to `SMOKE_ORACLE_PUBLIC_KEY` (the oracle's `encryptionKey=` from its `[OracleKeys]` start-up line; reusing the oracle's own `src/ecies.js` → wire-format guaranteed to match).
 5. **Submit** — `escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)`; parses `PromptSubmitted` for `answerMessageId`.
-6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**) with `eth_getLogs` walked in contiguous windows of at most `SMOKE_LOGS_BLOCK_RANGE` blocks (default 10 — Alchemy's free-tier cap; the public node allows a few hundred), resuming from a refused window rather than re-widening it and logging the node's own error, up to `SMOKE_TIMEOUT_MS` (5 min). The 2026-11-02 run day lost 6/6 smoke verdicts to a single-request `[submitBlock, head]` poll against an Alchemy endpoint while every answer was on-chain within a minute (`scripts/smoke/answerWait.js`).
+6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**) with `eth_getLogs` walked in contiguous windows of at most `SMOKE_LOGS_BLOCK_RANGE` blocks (default 10 — Alchemy's free-tier cap; the public node allows a few hundred), resuming from a refused window rather than re-widening it and logging the node's own error, up to `SMOKE_TIMEOUT_MS` (5 min). A single request over `[submitBlock, head]` is refused by a capped endpoint, so the wait walks windows instead (`scripts/smoke/answerWait.js`).
 7. **Fetch + decrypt** — fetches the answer `MessageFile` from the storage gateway (Autonomys/Irys, 30-s bounded), AES-decrypts it with the session key.
 8. **Assert** — prints the answer and judges it with `src/answerQuality.js` (burst: `scripts/smoke/burst.js`; injection: `scripts/smoke/injection.js`), then writes the metrics file.
 
 **What it tests / the pass criteria:**
 - **Oracle is alive + wired:** it received the prompt, decrypted it (proves ECIES + the oracle's Base signer works), produced an answer, and submitted it on-chain.
-- **Brain is working:** the decrypted answer has non-empty **`reasoning[]`** and **`sources[]`** — populated only from the Brain warm cache (macro + news). This is the CU-86d3cfa41 signal.
+- **Brain is working:** the decrypted answer has non-empty **`reasoning[]`** and **`sources[]`** — populated only from the Brain warm cache (macro + news).
 
 **Exit codes (for a scheduled canary):**
 | Code | Meaning | Action |
@@ -639,7 +632,7 @@ the oracle; out of scope here.
 no macro/news rows. The **social testnet body** keeps it warm; if it's not running, seed a
 couple of `market_news` + macro rows (or run the social body briefly) and re-run.
 
-### Restart check (CU-14ym9bvdmju)
+### Restart check
 
 Proves that restarting the ROFL oracle machine while a prompt is pending yields exactly one
 answer: no duplicate, no lost job. Sequence: **submit → marker → restart → one answer → settle.**
@@ -703,16 +696,11 @@ The metrics file gains a `settle` block (`settleMs`, `durationMs`, `fromBlock`, 
 ---
 
 ## 7. Iterate
-If the smoke run surfaces a script bug (encoding, ABI, gateway, timing), fix it **on the
-smoke branch**, commit `[CU-86d3dwme6]`, re-run — repeat until exit 0. This is why #57
-stays open: prove it against the live oracle first.
+If the smoke run surfaces a script bug (encoding, ABI, gateway, timing), fix it on a branch and
+re-run — repeat until exit 0.
 
-## 8. Merge + close-out (only once green)
-- [ ] Merge **PR #57** (smoke tooling) → `/merged` cleanup.
-- [ ] Merge the `rofl.yaml` manifest PR from A.7.
-- [ ] Close **CU-86d3cfa41** (reasoning/sources verified end-to-end).
-- [ ] Annotate/close **CU-86d3dwme6** (oracle body Brain migration verified on Base-testnet).
-- [ ] Update memory `project_oracle-brain-migration`.
+## 8. Close-out (only once green)
+- [ ] Merge the `rofl.yaml` manifest change from A.7.
 
 ## 9. Payload mirror (GCS write-through) — one-time setup per network
 
@@ -725,20 +713,22 @@ on-chain CID stays the root of trust — the bucket is a cache.** The mirror is 
 prompt's critical path: a failing bucket costs one alert and a climbing `payloadMirror.failed`
 counter in the heartbeat vitals, never an unanswered prompt. Unset bucket = mirror disabled.
 
-| Network | Bucket (`${project_id}-senseai-payloads`) | GCP project |
-| --- | --- | --- |
-| Base Sepolia (`base-testnet`) | `tradable-app-garrick-senseai-payloads` | `tradable-app-garrick` |
-| Base mainnet (`base-mainnet`) | `tradable-app-senseai-payloads` | `tradable-app` |
+One bucket per network, named `<gcp-project-id>-senseai-payloads` after the GCP project that
+network's oracle uses (the testnet project for `base-testnet`, the production project for
+`base-mainnet`). The placeholders below (`<gcp-project-id>`, `<bucket>`, `<service-account>`) stand
+for real names that are not written in this public file: the operator reads them from their own
+gcloud configuration (`gcloud config get-value project`, `gcloud storage buckets list`,
+`gcloud iam service-accounts list`) or the Infrastructure repository.
 
-- [ ] **9.1 Bucket (Infrastructure repo, `senseai_payloads.tf`, CU-14ym9bvm1d2):** uniform access,
+- [ ] **9.1 Bucket (Infrastructure repo, `senseai_payloads.tf`):** uniform access,
   `allUsers` → `roles/storage.objectViewer`, CORS `GET`/`HEAD` from the dApp origins, no
-  versioning or lifecycle. The same file creates the writer SA `senseai-payload-writer` with
+  versioning or lifecycle. The same file creates the writer service account `<service-account>` with
   **`roles/storage.objectCreator` on the bucket only** — it can add objects, never read,
   overwrite or delete them, so a leaked key cannot tamper with mirrored history.
 - [ ] **9.2 Writer key (you; gcloud, by hand — never Terraform state):**
   ```bash
   gcloud iam service-accounts keys create /tmp/payload-writer.json \
-    --iam-account senseai-payload-writer@<project>.iam.gserviceaccount.com --project <project>
+    --iam-account <service-account>@<gcp-project-id>.iam.gserviceaccount.com --project <gcp-project-id>
   jq -c . /tmp/payload-writer.json | pbcopy   # ONE line — the secrets generator rejects newlines
   rm /tmp/payload-writer.json
   ```
@@ -787,12 +777,16 @@ target the `base-mainnet` app. Rules that fell out of doing it:
 - Medium offer on the mainnet provider: 2 ROSE/h, 1,000 ROSE/month, **10000 MiB storage**.
   Note the lease expiry from `oasis rofl machine show` (paid-until) and top up before it lapses.
 - Switch-over for the real mainnet: re-run `rofl:init:cloud-sql:base-mainnet` and
-  `rofl:set:base-mainnet` WITHOUT the override so the deployment picks up `tradable-app`
-  and a dedicated oracle key.
+  `rofl:set:base-mainnet` WITHOUT the override so the deployment picks up the production GCP
+  project (`<gcp-project-id>`).
+  The oracle's keys need no setting: the ROFL key service makes them with the chain id and the
+  agent address in their key ids (`oracle/src/oracleKeys.js`), so the mainnet pair gets its own
+  signer and encryption key.
 
 
-`oracle/.env.oracle.base-mainnet` still carries placeholder contract addresses and
-`PUBLIC_KEY`, so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
+`compose.base-mainnet.yaml` still carries placeholder contract addresses (the mainnet pair's
+are filled on deploy day) and a `PUBLIC_KEY` placeholder (a setting the oracle no longer reads;
+the preflight flags it all the same), so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
 bundle**. That is the intended state, not a broken checkout: `ethers` accepts a
 non-address string as an ENS name and defers resolution, so a bundle built from
 placeholders would boot healthy, accept prompts, and fail every answer while the wallet
@@ -897,7 +891,7 @@ and waits for its one-hour refund.
 - [ ] Before the ownership handover, the oracle role is moved to the oracle's own address and the deploy wallet's removed, in the order in §1.1 (never the removal first).
 - [ ] Safe threshold and signer set confirmed; Tenderly simulation green before any batch is sent.
 - [ ] Wait one heartbeat interval before judging boot; read `machine show` → `net.oasis.error` before reading logs.
-- [ ] Payload mirror: `tradable-app-senseai-payloads` applied via Cloud Build on promotion to `prod`; writer key minted and pasted single-line (§9); `payloadMirror.failed` stays 0 across the first heartbeat after the first answered prompt.
+- [ ] Payload mirror: the production `<bucket>` applied via Cloud Build on promotion to `prod`; writer key minted and pasted single-line (§9); `payloadMirror.failed` stays 0 across the first heartbeat after the first answered prompt.
 
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.
