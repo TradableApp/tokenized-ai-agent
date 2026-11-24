@@ -9,7 +9,8 @@
  * separately ("POST /v2/<key>", a query string), and a part has no scheme in front for that to
  * find. So the secret parts themselves are collected here, from every configured value that
  * holds an address and from every setting named as a credential, and removed by value from
- * whatever text they turn up in.
+ * whatever text they turn up in. The database's host is one of them however short it is: the
+ * value of POSTGRES_HOST and the host of every postgres address.
  *
  * This is the second line. The first is not recording requests at all (sentryInit.js) and
  * describing errors before they are printed (errorDescription.js).
@@ -30,6 +31,20 @@ const CREDENTIAL_PARAMETER = /key|token|secret|auth|password|passwd|signature|cr
 const CREDENTIAL_SETTING = /(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_KEY)$/i;
 // A project or account number is an id, not a key.
 const ONLY_DIGITS = /^\d+$/;
+// The database's address is a secret (a ROFL secret, never written into the public compose)
+// whatever its length: an IPv4 address can be shorter than any credential. So the value of the
+// setting that holds it, and the host of every database address, are collected whole.
+// A loopback host is the same on every machine and says nothing, and removing "localhost" from
+// every line would blank ordinary text, so it is left out.
+const HOST_SETTING = /^POSTGRES(?:_[A-Z0-9]+)*_HOST$/i;
+const DATABASE_SCHEME = /^postgres(?:ql)?:$/i;
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i;
+
+/** The database host as written and, for an IPv6 host, without its brackets; nothing for loopback. */
+function databaseHost(host) {
+  if (!host || /\s/.test(host) || LOOPBACK.test(host)) return [];
+  return [...new Set([host, host.replace(/^\[|\]$/g, "")])];
+}
 
 function escapeForPattern(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -47,6 +62,8 @@ function decoded(text) {
 function secretsOfAddress(address) {
   const found = [];
   const long = (value) => value.length >= MIN_LENGTH && !ONLY_DIGITS.test(value);
+
+  if (DATABASE_SCHEME.test(address.protocol)) found.push(...databaseHost(address.hostname));
 
   if (address.password.length >= MIN_PASSWORD_LENGTH) found.push(address.password);
   // A key given as the user name, with no password after it.
@@ -92,6 +109,7 @@ function requestSecretsIn(env) {
     }
     // A credential set on its own, not inside an address: a database password, an API key.
     const bare = raw.trim().replace(/^["']+|["']+$/g, "");
+    if (HOST_SETTING.test(name)) databaseHost(bare).forEach((host) => secrets.add(host));
     if (
       !heldAnAddress &&
       CREDENTIAL_SETTING.test(name) &&
@@ -110,7 +128,60 @@ function requestSecretsIn(env) {
   return [...secrets];
 }
 
+// The settings that name the database's host on their own, outside an address.
+const HOST_SETTINGS = ["POSTGRES_HOST", "PGHOST"];
+// The database's own settings (its user, its database names, its host, …), whose values an error
+// line about a table is not to carry.
+const DATABASE_SETTING = /^(?:POSTGRES_|PG)[A-Z0-9_]*$/;
+// The schemes of a database address, whose path names the database: DATABASE_SCHEME, above.
+
+/**
+ * Every configured value, of any length, that a database identifier kept in a described error
+ * must not be (errorDescription.js keeps a quoted table or column name): each secret above, the
+ * value of every setting named as a credential, the user name, password and host of every
+ * configured address, the database a database address names, the value of every database
+ * setting (POSTGRES_*, PG*: its user and database names among them), and the database host,
+ * whole and label by label. Many are too short to
+ * remove from every line; an identifier that equals one is removed all the same. In lower case.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @returns {Set<string>}
+ */
+function configuredNamesIn(env) {
+  const names = new Set(requestSecretsIn(env));
+  const addHost = (host) => {
+    names.add(host);
+    for (const label of host.split(".")) names.add(label);
+  };
+  for (const [name, raw] of Object.entries(env)) {
+    if (typeof raw !== "string") continue;
+    const parts = raw.split(/[\s,]+/).map((part) => part.replace(/^["']+|["']+$/g, ""));
+    for (const part of parts) {
+      if (!SCHEME.test(part)) continue;
+      let address;
+      try {
+        address = new URL(part);
+      } catch {
+        continue;
+      }
+      names.add(decoded(address.username));
+      names.add(decoded(address.password));
+      addHost(address.hostname);
+      if (DATABASE_SCHEME.test(address.protocol)) {
+        names.add(decoded(address.pathname.replace(/^\/+/, "").split("/")[0]));
+      }
+    }
+    const bare = raw.trim().replace(/^["']+|["']+$/g, "");
+    if (CREDENTIAL_SETTING.test(name) || DATABASE_SETTING.test(name)) names.add(bare);
+    if (HOST_SETTINGS.includes(name)) addHost(bare);
+  }
+  names.delete("");
+
+  return new Set([...names].map((each) => each.toLowerCase()));
+}
+
 let pattern = null;
+let configuredNames = new Set();
 
 /**
  * Reads the configuration again. Called once the environment is complete (the env files are
@@ -122,6 +193,16 @@ function refreshRequestSecrets(env = process.env) {
   // an address is read in lower case whatever case it was written in.
   const secrets = requestSecretsIn(env).sort((a, b) => b.length - a.length);
   pattern = secrets.length ? new RegExp(secrets.map(escapeForPattern).join("|"), "gi") : null;
+  configuredNames = configuredNamesIn(env);
+}
+
+/**
+ * Whether `name` is, in any case, one of the configured values `configuredNamesIn` collects.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isConfiguredName(name) {
+  return configuredNames.has(String(name).toLowerCase());
 }
 
 /** The text without any configured secret. Anything that is not a string is returned as it is. */
@@ -133,4 +214,9 @@ function withoutRequestSecrets(text) {
 
 refreshRequestSecrets();
 
-module.exports = { requestSecretsIn, refreshRequestSecrets, withoutRequestSecrets };
+module.exports = {
+  requestSecretsIn,
+  refreshRequestSecrets,
+  withoutRequestSecrets,
+  isConfiguredName,
+};

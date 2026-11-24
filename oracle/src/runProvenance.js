@@ -1,5 +1,3 @@
-const { reasoningFromThoughts } = require("./answerProvenance");
-
 /**
  * Run-correlated provenance collector.
  *
@@ -59,7 +57,7 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
    * be in flight together under the p-queue, and keying by room would let the second clobber the
    * first — attributing one user's thoughts to the other's answer, permanently.
    */
-  function begin(roomKey, { sources = [] } = {}) {
+  function begin(roomKey) {
     // Evict oldest first so a leaked run cannot displace live ones indefinitely.
     while (runs.size >= maxRuns) {
       const oldest = runs.keys().next().value;
@@ -70,8 +68,6 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     const runId = `run-${(nextRunId += 1)}`;
     runs.set(runId, {
       roomKey,
-      sources: Array.isArray(sources) ? sources : [],
-      thoughts: [],
       currentAction: "",
     });
 
@@ -120,41 +116,21 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     runs.get(runId).currentAction = "";
   }
 
-  /**
-   * Records a thought. `action` wins when supplied; otherwise the action currently in flight
-   * attributes it — ACTION_STARTED tells us what is running, while onResponse delivers the
-   * thought without that attribution, and pairing them is the point of listening to both.
-   *
-   * An event for a run we never saw is IGNORED rather than auto-creating one: a stray or late
-   * event must not conjure a run that then leaks.
-   */
-  function recordThought(runId, thought, action) {
-    const run = runs.get(runId);
-    if (!run) return;
-
-    const text = typeof thought === "string" ? thought.trim() : "";
-    if (!text) return;
-
-    const attributed = typeof action === "string" && action.trim() ? action.trim() : run.currentAction;
-    run.thoughts.push(attributed ? { thought: text, action: attributed } : { thought: text });
+  /** The action in flight for a run as far as attribution goes, "" for none or an unknown run. */
+  function currentActionOf(runId) {
+    return runs.get(runId)?.currentAction ?? "";
   }
 
   /**
-   * Ends a run and returns its provenance, forgetting it.
+   * Ends a run, forgetting it. Returns nothing.
    *
-   * Used for RUN_ENDED and RUN_TIMEOUT alike: a timed-out run must still surrender the partial
-   * reasoning it gathered rather than discarding it silently. An unknown key yields the empty
-   * shape, so the answer path never has to branch on whether tracking happened.
+   * Used for RUN_ENDED and RUN_TIMEOUT alike; an unknown key is a no-op, so the answer path never
+   * has to branch on whether tracking happened. The run's sources and reasoning are not here:
+   * both go to the live stream (`stream/answerStream.js`), a thought with the action read with
+   * `currentActionOf` when it arrived, and what is stored is the stream's record.
    */
   function finish(runId) {
-    const run = runs.get(runId);
-    if (!run) return { reasoning: [], sources: [] };
-
     forget(runId);
-    return {
-      reasoning: reasoningFromThoughts(run.thoughts),
-      sources: run.sources,
-    };
   }
 
   /** Tracked run count — exposed so leak safety can be asserted rather than assumed. */
@@ -162,7 +138,7 @@ function createRunProvenance({ maxRuns = DEFAULT_MAX_RUNS } = {}) {
     return runs.size;
   }
 
-  return { begin, actionStarted, actionCompleted, recordThought, finish, size };
+  return { begin, actionStarted, actionCompleted, currentActionOf, finish, size };
 }
 
 module.exports = { createRunProvenance, DEFAULT_MAX_RUNS };

@@ -8,6 +8,22 @@ const crypto = require("crypto");
 const { default: PQueue } = require("p-queue");
 const { Mutex } = require("async-mutex");
 const { LRUCache } = require("lru-cache");
+const { holdFrameworkLogLevel } = require("./elizaos/frameworkLogLevel");
+
+// --- Configuration & Initialization ---
+
+// Load the specific environment file first for precedence.
+if (process.env.ENV_FILE) {
+  dotenv.config({ path: process.env.ENV_FILE });
+}
+// Load the base .env.oracle file to fill in any missing non-secret variables.
+dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
+
+// Before the framework is loaded, which reads its log level once: its information and debug
+// lines are not printed at all (frameworkLogLevel.js). After the env files, so a stricter level
+// the operator set there is kept.
+holdFrameworkLogLevel();
+
 const {
   ElizaOS,
   stringToUuid,
@@ -54,19 +70,23 @@ const {
   createPollBackoff,
 } = require("./pollBackoff");
 const { describeError, describedError, errorKind } = require("./errorDescription");
+
+// The plugin logs to the same place as the oracle: it describes its errors with the oracle's own
+// describer, which knows the secret parts of every configured address. Handed over here, when the
+// plugin is loaded, so it is in place before the agent and its actions are built in `start`.
+// Without it the plugin gives an error's kind alone, and a failed action's result would lose its
+// cause; a build without the seam is a stale build, so the oracle refuses to load it.
+if (typeof senseaiPluginModule.setErrorDescriber !== "function") {
+  throw new Error(
+    "setErrorDescriber missing from the plugin build — rebuild plugin-senseai (bun run build) " +
+      "from this source before starting the oracle.",
+  );
+}
+senseaiPluginModule.setErrorDescriber(describeError);
 const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
 const { createRoleGate } = require("./oracleRoleGate");
-
-// --- Configuration & Initialization ---
-
-// Load the specific environment file first for precedence.
-if (process.env.ENV_FILE) {
-  dotenv.config({ path: process.env.ENV_FILE });
-}
-// Load the base .env.oracle file to fill in any missing non-secret variables.
-dotenv.config({ path: path.resolve(__dirname, "../.env.oracle") });
 
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
@@ -288,7 +308,18 @@ const { startOracleHeartbeat } = require("./oracleHeartbeat");
 const { providerTally } = require("./providerTally");
 const { classifyIntent, queryGeminiDirect } = require("./geminiDirect");
 const { recordAnswerActivity } = require("./answerActivity");
-const { sourcesFromState } = require("./answerProvenance");
+const { sourcesFromState, stepFromThought } = require("./answerProvenance");
+const { encryptSymmetrically } = require("./stream/frameCrypto");
+const { noopSink, resolveReplicaId } = require("./stream/streamContract");
+const {
+  createAnswerStream,
+  createOfflineStream,
+  streamCounters,
+  noteThoughtDropped,
+  setThoughtDropListener,
+} = require("./stream/answerStream");
+const { sanitizeThought, warmThoughtSanitizer } = require("./stream/thoughtSanitizer");
+const { createThoughtDropAlerter } = require("./stream/thoughtDropAlert");
 const { createRunProvenance } = require("./runProvenance");
 const {
   selectAnswer,
@@ -298,7 +329,11 @@ const {
 } = require("./answerSelection");
 const { createToolServerWatch } = require("./elizaos/toolServerWatch");
 const { MARKET_DATA_TOOLS } = require("./elizaos/marketDataTools");
-const { isMutedFrameworkLog } = require("./elizaos/mutedFrameworkLogs");
+const {
+  cleanedLogCall,
+  cleanRuntimeLogger,
+  FRAMEWORK_LOG_LEVELS,
+} = require("./elizaos/mutedFrameworkLogs");
 
 const toolServerWatch = createToolServerWatch({
   expectedTools: MARKET_DATA_TOOLS,
@@ -349,6 +384,20 @@ const MOCK_E2E_SOURCES = [
 ];
 const MOCK_E2E_REASONING_DURATION = 3; // seconds — the dApp renders "Thought for {n} seconds"
 
+// MOCK-mode only: "__E2E_STEP_MS__:<n>" spaces the reasoning sentinel's steps <n> ms apart on the
+// live stream, so an e2e test can see steps arrive before the answer. Capped like the delay.
+const MOCK_STEP_MS_SENTINEL = /__E2E_STEP_MS__:(\d+)/;
+const MAX_MOCK_STEP_MS = 5000;
+
+// MOCK-mode only: "__E2E_RERUN__" makes the first run of a prompt send its sources and one step,
+// then end interrupted, and the handler run the prompt again in this process, once per answer:
+// a real second run, opening with reset "retry", in seconds rather than the retry queue's minute.
+const MOCK_RERUN_SENTINEL = /__E2E_RERUN__/;
+const mockRerunsDone = new LRUCache({ max: 1000 });
+
+/** Thrown by the first run of an "__E2E_RERUN__" prompt; caught in handlePrompt (mock only). */
+class MockRerunError extends Error {}
+
 // Nothing is built while this module loads. The keys arrive later (see oracleKeys.js), and
 // `configure` builds the provider, the signer and the contract from them.
 let provider;
@@ -372,6 +421,8 @@ function configure(keys) {
     AI_AGENT_CONTRACT_ADDRESS,
   ));
   decryptor = keys.decryptor;
+  // A malformed ORACLE_REPLICA_ID stops start-up here, not in the middle of an answer.
+  replicaId = resolveReplicaId();
   // Keys made by the key service were made for one chain; `start` checks the RPC is on it.
   expectedChainId = keys.mode === "rofl" ? CHAIN_IDS[NETWORK_NAME] : undefined;
 
@@ -458,6 +509,22 @@ const runProvenance = createRunProvenance();
 // what it says: this runtime is wired, any other one is not.
 let provenanceHandlersRuntime = null;
 let senseAiAgentId = null;
+
+// --- LIVE REASONING STREAM ---
+// Where frames go. The no-op sink until the stream server sets its own (setStreamSink); the
+// frames, and the record built from them, are the same either way.
+let streamSink = noopSink;
+// This process's replica id (ORACLE_REPLICA_ID or random), settled in configure().
+let replicaId = null;
+// Answer ids this process has opened a run for: a second run of one is a "retry" reset.
+const answersRun = new LRUCache({ max: 10000 });
+// The most recent streams, so a test can wait for their queued frames. Weakly held and bounded, so
+// it never keeps a finished run's frames alive; read by nothing else.
+const RECENT_STREAMS_KEPT = 64;
+const recentStreams = [];
+// A dropped thought leaves an answer with less reasoning and nothing else to show for it: alert by
+// kind, once and then at most hourly (stream/thoughtDropAlert.js). The heartbeat has the counts.
+setThoughtDropListener(createThoughtDropAlerter({ alert: sendAlert }));
 
 // The Postgres url the agent schema — and with it the oracle-state tables — was migrated on;
 // null where the oracle runs without Postgres. Set by initializeEliza, read by start().
@@ -586,13 +653,13 @@ async function initializeEliza() {
   // Create the orchestrator
   elizaOS = new ElizaOS();
 
-  // Some of the framework's lines are not printed. See mutedFrameworkLogs for which and why.
-  for (const level of ["info", "log", "warn", "error"]) {
+  // Some of the framework's lines are not printed, and every other one is cleaned first. See
+  // mutedFrameworkLogs for which and why. The agent runtime's own logger is replaced the same
+  // way once the runtime is built (below).
+  for (const level of FRAMEWORK_LOG_LEVELS) {
     const original = elizaLogger[level];
     if (typeof original !== "function") continue;
-    elizaLogger[level] = (...args) => {
-      if (!isMutedFrameworkLog(args, level)) original.apply(elizaLogger, args);
-    };
+    elizaLogger[level] = cleanedLogCall(original.bind(elizaLogger), level);
   }
 
   // Add and start the SenseAI Agent. The order around it (clean what is stored, name the
@@ -644,6 +711,11 @@ async function initializeEliza() {
       startAgents: async (agentIds) => {
         senseAiAgentId = agentIds[0];
         console.log("senseAiAgentId", senseAiAgentId);
+
+        // The runtime's own logger, which warns with the start of the model's reply when it
+        // cannot read it, is cleaned before the agent starts and prints anything. Throws when it
+        // cannot be, and the agent is then not started.
+        for (const agentId of agentIds) cleanRuntimeLogger(elizaOS.getAgent(agentId));
 
         // Start the agent lifecycle
         // The Brain's connection stays HERE, in the host: brainContext builds it with the mTLS
@@ -711,25 +783,8 @@ function strip0xPrefix(hexString) {
 const GCM_IV_BYTES = 12;
 const GCM_AUTH_TAG_BYTES = 16;
 
-/**
- * Symmetrically encrypts a data object using AES-256-GCM.
- * @param {object} dataObject The object to encrypt.
- * @param {Buffer} key The 32-byte symmetric key.
- * @returns {string} A string containing "iv.authTag.encryptedData".
- */
-function encryptSymmetrically(dataObject, key) {
-  const iv = crypto.randomBytes(GCM_IV_BYTES);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const dataBuffer = Buffer.from(JSON.stringify(dataObject));
-
-  // The auth tag MUST be appended to the encrypted data to match Web Crypto's output.
-  const encryptedContent = Buffer.concat([cipher.update(dataBuffer), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  const combinedBuffer = Buffer.concat([encryptedContent, authTag]);
-
-  // Use BASE64 encoding and the "iv.encrypted" format to match the frontend.
-  return `${iv.toString("base64")}.${combinedBuffer.toString("base64")}`;
-}
+// `encryptSymmetrically` lives in stream/frameCrypto.js: the stored files and the live frames
+// are sealed by the one function. It is still exported from this module.
 
 /**
  * Symmetrically decrypts data encrypted with AES-256-GCM.
@@ -1110,7 +1165,9 @@ function registerProvenanceHandlers(runtime) {
  * @param {string} userWallet - The user's wallet address for entity/room isolation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryElizaOS(conversationHistory, conversationId, userWallet) {
+async function queryElizaOS(conversationHistory, conversationId, userWallet, liveStream) {
+  // The answer's live stream (see stream/answerStream.js); an offline one for a caller with none.
+  const stream = liveStream ?? createOfflineStream();
   console.log("[Routing] Path (i): Initializing ElizaOS structured I/O loop...");
 
   if (!elizaOS) await initializeEliza();
@@ -1232,7 +1289,9 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
 
   // Handle, not roomId: two prompts for the SAME conversation can be in flight together
   // under the p-queue, and a room-keyed run would let the second clobber the first.
-  const runId = runProvenance.begin(roomId, { sources: composedSources });
+  const runId = runProvenance.begin(roomId);
+  // Sources before inference, so before this attempt's first step (see answerStream).
+  stream.sources(composedSources);
   const reasoningStart = Date.now();
 
   // We use handleMessage which runs the full processing pipeline:
@@ -1245,6 +1304,8 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
     // earlier run stored an apology). Callback ordering must not decide what a user is
     // charged for.
     const emittedTexts = [];
+    // False once the run has ended by any exit; a thought after that is not a step of it.
+    let runOpen = true;
 
     try {
       await elizaOS.handleMessage(
@@ -1286,7 +1347,27 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             // reasoning, which is stored with the answer for good.
             const failureKind = toolFailureKind(content.thought);
             if (content.thought && !failureKind) {
-              runProvenance.recordThought(runId, content.thought);
+              // Sanitised ONCE, before it is either streamed or stored. The stream starts the
+              // work now and applies it in the order thoughts arrived. The action in flight NOW
+              // titles it: by the time it is applied, ACTION_COMPLETED may have cleared it. The
+              // step is made from the thought itself, not from the run's record, so it is kept
+              // however late its sanitising finishes, as long as the stream is still taking
+              // steps; an untitled one is numbered when it is applied. A dropped thought is
+              // neither streamed nor stored, and is counted. See stream/thoughtSanitizer.js.
+              const thought = content.thought;
+              if (!runOpen) {
+                // The run has ended: its steps were the steps of an attempt now over, and
+                // another provider may be answering under the next attempt.
+                noteThoughtDropped("late");
+              } else {
+                const action = runProvenance.currentActionOf(runId);
+                stream.step(async () => {
+                  const clean = await sanitizeThought(thought);
+                  if (!clean) return null;
+                  const entry = action ? { thought: clean, action } : { thought: clean };
+                  return (index) => stepFromThought(entry, index);
+                });
+              }
             }
 
             // Keep the ATTRIBUTION, not just the text. Every emitter tags its callback with the
@@ -1304,12 +1385,17 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
           },
           // Triggered if the internal pipeline crashes
           onError: async (error) => {
+            runOpen = false;
             console.error("[ElizaOS] Runtime Error during handleMessage:", describedError(error));
+            // The steps already given are kept, under this attempt: the stream applies them
+            // before the next tier's attempt frame. Nothing waits for them here; the handler's
+            // flush before it reads the record does.
             runProvenance.finish(runId); // release the run; a rejected answer still frees it
             reject(error);
           },
           // CRITICAL: This is our signal that the tool-use/thought chain is finished
           onComplete: async () => {
+            runOpen = false;
             console.log("[ElizaOS] Processing complete signal received.");
             // WHY THIS WHOLE BODY IS WRAPPED. `onComplete` is an async callback whose promise
             // nothing awaits — the `new Promise(async (resolve, reject) => …)` executor does not
@@ -1323,6 +1409,10 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
             // change, which is what made the hazard reachable at all: `onError` and the outer
             // catch already release the run, and this exit was the only one that could not.
             try {
+              // The steps of this run are not waited for here: they are made from the thoughts
+              // themselves, so the handler's one bounded flush before it reads the stream's
+              // record (handlePrompt, handleRegeneration) is what keeps a late one.
+              //
               // A tool step failed and nothing answered without it: what is left is an apology
               // and an acknowledgement, and storing either would charge the user for it.
               // Rejecting hands the prompt to another provider. See queryAIModel for which.
@@ -1341,13 +1431,14 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
               // encrypted into an immutable MessageFile. See outboundSanitizer.js.
               const finalResponseText = await sanitizeAnswer(selectAnswer(emittedTexts));
               if (finalResponseText) {
-                // Real reasoning/sources for the answer MessageFile (CU-86d3cfa41):
-                // thought steps from the runtime + the warm-cache sources injected above.
-                const { reasoning, sources } = runProvenance.finish(runId);
+                // What is stored comes from the stream's record, never from here: the sources and
+                // steps went to the stream as they were known, so `reasoning` and `sources` are
+                // empty, as on every other tier (asAnswer).
+                runProvenance.finish(runId);
                 resolve({
                   text: finalResponseText.trim(),
-                  reasoning,
-                  sources,
+                  reasoning: [],
+                  sources: [],
                   reasoningDuration: Math.max(1, Math.round((Date.now() - reasoningStart) / 1000)),
                 });
               } else {
@@ -1371,6 +1462,7 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet) {
       // handleMessage can throw SYNCHRONOUSLY, before onError ever runs — the two other exits
       // release the run, and this one silently did not, stranding it until cap eviction weeks
       // later inside a long-lived TEE process. Caught in review; a stub that throws now covers it.
+      runOpen = false;
       runProvenance.finish(runId);
       reject(err);
     }
@@ -1417,6 +1509,137 @@ function hasMockDropSentinel(text) {
 function hasMockReasoningSentinel(text) {
   if (typeof text !== "string") return false;
   return MOCK_REASONING_SENTINEL.test(text);
+}
+
+/**
+ * Parses the optional "__E2E_STEP_MS__:<n>" marker (mock-mode only): the wait before each of the
+ * reasoning sentinel's steps, capped at MAX_MOCK_STEP_MS.
+ * @param {string} text
+ * @returns {number}
+ */
+function parseMockStepMs(text) {
+  if (typeof text !== "string") return 0;
+  const match = text.match(MOCK_STEP_MS_SENTINEL);
+  if (!match) return 0;
+  return Math.min(Number(match[1]), MAX_MOCK_STEP_MS);
+}
+
+/** Detects the optional "__E2E_RERUN__" marker (mock-mode only). */
+function hasMockRerunSentinel(text) {
+  if (typeof text !== "string") return false;
+  return MOCK_RERUN_SENTINEL.test(text);
+}
+
+/**
+ * Mock mode's fixed sources and reasoning, sent through the same tap as a model's: the stream's
+ * sources and steps, each step sanitised and converted as a real thought is. The stored record is
+ * then built from these frames like any other. `partial` sends the sources and the first step only.
+ */
+async function emitMockReasoning(stream, promptText, { partial = false } = {}) {
+  const stepMs = parseMockStepMs(promptText);
+  stream.sources(MOCK_E2E_SOURCES);
+  const steps = partial ? MOCK_E2E_REASONING.slice(0, 1) : MOCK_E2E_REASONING;
+  for (const [index, { title, description }] of steps.entries()) {
+    if (stepMs > 0) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, stepMs);
+        timer.unref();
+      });
+    }
+    stream.step(async () => {
+      const clean = await sanitizeThought(description);
+      return clean ? stepFromThought({ thought: clean, action: title }, index) : null;
+    });
+  }
+  await stream.flush();
+}
+
+/**
+ * Sets where live frames go (the stream server, once it exists). Anything that is not a sink
+ * means none: the answer path then builds offline streams and sends nothing.
+ */
+function setStreamSink(sink) {
+  streamSink = sink;
+}
+
+/**
+ * The heartbeat's `stream` block: the answer path's counts, and the stream server's own stats
+ * (`server`, null when the sink has none or they cannot be read). Never an id.
+ */
+function streamHeartbeatSnapshot() {
+  let server = null;
+  try {
+    if (typeof streamSink?.stats === "function") server = streamSink.stats() ?? null;
+  } catch {
+    server = null;
+  }
+  return { ...streamCounters.snapshot(), server };
+}
+
+/**
+ * Opens the live stream for one run of an answer. Never throws (see createAnswerStream). The
+ * reset says "retry" when this process has opened a run for this answer before.
+ */
+function openAnswerStream(answerMessageId, sessionKey) {
+  const key = answerMessageId.toString();
+  const reason = answersRun.has(key) ? "retry" : "start";
+  answersRun.set(key, true);
+  if (!replicaId) {
+    // Settled in configure(); a module loaded without it (tests) still gets a valid one.
+    try {
+      replicaId = resolveReplicaId();
+    } catch {
+      replicaId = resolveReplicaId({});
+    }
+  }
+  const stream = createAnswerStream({
+    answerMessageId: key,
+    sessionKey,
+    replica: replicaId,
+    sink: streamSink,
+    reason,
+  });
+  recentStreams.push(new WeakRef(stream));
+  if (recentStreams.length > RECENT_STREAMS_KEPT) recentStreams.shift();
+  return stream;
+}
+
+/** Test seam: waits for the frames the most recent streams have queued. */
+async function flushStreamsForTest() {
+  await Promise.all(recentStreams.map((ref) => ref.deref()?.flush()));
+}
+
+/**
+ * The reasoning, sources, answering attempt and duration an assistant MessageFile stores.
+ * Reasoning, sources and the attempt come from the stream's record, which is the projection of the
+ * frames it built: what was shown live is what is stored. Empty lists are left out, as before, and
+ * so is `answerAttempt` when it is 1 (no fallback tier was entered), so such a file is unchanged.
+ */
+function storedExtrasFrom({ reasoning, sources, answerAttempt }, reasoningDuration) {
+  return {
+    ...(reasoning.length ? { reasoning } : {}),
+    ...(sources.length ? { sources } : {}),
+    ...(answerAttempt > 1 ? { answerAttempt } : {}),
+    ...(reasoningDuration !== undefined ? { reasoningDuration } : {}),
+  };
+}
+
+/**
+ * Whether this run's own submitAnswer transaction was mined and succeeded although waiting for its
+ * receipt threw (an RPC drop or a timeout after it landed). Read by the transaction's hash, so only
+ * this run's submission can count: a revert, a cancellation or another replica's answer leaves no
+ * successful receipt under it. Never asked for a `JobAlreadyFinalized` revert, which the handler's
+ * own branch keeps. Never throws: a receipt that cannot be read counts as not mined.
+ */
+async function minedDespiteFailedWait(error, txHash) {
+  if (typeof txHash !== "string" || txHash === "") return false;
+  if (isContractError(error, "JobAlreadyFinalized")) return false;
+  try {
+    const receipt = await provider.getTransactionReceipt(txHash);
+    return receipt?.status === 1;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1468,15 +1691,22 @@ function shouldInitializeConversation({
  * @param {Array<object>} conversationHistory - The full conversation history with roles.
  * @param {string} conversationId - The on-chain conversation ID.
  * @param {string} userWallet - The user's wallet address.
+ * @param {object} [liveStream] - The answer's live stream (stream/answerStream.js). Each fallback
+ *          tier actually entered is a new attempt on it; the ElizaOS path sends its sources and
+ *          steps to it. The handlers store reasoning and sources from its record, never from the
+ *          answer returned here.
  * @returns {Promise<{text: string, reasoning: Array<{title: string, description: string}>, sources: Array<{title: string, url: string}>, reasoningDuration?: number}>}
  *          The normalized answer object (CU-86d3cfa41) — string-only provider
- *          paths carry empty reasoning/sources.
+ *          paths carry empty reasoning/sources, and so does the ElizaOS path (its sources and
+ *          steps go to the live stream as they are known).
  */
 function asAnswer(text) {
   return { text, reasoning: [], sources: [] };
 }
 
-async function queryAIModel(conversationHistory, conversationId, userWallet) {
+async function queryAIModel(conversationHistory, conversationId, userWallet, liveStream) {
+  // The answer's live stream (see stream/answerStream.js); an offline one for a caller with none.
+  const stream = liveStream ?? createOfflineStream();
   // --- MOCK MODE: Return deterministic response ---
   if (MOCK_AI) {
     const latestUserMessage =
@@ -1549,13 +1779,14 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
       return answer;
     } catch (err) {
       console.warn("[Failover] First-party path failed. Falling back to ElizaOS.");
+      stream.attempt();
     }
   }
 
   // 3. Path B: 3rd Party ElizaOS (Google Vertex/Gemini via Plugin)
   try {
     // We pass conversationId here to ensure proper room isolation in Eliza
-    const answer = await queryElizaOS(conversationHistory, conversationId, userWallet);
+    const answer = await queryElizaOS(conversationHistory, conversationId, userWallet, stream);
     providerTally.recordServed("elizaos");
 
     return answer;
@@ -1581,7 +1812,8 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
         describedError(err),
       );
 
-      // 4. Failover 1: ChainGPT
+      // 4. Failover 1: ChainGPT. A new attempt on the stream: the steps shown so far stay.
+      stream.attempt();
       try {
         const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
         // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
@@ -1598,6 +1830,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet) {
 
     // 5. Failover 2: direct Gemini call, no agent runtime (see geminiDirect.js for why
     //    this is a different failure domain from the ElizaOS path above)
+    stream.attempt();
     try {
       const answer = asAnswer(await queryGeminiDirect(conversationHistory));
       providerTally.recordServed("gemini");
@@ -1663,6 +1896,8 @@ async function handlePrompt(
   // from that arrow function, not this handler, so nothing downstream can otherwise tell a
   // submitted answer from a cancelled one. Declared out here to survive the try/catch.
   let submitted = false;
+  // This run's live stream, opened once the session key is known. Ended on every exit below.
+  let stream = null;
 
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
@@ -1686,6 +1921,7 @@ async function handlePrompt(
 
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
+    stream = openAnswerStream(answerMessageId, sessionKey);
 
     const decryptedData = isSapphire
       ? payload
@@ -1712,27 +1948,34 @@ async function handlePrompt(
       console.log(
         `  ℹ️ Dropping prompt ${promptMessageId} (E2E __E2E_DROP__ sentinel) — leaving it pending for the refund flow.`,
       );
+      stream.done("abandoned");
       return;
     }
 
-    // E2E only: "__E2E_REASONING__" attaches deterministic reasoning + sources to the answer
-    // MessageFile below, so the dApp's reasoning/sources render path can be asserted
-    // end-to-end. Empty object otherwise (and always in production — MOCK_AI is false there).
-    const mockAnswerExtras =
-      MOCK_AI && hasMockReasoningSentinel(promptText)
-        ? {
-            reasoning: MOCK_E2E_REASONING,
-            sources: MOCK_E2E_SOURCES,
-            reasoningDuration: MOCK_E2E_REASONING_DURATION,
-          }
-        : {};
+    // E2E only: "__E2E_REASONING__" sends fixed sources and reasoning through the stream, the
+    // same tap a model's go through, so they are stored as its projection like any other; and
+    // "__E2E_RERUN__" ends the first run after its first step and runs the prompt again (see
+    // MOCK_RERUN_SENTINEL). Never in production: MOCK_AI is false there.
+    let mockReasoningDuration;
+    if (MOCK_AI) {
+      const rerun = hasMockRerunSentinel(promptText) && !mockRerunsDone.has(String(answerMessageId));
+      if (rerun) {
+        mockRerunsDone.set(String(answerMessageId), true);
+        await emitMockReasoning(stream, promptText, { partial: true });
+        throw new MockRerunError("E2E re-run sentinel");
+      }
+      if (hasMockReasoningSentinel(promptText)) {
+        await emitMockReasoning(stream, promptText);
+        mockReasoningDuration = MOCK_E2E_REASONING_DURATION;
+      }
+    }
 
     console.log("  Reconstructing history for regeneration...");
     const history = await reconstructHistory(previousMessageCID, sessionKey);
 
     history.push({ role: "user", content: promptText, createdAt: Date.now() });
 
-    const answer = await queryAIModel(history, conversationId.toString(), user);
+    const answer = await queryAIModel(history, conversationId.toString(), user, stream);
     // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
     // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
     // in the same fenced region — stored verbatim, then replayed by `reconstructHistory` inside
@@ -1740,22 +1983,21 @@ async function handlePrompt(
     // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
     // see it. Storage is immutable, so this has to happen before the upload, not at the read.
     const answerText = stripStoredAnswer(answer.text);
-    // Real reasoning/sources from the answer path (empty on string-only
-    // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
-    // so mock runs stay deterministic.
-    const realAnswerExtras = {
-      ...(answer.reasoning?.length ? { reasoning: answer.reasoning } : {}),
-      ...(answer.sources?.length ? { sources: answer.sources } : {}),
-      ...(answer.reasoningDuration !== undefined
-        ? { reasoningDuration: answer.reasoningDuration }
-        : {}),
-    };
+    // Reasoning and sources from the stream's record ONLY: the projection of the frames it built,
+    // so what was shown live is what is stored. Read once every queued step is in (bounded), and
+    // nothing is added to the stream's steps after it.
+    await stream.flush();
+    const storedExtras = storedExtrasFrom(
+      stream.record(),
+      mockReasoningDuration ?? answer.reasoningDuration,
+    );
 
     // Check again before paying for storage
     try {
       const isDoneNow = await contract.isJobFinalized(answerMessageId);
       if (isDoneNow) {
         console.log(`  ℹ️ Skipped: Prompt ${promptMessageId} was cancelled during AI processing.`);
+        stream.done("abandoned");
         return;
       }
     } catch (err) {
@@ -1878,8 +2120,7 @@ async function handlePrompt(
         createdAt: now + 1,
         role: "assistant",
         content: answerText,
-        ...realAnswerExtras,
-        ...mockAnswerExtras,
+        ...storedExtras,
       });
       const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
 
@@ -1913,8 +2154,7 @@ async function handlePrompt(
         createdAt: now + 1,
         role: "assistant",
         content: answerText,
-        ...realAnswerExtras,
-        ...mockAnswerExtras,
+        ...storedExtras,
       });
       const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
 
@@ -1932,36 +2172,83 @@ async function handlePrompt(
       };
     }
 
-    // We lock the wallet to ensure Nonces are used sequentially.
-    await txMutex.runExclusive(async () => {
-      // Double-check finalization on-chain right before sending
-      // This catches race conditions where user cancelled while we were uploading
-      const isFinalized = await contract.isJobFinalized(answerMessageId);
+    // This run's own submitAnswer transaction once sent: if waiting for its receipt throws, its
+    // hash tells an answer that was mined anyway from one that was not.
+    let sentTxHash = null;
+    try {
+      // We lock the wallet to ensure Nonces are used sequentially.
+      await txMutex.runExclusive(async () => {
+        // Double-check finalization on-chain right before sending
+        // This catches race conditions where user cancelled while we were uploading
+        const isFinalized = await contract.isJobFinalized(answerMessageId);
 
-      if (isFinalized) {
+        if (isFinalized) {
+          console.log(
+            `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          );
+          return;
+        }
+        console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+
+        const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+        sentTxHash = tx.hash;
+
+        const receipt = await tx.wait();
+        // After the receipt: an unconfirmed submission is not an answer. Recording before
+        // confirmation would be the worse error; a wait that throws is settled below.
+        submitted = true;
         console.log(
-          `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
         );
-        return;
-      }
-      console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
-
-      const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
-
-      const receipt = await tx.wait();
-      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
-      // the connection drops after the tx lands but before this resolves, the escrow settles
-      // unrecorded. Recording before confirmation would be the worse error.
+      });
+    } catch (submitError) {
+      // The wait threw, but this run's own transaction may have landed: its receipt, read by
+      // hash, confirms it, and it is then this run's answer like any other. Otherwise the error
+      // goes on to the handler's catch unchanged (a cancellation, another replica, a failure).
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       submitted = true;
       console.log(
-        `  ✅ Success! Answer for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
+        `  ✅ Answer for prompt ${promptMessageId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
+
+    // The answer frame goes only after THIS run's submitAnswer receipt: a retry re-runs the model
+    // and uploads again, so an earlier upload is never the answer. Queued, never awaited.
+    if (submitted) {
+      stream.answer({
+        text: answerText,
+        answerMessageCID,
+        reasoningDuration: storedExtras.reasoningDuration,
+      });
+      stream.done("answered");
+    } else {
+      stream.done("abandoned");
+    }
   } catch (error) {
+    // E2E only: the first run of an "__E2E_RERUN__" prompt ends interrupted and the prompt is run
+    // again here, once, as a real second run. Its frames are flushed first so the second run's
+    // reset follows the first run's done.
+    if (MOCK_AI && error instanceof MockRerunError) {
+      stream?.done("interrupted");
+      await stream?.flush();
+      console.log("[Mock AI] E2E re-run sentinel: running the prompt again in this process.");
+      return handlePrompt(
+        user,
+        conversationId,
+        promptMessageId,
+        answerMessageId,
+        payload,
+        roflEncryptedKey,
+        event,
+      );
+    }
+
+
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
         `  ℹ️ Skipped: Transaction reverted with 'JobAlreadyFinalized'. The user likely cancelled this prompt.`,
       );
+      stream?.done("abandoned");
 
       return; // Exit gracefully
     }
@@ -1976,6 +2263,7 @@ async function handlePrompt(
         console.log(
           `  ℹ️ Transaction failed but job ${answerMessageId} is finalized on-chain. Treating as cancelled/completed.`,
         );
+        stream?.done("abandoned");
 
         return; // Exit gracefully
       }
@@ -2008,6 +2296,9 @@ async function handlePrompt(
       extra: { convId: conversationId?.toString() },
     });
     console.error(`Error in handlePrompt for convId ${conversationId}:`, describedError(error));
+
+    // Bad input is dropped for good; anything else may be retried as a new run.
+    stream?.done(isBadInputError(error) ? "abandoned" : "interrupted");
 
     throw error; // Propagate error to be caught by handleAndRecord
   }
@@ -2043,6 +2334,8 @@ async function handleRegeneration(
   // Did the answer actually reach the chain? See handlePrompt — the mutex's isJobFinalized guard
   // returns from that arrow function, not this handler.
   let submitted = false;
+  // This run's live stream, opened once the session key is known. Ended on every exit below.
+  let stream = null;
 
   // --- Idempotency Check ---
   // Check if this specific answer ID has already been finalized on-chain.
@@ -2064,6 +2357,7 @@ async function handleRegeneration(
 
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
+    stream = openAnswerStream(answerMessageId, sessionKey);
 
     const decryptedData = isSapphire
       ? payload
@@ -2097,7 +2391,7 @@ async function handleRegeneration(
       });
     }
 
-    const answer = await queryAIModel(history, conversationId.toString(), user);
+    const answer = await queryAIModel(history, conversationId.toString(), user, stream);
     // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
     // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
     // in the same fenced region — stored verbatim, then replayed by `reconstructHistory` inside
@@ -2105,22 +2399,16 @@ async function handleRegeneration(
     // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
     // see it. Storage is immutable, so this has to happen before the upload, not at the read.
     const answerText = stripStoredAnswer(answer.text);
-    // Real reasoning/sources from the answer path (empty on string-only
-    // providers). In handlePrompt the e2e sentinel extras spread AFTER these,
-    // so mock runs stay deterministic.
-    const realAnswerExtras = {
-      ...(answer.reasoning?.length ? { reasoning: answer.reasoning } : {}),
-      ...(answer.sources?.length ? { sources: answer.sources } : {}),
-      ...(answer.reasoningDuration !== undefined
-        ? { reasoningDuration: answer.reasoningDuration }
-        : {}),
-    };
+    // Reasoning and sources from the stream's record ONLY (see handlePrompt).
+    await stream.flush();
+    const storedExtras = storedExtrasFrom(stream.record(), answer.reasoningDuration);
 
     // Check again before paying for storage
     try {
       const isDoneNow = await contract.isJobFinalized(answerMessageId);
       if (isDoneNow) {
         console.log(`  ℹ️ Skipped: Prompt ${promptMessageId} was cancelled during AI processing.`);
+        stream.done("abandoned");
         return;
       }
     } catch (err) {
@@ -2141,7 +2429,7 @@ async function handleRegeneration(
       createdAt: now,
       role: "assistant",
       content: answerText,
-      ...realAnswerExtras,
+      ...storedExtras,
     });
     const encryptedAnswer = encryptSymmetrically(answerMessageFile, sessionKey);
 
@@ -2158,36 +2446,63 @@ async function handleRegeneration(
       searchDeltaCID: "",
     };
 
-    // We lock the wallet to ensure Nonces are used sequentially.
-    await txMutex.runExclusive(async () => {
-      // Double-check finalization on-chain right before sending
-      // This catches race conditions where user cancelled while we were uploading
-      const isFinalized = await contract.isJobFinalized(answerMessageId);
+    // This run's own submitAnswer transaction once sent: if waiting for its receipt throws, its
+    // hash tells an answer that was mined anyway from one that was not.
+    let sentTxHash = null;
+    try {
+      // We lock the wallet to ensure Nonces are used sequentially.
+      await txMutex.runExclusive(async () => {
+        // Double-check finalization on-chain right before sending
+        // This catches race conditions where user cancelled while we were uploading
+        const isFinalized = await contract.isJobFinalized(answerMessageId);
 
-      if (isFinalized) {
+        if (isFinalized) {
+          console.log(
+            `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          );
+          return;
+        }
+        console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
+
+        const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
+        sentTxHash = tx.hash;
+
+        const receipt = await tx.wait();
+        // After the receipt: an unconfirmed submission is not an answer. Recording before
+        // confirmation would be the worse error; a wait that throws is settled below.
+        submitted = true;
         console.log(
-          `  ℹ️ Skipped (in mutex): Prompt ${promptMessageId} finalized or cancelled just now.`,
+          `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
         );
-        return;
-      }
-      console.log(`  Submitting transaction for prompt ${promptMessageId}...`);
-
-      const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
-
-      const receipt = await tx.wait();
-      // After the receipt: an unconfirmed submission is not an answer. Accepted blind spot — if
-      // the connection drops after the tx lands but before this resolves, the escrow settles
-      // unrecorded. Recording before confirmation would be the worse error.
+      });
+    } catch (submitError) {
+      // The wait threw, but this run's own transaction may have landed: its receipt, read by
+      // hash, confirms it, and it is then this run's answer like any other. Otherwise the error
+      // goes on to the handler's catch unchanged (a cancellation, another replica, a failure).
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       submitted = true;
       console.log(
-        `  ✅ Success! Regeneration for prompt ${promptMessageId} submitted. Tx: ${receipt.hash}`,
+        `  ✅ Regeneration for prompt ${promptMessageId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
+
+    // After THIS run's receipt only (see handlePrompt). Queued, never awaited.
+    if (submitted) {
+      stream.answer({
+        text: answerText,
+        answerMessageCID,
+        reasoningDuration: storedExtras.reasoningDuration,
+      });
+      stream.done("answered");
+    } else {
+      stream.done("abandoned");
+    }
   } catch (error) {
     if (isContractError(error, "JobAlreadyFinalized")) {
       console.log(
         `  ℹ️ Skipped: Transaction reverted with 'JobAlreadyFinalized'. The user likely cancelled this prompt.`,
       );
+      stream?.done("abandoned");
 
       return; // Exit gracefully
     }
@@ -2200,6 +2515,7 @@ async function handleRegeneration(
         console.log(
           `  ℹ️ Transaction failed but job ${answerMessageId} is finalized on-chain. Treating as cancelled/completed.`,
         );
+        stream?.done("abandoned");
 
         return; // Exit gracefully
       }
@@ -2231,6 +2547,8 @@ async function handleRegeneration(
       `Error in handleRegeneration for promptId ${promptMessageId}:`,
       describedError(error),
     );
+    // Bad input is dropped for good; anything else may be retried as a new run.
+    stream?.done(isBadInputError(error) ? "abandoned" : "interrupted");
     throw error;
   }
 
@@ -2634,7 +2952,7 @@ async function loadEventForRetry(job) {
   }
   if (!match) {
     throw new Error(
-      `Could not re-parse event '${job.eventName}' from transaction receipt.${parseError ? ` Parse error: ${parseError.message}` : ""}`,
+      `Could not re-parse event '${job.eventName}' from transaction receipt.${parseError ? ` Parse error: ${describeError(parseError)}` : ""}`,
       parseError ? { cause: parseError } : undefined,
     );
   }
@@ -2992,6 +3310,11 @@ async function start() {
   // makes for degraded market context.
   await initInboundPrompt();
 
+  // The Brain's sanitiser, loaded now so the first prompt's thoughts do not wait on the import
+  // and time out. Not awaited, and it never rejects: a failed load is logged by kind and the
+  // oracle starts all the same (thoughts are then dropped and counted).
+  void warmThoughtSanitizer();
+
   // Initialize the connection to the decentralised storage provider.
   await initializeStorage();
 
@@ -3044,6 +3367,7 @@ async function start() {
     fetchAccountInfo: () => require("./storage/autonomys").fetchAccountInfo(),
     mirrorSnapshot: () => require("./storage/mirror").snapshot(),
     observeToolServers: () => toolServerWatch.observe(),
+    streamSnapshot: () => streamHeartbeatSnapshot(),
     diskPath: path.dirname(STATE_FILE_PATH),
   });
 
@@ -3136,6 +3460,11 @@ module.exports = {
   parseMockDelayMs,
   hasMockDropSentinel,
   hasMockReasoningSentinel,
+  parseMockStepMs,
+  hasMockRerunSentinel,
+  setStreamSink,
+  streamHeartbeatSnapshot,
+  flushStreamsForTest,
   shouldInitializeConversation,
   getSessionKey,
   encryptSymmetrically,

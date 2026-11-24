@@ -1,4 +1,5 @@
 const { getHandles: getBrainHandles } = require("./brainContext");
+const { errorKind } = require("./errorDescription");
 
 /**
  * Oracle-side `senseai.daily_activity` telemetry.
@@ -67,10 +68,10 @@ async function recordAnswerActivity({
       },
     });
   } catch (error) {
+    // The kind only: a database error's message can quote the row it refused, and the row
+    // holds the user's wallet.
     console.warn(
-      `[AnswerActivity] Failed to record ${kind} for ${String(answerMessageId)}: ${String(
-        error?.message ?? error,
-      )}`,
+      `[AnswerActivity] Failed to record ${kind} for ${String(answerMessageId)} (${errorKind(error)}).`,
     );
   }
 }

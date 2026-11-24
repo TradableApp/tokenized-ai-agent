@@ -132,19 +132,40 @@ PUBLIC_IP=$(gcloud sql instances describe "$INSTANCE" \
   --format=json 2>/dev/null \
   | python3 -c "import json,sys; ips=json.load(sys.stdin).get('ipAddresses',[]); print(next((i.get('ipAddress','') for i in ips if i.get('type')=='PRIMARY'), ''))" 2>/dev/null || true)
 
+#
+# POSTGRES_HOST is a secret (the generated compose is tracked in a public repo), so the
+# address is never echoed. Where it cannot be stamped, the operator is given the command
+# that reads it instead.
+READ_HOST_CMD="gcloud sql instances describe $INSTANCE --project=$GCP_PROJECT --format=json | jq -r '.ipAddresses[] | select(.type==\"PRIMARY\") | .ipAddress'"
+SPLIT_DELIMITER="=== 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ==="
+
 if [ -z "$PUBLIC_IP" ]; then
   echo "⚠️  Could not fetch Cloud SQL public IP — leaving $ENV_FILE unchanged."
 elif [ ! -f "$ENV_FILE" ]; then
-  echo "⚠️  $ENV_FILE not found — add manually: POSTGRES_HOST=$PUBLIC_IP"
-elif grep -q "^POSTGRES_HOST=" "$ENV_FILE"; then
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
-  else
-    sed -i "s|^POSTGRES_HOST=.*|POSTGRES_HOST=$PUBLIC_IP|" "$ENV_FILE"
+  echo "⚠️  $ENV_FILE not found — add POSTGRES_HOST above the delimiter by hand. Read the address with:"
+  echo "     $READ_HOST_CMD"
+elif awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } !below && /^POSTGRES_HOST=/ { found = 1 } END { exit !found }' "$ENV_FILE"; then
+  # Only the line ABOVE the delimiter is stamped: a line below it is written into the compose
+  # as plaintext, so stamping a blank one there would recreate what rofl-set-secrets.sh refuses.
+  STAMPED_ENV="$TMP_DIR/stamped.env"   # inside the 0700 dir the EXIT trap removes, even on failure
+  awk -v d="$SPLIT_DELIMITER" -v ip="$PUBLIC_IP" \
+    'index($0, d) { below = 1 } !below && /^POSTGRES_HOST=/ { print "POSTGRES_HOST=" ip; next } { print }' \
+    "$ENV_FILE" > "$STAMPED_ENV"
+  cat "$STAMPED_ENV" > "$ENV_FILE"   # cat, not mv: the env file keeps its own permissions
+  rm -f "$STAMPED_ENV"
+  echo "📝 Stamped POSTGRES_HOST in $ENV_FILE"
+  if awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } below && /^POSTGRES_HOST=./ { found = 1 } END { exit !found }' "$ENV_FILE"; then
+    echo "⚠️  POSTGRES_HOST also has a value below the delimiter in $ENV_FILE — it would be written"
+    echo "   into the compose as plaintext, and rofl-set-secrets.sh refuses that. Remove that line."
   fi
-  echo "📝 Stamped POSTGRES_HOST=$PUBLIC_IP in $ENV_FILE"
+elif awk -v d="$SPLIT_DELIMITER" 'index($0, d) { below = 1 } below && /^POSTGRES_HOST=/ { found = 1 } END { exit !found }' "$ENV_FILE"; then
+  echo "⚠️  POSTGRES_HOST sits only below the delimiter in $ENV_FILE — not stamped. It would be"
+  echo "   written into the compose as plaintext, and rofl-set-secrets.sh refuses that. Move the line"
+  echo "   ABOVE the delimiter and set it there. Read the address with:"
+  echo "     $READ_HOST_CMD"
 else
-  echo "⚠️  $ENV_FILE has no POSTGRES_HOST line — add manually: POSTGRES_HOST=$PUBLIC_IP"
+  echo "⚠️  $ENV_FILE has no POSTGRES_HOST line — add one above the delimiter by hand. Read the address with:"
+  echo "     $READ_HOST_CMD"
 fi
 
 echo ""

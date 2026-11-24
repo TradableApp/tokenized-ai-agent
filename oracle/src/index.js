@@ -3,7 +3,7 @@ initSentry();
 
 const Sentry = require("@sentry/node");
 
-const { describedError } = require("./errorDescription");
+const { describedError, withoutAddresses } = require("./errorDescription");
 const { obtainOracleKeys } = require("./oracleKeys");
 const { wrapConsole } = require("./secretValues");
 
@@ -40,8 +40,10 @@ try {
   // case this guard was written for, since each TEE deploy iteration is an image build, an
   // on-chain update and a restart. Filling the incident feed with them is how a real crash gets
   // missed. The message already names every problem, so a stack trace adds nothing.
+  // The problems name each setting and never its value (startupConfig.js); addresses are
+  // removed as well, in case a value was written into the text all the same.
   if (err instanceof ConfigError) {
-    console.error(err.message);
+    console.error(withoutAddresses(err.message));
     process.exit(1);
   }
   throw err; // genuine bugs still reach uncaughtException → Sentry
@@ -58,6 +60,13 @@ async function main() {
   // eslint-disable-next-line global-require
   const oracle = require("./aiAgentOracle");
   oracle.configure(keys);
+  // The live reasoning stream server, before anything can answer a prompt, so every run's
+  // frames reach it. Switched off (STREAM_ENABLED=false), it opens nothing and the oracle runs
+  // exactly as it does without it; a port it cannot have is logged and the oracle answers
+  // without it.
+  // eslint-disable-next-line global-require
+  const { startStreamFromEnv } = require("./stream/streamServer");
+  await startStreamFromEnv({ setSink: oracle.setStreamSink });
   console.log("Starting Node.js ROFL Oracle Service...");
   await oracle.start();
 }

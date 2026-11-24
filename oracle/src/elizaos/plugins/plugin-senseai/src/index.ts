@@ -14,6 +14,10 @@ import { BrainService } from "./services/brain";
 // and hands this plugin a getter for the handles. See services/brain.ts for why.
 export { setBrainAccessor } from "./services/brain";
 export type { BrainAccessor } from "./services/brain";
+// The oracle hands over its error describer the same way, so the plugin's error logs are
+// described exactly as the host's are. See utils/errorDescription.ts.
+export { setErrorDescriber } from "./utils/errorDescription";
+export type { ErrorDescriber } from "./utils/errorDescription";
 
 /**
  * SenseAI — the ORACLE body's ElizaOS plugin.

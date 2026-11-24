@@ -101,6 +101,54 @@ describe("request secrets", () => {
     });
   });
 
+  // The database address is a secret (a ROFL secret, never in the public compose), whatever its
+  // length: an IPv4 address can be shorter than any credential. Every address and name here is
+  // from the documentation ranges.
+  describe("the database host", () => {
+    it("is POSTGRES_HOST, however short", () => {
+      expect(requestSecretsIn({ POSTGRES_HOST: "192.0.2.7" })).to.include("192.0.2.7");
+      expect(requestSecretsIn({ POSTGRES_HOST: " db.example.com " })).to.include("db.example.com");
+      expect(requestSecretsIn({ POSTGRES_HOST: "" })).to.deep.equal([]);
+    });
+
+    it("is the host of every database address, however short", () => {
+      const secrets = requestSecretsIn({
+        POSTGRES_URL: "postgres://oracle@192.0.2.8:5432/oracle_agent",
+        POSTGRES_AGENT_URL: "postgresql://oracle@[2001:db8::8]:5432/agent",
+      });
+
+      expect(secrets).to.include("192.0.2.8");
+      // The URL parser gives an IPv6 host in brackets; both spellings are removed from text.
+      expect(secrets).to.include("[2001:db8::8]");
+      expect(secrets).to.include("2001:db8::8");
+    });
+
+    it("is not a loopback host, which is the same on every machine", () => {
+      for (const host of ["localhost", "127.0.0.1", "::1", "[::1]"]) {
+        expect(requestSecretsIn({ POSTGRES_HOST: host }), host).to.deep.equal([]);
+      }
+    });
+
+    it("is not the host of an address that is not a database's", () => {
+      expect(requestSecretsIn({ RPC: "https://198.51.100.2/v1" })).to.deep.equal([]);
+    });
+
+    it("is removed from a failed connection's text, as the describer prints it", () => {
+      refreshRequestSecrets({ POSTGRES_HOST: "192.0.2.7" });
+      const { describeError } = require("../src/errorDescription");
+
+      const text = describeError(
+        Object.assign(new Error("connect ECONNREFUSED 192.0.2.7:5432"), { code: "ECONNREFUSED" }),
+      );
+
+      expect(text).to.not.include("192.0.2.7");
+      expect(text).to.include("ECONNREFUSED");
+      expect(withoutRequestSecrets("getaddrinfo ENOTFOUND 192.0.2.7")).to.equal(
+        "getaddrinfo ENOTFOUND [REDACTED]",
+      );
+    });
+  });
+
   describe("removal", () => {
     it("takes a secret out of text that has no scheme in front of it", () => {
       refreshRequestSecrets({ RPC: `https://base.example/v2/${PATH_KEY}?dkey=${QUERY_KEY}` });

@@ -15,7 +15,15 @@ set -euo pipefail
 #   * each file is split by the delimiter into a 🔒 SECRETS section (pushed
 #     on-chain, injected as ${KEY:-}) and a 📄 CONFIG section (plaintext literal
 #     in the ORC bundle — costs ZERO ROFL secret slots). Put credentials above
-#     the delimiter, everything else below.
+#     the delimiter, everything else below. The database address (POSTGRES_HOST)
+#     is a secret too: the generated compose is tracked in a public repo, so it
+#     must reach the compose in no form. Refused, naming the setting and never a
+#     value: a non-empty POSTGRES_HOST or POSTGRES_URL (or any postgres address)
+#     below the delimiter; a setting below the delimiter whose value holds the
+#     POSTGRES_HOST value; a key that is not upper-case snake case (`mcp` aside),
+#     such as `export KEY=` or `postgres_host=`, named by its line number; and database settings with no
+#     non-empty POSTGRES_HOST above the delimiter, which would boot an oracle with
+#     an empty host.
 #   * Cloud-SQL ownership mirrors sense-ai-core:
 #       - CLIENT_CERT / CLIENT_KEY        → rofl-init-cloud-sql.sh (minted cert)
 #       - POSTGRES_PASSWORD / SERVER_CA   → GCP Secret Manager, fetched in PART 3
@@ -106,6 +114,11 @@ CONFIG_YAML=""    # 📄 section body (compose)
 SECRETS_LIST=""   # KEY__SEP__VALUE lines to push on-chain
 SEEN_KEYS=""      # |KEY| dedup registry (env-specific wins)
 KEEP_KEYS=""      # |KEY| the secrets that SHOULD stay on-chain (for orphan purge)
+POSTGRES_HOST_IN_CONFIG=""  # env file that sets POSTGRES_HOST below the delimiter (refused)
+POSTGRES_HOST_VALUE=""      # the POSTGRES_HOST secret, compared by value, never printed
+DATABASE_URL_IN_CONFIG=""   # "KEY in FILE" lines: a postgres address below the delimiter (refused)
+MALFORMED_KEYS=""           # "LINE SECTION in FILE" lines: a key that is not upper-case snake case (refused)
+HAS_DATABASE_CONFIG=0       # a non-empty POSTGRES_* setting below the delimiter
 
 is_seen()  { case "$SEEN_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
 mark_seen(){ SEEN_KEYS="${SEEN_KEYS}|$1|"; }
@@ -113,8 +126,9 @@ is_kept()  { case "$KEEP_KEYS" in *"|$1|"*) return 0;; *) return 1;; esac; }
 keep_key() { KEEP_KEYS="${KEEP_KEYS}|$1|"; }
 
 process_file() {
-  local file="$1" is_config=0 line key remainder value
+  local file="$1" is_config=0 line key remainder value lineno=0
   while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
     # delimiter → switch to config section (no compose output; banners added once, later)
     if [[ "$line" == *"$SPLIT_DELIMITER"* ]]; then is_config=1; continue; fi
     # drop comments / blanks (compose is a clean generated artifact)
@@ -124,6 +138,16 @@ process_file() {
 
     key=$(echo "$line" | cut -d= -f1 | tr -d '[:space:]')
     remainder=$(echo "$line" | cut -d= -f2- | sed 's/[[:space:]]*$//')
+    # A key compose and the oracle would read as something else (`export KEY=`, `key=`) is
+    # refused: its value would land in the compose under a name nothing checks. It is named by
+    # its line number, never by its text: a wrapped value's continuation line holds "=" too,
+    # and what reads as its key is part of a secret. `mcp` is lower-case on purpose (see the
+    # preflight below).
+    if [ "$key" != "mcp" ] && ! [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+      if [ "$is_config" -eq 0 ]; then MALFORMED_KEYS+="${lineno} above in ${file}\n"
+      else MALFORMED_KEYS+="${lineno} below in ${file}\n"; fi
+      continue
+    fi
     is_seen "$key" && continue
     mark_seen "$key"
 
@@ -156,6 +180,7 @@ process_file() {
         exit 1
         ;;
       esac
+      [ "$key" = "POSTGRES_HOST" ] && POSTGRES_HOST_VALUE="$value"
       SECRETS_LIST+="${key}__SEP__${value}"$'\n'        # push (or purge if blank)
       if [ -n "$value" ]; then
         SECRETS_YAML+="      - $key=\${$key:-}\n"
@@ -166,7 +191,16 @@ process_file() {
       if [ "$key" = "mcp" ]; then
         value=$(echo "$remainder" | sed -E 's/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')
         CONFIG_YAML+="      - mcp=$value\n"
+      elif [ "$key" = "POSTGRES_HOST" ] && [ -n "$remainder" ]; then
+        # The database address is a secret: the compose this block lands in is tracked in a
+        # public repo. Not emitted; the preflight below refuses the run, naming only the file.
+        POSTGRES_HOST_IN_CONFIG="$file"
+      elif [ -n "$remainder" ] && { [ "$key" = "POSTGRES_URL" ] ||
+        [[ "$remainder" =~ ^[\"\']?[Pp][Oo][Ss][Tt][Gg][Rr][Ee][Ss]([Qq][Ll])?:// ]]; }; then
+        # A database address holds the host. Not emitted; refused below, by name.
+        DATABASE_URL_IN_CONFIG+="${key} in ${file}\n"
       elif [ -n "$remainder" ]; then
+        [[ "$key" == POSTGRES_* ]] && HAS_DATABASE_CONFIG=1
         looks_like_embedded_secret "$remainder" && \
           echo "  ⚠️  '$key' is in the CONFIG section but its value looks like it embeds a credential — move it ABOVE the delimiter."
         CONFIG_YAML+="      - $key=$remainder\n"
@@ -216,6 +250,24 @@ ENV_YAML+="$CONFIG_YAML"
 . "$(dirname "$0")/rofl-config-patterns.sh"
 preflight_failures=""
 
+# First, any setting below the delimiter whose value holds the address, compared by value. A
+# loopback host is the same everywhere and says nothing, so it is not compared. No rule here
+# prints a value: the rules below name the setting and give its value's length only.
+case "$POSTGRES_HOST_VALUE" in
+  ""|localhost|127.*|::1|"[::1]") ;;
+  *)
+    while IFS= read -r cfg_line; do
+      [ -z "$cfg_line" ] && continue
+      cfg_key="${cfg_line%%=*}"
+      cfg_key="${cfg_key#      - }"
+      cfg_val="${cfg_line#*=}"
+      if [[ "$cfg_val" == *"$POSTGRES_HOST_VALUE"* ]]; then
+        preflight_failures+="  ✗ ${cfg_key} below the delimiter holds the POSTGRES_HOST value\n      the database address is a secret — keep it out of the plaintext config (value not shown)\n"
+      fi
+    done <<< "$(printf '%b' "$CONFIG_YAML")"
+    ;;
+esac
+
 while IFS= read -r cfg_line; do
   [ -z "$cfg_line" ] && continue
   cfg_key="${cfg_line%%=*}"
@@ -234,21 +286,45 @@ while IFS= read -r cfg_line; do
     # content, reachable by hand-editing — which SKIP_ENV_PARITY_CHECK=1 leaves unguarded.
     cfg_val="${cfg_val%"${cfg_val##*[^[:space:]]}"}"
     if [ -n "$cfg_val" ]; then
-      preflight_failures+="  ✗ mcp=${cfg_val}\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
+      preflight_failures+="  ✗ mcp $(rofl_value_shape "$cfg_val")\n      must be bare empty — any value registers ZERO MCP servers (see CLAUDE.md)\n"
     fi
     continue
   fi
   [ -z "$cfg_val" ] && continue
 
   if printf '%s' "$cfg_val" | grep -qE "$ROFL_PLACEHOLDER_RE"; then
-    preflight_failures+="  ✗ ${cfg_key}=${cfg_val}\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
+    preflight_failures+="  ✗ ${cfg_key} $(rofl_value_shape "$cfg_val")\n      placeholder — would be baked into the bundle and fail at use time, not at boot\n"
   fi
   case "$cfg_val" in
     '"'*'"'|"'"*"'")
-      preflight_failures+="  ✗ ${cfg_key}=${cfg_val}\n      quoted — docker-compose keeps the quotes, so the container sees them as part of the value\n"
+      preflight_failures+="  ✗ ${cfg_key} $(rofl_value_shape "$cfg_val")\n      quoted — docker-compose keeps the quotes, so the container sees them as part of the value\n"
       ;;
   esac
 done <<< "$(printf '%b' "$CONFIG_YAML")"
+
+# The database address is a secret. These, like every rule here, never print a value.
+if [ -n "$POSTGRES_HOST_IN_CONFIG" ]; then
+  preflight_failures+="  ✗ POSTGRES_HOST is set below the delimiter in ${POSTGRES_HOST_IN_CONFIG}\n      the database address is a secret — move it ABOVE the delimiter so it is injected, not written into the public compose\n"
+fi
+while IFS= read -r entry; do
+  [ -z "$entry" ] && continue
+  preflight_failures+="  ✗ ${entry%% in *} below the delimiter in ${entry#* in } is a database address\n      it holds the database host, a secret — set POSTGRES_HOST ABOVE the delimiter and the parts of the address as their own settings\n"
+done <<< "$(printf '%b' "$DATABASE_URL_IN_CONFIG")"
+while IFS= read -r entry; do
+  [ -z "$entry" ] && continue
+  where="${entry%% in *}"
+  if [ "${where#* }" = "above" ]; then
+    why="nothing is pushed until every line above it is one whole setting"
+  else
+    why="compose would pass it on under a name nothing checks"
+  fi
+  preflight_failures+="  ✗ line ${where%% *} of ${entry#* in } (${where#* } the delimiter) has a key that is not upper-case snake case (text not shown)\n      write KEY=value with no prefix (no 'export'), in upper case, each value on one line — ${why}\n"
+done <<< "$(printf '%b' "$MALFORMED_KEYS")"
+# Database settings with no host above the delimiter would boot an oracle with an empty host,
+# found only after the build, the update and the restart.
+if [ "$HAS_DATABASE_CONFIG" -eq 1 ] && [ -z "$POSTGRES_HOST_VALUE" ]; then
+  preflight_failures+="  ✗ database settings are set below the delimiter but POSTGRES_HOST has no value ABOVE the delimiter\n      the oracle would start with an empty database host — set POSTGRES_HOST above the delimiter (rofl-init-cloud-sql.sh stamps it)\n"
+fi
 
 if [ -n "$preflight_failures" ]; then
   echo ""

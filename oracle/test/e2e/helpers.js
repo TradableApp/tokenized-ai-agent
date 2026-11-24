@@ -103,8 +103,9 @@ function createStubs(sessionKey) {
           return ["fake-agent-id"];
         }
         async startAgents() {}
+        // The runtime's own logger, which the oracle replaces with a cleaned one.
         getAgent() {
-          return null;
+          return { logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } } };
         }
       },
       elizaLogger: {
@@ -118,7 +119,7 @@ function createStubs(sessionKey) {
       createUniqueUuid: (_ns, s) => s,
       ChannelType: { DM: "DM", WORLD: "WORLD" },
     },
-    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {} },
+    "./elizaos/plugins/plugin-senseai/dist/index.js": { default: {}, setErrorDescriber: () => {} },
     "./elizaos/character.js": {},
     "@sentry/node": {
       init: sinon.stub(),

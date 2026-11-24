@@ -2,6 +2,8 @@ const path = require("node:path");
 
 const { expect } = require("chai");
 
+const { describeError } = require("../src/errorDescription");
+
 // ANALYZE_ASSET_SENTIMENT — the oracle's port of sense-ai-core's sentiment action. CU-86d3z0r81.
 //
 // WHY THIS FILE EXISTS. The port shipped with service-level tests only (`brainService.test.js`),
@@ -100,7 +102,11 @@ describe("ANALYZE_ASSET_SENTIMENT (oracle port)", () => {
   let action;
 
   before(() => {
-    const plugin = require(DIST).default;
+    // Loaded as the oracle loads it: with the oracle's error describer handed over, so a failed
+    // action's result carries the described cause rather than the error's kind alone.
+    const mod = require(DIST);
+    mod.setErrorDescriber(describeError);
+    const plugin = mod.default;
     action = (plugin.actions || []).find((a) => a.name === "ANALYZE_ASSET_SENTIMENT");
   });
 

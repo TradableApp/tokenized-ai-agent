@@ -27,6 +27,8 @@
  * cache happens to be unavailable.
  */
 
+const { describeError, errorKind } = require("./errorDescription");
+
 /** Resolves to the Brain's `sanitizeOutboundText`, or null when the Brain cannot be loaded. */
 let sanitizerPromise = null;
 
@@ -75,20 +77,24 @@ function loadSanitizer() {
         if (mod && !fn) {
           console.error(
             "[outboundSanitizer] The Brain loaded but does not export sanitizeOutboundText — " +
-              "answers will be stored UNSANITISED. Check the Brain barrel for a renamed or " +
-              "removed export.",
+              "answers will be stored UNSANITISED and reasoning thoughts are dropped. Check the " +
+              "Brain barrel for a renamed or removed export.",
           );
         }
         return fn;
       })
       .catch((error) => {
         const retriable = loadAttempts < MAX_LOAD_ATTEMPTS;
+        // Thoughts share this load (stream/thoughtSanitizer.js) and are dropped, not stored,
+        // when it fails: the line says both, so it does not send anyone after the wrong thing.
         console.error(
-          "[outboundSanitizer] Could not load the Brain — answers will be stored unsanitised. " +
-            `Reason: ${error?.message ?? error}. ` +
+          "[outboundSanitizer] Could not load the Brain — answers will be stored unsanitised " +
+            "and reasoning thoughts are dropped. " +
+            `Reason: ${describeError(error)}. ` +
             (retriable
               ? "Will retry once on the next answer, in case the container was still warming."
-              : "Giving up for this process; every later answer is stored unsanitised."),
+              : "Giving up for this process; every later answer is stored unsanitised and " +
+                "every later thought is dropped."),
         );
         // Clearing the cached promise is what permits the retry. Left set, a warm-up blip would
         // silence sanitisation for the life of the process.
@@ -119,10 +125,9 @@ async function sanitizeAnswer(answer) {
     // Logged at ERROR because that is the only level that survives to where anyone will see it:
     // `oasis rofl machine logs` surfaces warn and error, so an INFO line inside the TEE is
     // invisible in practice.
+    // The kind only: the sanitiser works on the answer, and its error can quote it.
     console.error(
-      `[outboundSanitizer] Sanitiser threw; storing the answer unsanitised. Reason: ${
-        error?.message ?? error
-      }`,
+      `[outboundSanitizer] Sanitiser threw; storing the answer unsanitised (${errorKind(error)}).`,
     );
     return answer;
   }
@@ -221,4 +226,12 @@ function _resetForTests() {
   loadAttempts = 0;
 }
 
-module.exports = { sanitizeAnswer, _setSanitizerForTests, _resetForTests };
+/**
+ * The Brain's `sanitizeOutboundText`, or null when it cannot be loaded. Shared with the thought
+ * sanitiser (`stream/thoughtSanitizer.js`), so both use the one load, its retry and its test seam.
+ */
+function loadOutboundSanitizer() {
+  return loadSanitizer();
+}
+
+module.exports = { sanitizeAnswer, loadOutboundSanitizer, _setSanitizerForTests, _resetForTests };
