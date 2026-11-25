@@ -164,11 +164,18 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
 
   /**
    * @notice Emitted with the amounts of a cancellation: both leave the escrow's own balance.
+   * @dev Carries the user so an indexer needs no other event or stored record to file it.
    * @param escrowId The unique ID of the cancelled escrow.
+   * @param user The user who cancelled.
    * @param fee The cancellation fee sent to the treasury (never more than was escrowed).
    * @param returned The rest of the escrowed amount, sent back to the user.
    */
-  event CancellationSettled(uint256 indexed escrowId, uint256 fee, uint256 returned);
+  event CancellationSettled(
+    uint256 indexed escrowId,
+    address indexed user,
+    uint256 fee,
+    uint256 returned
+  );
 
   /**
    * @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
@@ -585,7 +592,7 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
     --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
 
-    emit CancellationSettled(escrowId, fee, returned);
+    emit CancellationSettled(escrowId, msg.sender, fee, returned);
     emit PromptCancelled(msg.sender, _answerMessageId);
     evmAIAgent.recordCancellation(msg.sender, _answerMessageId);
     if (fee != 0) {

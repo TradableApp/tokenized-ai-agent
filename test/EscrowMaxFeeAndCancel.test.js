@@ -131,7 +131,12 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
       await expect(ctx.escrow.connect(ctx.user).cancelPrompt(ctx.answerMessageId, CANCELLATION_FEE))
         .to.emit(ctx.escrow, "CancellationSettled")
         // fee 1, returned 10 - 1 = 9
-        .withArgs(ctx.answerMessageId, CANCELLATION_FEE, PROMPT_FEE - CANCELLATION_FEE)
+        .withArgs(
+          ctx.answerMessageId,
+          ctx.user.address,
+          CANCELLATION_FEE,
+          PROMPT_FEE - CANCELLATION_FEE,
+        )
         .and.to.emit(ctx.escrow, "PromptCancelled")
         .withArgs(ctx.user.address, ctx.answerMessageId);
 
@@ -180,7 +185,7 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
       await expect(ctx.escrow.connect(ctx.user).cancelPrompt(ctx.answerMessageId, above))
         .to.emit(ctx.escrow, "CancellationSettled")
         // The whole 10 is the fee and nothing is returned.
-        .withArgs(ctx.answerMessageId, PROMPT_FEE, 0n);
+        .withArgs(ctx.answerMessageId, ctx.user.address, PROMPT_FEE, 0n);
 
       const after = await snapshot(ctx);
       expect(after.user).to.equal(before.user);
