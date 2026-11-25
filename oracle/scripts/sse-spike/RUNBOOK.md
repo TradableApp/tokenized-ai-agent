@@ -486,10 +486,10 @@ Sapphire **testnet** only: the 30 s cut and the connection counts are to be re-c
 | 3 | Buffering (CLI accel 0 / 1, browser) | 9, 11 | On time: mean 75 ms, max 298 ms, no bursts, accel 0 and 1; headless Chromium mean 61 ms, max 100 ms | on time: `sse`; bursts or at close: `VITE_REASONING_STREAM_MODE=poll` |
 | 4 | Idle timeout (none / 15 s / 60 s heartbeat) | 10 | No idle limit seen: every stream is cut 30.3 to 30.5 s after it opens, silent or with frames every 0.5 s (local control held 75 s; one curl held 41.3 s, unexplained) | `STREAM_HEARTBEAT_MS` = half the idle limit |
 | 5 | Longest connection (10 min) | 10 | About 30 s. The 10-minute hold got 1 of 20 frames | `STREAM_MAX_CONN_MS` below it |
-| 6 | Concurrent (50 / 200) | 12 | 50 asked: 44 opened, 6 reset. 200 asked: 140 opened, 60 reset. None complete (30 s streams, cut at 30 s). One new connection was refused about 30 s later | `STREAM_MAX_CONN_TOTAL` |
+| 6 | Concurrent (50 / 200) | 12 | Recorded in the private run evidence | `STREAM_MAX_CONN_TOTAL` |
 | 7 | HTTP version to the browser (and to curl, and proxy to app) | 11, 8, 9 | HTTP/1.1 to curl and openssl (ALPN), and from the proxy to the app; the browser did not expose it | HTTP/1.1: one stream per tab (already so) |
 | 8 | CORS preflight and headers pass, no gzip | 11, 9 | Pass from `http://127.0.0.1:8788` (a request with `Last-Event-ID`): 200, allow-origin echoed, no `content-encoding`. Not run from the sandbox dApp origin | stripped: poll mode; preflight blocked: no-go |
-| 9 | `X-Forwarded-For` present | 9 | Absent, with `x-forwarded-proto`, `via` and `forwarded` | present: per-IP limit possible; absent: per-answer and global caps |
+| 9 | `X-Forwarded-For` present | 9 | Recorded in the private run evidence | present: per-IP limit possible; absent: per-answer and global caps |
 | 10 | URL after restart / after replacement | 13, 14 | Not answered: after `machine stop` (a terminate) and `machine restart`, `machine show` kept the same URL but nothing served for 18 min and logs returned 404. Replacement not run | stable: set once; changes: custom domain or URL read at run time |
 | 11 | What arrives when the app is down | 13 | A TLS handshake failure (curl exit 35, `ECONNRESET`), no HTTP status | the client treats 502/503 as retry |
 | 12 | 64 KiB frame | 9 | Intact | cut: lower the answer-frame cap |
