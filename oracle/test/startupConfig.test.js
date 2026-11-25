@@ -678,6 +678,24 @@ describe("startup config validation", () => {
       expect(() => validateConfig(baseEnv())).to.not.throw();
     });
 
+    it("ends a connection by default before the ROFL proxy would cut it, and after a poll's wait", () => {
+      const {
+        STREAM_SETTING_DEFAULTS,
+        PROXY_CONNECTION_LIMIT_MS,
+      } = require("../src/stream/streamConfig");
+      const { STREAM_HTTP } = require("../src/stream/streamContract");
+      const lifetime = STREAM_SETTING_DEFAULTS.STREAM_MAX_CONN_MS;
+      // The proxy closed every connection 30.3 to 30.5 s after it opened (measured on Sapphire
+      // testnet, 2026-11-25): the limit is taken as 30 000 ms and the default leaves 5 000 ms
+      // for a slow write, so the server's own clean end comes first.
+      expect(PROXY_CONNECTION_LIMIT_MS).to.equal(30000);
+      expect(lifetime).to.equal(PROXY_CONNECTION_LIMIT_MS - 5000);
+      // A poll waits 20 000 ms for a first frame; a lifetime below that would cut every poll short.
+      expect(lifetime).to.be.above(STREAM_HTTP.pollWaitMs);
+      // One heartbeat (15 000 ms) still fits inside a connection.
+      expect(lifetime).to.be.above(STREAM_SETTING_DEFAULTS.STREAM_HEARTBEAT_MS);
+    });
+
     it("accepts a complete, valid set", () => {
       expect(() =>
         validateConfig(
