@@ -10,6 +10,15 @@ const net = require("node:net");
  * wrong setting can be a secret, and a machine's logs are kept.
  */
 
+/**
+ * How long the ROFL proxy in front of the server keeps one connection: it closed every stream
+ * 30.3 to 30.5 s after it opened, with frames passing or with none (measured on a Sapphire
+ * testnet machine, 2026-11-25; the proxy's documentation states no limit and no setting for one).
+ */
+const PROXY_CONNECTION_LIMIT_MS = 30000;
+/** Left before the proxy's limit for a slow last write, so the server's own end comes first. */
+const PROXY_LIMIT_HEADROOM_MS = 5000;
+
 const STREAM_SETTING_DEFAULTS = Object.freeze({
   /** `false` runs no server; frames are still built and the stored record is unchanged. */
   STREAM_ENABLED: true,
@@ -28,7 +37,13 @@ const STREAM_SETTING_DEFAULTS = Object.freeze({
    */
   STREAM_GRACE_MS: 120000,
   STREAM_HEARTBEAT_MS: 15000,
-  STREAM_MAX_CONN_MS: 240000,
+  /**
+   * How long a reader's connection lasts before the server ends it and the reader reconnects from
+   * its cursor (frames made meanwhile are in the buffer and are sent first on the new connection).
+   * Below the proxy's limit, so a stream is ended cleanly and never cut; above a poll's wait
+   * (20 s) and the 10 s after which the dApp follows a quiet connection at once.
+   */
+  STREAM_MAX_CONN_MS: PROXY_CONNECTION_LIMIT_MS - PROXY_LIMIT_HEADROOM_MS,
   STREAM_MAX_CONN_PER_ANSWER: 4,
   STREAM_MAX_CONN_TOTAL: 200,
 });
@@ -227,6 +242,7 @@ function readStreamConfig(env = process.env) {
 
 module.exports = {
   STREAM_SETTING_DEFAULTS,
+  PROXY_CONNECTION_LIMIT_MS,
   DEFAULT_ALLOWED_ORIGINS,
   SOCKET_BUDGET,
   streamConfigProblems,
