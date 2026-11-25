@@ -257,6 +257,26 @@ describe("EVMAIAgentEscrow: maximum fee and cancellation from the escrowed amoun
       expect(seenUser).to.equal(ctx.user.address);
       expect(seenAmount).to.equal(PROMPT_FEE);
     });
+
+    it("the same holds for an agent job the oracle opens", async function () {
+      const ctx = await loadFixture(reentrant);
+      // Nothing came first in this fixture, so the job's trigger takes message id 0.
+      const triggerId = 0n;
+      await ctx.token.arm(
+        await ctx.escrow.getAddress(),
+        ctx.escrow.interface.encodeFunctionData("escrows", [triggerId]),
+      );
+
+      await ctx.escrow.connect(ctx.oracle).initiateAgentJob(ctx.user.address, 0, PAYLOAD, KEY);
+
+      const [seenUser, seenAmount, , seenStatus] = ctx.escrow.interface.decodeFunctionResult(
+        "escrows",
+        await ctx.token.observed(),
+      );
+      expect(seenUser).to.equal(ctx.user.address);
+      expect(seenAmount).to.equal(PROMPT_FEE);
+      expect(seenStatus).to.equal(PENDING);
+    });
   });
 });
 
@@ -352,5 +372,19 @@ describe("SapphireAIAgentEscrow: a paying call names its maximum fee", function 
       .withArgs(CANCELLATION_FEE + 1n, CANCELLATION_FEE);
     // The deposit still holds 100 less the escrowed 10.
     expect(await escrow.deposits(user.address)).to.equal(DEPOSIT - PROMPT_FEE);
+  });
+
+  // Who may cancel is decided before the fee is looked at, as on the EVM escrow, so someone
+  // else's prompt is refused as theirs whatever maximum is named.
+  it("cancelPrompt refuses a caller who does not own the prompt before it looks at the maximum", async function () {
+    const { escrow, deployer, user } = await loadFixture(deploy);
+    await escrow.connect(user).initiatePrompt(0, PAYLOAD, PROMPT_FEE);
+    await time.increase(5);
+
+    // A maximum of 0 is below the cancellation fee of 1.
+    await expect(escrow.connect(deployer).cancelPrompt(1, 0)).to.be.revertedWithCustomError(
+      escrow,
+      "NotPromptOwner",
+    );
   });
 });

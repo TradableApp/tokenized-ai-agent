@@ -112,11 +112,8 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   /// @param escrowId The unique identifier for this escrow entry.
   /// @param user The address of the user whose payment is escrowed.
   /// @param amount The amount placed in escrow.
-  event PaymentEscrowed( // solhint-disable-line gas-indexed-events
-    uint256 indexed escrowId,
-    address indexed user,
-    uint256 amount
-  );
+  event PaymentEscrowed(// solhint-disable-line gas-indexed-events
+  uint256 indexed escrowId, address indexed user, uint256 amount);
   /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
   /// @param escrowId The unique identifier of the finalized escrow entry.
   event PaymentFinalized(uint256 indexed escrowId);
@@ -376,7 +373,11 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @param _payload The plaintext user prompt intended for the TEE.
    * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
-  function initiatePrompt(uint256 _conversationId, string calldata _payload, uint256 _maxFee) external {
+  function initiatePrompt(
+    uint256 _conversationId,
+    string calldata _payload,
+    uint256 _maxFee
+  ) external {
     _checkMaxFee(promptFee, _maxFee);
     _processEscrowPayment(msg.sender, promptFee);
 
@@ -518,7 +519,6 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
   function cancelPrompt(uint256 _answerMessageId, uint256 _maxFee) external {
-    _checkMaxFee(cancellationFee, _maxFee);
     uint256 escrowId = _answerMessageId;
     Escrow storage escrow = escrows[escrowId];
 
@@ -531,6 +531,8 @@ contract SapphireAIAgentEscrow is Ownable2Step {
     if (block.timestamp < escrow.createdAt + CANCELLATION_TIMEOUT) {
       revert PromptNotCancellableYet();
     }
+    // Who may cancel, and when, is settled first, as on the EVM escrow; then the fee.
+    _checkMaxFee(cancellationFee, _maxFee);
     if (deposits[msg.sender] < cancellationFee) {
       revert InsufficientDeposit();
     }
@@ -553,7 +555,11 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @param _payload The plaintext ABI-encoded update instructions for the TEE.
    * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
-  function initiateMetadataUpdate(uint256 _conversationId, string calldata _payload, uint256 _maxFee) external {
+  function initiateMetadataUpdate(
+    uint256 _conversationId,
+    string calldata _payload,
+    uint256 _maxFee
+  ) external {
     _checkMaxFee(metadataUpdateFee, _maxFee);
     _processDirectPayment(msg.sender, metadataUpdateFee);
 
