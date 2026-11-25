@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSE probe</title>
+<style>
+  body { font: 14px/1.4 ui-monospace, Menlo, monospace; margin: 16px; background: #fff; color: #111; }
+  input { width: min(100%, 36rem); font: inherit; }
+  pre { white-space: pre-wrap; background: #f4f4f4; padding: 8px; }
+</style>
+</head>
+<body>
+<h1>SSE probe: browser check</h1>
+<p>Opens the probe stream with <code>fetch</code> from this page's origin, with a
+<code>Last-Event-ID</code> header so the browser must send a CORS preflight first. Prints each
+frame's delay (arrival minus server send time, clock skew removed) and a summary. Read the HTTP
+version from the devtools Network tab, Protocol column. No dependencies. See RUNBOOK.md, step
+"browser check", for how to open it without deploying anything.</p>
+<label>Probe base URL <input id="base" placeholder="https://p8787.example.rofl.app"></label>
+<button id="go" type="button">Run (about 70 s)</button>
+<pre id="out"></pre>
+<script>
+// The same function as the console snippet in RUNBOOK.md.
+async function runProbe(base, log) {
+  base = base.replace(/\/+$/, '');
+  // Clock skew: the /health sample with the shortest round trip; the server read its clock
+  // halfway through it, give or take half the round trip.
+  let best = null;
+  for (let i = 0; i < 6; i += 1) {
+    const t0 = Date.now();
+    const r = await fetch(base + '/health', { cache: 'no-store' });
+    await r.text();
+    const t1 = Date.now();
+    const server = Number(r.headers.get('x-probe-time'));
+    if (!server) throw new Error('X-Probe-Time not readable: is this origin on the allow-list?');
+    if (!best || t1 - t0 < best.t1 - best.t0) best = { t0, t1, server };
+  }
+  const offset = best.server - (best.t0 + best.t1) / 2;
+  log('skew: server ' + offset.toFixed(1) + ' ms ahead, +/- ' + ((best.t1 - best.t0) / 2).toFixed(1) + ' ms');
+  const every = 3000;
+  const url = base + '/probe?every=' + every + '&for=60000&accel=0';
+  const res = await fetch(url, { cache: 'no-store', headers: { 'Last-Event-ID': '0' } });
+  log('status ' + res.status + ', content-type ' + res.headers.get('content-type') + ' (preflight passed)');
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  const arrivals = [];
+  for (;;) {
+    const { value, done } = await reader.read();
+    const now = Date.now();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const data = block.split('\n').find((l) => l.startsWith('data: '));
+      if (!data || !block.includes('event: tick')) continue;
+      const d = JSON.parse(data.slice(6));
+      const delay = now - (d.sentAt - offset);
+      arrivals.push({ seq: d.seq, now, delay });
+      log('frame ' + d.seq + ': delay ' + delay.toFixed(1) + ' ms');
+    }
+  }
+  let bursts = 0;
+  for (let i = 1; i < arrivals.length; i += 1) {
+    // Frames sent `every` ms apart that arrive within a quarter of that were held back.
+    if (arrivals[i].now - arrivals[i - 1].now < every / 4) bursts += 1;
+  }
+  const delays = arrivals.map((a) => a.delay);
+  const entry = performance.getEntriesByName(url).pop();
+  const protocol = entry && entry.nextHopProtocol ? entry.nextHopProtocol : 'not exposed: read the Protocol column';
+  const summary = {
+    frames: arrivals.length,
+    meanDelayMs: Math.round(delays.reduce((a, b) => a + b, 0) / (delays.length || 1)),
+    maxDelayMs: Math.round(Math.max(...delays)),
+    framesArrivingTogether: bursts,
+    protocol,
+  };
+  log('summary ' + JSON.stringify(summary));
+  return summary;
+}
+
+document.getElementById('go').addEventListener('click', () => {
+  const out = document.getElementById('out');
+  out.textContent = '';
+  const log = (line) => { out.textContent += line + '\n'; };
+  runProbe(document.getElementById('base').value.trim(), log).catch((err) => log('failed: ' + err.message));
+});
+</script>
+</body>
+</html>
