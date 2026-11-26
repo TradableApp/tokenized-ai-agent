@@ -414,8 +414,10 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
   run `bun run image:pin:base-testnet` on its own; it changes nothing when the digest is already there.
   ⚠️ **Check the first deploy from a pinned file on a testnet machine.** A default buildx push makes
   an image index (the image manifest plus a provenance attestation), so the digest pinned is the
-  index's. No document we have says how ROFL resolves an index digest to the platform's manifest;
-  the pull by tag did pick the amd64 manifest from this index. After A.9, read `oasis rofl machine
+  index's. The Base Sepolia verification run (sense-ai-e2e `docs/BASE_SEPOLIA_VERIFICATION.md`)
+  pulled by tag and its machine log showed the amd64 manifest taken from the index behind the tag,
+  so ROFL resolves an index to the platform when pulling by tag. A pull by digest alone has not been
+  seen yet, so the first deploy from a digest-only line is still checked: after A.9, read `oasis rofl machine
   logs` for the image being pulled and the oracle starting. If the pull by index digest fails, the
   fallback is to pin the linux/amd64 manifest's digest (from `docker buildx imagetools inspect
   <name>:<tag> --raw`, the entry whose platform is linux/amd64) by hand, or to push without the
