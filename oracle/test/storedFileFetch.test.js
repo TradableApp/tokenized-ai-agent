@@ -315,6 +315,93 @@ describe("stored file fetches are bounded", function () {
   });
 });
 
+describe("stored file fetch edge cases", function () {
+  this.timeout(10000);
+  const zlib = require("node:zlib");
+  const {
+    fetchStoredFile,
+    MAX_STORED_FILE_BYTES,
+    STORED_FILE_TIMEOUT_MS,
+  } = require("../src/storage/storedFileFetch");
+  let server;
+
+  afterEach(async () => {
+    if (server) await server.stop();
+    server = null;
+  });
+
+  const refusal = (response) => new Error(`status ${response.status}`);
+
+  it("counts a gzip body as it is decoded, and stops at the limit", async () => {
+    const compressed = zlib.gzipSync(Buffer.alloc(ENDLESS, 0));
+    server = await startServer((_req, res, record) => {
+      res.writeHead(200, { "Content-Encoding": "gzip", "Content-Type": "text/plain" });
+      record.written = compressed.length;
+      res.end(compressed);
+    });
+
+    const error = await rejectionOf(
+      fetchStoredFile((signal) => realFetch(`${server.base}/gz`, { signal }), {
+        maxBytes: MIB,
+        refusal,
+      }),
+    );
+
+    expect(error.name).to.equal("StoredFileTooLargeError");
+    expect(error.bytesRead)
+      .to.be.above(MIB)
+      .and.at.most(MIB + READ_SLACK);
+    expect(compressed.length, "the wire carried far less than the limit").to.be.below(MIB);
+  });
+
+  it("refuses a key file one byte over its 4 KiB limit through a real fetch", async () => {
+    server = await startServer((_req, res) => res.end(Buffer.alloc(4097, 0x30)));
+
+    const error = await rejectionOf(
+      fetchStoredFile((signal) => realFetch(`${server.base}/key`, { signal }), {
+        maxBytes: 4096,
+        refusal,
+      }),
+    );
+
+    expect(error.name).to.equal("StoredFileTooLargeError");
+    expect(error.limitBytes).to.equal(4096);
+  });
+
+  for (const bad of [NaN, "abc", null, Infinity, -Infinity, {}]) {
+    it(`falls back to the default byte limit for a maxBytes of ${String(bad)}`, async () => {
+      const body = Buffer.alloc(MAX_STORED_FILE_BYTES + 1, 0x41);
+
+      const error = await rejectionOf(
+        fetchStoredFile(async () => new Response(body), { maxBytes: bad, refusal }),
+      );
+
+      expect(error.name).to.equal("StoredFileTooLargeError");
+      expect(error.limitBytes).to.equal(MAX_STORED_FILE_BYTES);
+    });
+
+    it(`falls back to the default time limit for a timeoutMs of ${String(bad)}`, async () => {
+      // Answers after 50 ms unless the fetch is ended first, as a real fetch would be.
+      const slow = (signal) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => resolve(new Response("late but fine")), 50);
+          signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new Error("ended"));
+          });
+        });
+      let timedOut = null;
+      const body = await fetchStoredFile(slow, { timeoutMs: bad, refusal }).catch((error) => {
+        timedOut = error;
+      });
+
+      expect(timedOut).to.equal(null);
+      expect(body.toString()).to.equal("late but fine");
+      expect(STORED_FILE_TIMEOUT_MS).to.be.above(50);
+    });
+  }
+});
+
 describe("the stored file limit", () => {
   const {
     LARGEST_WRITTEN_FILE_BYTES,

@@ -1688,6 +1688,42 @@ describe("aiAgentOracle", function () {
       expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
 
+    it("drops a retried job whose event turns out to be bad input, instead of retrying it to exhaustion", async () => {
+      const fakePayload = {
+        promptText: "retried, then refused",
+        isNewConversation: false,
+        previousMessageCID: "not a content id",
+      };
+      const eventArgs = [
+        "0xUser",
+        1,
+        2,
+        3,
+        ethers.toUtf8Bytes(createEncryptedString(fakePayload, FAKE_SESSION_KEY)),
+        "key",
+      ];
+      const tx = txHash("retry-bad-input");
+      await seedFailedJob({ transactionHash: tx, logIndex: 0, blockNumber: 101 });
+      const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
+      mockedProvider.getTransactionReceipt.resolves({
+        logs: [{ address: "0xMockedContractAddress", index: 0, transactionHash: tx }],
+        blockNumber: 101,
+        transactionHash: tx,
+      });
+      mockedProvider.getBlock.resolves({ timestamp: Date.now() });
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      mockedContract.interface.parseLog.returns({ name: "PromptSubmitted", args: eventArgs });
+
+      await aiAgentOracle.retryFailedJobs();
+
+      expect(mockedContract.submitAnswer.called).to.equal(false);
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+      const critical = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((call) => String(call.args[0]).includes("CRITICAL"));
+      expect(critical).to.deep.equal([]);
+    });
+
     it("should stop retrying a job after max retries, keeping it as exhausted", async () => {
       await seedFailedJob();
       await failJobAttempts(stateStore, 9); // The next attempt is the last
@@ -2676,7 +2712,7 @@ describe("aiAgentOracle", function () {
       expect(errors.isBadInputError(refused)).to.equal(true);
     });
 
-    it("passes a timeout on as retryable, so the prompt is queued and not answered without history", async () => {
+    it("ends the walk at a fetch that timed out, keeping the newer messages it read", async () => {
       fetchStub()
         .withArgs(idFor(2))
         .resolves(createEncryptedString(message("newest", idFor(1)), FAKE_SESSION_KEY));
@@ -2684,15 +2720,40 @@ describe("aiAgentOracle", function () {
         .withArgs(idFor(1))
         .rejects(new errors.StoredFileTimeoutError({ timeoutMs: 30000 }));
 
-      let refused;
-      try {
-        await aiAgentOracle.reconstructHistory(idFor(2), FAKE_SESSION_KEY);
-      } catch (error) {
-        refused = error;
-      }
+      const history = await aiAgentOracle.reconstructHistory(idFor(2), FAKE_SESSION_KEY);
 
-      expect(refused, "the walk refused").to.be.an("error");
-      expect(errors.isRetryableError(refused)).to.equal(true);
+      expect(history).to.deep.equal([{ role: "user", content: "newest" }]);
+    });
+
+    it("ends the walk, keeping what it read, once its own time is spent", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      const bodies = new Map();
+      for (let n = 1; n <= 10; n += 1) {
+        bodies.set(
+          idFor(n),
+          createEncryptedString(
+            message(`Message ${n}`, n > 1 ? idFor(n - 1) : null),
+            FAKE_SESSION_KEY,
+          ),
+        );
+      }
+      // Each fetch takes 40 s of the walk's clock.
+      let now = 1_000_000;
+      sinon.stub(Date, "now").callsFake(() => now);
+      fetchStub().callsFake(async (id) => {
+        now += 40_000;
+        return bodies.get(id);
+      });
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(10), FAKE_SESSION_KEY);
+
+      const fetches = Math.ceil(limits.walkMs / 40_000);
+      expect(fetchStub().callCount).to.equal(fetches);
+      expect(history).to.have.lengthOf(fetches);
+      expect(history[history.length - 1].content).to.equal("Message 10");
+      // The last fetch was given only what was left of the walk's time.
+      const lastTimeout = fetchStub().lastCall.args[1].timeoutMs;
+      expect(lastTimeout).to.equal(limits.walkMs - (fetches - 1) * 40_000);
     });
 
     it("gives every fetch of a long chain of small files the walk's remaining bytes and time", async () => {
@@ -2724,12 +2785,69 @@ describe("aiAgentOracle", function () {
       const fits = Math.floor(limits.walkBytes / fileChars);
       expect(fits, "the test's files fit the walk at least once").to.be.at.least(1);
       expect(fits, "the walk's byte limit binds before its file count").to.be.below(limits.files);
-      chain(fits + 3, () => content);
+      // As the providers do: a body over the fetch's maxBytes is refused at that limit, so the
+      // walk meets its spent bytes as a refusal at what it has left, not as a long string.
+      const served = fetchStub();
+      const bodies = new Map();
+      for (let i = 1; i <= fits + 3; i += 1) {
+        bodies.set(
+          idFor(i),
+          createEncryptedString(message(content, i > 1 ? idFor(i - 1) : null), FAKE_SESSION_KEY),
+        );
+      }
+      served.callsFake(async (id, { maxBytes }) => {
+        const body = bodies.get(id);
+        if (body.length > maxBytes) {
+          throw new errors.StoredFileTooLargeError({
+            limitBytes: maxBytes,
+            bytesRead: maxBytes + 1,
+          });
+        }
+        return body;
+      });
 
       const history = await aiAgentOracle.reconstructHistory(idFor(fits + 3), FAKE_SESSION_KEY);
 
       expect(history).to.have.lengthOf(fits);
-      expect(fetchStub().callCount).to.be.at.most(fits + 1);
+      expect(served.callCount).to.equal(fits + 1);
+      expect(served.lastCall.args[1].maxBytes).to.be.below(limits.fileBytes);
+    });
+
+    it("stops the walk, keeping the newer messages, once their content passes its own budget", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      const each = Math.floor(limits.contentChars / 3) + 1;
+      chain(6, () => "c".repeat(each));
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(6), FAKE_SESSION_KEY);
+
+      expect(history).to.have.lengthOf(2);
+      const total = history.reduce((sum, m) => sum + m.content.length, 0);
+      expect(total).to.be.at.most(limits.contentChars);
+    });
+
+    it("keeps a whole conversation of the longest prompts and of answers as long as the stream carries", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      const promptChars = 5000;
+      const answerChars = 64 * 1024;
+      for (let i = 1; i <= limits.files; i += 1) {
+        const isAnswer = i % 2 === 0;
+        fetchStub()
+          .withArgs(idFor(i))
+          .resolves(
+            createEncryptedString(
+              {
+                role: isAnswer ? "assistant" : "user",
+                content: (isAnswer ? "a" : "p").repeat(isAnswer ? answerChars : promptChars),
+                parentCID: i > 1 ? idFor(i - 1) : null,
+              },
+              FAKE_SESSION_KEY,
+            ),
+          );
+      }
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(limits.files), FAKE_SESSION_KEY);
+
+      expect(history).to.have.lengthOf(limits.files);
     });
 
     it("never caches a file that does not decrypt: the next prompt fetches it again", async () => {
@@ -2765,6 +2883,89 @@ describe("aiAgentOracle", function () {
       const cache = aiAgentOracle.historyCacheUsage();
       expect(cache.maxBytes).to.equal(aiAgentOracle.HISTORY_LIMITS.cacheBytes);
       expect(cache.bytes).to.be.above(0).and.below(4096);
+    });
+
+    describe("an answer too large to store", () => {
+      const {
+        ANSWER_ALLOWANCE_BYTES,
+        LARGEST_WRITTEN_FILE_BYTES,
+      } = require("../src/storage/storedFileFetch");
+      // Plain text whose JSON is over the answer's allowance.
+      const HUGE = "x".repeat(ANSWER_ALLOWANCE_BYTES + 1024);
+
+      function storedAnswers() {
+        return stubs["./storage/storage"].uploadData
+          .getCalls()
+          .map((call) => {
+            try {
+              return decryptSymmetrically(call.args[0].toString("utf-8"), FAKE_SESSION_KEY);
+            } catch {
+              return null;
+            }
+          })
+          .filter((file) => file && file.role === "assistant");
+      }
+
+      async function prompt() {
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(
+            { promptText: "write a lot", isNewConversation: true },
+            FAKE_SESSION_KEY,
+          ),
+        );
+        await aiAgentOracle.handlePrompt("0xUser", 5, 10, 11, payloadBytes, "0xkey", {
+          blockNumber: 1,
+          getBlock: () => Promise.resolve({ timestamp: 1 }),
+        });
+      }
+
+      it("is never uploaded, and the next tier answers in its place", async () => {
+        process.env.CHAIN_GPT_API_KEY = "fake-key";
+        stubs["node-fetch"].callsFake(async (url) => {
+          if (String(url).includes("chaingpt")) {
+            return { ok: true, text: async () => HUGE };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "Mocked AI Response" }] } }],
+            }),
+            text: async () => "Mocked AI Response",
+          };
+        });
+
+        await prompt();
+
+        const chaingptAsked = stubs["node-fetch"]
+          .getCalls()
+          .some((call) => String(call.args[0]).includes("chaingpt"));
+        expect(chaingptAsked, "the oversized tier was asked").to.equal(true);
+        const [answer] = storedAnswers();
+        expect(answer, "an answer was stored").to.not.equal(undefined);
+        expect(answer.content).to.equal("Mocked AI Response");
+      });
+
+      it("is not uploaded when the only provider writes it", async () => {
+        process.env.AI_PROVIDER = "Gemini";
+        stubs["node-fetch"].resolves({
+          ok: true,
+          json: async () => ({ candidates: [{ content: { parts: [{ text: HUGE }] } }] }),
+          text: async () => HUGE,
+        });
+
+        await prompt().catch(() => {});
+
+        for (const call of stubs["./storage/storage"].uploadData.getCalls()) {
+          expect(call.args[0].length).to.be.below(ANSWER_ALLOWANCE_BYTES);
+        }
+        for (const file of storedAnswers()) {
+          expect(file.content).to.not.equal(HUGE);
+        }
+      });
+
+      it("fits every file the oracle writes under the size it will read", () => {
+        expect(aiAgentOracle.HISTORY_LIMITS.fileBytes).to.be.above(LARGEST_WRITTEN_FILE_BYTES);
+      });
     });
 
     describe("what the handler does with the prompt", () => {
@@ -2811,14 +3012,44 @@ describe("aiAgentOracle", function () {
         expect(fatalAlerts()).to.deep.equal([]);
       });
 
-      it("queues a prompt whose parent timed out, and does not answer it", async () => {
+      it("answers a prompt whose parent timed out, with the history read so far, and does not queue it", async () => {
         fetchStub()
           .withArgs(idFor(9))
           .rejects(new errors.StoredFileTimeoutError({ timeoutMs: 30000 }));
 
         await handle(promptEvent("slow-parent", idFor(9)));
 
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        expect(mockedContract().submitAnswer.calledOnce).to.equal(true);
+        expect(fatalAlerts()).to.deep.equal([]);
+      });
+
+      it("queues a prompt whose key file timed out: without the key nothing can be answered", async () => {
+        stubs["./storage/storage"].queryTransactionByTags.resolves(idFor(4));
+        fetchStub()
+          .withArgs(idFor(4))
+          .rejects(new errors.StoredFileTimeoutError({ timeoutMs: 30000 }));
+        const event = promptEvent("slow-key-file", null);
+        event.args[5] = "0x";
+
+        await handle(event);
+
         expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+        expect(mockedContract().submitAnswer.called).to.equal(false);
+      });
+
+      it("drops a prompt whose key file is over its own limit", async () => {
+        stubs["./storage/storage"].queryTransactionByTags.resolves(idFor(4));
+        const limitBytes = aiAgentOracle.HISTORY_LIMITS.keyFileBytes;
+        fetchStub()
+          .withArgs(idFor(4))
+          .rejects(new errors.StoredFileTooLargeError({ limitBytes, bytesRead: limitBytes + 1 }));
+        const event = promptEvent("big-key-file", null);
+        event.args[5] = "0x";
+
+        await handle(event);
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
         expect(mockedContract().submitAnswer.called).to.equal(false);
         expect(fatalAlerts()).to.deep.equal([]);
       });
@@ -2863,7 +3094,8 @@ describe("aiAgentOracle", function () {
 
       const [call] = callsFor(idFor(4));
       expect(call, "the key file was fetched").to.not.equal(undefined);
-      expect(call.args[1].maxBytes).to.be.at.most(64 * 1024);
+      expect(call.args[1].maxBytes).to.equal(4 * 1024);
+      expect(call.args[1].maxBytes).to.equal(aiAgentOracle.HISTORY_LIMITS.keyFileBytes);
       expect(call.args[1].timeoutMs).to.be.above(0);
     });
   });

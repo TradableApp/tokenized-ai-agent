@@ -114,6 +114,34 @@ describe("storage router", function () {
     });
   });
 
+  describe("uploadData refuses a file it would later refuse to read", () => {
+    const { LARGEST_WRITTEN_FILE_BYTES } = require("../src/storage/storedFileFetch");
+    const { isRetryableError, isBadInputError } = require("../src/errors");
+
+    it("uploads a file of exactly the largest written size", async () => {
+      await storage.uploadData(Buffer.alloc(LARGEST_WRITTEN_FILE_BYTES, 0x41));
+
+      expect(autonomysStub.uploadData.calledOnce).to.equal(true);
+    });
+
+    it("refuses one byte more before any provider is asked, as retryable and not as bad input", async () => {
+      let refused;
+      try {
+        await storage.uploadData(Buffer.alloc(LARGEST_WRITTEN_FILE_BYTES + 1, 0x41));
+      } catch (error) {
+        refused = error;
+      }
+
+      expect(refused, "refused").to.be.an("error");
+      expect(refused.name).to.equal("StoredFileWriteRefusedError");
+      expect(isRetryableError(refused)).to.equal(true);
+      expect(isBadInputError(refused)).to.equal(false);
+      expect(autonomysStub.uploadData.called).to.equal(false);
+      expect(arweaveStub.uploadData.called).to.equal(false);
+      expect(mirrorStub.mirrorInBackground.called).to.equal(false);
+    });
+  });
+
   describe("fetchData", () => {
     it("should correctly route to the arweave provider for a valid Arweave CID", async () => {
       // Exactly 43 chars, valid Base64URL characters
