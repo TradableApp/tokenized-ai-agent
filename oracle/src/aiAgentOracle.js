@@ -2847,10 +2847,18 @@ function buildAlertThrottles(now = monotonicNow) {
 }
 buildAlertThrottles();
 
-/** Sends the unreadable-prompt notice when one is due. */
+/**
+ * Sends the unreadable-prompt notice when one is due. Never throws: a notice that cannot be sent
+ * is logged and its counts are gone, and the event being handled is not failed or queued for it.
+ */
 async function sendPromptReadNoticeIfDue() {
   const notice = promptReads.takeNotice();
-  if (notice) await sendAlert(notice.title, notice.message);
+  if (!notice) return;
+  try {
+    await sendAlert(notice.title, notice.message);
+  } catch (error) {
+    console.error("[Alerts] The unreadable-prompt notice was not sent:", describeError(error));
+  }
 }
 
 /**

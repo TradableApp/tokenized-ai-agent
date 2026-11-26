@@ -27,6 +27,13 @@ async function sendSlackAlert(title, message) {
 }
 
 /**
+ * The mainnet names NETWORK_NAME takes: the mainnet entries of `CHAIN_IDS` in oracleKeys.js
+ * (Base 8453, Sapphire 23294), which is also what compose.base-mainnet.yaml sets. Written out
+ * rather than imported, since oracleKeys.js loads this module.
+ */
+const MAINNET_NETWORKS = new Set(["base", "sapphire"]);
+
+/**
  * Whether email alerts should fire in the current environment.
  *
  * Email alerts land in a human inbox (admin@tradable.app), so they are
@@ -45,13 +52,6 @@ function isEmailAlertingEnabled() {
   if (override === "false") return false;
   return MAINNET_NETWORKS.has(process.env.NETWORK_NAME || "");
 }
-
-/**
- * The mainnet names NETWORK_NAME takes: the mainnet entries of `CHAIN_IDS` in oracleKeys.js
- * (Base 8453, Sapphire 23294), which is also what compose.base-mainnet.yaml sets. Written out
- * rather than imported, since oracleKeys.js loads this module.
- */
-const MAINNET_NETWORKS = new Set(["base", "sapphire"]);
 
 /**
  * Sends a formatted alert email via SendGrid.
