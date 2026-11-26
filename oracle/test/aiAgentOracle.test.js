@@ -2539,8 +2539,11 @@ describe("aiAgentOracle", function () {
         );
 
       it("is not printed or put in an alert when the error is fatal", async () => {
+        // With a runtime code, so it is the oracle's fault and not the sender's.
         stubs["./ecies"].eciesDecrypt.rejects(
-          new Error(`Decryption service at ${ADDRESS} refused`),
+          Object.assign(new Error(`Decryption service at ${ADDRESS} refused`), {
+            code: "ERR_CRYPTO_OPERATION_FAILED",
+          }),
         );
 
         await handle(eventFailingWith("fatal-with-address"));

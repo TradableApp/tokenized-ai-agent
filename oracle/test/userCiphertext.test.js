@@ -2,7 +2,7 @@ const { expect } = require("chai");
 const crypto = require("crypto");
 
 const { eciesEncrypt } = require("../src/ecies");
-const { BadInputError } = require("../src/errors");
+const { BadInputError, RetryableError } = require("../src/errors");
 const { createDecryptor } = require("../src/oracleKeys");
 const { unwrapSessionKey, payloadText } = require("../src/userCiphertext");
 
@@ -67,6 +67,13 @@ describe("ciphertext a user sends", () => {
 
     it("passes on a failure that carries a runtime code, which is not the sender's doing", async () => {
       const fault = Object.assign(new Error("binding failed"), { code: "ERR_CRYPTO_OPERATION_FAILED" });
+      const failing = { decrypt: () => Promise.reject(fault) };
+
+      expect(await refusal(unwrapSessionKey(failing, Buffer.from([0x01])))).to.equal(fault);
+    });
+
+    it("passes on an error the oracle has typed as one to retry", async () => {
+      const fault = new RetryableError("the key service is busy");
       const failing = { decrypt: () => Promise.reject(fault) };
 
       expect(await refusal(unwrapSessionKey(failing, Buffer.from([0x01])))).to.equal(fault);

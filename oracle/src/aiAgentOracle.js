@@ -60,6 +60,8 @@ const {
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
+const { createAlertThrottle } = require("./alertThrottle");
+const { payloadText, unwrapSessionKey } = require("./userCiphertext");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
@@ -872,7 +874,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     }
   } else if (roflEncryptedKey && roflEncryptedKey !== "0x") {
     const cipherBlob = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
-    return await requireDecryptor().decrypt(cipherBlob);
+    // The wrap is the sender's; the decryptor is ours, so a missing one stays a fault.
+    return await unwrapSessionKey(requireDecryptor(), cipherBlob);
   }
 
   if (conversationId) {
@@ -1925,7 +1928,7 @@ async function handlePrompt(
 
     const decryptedData = isSapphire
       ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      : decryptSymmetrically(payloadText(payload), sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "PromptSubmitted");
 
@@ -2291,10 +2294,14 @@ async function handlePrompt(
       });
     }
 
-    Sentry.captureException(error, {
-      tags: { site: "handle_prompt" },
-      extra: { convId: conversationId?.toString() },
-    });
+    // Bad input is the sender's, and is not reported: one event per malformed prompt would let
+    // anyone fill the error reports.
+    if (!isBadInputError(error)) {
+      Sentry.captureException(error, {
+        tags: { site: "handle_prompt" },
+        extra: { convId: conversationId?.toString() },
+      });
+    }
     console.error(`Error in handlePrompt for convId ${conversationId}:`, describedError(error));
 
     // Bad input is dropped for good; anything else may be retried as a new run.
@@ -2361,7 +2368,7 @@ async function handleRegeneration(
 
     const decryptedData = isSapphire
       ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      : decryptSymmetrically(payloadText(payload), sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "RegenerationRequested");
 
@@ -2588,7 +2595,7 @@ async function handleBranch(
 
     const decryptedData = isSapphire
       ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      : decryptSymmetrically(payloadText(payload), sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "BranchRequested");
 
@@ -2670,7 +2677,7 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
 
     const decryptedData = isSapphire
       ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+      : decryptSymmetrically(payloadText(payload), sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "MetadataUpdateRequested");
 
@@ -2803,6 +2810,11 @@ async function lostOracleRole(error) {
   }
 }
 
+// The lag alert is checked once per event, so a backlog would send one per event. One per ten
+// minutes says the same; the per-event lag is still logged.
+const LAG_ALERT_INTERVAL_MS = 10 * 60 * 1000;
+const lagAlerts = createAlertThrottle({ intervalMs: LAG_ALERT_INTERVAL_MS });
+
 /**
  * A wrapper for event handlers that distinguishes between retryable and fatal errors.
  * Retryable errors are saved to a queue for later processing.
@@ -2830,7 +2842,7 @@ async function handleAndRecord(eventName, handler, ...args) {
     console.log(`[Lag] ${eventName} block=${event.blockNumber} block_to_start_s=${lagInSeconds}`);
     const lagThreshold = 300; // 5 minutes
 
-    if (lagInSeconds > lagThreshold) {
+    if (lagInSeconds > lagThreshold && lagAlerts.shouldSend()) {
       await sendAlert(
         "High Oracle Processing Lag Detected",
         `The oracle is currently processing events that are over ${Math.floor(lagInSeconds / 60)} minutes old. The system is under heavy load and may not be keeping up. Consider deploying additional oracle instances to handle the demand.`,
