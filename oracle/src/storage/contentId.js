@@ -10,7 +10,9 @@
  *   with the raw codec, so always `bafkr6i` and 52 more of `[a-z2-7]` (59 characters).
  * - Irys / Arweave (`arweave.uploadData`, read for older conversations): a transaction id, the
  *   base64url of a 32-byte hash, 43 characters. 44 is also taken, as the router has always taken
- *   it and the dApp reads it, so no stored conversation that held one is cut off.
+ *   it and the dApp reads it, so no stored conversation that held one is cut off. Not taken at
+ *   all with `STORAGE_PROVIDER=autonomys-only` (`storageMode.js`): that deployment never wrote
+ *   one, so such an id is refused as an id of unknown shape is.
  * - Local IPFS (`ipfs.uploadData`, localnet only, `LOCAL_IPFS_API_URL` set): Kubo's CIDv1 of a
  *   SHA-256 hash, `bafkrei` for a file in one block or `bafybei` for one in several, then 52
  *   of `[a-z2-7]`.
@@ -21,6 +23,8 @@
  * or a host.
  */
 
+const { isAutonomysOnly } = require("./storageMode");
+
 const AUTONOMYS_ID = /^bafkr6i[a-z2-7]{52}$/;
 const ARWEAVE_ID = /^[A-Za-z0-9_-]{43,44}$/;
 const LOCAL_IPFS_ID = /^baf(?:kr|yb)ei[a-z2-7]{52}$/;
@@ -30,7 +34,7 @@ const MOCK_ID = /^mock_[0-9a-f]{20}$/;
 function contentIdKind(value, env = process.env) {
   if (typeof value !== "string") return null;
   if (AUTONOMYS_ID.test(value)) return "autonomys";
-  if (ARWEAVE_ID.test(value)) return "arweave";
+  if (ARWEAVE_ID.test(value)) return isAutonomysOnly(env) ? null : "arweave";
   if (env.LOCAL_IPFS_API_URL && LOCAL_IPFS_ID.test(value)) return "local-ipfs";
   if (env.USE_MOCK_STORAGE === "true" && MOCK_ID.test(value)) return "mock";
   return null;

@@ -383,17 +383,19 @@ describe("startup config validation", () => {
     }
   });
 
-  it("requires both credentials for an unrecognised provider rather than rejecting it", () => {
-    // A typo'd or future provider falls into storage.js's else branch and gets BOTH providers,
-    // so the safe reading is "needs both" — not "reject the value". Rejecting would make the
-    // guard fail a deployment that storage.js would have handled.
+  it("refuses an unrecognised provider, and still names both credentials it would need", () => {
+    // STORAGE_PROVIDER takes irys, autonomys-only or nothing (storage/storageMode.js). Any other
+    // value is refused at start-up rather than read as unset, so a slip in "autonomys-only"
+    // cannot start a deployment that starts and funds Irys when it was meant not to. Every
+    // problem is still reported in one pass, so the credentials are checked as for unset.
     try {
       validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined, STORAGE_PROVIDER: "autonmyos" }));
       expect.fail("expected a ConfigError");
     } catch (err) {
+      expect(err.message).to.include("STORAGE_PROVIDER is not a supported value");
       expect(err.message).to.include("IRYS_PAYMENT_PRIVATE_KEY");
       expect(err.message).to.include("AUTONOMYS_API_KEY");
-      expect(err.message).to.not.match(/not a recognised value/i);
+      expect(err.message).to.not.include("autonmyos");
     }
   });
 
@@ -506,8 +508,8 @@ describe("startup config validation", () => {
     // that gets guards deleted.
     //
     // This test previously asserted the mirror image — that STORAGE_PROVIDER=autonomys needs
-    // only AUTONOMYS_API_KEY — which encoded the invented taxonomy rather than storage.js. There
-    // is no "autonomys" branch: that value falls through to Irys AND Autonomys, so it needs both.
+    // only AUTONOMYS_API_KEY — which encoded an invented taxonomy rather than storage.js. The
+    // value that needs only AUTONOMYS_API_KEY is "autonomys-only" (autonomysOnlyStorage.test.js).
     expect(() =>
       validateConfig(
         baseEnv({

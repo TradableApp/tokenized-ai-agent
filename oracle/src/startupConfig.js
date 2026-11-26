@@ -25,6 +25,7 @@ const { keyModeFor } = require("./oracleKeys");
 const { DEFAULT_POLL_BACKOFF_CAP_MS, DEFAULT_POLL_INTERVAL_MS } = require("./pollBackoff");
 const { REQUIRED_BASE_KEYS, CERT_KEY_PAIRS } = require("./postgresBootstrap");
 const { streamConfigProblems } = require("./stream/streamConfig");
+const { storageMode, SUPPORTED_STORAGE_PROVIDERS } = require("./storage/storageMode");
 
 /**
  * Thrown when the process must not continue. Typed so callers can distinguish it from bugs.
@@ -90,36 +91,33 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const PRIVATE_KEY_HEX = /^(?:0x)?[0-9a-fA-F]{64}$/;
 
 /**
- * Which credentials a given STORAGE_PROVIDER actually needs.
- *
- * MIRRORS `storage/storage.js::initializeStorage`. **If that function gains a provider path,
- * change this to match** — the coupling is by hand, unlike SUPPORTED_NETWORKS which is imported.
- * It cannot be imported without refactoring storage.js, whose branches are side effects rather
- * than data.
+ * Which credentials a storage mode needs. The mode is read by `storage/storageMode.js`, the same
+ * function `storage/storage.js::initializeStorage` branches on, so the two cannot drift apart.
  *
  * That function has two early returns before any credential is touched — `USE_MOCK_STORAGE` and
- * `USE_LOCAL_IPFS` — handled by the caller, then a two-way branch:
+ * `USE_LOCAL_IPFS` — handled by the caller, then a three-way branch:
  *
- *   STORAGE_PROVIDER === "irys"  → Irys ONLY               → IRYS_PAYMENT_PRIVATE_KEY
- *   anything else, INCLUDING unset → Irys AND Autonomys     → both credentials
+ *   "irys"                   → Irys ONLY          → IRYS_PAYMENT_PRIVATE_KEY
+ *   "autonomys-only"         → Autonomys ONLY     → AUTONOMYS_API_KEY (Irys is never started)
+ *   unset or empty           → Irys AND Autonomys → both credentials
  *
- * The second branch is the normal case, not an error: `.env.oracle.example` ships
- * `STORAGE_PROVIDER=` empty, and the comment there explains why — both are initialised so old
- * Arweave data stays readable while new writes go to Autonomys. So an unrecognised or missing
- * value must NOT be rejected; it must be validated as "both", which is the stricter requirement.
+ * Unset is the normal case, not an error: `.env.oracle.example` ships `STORAGE_PROVIDER=` empty
+ * — both are initialised so old Arweave data stays readable while new writes go to Autonomys.
+ * Any other value (`null` here) is refused by the caller, and its credentials are checked as for
+ * unset, the stricter requirement, so every problem is still reported in one pass.
  *
  * A first version of this guard invented a three-key provider map and demanded only the matching
  * credential. It let a deployment with NO storage credentials at all start cleanly — the exact
  * failure this module exists to prevent, since the credentials are read at upload time and would
  * therefore have failed after the user had paid.
  *
- * @param {string} provider lower-cased STORAGE_PROVIDER, possibly ""
+ * @param {string|null} mode what `storageMode` read
  * @returns {string[]} env var names that must be present
  */
-function requiredStorageCredentials(provider) {
-  return provider === "irys"
-    ? ["IRYS_PAYMENT_PRIVATE_KEY"]
-    : ["IRYS_PAYMENT_PRIVATE_KEY", "AUTONOMYS_API_KEY"];
+function requiredStorageCredentials(mode) {
+  if (mode === "irys") return ["IRYS_PAYMENT_PRIVATE_KEY"];
+  if (mode === "autonomys-only") return ["AUTONOMYS_API_KEY"];
+  return ["IRYS_PAYMENT_PRIVATE_KEY", "AUTONOMYS_API_KEY"];
 }
 
 // How far a typed name may be from a supported one and still be taken for a slip.
@@ -328,14 +326,21 @@ function validateConfig(env = process.env) {
   // "derived from the real branch" claim above overstated.
   const usesRemoteStorage = env.USE_MOCK_STORAGE !== "true" && isBlank(env.LOCAL_IPFS_API_URL);
   if (usesRemoteStorage) {
-    const provider = (env.STORAGE_PROVIDER || "").trim().toLowerCase();
+    const mode = storageMode(env);
     // Only a value this module knows is named; anything else is described, not quoted.
     let describe = "STORAGE_PROVIDER is unset";
-    if (provider === "irys") describe = 'STORAGE_PROVIDER is "irys"';
-    else if (provider) {
-      describe = `STORAGE_PROVIDER names a provider other than irys${didYouMean(closestSupported(provider, ["irys"]))}`;
+    if (mode === "irys") describe = 'STORAGE_PROVIDER is "irys"';
+    else if (mode === "autonomys-only") {
+      describe = 'STORAGE_PROVIDER is "autonomys-only" (IRYS_PAYMENT_PRIVATE_KEY is not used)';
+    } else if (mode === null) {
+      const typed = env.STORAGE_PROVIDER.trim().toLowerCase();
+      describe = "STORAGE_PROVIDER is not a supported value";
+      problems.push(
+        `${describe}${didYouMean(closestSupported(typed, SUPPORTED_STORAGE_PROVIDERS))} — set ` +
+          `${SUPPORTED_STORAGE_PROVIDERS.join(" or ")}, or leave it unset for Irys and Autonomys`,
+      );
     }
-    for (const credential of requiredStorageCredentials(provider)) {
+    for (const credential of requiredStorageCredentials(mode)) {
       if (isMissingOrPlaceholder(env[credential])) {
         const state = isBlank(env[credential])
           ? "is missing or empty"

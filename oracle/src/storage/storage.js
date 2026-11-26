@@ -5,6 +5,7 @@ const mirror = require("./mirror");
 const crypto = require("crypto");
 const { describeError } = require("../errorDescription");
 const { contentIdKind, isContentId, printableContentId } = require("./contentId");
+const { storageMode } = require("./storageMode");
 const { LARGEST_WRITTEN_FILE_BYTES } = require("./storedFileFetch");
 const { StoredFileWriteRefusedError } = require("../errors");
 
@@ -48,6 +49,8 @@ const USE_IN_MEMORY_TAG_INDEX = USE_MOCK_STORAGE || USE_LOCAL_IPFS;
 function getProviderFromCID(cid) {
   // The shapes are in contentId.js, shared with the payload schema: an Autonomys CIDv1
   // (`bafkr6i` + 52 base32) is checked before the broader Arweave/Irys id (43 or 44 base64url).
+  // With STORAGE_PROVIDER=autonomys-only an Arweave id has no kind, so fetchData refuses it
+  // before this is reached.
   const kind = contentIdKind(cid);
   if (kind === "autonomys") return autonomys;
   if (kind === "arweave") return arweave;
@@ -76,9 +79,19 @@ async function initializeStorage() {
     return;
   }
 
-  if (process.env.STORAGE_PROVIDER === "irys") {
+  // STORAGE_PROVIDER is read by storageMode.js; a value it does not know is refused at start-up
+  // (startupConfig.js), and is taken here as unset.
+  const mode = storageMode();
+  if (mode === "irys") {
     await arweave.initializeIrys();
     console.log("Storage providers initialized (Irys only — STORAGE_PROVIDER=irys).");
+  } else if (mode === "autonomys-only") {
+    // Irys is never started, so it is never funded and IRYS_PAYMENT_PRIVATE_KEY is never read.
+    await autonomys.initializeAutoDrive();
+    console.log(
+      "Storage providers initialized (Autonomys only — STORAGE_PROVIDER=autonomys-only; " +
+        "IRYS_PAYMENT_PRIVATE_KEY is not used).",
+    );
   } else {
     // Initialize BOTH so we can read old Arweave data AND write new Autonomys data.
     await Promise.all([arweave.initializeIrys(), autonomys.initializeAutoDrive()]);
@@ -125,7 +138,8 @@ async function uploadData(dataBuffer, tags = []) {
     return cid;
   }
 
-  if (process.env.STORAGE_PROVIDER === "irys") {
+  // Every mode but irys writes to Autonomys, autonomys-only included.
+  if (storageMode() === "irys") {
     return arweave.uploadData(dataBuffer, tags);
   }
 
@@ -219,6 +233,11 @@ async function queryTransactionByTags(tags) {
     return null;
   }
 
+  // With STORAGE_PROVIDER=autonomys-only Autonomys is asked alone: Irys is not started, and the
+  // deployment never wrote a file there. A failed query is then no match, as it is today when
+  // every provider fails.
+  const autonomysOnly = storageMode() === "autonomys-only";
+
   // Try Primary Provider (Autonomys) first
   try {
     const autoCid = await autonomys.queryTransactionByTags(tags);
@@ -226,8 +245,11 @@ async function queryTransactionByTags(tags) {
       return autoCid;
     }
   } catch (error) {
-    console.warn("Error querying Autonomys tags (continuing to fallback):", describeError(error));
+    const next = autonomysOnly ? "no match" : "continuing to fallback";
+    console.warn(`Error querying Autonomys tags (${next}):`, describeError(error));
   }
+
+  if (autonomysOnly) return null;
 
   // Fallback to Legacy Provider (Arweave)
   // This ensures old conversations can still be resumed
