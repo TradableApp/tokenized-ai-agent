@@ -977,7 +977,12 @@ function isMessageFile(value) {
   );
 }
 
-/** A refusal at the walk's remaining bytes, not at a file's own limit: the walk has read enough. */
+/**
+ * A refusal at the walk's remaining bytes, not at a file's own limit: the walk has read enough.
+ * Each file is fetched with a limit of the smaller of a file's own limit and the bytes the walk
+ * has left, so a refusal below the file limit can only be the walk's budget; a refusal at the
+ * file limit means the file itself is too large.
+ */
 function isWalkBytesSpent(error) {
   return error instanceof StoredFileTooLargeError && error.limitBytes < HISTORY_LIMITS.fileBytes;
 }
@@ -1065,6 +1070,7 @@ async function reconstructHistory(startMessageCID, sessionKey) {
       break;
     }
     // Counted whether it came from storage or the cache: decrypting it is the walk's work too.
+    // Characters, which are bytes for the files read here: a sealed file is base64 text.
     bytesLeft -= encryptedString.length;
 
     // 3. Decrypt (Fast CPU op) and read it as a message file.
@@ -1975,6 +1981,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       console.warn(
         "[Failover] A tool step failed in the ElizaOS run and nothing answered without it. " +
           "Answering with the direct Gemini call.",
+      );
+    } else if (err instanceof AnswerTooLargeToStoreError) {
+      // ElizaOS did answer; its answer cannot be stored, so the next tier is asked.
+      console.warn(
+        "[Failover] ElizaOS answer too large to store. Falling back to ChainGPT.",
+        describedError(err),
       );
     } else {
       /* A retired or misspelled GOOGLE_* model id surfaces here, not at startup: Gemini
