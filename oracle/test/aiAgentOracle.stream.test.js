@@ -233,6 +233,18 @@ function receiptWaitFails({ contract, provider }, receipt) {
   provider.getTransactionReceipt.withArgs("0xOwnTx").resolves(receipt);
 }
 
+/**
+ * Every tier of the fallback chain fails: the ElizaOS run errors, ChainGPT's request is refused
+ * and the direct Gemini call throws. Returns what `loadOracle` returns.
+ */
+function loadOracleWithNoModel() {
+  process.env.CHAIN_GPT_API_KEY = "test-key";
+  sinon.stub(global, "fetch").rejects(new Error("ChainGPT is down"));
+  const loaded = loadOracle({ scriptFor: () => ({ fail: new Error("model 503") }) });
+  loaded.stubs["./geminiDirect"].queryGeminiDirect.rejects(new Error("Gemini is down"));
+  return loaded;
+}
+
 const activityKinds = (stubs) =>
   stubs["./answerActivity"].recordAnswerActivity.getCalls().map((call) => call.args[0].kind);
 
@@ -691,6 +703,68 @@ describe("answer path and live stream", function () {
       expect(secondFrames.at(-1).data).to.deep.equal({ outcome: "answered" });
       expect(frames.filter((f) => f.type === "answer")).to.have.length(1);
     });
+
+    it("stores nothing, submits nothing and ends interrupted when every tier fails, and the retry answers", async () => {
+      const { oracle, sink, stubs, contract, uploads, storedAnswer } = loadOracleWithNoModel();
+
+      let thrown;
+      await oracle
+        .handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent())
+        .catch((error) => {
+          thrown = error;
+        });
+      await oracle.flushStreamsForTest();
+
+      expect(thrown, "no answer goes to the retry queue").to.exist;
+      expect(thrown.name).to.equal("NoModelAnswerError");
+      expect(uploads, "nothing is stored").to.have.length(0);
+      expect(contract.submitAnswer.called, "nothing is submitted").to.equal(false);
+      let frames = sink.frames("457");
+      expect(frames.some((f) => f.type === "answer")).to.equal(false);
+      expect(frames.at(-1).data).to.deep.equal({ outcome: "interrupted" });
+      expect(activityKinds(stubs)).to.deep.equal(["answer_failed"]);
+
+      // The retry, once a model answers again, is a run of its own that answers.
+      stubs["./geminiDirect"].queryGeminiDirect.resolves("An answer after the outage.");
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.flushStreamsForTest();
+
+      frames = sink.frames("457");
+      const second = runsOf(frames)[1];
+      expect(second, "a second run").to.exist;
+      expect(frames.filter((f) => f.run === second).at(-1).data).to.deep.equal({ outcome: "answered" });
+      expect(contract.submitAnswer.calledOnce).to.equal(true);
+      expect(storedAnswer().map((a) => a.file.content)).to.deep.equal(["An answer after the outage."]);
+    });
+
+    it("answers with a later tier when an earlier one fails", async () => {
+      // ChainGPT has no key, so it fails too, and the direct Gemini call answers.
+      delete process.env.CHAIN_GPT_API_KEY;
+      const { oracle, sink, contract, storedAnswer } = loadOracle({
+        scriptFor: () => ({ fail: new Error("model 404") }),
+      });
+
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.flushStreamsForTest();
+
+      expect(contract.submitAnswer.calledOnce).to.equal(true);
+      expect(storedAnswer().map((a) => a.file.content)).to.deep.equal(["Direct Gemini answer."]);
+      expect(sink.frames("457").at(-1).data).to.deep.equal({ outcome: "answered" });
+    });
+
+    it("stores and submits a model's answer that begins with the word Error", async () => {
+      // Whether a model answered is told by the type of what was thrown, never by the text.
+      const text = "Error: a 404 from an exchange API means the endpoint was not found.";
+      const { oracle, contract, storedAnswer } = loadOracle({
+        scriptFor: () => ({ thoughts: [], answer: text }),
+      });
+
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("What is an API 404?"), "0xkey", fakeEvent());
+      await oracle.flushStreamsForTest();
+
+      expect(contract.submitAnswer.calledOnce).to.equal(true);
+      expect(storedAnswer().map((a) => a.file.content)).to.deep.equal([text]);
+    });
   });
 
   describe("streaming can never delay or lose a paid answer", () => {
@@ -972,6 +1046,25 @@ describe("answer path and live stream", function () {
         expect(secondFrames[0].data).to.deep.equal({ reason: "retry" });
         expect(secondFrames.at(-1).data).to.deep.equal({ outcome: "answered" });
         expect(frames.filter((f) => f.type === "answer")).to.have.length(1);
+      });
+
+      it("stores nothing, submits nothing and ends interrupted when every tier fails", async () => {
+        const { oracle, sink, stubs, contract, uploads } = loadOracleWithNoModel();
+
+        let thrown;
+        await regenerate(oracle).catch((error) => {
+          thrown = error;
+        });
+        await oracle.flushStreamsForTest();
+
+        expect(thrown, "no answer goes to the retry queue").to.exist;
+        expect(thrown.name).to.equal("NoModelAnswerError");
+        expect(uploads, "nothing is stored").to.have.length(0);
+        expect(contract.submitAnswer.called, "nothing is submitted").to.equal(false);
+        const frames = sink.frames("460");
+        expect(frames.some((f) => f.type === "answer")).to.equal(false);
+        expect(frames.at(-1).data).to.deep.equal({ outcome: "interrupted" });
+        expect(activityKinds(stubs)).to.deep.equal(["answer_failed"]);
       });
     });
 
