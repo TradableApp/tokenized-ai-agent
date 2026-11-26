@@ -48,7 +48,12 @@ failures=""
 # identity fixes which oracle code runs only when every image is named by its content digest.
 # Checked first, and on every compose file whatever its layout: the rules below read the plaintext
 # block, this one reads `services:`.
-unpinned="$(rofl_unpinned_images "$COMPOSE_FILE")"
+# rofl_unpinned_images exits non-zero whenever it refuses, and prints why; an exit with nothing
+# printed is still a refusal, so a failure in it can never read as a clean pass.
+unpinned=""
+if ! unpinned="$(rofl_unpinned_images "$COMPOSE_FILE")"; then
+  [ -n "$unpinned" ] || unpinned=$'\037could not read the image entries'
+fi
 if [ -n "$unpinned" ]; then
   pin_env="$(basename "$COMPOSE_FILE" .yaml)"; pin_env="${pin_env#compose.}"
   echo "❌ Preflight: '$COMPOSE_FILE' names an image that is not pinned by digest — refusing to build an ORC bundle."

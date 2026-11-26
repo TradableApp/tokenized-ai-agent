@@ -38,7 +38,7 @@ echo "✅ rofl.yaml updated to version: $NEW_VERSION"
 # pushed image by its digest alone and records this version in the `# pinned from :<tag>` line
 # above it. The '|' character is used as a delimiter to avoid issues with slashes '/' in the path.
 echo "Updating '$COMPOSE_FILE' to the version tag..."
-sed -i.bak "s|$IMAGE_BASE_NAME[:@].*|$IMAGE_BASE_NAME:$NEW_VERSION|g" "$COMPOSE_FILE"
+sed -i.bak "s|${IMAGE_BASE_NAME}[:@].*|${IMAGE_BASE_NAME}:${NEW_VERSION}|g" "$COMPOSE_FILE"
 rm "${COMPOSE_FILE}.bak"
 
 # Build and push the version-tagged Docker image

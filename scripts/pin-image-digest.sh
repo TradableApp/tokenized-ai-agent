@@ -68,7 +68,12 @@ lookup_digest() {
   fi
 }
 
-# Every image line, resolved before anything is written.
+# Every image line, resolved before anything is written. The entries are captured first so a
+# reader that fails, or prints nothing, is a refusal rather than a file with nothing to pin.
+if ! entries="$(rofl_image_entries "$COMPOSE_FILE")" || [ -z "$entries" ]; then
+  echo "❌ Pin: could not read any image entries from '$COMPOSE_FILE'. Nothing was written." >&2
+  exit 1
+fi
 replacements=""
 count=0
 while IFS=$'\037' read -r line_no service ref recorded; do
@@ -111,7 +116,11 @@ while IFS=$'\037' read -r line_no service ref recorded; do
   fi
   replacements+="${line_no}"$'\t'"${name}@${answer}"$'\t'"${tag}"$'\n'
   count=$((count + 1))
-done < <(rofl_image_entries "$COMPOSE_FILE")
+done <<< "$entries"
+if [ "$count" -eq 0 ]; then
+  echo "❌ Pin: could not read any image entries from '$COMPOSE_FILE'. Nothing was written." >&2
+  exit 1
+fi
 
 tmp="$(mktemp "${COMPOSE_FILE}.pin.XXXXXX")"
 trap 'rm -f "$tmp" "$tmp.map"' EXIT

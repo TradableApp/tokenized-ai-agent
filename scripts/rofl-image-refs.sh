@@ -96,18 +96,40 @@ rofl_is_tag() {
 }
 
 # Prints one line per service that is not pinned: the service (empty when the file has none), the
-# unit separator and why. Prints nothing when every service's image is pinned.
+# unit separator and why; exits 1 when it printed any. Prints nothing and exits 0 only when every
+# service's image is pinned.
+#
+# Fails closed: the entries are captured before they are read, so a reader that fails (an
+# unreadable file, awk exiting early) is a refusal, and so is no output at all. Read through a
+# process substitution instead, such a failure would run the loop zero times and print nothing,
+# which is what "every image is pinned" looks like.
 rofl_unpinned_images() {
-  local service ref
+  local entries service ref status=0
+  if ! entries="$(rofl_image_entries "$1")" || [ -z "$entries" ]; then
+    printf '\037could not read the image entries of %s\n' "$1"
+    return 1
+  fi
   while IFS=$'\037' read -r _ service ref _; do
     if [ -z "$service" ]; then
-      printf '\037no service found under services:\n'
+      printf '\037no service found under services:\n'; status=1
     elif [ -z "$ref" ]; then
-      printf '%s\037has no image: line\n' "$service"
+      printf '%s\037has no image: line\n' "$service"; status=1
     elif ! rofl_is_pinned_ref "$ref" && [[ "$ref" == *@* ]] && rofl_ref_has_tag "$ref"; then
-      printf '%s\037names %s, which carries a tag and a digest; the registry transport takes one, so write <name>@sha256:<64 lower-case hex> and keep the tag in "# pinned from :<tag>" on the line above\n' "$service" "$ref"
+      printf '%s\037names %s, which carries a tag and a digest; the registry transport takes one, so write <name>@sha256:<64 lower-case hex> and keep the tag in "# pinned from :<tag>" on the line above\n' "$service" "$ref"; status=1
     elif ! rofl_is_pinned_ref "$ref"; then
-      printf '%s\037names %s, which is not <name>@sha256:<64 lower-case hex>\n' "$service" "$ref"
+      printf '%s\037names %s, which is not <name>@sha256:<64 lower-case hex>\n' "$service" "$ref"; status=1
     fi
-  done < <(rofl_image_entries "$1")
+  done <<< "$entries"
+  return "$status"
 }
+
+# Run as a program rather than sourced: `bash scripts/rofl-image-refs.sh --unpinned <compose-file>`
+# prints what rofl_unpinned_images prints and exits with its status.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  if [ "${1:-}" = "--unpinned" ] && [ -n "${2:-}" ]; then
+    rofl_unpinned_images "$2"
+    exit $?
+  fi
+  echo "usage: rofl-image-refs.sh --unpinned <compose-file>" >&2
+  exit 2
+fi
