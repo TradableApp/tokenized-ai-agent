@@ -96,7 +96,12 @@ function confineRuntimeToTheRun(runtime) {
     throw new Error("The agent runtime has no list of evaluators");
   }
 
-  runtime.evaluators = [];
+  // Checked after the write: a list that did not take it would leave the evaluators running.
+  const none = [];
+  runtime.evaluators = none;
+  if (runtime.evaluators !== none) {
+    throw new Error("The agent runtime's evaluator list could not be replaced");
+  }
   adapter.log = async () => {};
   runtime.queueEmbeddingGeneration = async () => {};
   runtime.getRoomsForParticipants = async () => [];

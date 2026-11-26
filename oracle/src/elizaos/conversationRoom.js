@@ -120,6 +120,10 @@ function noop() {}
  * them held the key for, has settled. `task` is given `hold(promise)`, which keeps the key taken
  * after the task itself has settled, until `promise` has too. An entry is removed once nothing is
  * queued on it.
+ *
+ * `hold` counts only when it is called before the task's own promise settles (inside the task, a
+ * `finally` included). The holds are read once, right after the task settles; one added later is
+ * not waited for.
  */
 function chained(queues, key, task) {
   const before = queues.get(key) ?? Promise.resolve();
@@ -148,7 +152,8 @@ const roomTurns = new Map();
  * Runs `task` once every earlier task for the same room, and whatever each held the room for, has
  * settled, and gives back its result or its throw. Tasks for other rooms are not held up. A task
  * that throws does not stop the next. `task` is given `hold(promise)`: the room stays taken until
- * that promise settles too, while the task's result goes back at once.
+ * that promise settles too, while the task's result goes back at once. Call `hold` inside the
+ * task, before it settles (a `finally` is in time); a call made after that is not waited for.
  *
  * Within this process only: two processes on one agent database do not see each other's locks.
  *
