@@ -388,3 +388,187 @@ describe("SapphireAIAgentEscrow: a paying call names its maximum fee", function 
     );
   });
 });
+
+// The Sapphire escrow holds native deposits rather than a token, so a cancellation's fee comes out
+// of the escrowed amount and the rest goes back to the user's deposit, with the same guarantees
+// as the EVM escrow: the fee is never more than was escrowed, a user with nothing left on deposit
+// can still cancel, and the amounts are announced in `CancellationSettled`.
+describe("SapphireAIAgentEscrow: a cancellation takes its fee from the escrowed amount", function () {
+  const DEPOSIT = ethers.parseEther("100");
+  const PROMPT_FEE = ethers.parseEther("10");
+  const CANCELLATION_FEE = ethers.parseEther("1");
+  const METADATA_FEE = ethers.parseEther("0.5");
+  const BRANCH_FEE = ethers.parseEther("2");
+  const PAYLOAD = "a confidential payload";
+  // The mock agent hands out message ids from 0: prompt 0, answer 1. The answer id keys the escrow.
+  const ANSWER_ID = 1n;
+  // The escrow status enum: PENDING is its first member, REFUNDED its third.
+  const PENDING = 0n;
+  const REFUNDED = 2n;
+
+  async function deployWithDeposit(deposit, { pastWindow = true } = {}) {
+    const [deployer, user, oracle, treasury, stranger] = await ethers.getSigners();
+    const mockAgent = await (
+      await ethers.getContractFactory("MockSapphireAIAgent")
+    ).deploy(oracle.address);
+    const escrow = await (
+      await ethers.getContractFactory("SapphireAIAgentEscrow")
+    ).deploy(
+      await mockAgent.getAddress(),
+      treasury.address,
+      deployer.address,
+      PROMPT_FEE,
+      CANCELLATION_FEE,
+      METADATA_FEE,
+      BRANCH_FEE,
+    );
+    await escrow.connect(user).deposit({ value: deposit });
+    await escrow.connect(user).setSpendingLimit((await time.latest()) + 86400);
+    await escrow.connect(user).initiatePrompt(0, PAYLOAD, PROMPT_FEE);
+    if (pastWindow) {
+      // The cancellation window is 3 seconds.
+      await time.increase(5);
+    }
+    return { escrow, mockAgent, deployer, user, treasury, stranger };
+  }
+
+  const withPendingPrompt = () => deployWithDeposit(DEPOSIT);
+  // A deposit of exactly one prompt: after the prompt nothing of it is left.
+  const withEmptyDeposit = () => deployWithDeposit(PROMPT_FEE);
+  const withFreshPrompt = () => deployWithDeposit(DEPOSIT, { pastWindow: false });
+
+  async function snapshot({ escrow, user, treasury }) {
+    return {
+      deposit: await escrow.deposits(user.address),
+      treasury: await ethers.provider.getBalance(treasury.address),
+      escrow: await ethers.provider.getBalance(await escrow.getAddress()),
+      pending: await escrow.pendingEscrowCount(user.address),
+    };
+  }
+
+  it("pays the fee to the treasury and returns the rest to the deposit, and announces both", async function () {
+    const ctx = await loadFixture(withPendingPrompt);
+    const before = await snapshot(ctx);
+
+    await expect(ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, CANCELLATION_FEE))
+      .to.emit(ctx.escrow, "CancellationSettled")
+      // fee 1, returned 10 - 1 = 9
+      .withArgs(ANSWER_ID, ctx.user.address, CANCELLATION_FEE, PROMPT_FEE - CANCELLATION_FEE)
+      .and.to.emit(ctx.escrow, "PromptCancelled")
+      .withArgs(ctx.user.address, ANSWER_ID);
+
+    const after = await snapshot(ctx);
+    // The deposit of 100 paid 10 into escrow (90 left) and gets 9 back: 99.
+    expect(after.deposit).to.equal(before.deposit + PROMPT_FEE - CANCELLATION_FEE);
+    expect(after.treasury).to.equal(before.treasury + CANCELLATION_FEE);
+    // What reached the treasury and what came back to the deposit add up to the escrowed 10.
+    expect(after.treasury - before.treasury + (after.deposit - before.deposit)).to.equal(PROMPT_FEE);
+    // Only the fee of 1 leaves the contract; the 9 stays on as the user's deposit.
+    expect(after.escrow).to.equal(before.escrow - CANCELLATION_FEE);
+    expect(after.pending).to.equal(0n);
+    expect((await ctx.escrow.escrows(ANSWER_ID)).status).to.equal(REFUNDED);
+  });
+
+  it("works for a user whose deposit is empty after the prompt", async function () {
+    const ctx = await loadFixture(withEmptyDeposit);
+    // A deposit of 10 paid the prompt's 10 into escrow.
+    expect(await ctx.escrow.deposits(ctx.user.address)).to.equal(0n);
+    const before = await snapshot(ctx);
+
+    await expect(ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, CANCELLATION_FEE))
+      .to.emit(ctx.escrow, "CancellationSettled")
+      // fee 1, returned 10 - 1 = 9
+      .withArgs(ANSWER_ID, ctx.user.address, CANCELLATION_FEE, PROMPT_FEE - CANCELLATION_FEE);
+
+    const after = await snapshot(ctx);
+    // 10 escrowed, 1 to the treasury, 9 back to the empty deposit.
+    expect(after.deposit).to.equal(PROMPT_FEE - CANCELLATION_FEE);
+    expect(after.treasury).to.equal(before.treasury + CANCELLATION_FEE);
+  });
+
+  it("never charges more than was escrowed", async function () {
+    const ctx = await loadFixture(withPendingPrompt);
+    // A cancellation fee of 11 against an escrowed 10.
+    const above = PROMPT_FEE + ethers.parseEther("1");
+    await ctx.escrow.connect(ctx.deployer).setCancellationFee(above);
+    const before = await snapshot(ctx);
+
+    const tx = await ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, above);
+
+    const after = await snapshot(ctx);
+    // The deposit left after the prompt (100 - 10 = 90) is not touched.
+    expect(after.deposit).to.equal(before.deposit);
+    // The treasury gets the escrowed 10, not the fee of 11.
+    expect(after.treasury).to.equal(before.treasury + PROMPT_FEE);
+    expect(after.escrow).to.equal(before.escrow - PROMPT_FEE);
+    await expect(tx)
+      .to.emit(ctx.escrow, "CancellationSettled")
+      // The whole 10 is the fee and nothing is returned.
+      .withArgs(ANSWER_ID, ctx.user.address, PROMPT_FEE, 0n);
+  });
+
+  it("checks the maximum against the fee actually charged, not a fee above the escrowed amount", async function () {
+    const ctx = await loadFixture(withPendingPrompt);
+    // The fee is set to 50 but only the escrowed 10 can be charged, and the caller allows 10.
+    await ctx.escrow.connect(ctx.deployer).setCancellationFee(ethers.parseEther("50"));
+
+    await expect(ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, PROMPT_FEE))
+      .to.emit(ctx.escrow, "CancellationSettled")
+      .withArgs(ANSWER_ID, ctx.user.address, PROMPT_FEE, 0n);
+  });
+
+  it("is refused, with nothing moved, when the fee was raised above the caller's maximum", async function () {
+    const ctx = await loadFixture(withPendingPrompt);
+    const raised = CANCELLATION_FEE + 1n;
+    await ctx.escrow.connect(ctx.deployer).setCancellationFee(raised);
+    const before = await snapshot(ctx);
+
+    await expect(ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, CANCELLATION_FEE))
+      .to.be.revertedWithCustomError(ctx.escrow, "FeeAboveMaximum")
+      .withArgs(raised, CANCELLATION_FEE);
+
+    expect(await snapshot(ctx)).to.deep.equal(before);
+    expect((await ctx.escrow.escrows(ANSWER_ID)).status).to.equal(PENDING);
+  });
+
+  describe("the refusals still hold", function () {
+    it("refuses a caller who does not own the prompt", async function () {
+      const ctx = await loadFixture(withPendingPrompt);
+      await expect(
+        ctx.escrow.connect(ctx.stranger).cancelPrompt(ANSWER_ID, ethers.MaxUint256),
+      ).to.be.revertedWithCustomError(ctx.escrow, "NotPromptOwner");
+    });
+
+    it("refuses before the cancellation window has passed", async function () {
+      const ctx = await loadFixture(withFreshPrompt);
+      await expect(
+        ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, ethers.MaxUint256),
+      ).to.be.revertedWithCustomError(ctx.escrow, "PromptNotCancellableYet");
+    });
+
+    it("refuses a prompt already cancelled", async function () {
+      const ctx = await loadFixture(withPendingPrompt);
+      await ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, ethers.MaxUint256);
+      await expect(
+        ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, ethers.MaxUint256),
+      ).to.be.revertedWithCustomError(ctx.escrow, "EscrowNotPending");
+    });
+
+    it("refuses a prompt already refunded", async function () {
+      const ctx = await loadFixture(withPendingPrompt);
+      await time.increase(3601);
+      await ctx.escrow.processRefund(ANSWER_ID);
+      await expect(
+        ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, ethers.MaxUint256),
+      ).to.be.revertedWithCustomError(ctx.escrow, "EscrowNotPending");
+    });
+
+    it("refuses a prompt already answered", async function () {
+      const ctx = await loadFixture(withPendingPrompt);
+      await ctx.mockAgent.callFinalizePayment(await ctx.escrow.getAddress(), ANSWER_ID);
+      await expect(
+        ctx.escrow.connect(ctx.user).cancelPrompt(ANSWER_ID, ethers.MaxUint256),
+      ).to.be.revertedWithCustomError(ctx.escrow, "EscrowNotPending");
+    });
+  });
+});

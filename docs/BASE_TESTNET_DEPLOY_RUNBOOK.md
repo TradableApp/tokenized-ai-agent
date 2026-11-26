@@ -149,7 +149,9 @@ A fresh pair is a new agent and escrow, deployed with `DEPLOY_MODE=fresh`. Do th
 and do not go on from a step that did not check out. The scripts named below refuse out of order
 where they can; the rest of the order is this list. Steps 0, 4, 9a and 10 cover the fee token
 when it is SenseToken (from the `sense-contracts` repository); an ordinary token needs only its
-address and symbol in step 1.
+address and symbol in step 1. Whichever it is, the fee token must deliver exactly the amount
+transferred: the escrow accounts for the amount it asked for, so a token that takes a fee on
+transfer or whose balances rebase is not supported.
 
 0. **The fee token, when it is new** (in `sense-contracts`, see its README "Deploying"): its
    `ENV_FILE` sets `TOKEN_NAME`, `TOKEN_SYMBOL`, `INITIAL_SUPPLY` (the whole supply in base units,
