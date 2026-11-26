@@ -61,7 +61,7 @@ const {
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { createAlertThrottle } = require("./alertThrottle");
-const { payloadText, unwrapSessionKey } = require("./userCiphertext");
+const { payloadText, unwrapSessionKey, isWrapNotOpened } = require("./userCiphertext");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
@@ -2815,6 +2815,12 @@ async function lostOracleRole(error) {
 const LAG_ALERT_INTERVAL_MS = 10 * 60 * 1000;
 const lagAlerts = createAlertThrottle({ intervalMs: LAG_ALERT_INTERVAL_MS });
 
+// A wrap that does not open is dropped as the sender's mistake. If the dApp wraps to a key this
+// oracle does not hold, every prompt fails that way and none is answered, so the condition is
+// said once an hour: often enough to be seen, and no more however many such prompts arrive.
+const UNOPENED_WRAP_ALERT_INTERVAL_MS = 60 * 60 * 1000;
+const unopenedWrapAlerts = createAlertThrottle({ intervalMs: UNOPENED_WRAP_ALERT_INTERVAL_MS });
+
 /**
  * A wrapper for event handlers that distinguishes between retryable and fatal errors.
  * Retryable errors are saved to a queue for later processing.
@@ -2859,7 +2865,14 @@ async function handleAndRecord(eventName, handler, ...args) {
       console.warn(
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${describeError(error)}`,
       );
-      // We do NOT throw, we do NOT alert, we do NOT queue for retry.
+      // We do NOT throw, we do NOT queue for retry, and the prompt itself raises no alert.
+      if (isWrapNotOpened(error) && unopenedWrapAlerts.shouldSend()) {
+        await sendAlert(
+          "Wrapped Session Keys Could Not Be Opened",
+          "A prompt's wrapped session key could not be opened with the oracle's key, and the prompt was dropped. One such prompt is a sender's mistake. If prompts are going unanswered, check that the dApp's oracle public key is this oracle's. This notice is sent at most once an hour.",
+        );
+      }
+
       return;
     }
 

@@ -42,7 +42,11 @@ async function unwrapSessionKey(decryptor, cipherBlob) {
   } catch (error) {
     if (isOracleFault(error)) throw error;
     // The kind only: the message can quote bytes of the wrap.
-    throw new BadInputError(`Could not open the wrapped session key (${errorKind(error)}).`);
+    const refusal = new BadInputError(
+      `Could not open the wrapped session key (${errorKind(error)}).`,
+    );
+    refusal.wrapNotOpened = true;
+    throw refusal;
   }
 
   // A wrap of any other length opens cleanly and fails later, when the key is first used.
@@ -73,4 +77,13 @@ function payloadText(payload) {
   }
 }
 
-module.exports = { unwrapSessionKey, payloadText };
+/**
+ * Whether bad input was a wrap that did not open. One such wrap is the sender's doing; every
+ * wrap failing this way is what a dApp wrapping to a key the oracle does not hold looks like,
+ * so the caller reports the condition (throttled), never the prompt.
+ */
+function isWrapNotOpened(error) {
+  return error instanceof BadInputError && error.wrapNotOpened === true;
+}
+
+module.exports = { unwrapSessionKey, payloadText, isWrapNotOpened };
