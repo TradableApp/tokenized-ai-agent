@@ -232,14 +232,58 @@ describe("pin-image-digest.sh", function () {
   it("writes what the preflight accepts", function () {
     const t = setup(compose(`image: ${IMAGE}:base-testnet`));
     expect(pin(t).code).to.equal(0);
-    const result = spawnSync(
-      "bash",
-      ["-c", '. "$1"; rofl_unpinned_images "$2"', "_", path.join(REPO_ROOT, "scripts", "rofl-image-refs.sh"), t.file],
-      { encoding: "utf8" },
-    );
+    const result = spawnSync("bash", [path.join(REPO_ROOT, "scripts", "rofl-image-refs.sh"), "--unpinned", t.file], {
+      encoding: "utf8",
+    });
 
     expect(result.status).to.equal(0);
     expect(result.stdout).to.equal("");
+  });
+
+  describe("when the image lines cannot be read", function () {
+    // A reader that fails must never look like a file with nothing to pin.
+    function withFailingAwk(t) {
+      const bin = path.join(t.dir, "bin");
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, "awk"), "#!/bin/bash\nexit 1\n", { mode: 0o755 });
+      const result = spawnSync("bash", [PIN, t.file], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ROFL_IMAGE_DIGEST_CMD: t.stub },
+      });
+      return { code: result.status, out: `${result.stdout}${result.stderr}` };
+    }
+
+    it("refuses and writes nothing when the reader fails with no output", function () {
+      const before = compose(`image: ${IMAGE}:base-testnet`);
+      const t = setup(before);
+      const { code, out } = withFailingAwk(t);
+
+      expect(code).to.not.equal(0);
+      expect(out).to.include("could not read any image entries");
+      expect(out).to.include("Nothing was written");
+      expect(out).to.not.include("already");
+      expect(read(t)).to.equal(before);
+      expect(lookedUp(t)).to.deep.equal([]);
+    });
+
+    it("refuses and writes nothing when the file cannot be read", function () {
+      if (process.getuid && process.getuid() === 0) this.skip(); // root reads a mode-000 file
+      const before = compose(`image: ${IMAGE}:base-testnet`);
+      const t = setup(before);
+      fs.chmodSync(t.file, 0o000);
+      const result = spawnSync("bash", [PIN, t.file], {
+        encoding: "utf8",
+        env: { ...process.env, ROFL_IMAGE_DIGEST_CMD: t.stub },
+      });
+      fs.chmodSync(t.file, 0o644);
+      const out = `${result.stdout}${result.stderr}`;
+
+      expect(result.status).to.not.equal(0);
+      expect(out).to.include("could not read any image entries");
+      expect(out).to.not.include("already");
+      expect(read(t)).to.equal(before);
+      expect(lookedUp(t)).to.deep.equal([]);
+    });
   });
 
   describe("the default lookup, through docker buildx imagetools", function () {

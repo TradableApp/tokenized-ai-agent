@@ -59,13 +59,14 @@ function composeFixture(
   ].join("\n");
 }
 
-function runPreflight(contents, name = "compose.base-testnet.yaml") {
+function runPreflight(contents, name = "compose.base-testnet.yaml", { env = process.env, mode } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ta-preflight-"));
   const file = path.join(dir, name);
   fs.writeFileSync(file, contents);
+  if (mode !== undefined) fs.chmodSync(file, mode);
 
   try {
-    const out = execFileSync("bash", [PREFLIGHT, file], { encoding: "utf8" });
+    const out = execFileSync("bash", [PREFLIGHT, file], { encoding: "utf8", env });
     return { code: 0, out };
   } catch (err) {
     return { code: err.status, out: `${err.stdout || ""}${err.stderr || ""}` };
@@ -262,6 +263,51 @@ describe("rofl-preflight.sh", function () {
       expect(code, out).to.equal(0);
     });
 
+    describe("fails closed when the image lines cannot be read", function () {
+      const failingAwkEnv = () => {
+        const bin = fs.mkdtempSync(path.join(os.tmpdir(), "ta-preflight-bin-"));
+        fs.writeFileSync(path.join(bin, "awk"), "#!/bin/bash\nexit 1\n", { mode: 0o755 });
+        return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+      };
+
+      it("refuses when the reader fails with no output", function () {
+        const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"]), "compose.base-testnet.yaml", {
+          env: failingAwkEnv(),
+        });
+
+        expect(code).to.equal(1);
+        expect(out).to.include("could not read the image entries");
+        expect(out).to.not.include("✅");
+      });
+
+      it("refuses when the file cannot be read", function () {
+        if (process.getuid && process.getuid() === 0) this.skip(); // root reads a mode-000 file
+        const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"]), "compose.base-testnet.yaml", { mode: 0o000 });
+
+        expect(code).to.equal(1);
+        expect(out).to.include("could not read the image entries");
+        expect(out).to.not.include("✅");
+      });
+
+      it("has the lib refuse on its own, with a non-zero exit", function () {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ta-preflight-"));
+        const file = path.join(dir, "compose.yaml");
+        fs.writeFileSync(file, composeFixture(["- LOG_LEVEL=warn"]));
+        let failed;
+        try {
+          execFileSync("bash", [path.join(REPO_ROOT, "scripts", "rofl-image-refs.sh"), "--unpinned", file], {
+            encoding: "utf8",
+            env: failingAwkEnv(),
+          });
+        } catch (err) {
+          failed = err;
+        }
+
+        expect(failed, "the lib exited 0").to.not.equal(undefined);
+        expect(failed.stdout).to.include("could not read the image entries");
+      });
+    });
+
     it("names the release command for a mainnet compose", function () {
       const imageLine = "image: ghcr.io/tradableapp/tokenized-ai-agent:base-mainnet-latest";
       const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine }), "compose.base-mainnet.yaml");
@@ -423,10 +469,14 @@ describe("rofl-preflight.sh", function () {
     // pushed by its digest; no mainnet image has been pushed yet, so the two mainnet files name a
     // tag alone and are refused until a release writes the digest of what it pushed.
     const IMAGE_REFS = path.join(REPO_ROOT, "scripts", "rofl-image-refs.sh");
-    const unpinned = (name) =>
-      execFileSync("bash", ["-c", '. "$1"; rofl_unpinned_images "$2"', "_", IMAGE_REFS, path.join(REPO_ROOT, name)], {
-        encoding: "utf8",
-      });
+    // Exit status 1 means "something is not pinned"; its stdout is what to report.
+    const unpinned = (name) => {
+      try {
+        return execFileSync("bash", [IMAGE_REFS, "--unpinned", path.join(REPO_ROOT, name)], { encoding: "utf8" });
+      } catch (err) {
+        return err.stdout;
+      }
+    };
     const scripts = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")).scripts;
     // The image line and the `# pinned from :<tag>` comment the pin script keeps above it.
     const pinnedFrom = (name) => {
@@ -440,6 +490,30 @@ describe("rofl-preflight.sh", function () {
       expect([...composeFiles].sort()).to.deep.equal(
         ["compose.base-mainnet.yaml", "compose.base-testnet.yaml", "compose.mainnet.yaml", "compose.testnet.yaml", "compose.yaml"],
       );
+    });
+
+    // compose.yaml is the copy of the per-env file the last rofl:build used. A pin committed to a
+    // per-env file without the rebuilt copy leaves the two naming different images.
+    const imageLines = (name) =>
+      fs
+        .readFileSync(path.join(REPO_ROOT, name), "utf8")
+        .split(/\r?\n/)
+        .map((line, i, all) => (/^\s+image:/.test(line) ? [/^\s+# pinned from :/.test(all[i - 1]) ? all[i - 1] : null, line] : null))
+        .filter(Boolean);
+
+    it("compose.yaml names the same image, with the same record, as one per-env compose file", function () {
+      const copy = imageLines("compose.yaml");
+      expect(copy.length, "compose.yaml has an image line").to.be.greaterThan(0);
+      const sources = composeFiles.filter((name) => name !== "compose.yaml");
+      const matching = sources.filter((name) => JSON.stringify(imageLines(name)) === JSON.stringify(copy));
+
+      expect(matching, `compose.yaml's image is not that of any of ${sources.join(", ")}`).to.not.deep.equal([]);
+    });
+
+    it("tells a compose.yaml left behind by a new pin from one that is current", function () {
+      const current = imageLines("compose.base-testnet.yaml");
+      const stale = current.map(([record, line]) => [record, line.replace(/[0-9a-f]{64}$/, "f".repeat(64))]);
+      expect(JSON.stringify(stale)).to.not.equal(JSON.stringify(current));
     });
 
     for (const name of ["compose.yaml", "compose.base-testnet.yaml", "compose.testnet.yaml"]) {
