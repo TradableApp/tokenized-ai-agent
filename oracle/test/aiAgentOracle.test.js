@@ -2305,8 +2305,11 @@ describe("aiAgentOracle", function () {
       expect(jobs[0].blockNumber).to.equal(56696323);
     });
     it("should send a critical alert for a non-retryable error", async () => {
-      // Simulate a fatal error like a decryption failure.
-      stubs["./ecies"].eciesDecrypt.rejects(new Error("Decryption failed"));
+      // A failure of the oracle's own decryption (its runtime reports it with a code), which is
+      // not the sender's doing.
+      stubs["./ecies"].eciesDecrypt.rejects(
+        Object.assign(new Error("Decryption failed"), { code: "ERR_CRYPTO_OPERATION_FAILED" }),
+      );
 
       const user = "0xUser";
       const conversationId = 1;
@@ -2333,6 +2336,129 @@ describe("aiAgentOracle", function () {
 
       // Assert that the job was NOT added to the retry queue.
       expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+    });
+
+    // A prompt's wrapped session key and its payload bytes are the sender's. Read with the
+    // oracle's own healthy key, anything malformed in them is bad input: dropped, with no alert,
+    // no Sentry event and no `answer_failed`, however many such prompts are sent.
+    describe("a wrapped key or payload the sender got wrong", () => {
+      const realEcies = require("../src/ecies");
+
+      const oraclePublicKey = () => realEcies.publicKeyFromPrivateKey(process.env.PRIVATE_KEY);
+      const wrap = (key) => realEcies.eciesEncrypt(oraclePublicKey(), key);
+      const validPayload = () =>
+        ethers.toUtf8Bytes(
+          createEncryptedString(
+            { promptText: "hello", isNewConversation: true, previousMessageCID: null },
+            FAKE_SESSION_KEY,
+          ),
+        );
+
+      const cases = {
+        "a version byte other than 1": async () => {
+          const blob = await wrap(FAKE_SESSION_KEY);
+          blob[0] = 0x02;
+          return { blob, payload: validPayload() };
+        },
+        "a wrap too short to hold a key": async () => ({
+          blob: Buffer.concat([Buffer.from([0x01]), crypto.randomBytes(92)]),
+          payload: validPayload(),
+        }),
+        "a public key that is not a point on the curve": async () => ({
+          blob: Buffer.concat([
+            Buffer.from([0x01, 0x04]),
+            Buffer.alloc(64, 0xff),
+            crypto.randomBytes(12 + 48),
+          ]),
+          payload: validPayload(),
+        }),
+        "a wrap whose authentication tag does not match": async () => {
+          const blob = await wrap(FAKE_SESSION_KEY);
+          blob[blob.length - 1] ^= 0x01;
+          return { blob, payload: validPayload() };
+        },
+        "a well-formed wrap of a 16-byte key": async () => ({
+          blob: await wrap(crypto.randomBytes(16)),
+          payload: validPayload(),
+        }),
+        "payload bytes that are not UTF-8": async () => ({
+          blob: await wrap(FAKE_SESSION_KEY),
+          payload: Uint8Array.from([0x41, 0xff, 0xfe, 0x2e, 0x42]),
+        }),
+      };
+
+      for (const [name, build] of Object.entries(cases)) {
+        it(`drops ${name} as bad input, with no alert and no Sentry event`, async () => {
+          stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+          const recordAnswerActivity = sinon.stub().resolves();
+          const mod = withTestKeys(
+            proxyquire("../src/aiAgentOracle", {
+              ...stubs,
+              "./answerActivity": { recordAnswerActivity },
+            }),
+            stubs["./ecies"],
+          );
+          mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+          const { blob, payload } = await build();
+          const fakeEvent = {
+            blockNumber: 104,
+            transactionHash: txHash(`bad-input-${name}`),
+            index: 0,
+            args: ["0xUser", 1, 2, 3, payload, ethers.hexlify(blob)],
+            getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+          };
+
+          await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
+
+          expect(stubs["./alerting"].sendAlert.called, "no alert").to.be.false;
+          expect(stubs["@sentry/node"].captureException.called, "no Sentry event").to.be.false;
+          expect(
+            recordAnswerActivity.getCalls().filter((c) => c.args[0]?.kind === "answer_failed"),
+            "no answer_failed",
+          ).to.have.lengthOf(0);
+          expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+          expect(
+            stubs["./contractUtility"].initializeOracle().contract.submitAnswer.called,
+          ).to.be.false;
+        });
+      }
+
+      it("still alerts when the oracle has no decryption key of its own", async () => {
+        const mod = proxyquire("../src/aiAgentOracle", stubs);
+        mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+        const blob = await wrap(FAKE_SESSION_KEY);
+        const fakeEvent = {
+          blockNumber: 105,
+          transactionHash: txHash("no-oracle-key"),
+          index: 0,
+          args: ["0xUser", 1, 2, 3, validPayload(), ethers.hexlify(blob)],
+          getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+        };
+
+        await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
+
+        sinon.assert.calledWithMatch(stubs["./alerting"].sendAlert, "CRITICAL: Oracle Fatal Error");
+      });
+    });
+
+    it("sends the processing lag alert once for a run of lagging events, not once per event", async () => {
+      const handler = sinon.stub().resolves();
+      const hourOld = Math.floor(Date.now() / 1000) - 60 * 60;
+      for (const index of [0, 1, 2]) {
+        const fakeEvent = {
+          blockNumber: 200 + index,
+          transactionHash: txHash(`lagging-${index}`),
+          index,
+          getBlock: () => Promise.resolve({ timestamp: hourOld }),
+        };
+        await aiAgentOracle.handleAndRecord("PromptSubmitted", handler, fakeEvent);
+      }
+
+      expect(handler.callCount, "every event is still handled").to.equal(3);
+      const lagAlerts = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes("Processing Lag"));
+      expect(lagAlerts).to.have.lengthOf(1);
     });
 
     it("queues an event for retry when the provider refuses a request made while handling it", async () => {
