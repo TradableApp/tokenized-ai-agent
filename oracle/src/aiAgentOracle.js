@@ -2299,10 +2299,14 @@ async function handlePrompt(
       });
     }
 
-    Sentry.captureException(error, {
-      tags: { site: "handle_prompt" },
-      extra: { convId: conversationId?.toString() },
-    });
+    // A run no model answered was reported where the provider failed, with that provider's
+    // error. A second report here would double every such failure, on each retry too.
+    if (!(error instanceof NoModelAnswerError)) {
+      Sentry.captureException(error, {
+        tags: { site: "handle_prompt" },
+        extra: { convId: conversationId?.toString() },
+      });
+    }
     console.error(`Error in handlePrompt for convId ${conversationId}:`, describedError(error));
 
     // Bad input is dropped for good; anything else may be retried as a new run.

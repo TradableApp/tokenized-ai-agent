@@ -1964,7 +1964,8 @@ describe("aiAgentOracle", function () {
       const tags = stubs["@sentry/node"].captureException
         .getCalls()
         .map((call) => call.args[1]?.tags?.site);
-      expect(tags).to.include("ai_all_tiers_failed");
+      // One report per failure, from where the provider failed: the handler adds no second one.
+      expect(tags).to.deep.equal(["ai_all_tiers_failed"]);
     });
   });
 
