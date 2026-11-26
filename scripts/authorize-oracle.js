@@ -28,6 +28,7 @@ const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
 const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
+const { failureText } = require("./lib/failureText");
 const { captureTypedSettings, typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
 
@@ -379,9 +380,7 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(
-      chalk.red(error instanceof HandoverError ? error.message : (error?.stack ?? String(error))),
-    );
+    console.error(chalk.red(failureText(error, HandoverError)));
     process.exitCode = 1;
   });
 }

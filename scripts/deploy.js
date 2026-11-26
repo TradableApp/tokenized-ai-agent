@@ -3,6 +3,7 @@ const chalk = require("chalk");
 
 const { describeShape, isSet } = require("./lib/settingShape");
 const { readEnvFile, fileOnlyProblems, withFileValues } = require("./lib/envFile");
+const { failureText } = require("./lib/failureText");
 const { typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const { LOCAL_NETWORKS } = require("./lib/networks");
 
@@ -973,8 +974,8 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    // The stack (message and frames) only: an ethers error object also carries the request.
-    console.error(chalk.red(error?.stack ?? String(error)));
+    // Never the error or its stack: an ethers error's message carries the request's address.
+    console.error(chalk.red(failureText(error)));
     process.exitCode = 1;
   });
 }

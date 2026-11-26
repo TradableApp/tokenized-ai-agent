@@ -28,6 +28,7 @@ const { ethers } = require("ethers");
 
 const { describeShape } = require("./lib/settingShape");
 const { readEnvFile } = require("./lib/envFile");
+const { failureText } = require("./lib/failureText");
 const { captureTypedSettings, typedSettings, typedOnlyProblems } = require("./lib/typedSettings");
 const { LOCAL_NETWORKS } = require("./lib/networks");
 const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
@@ -345,9 +346,7 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(
-      chalk.red(error instanceof ListingError ? error.message : (error?.stack ?? String(error))),
-    );
+    console.error(chalk.red(failureText(error, ListingError)));
     process.exitCode = 1;
   });
 }
