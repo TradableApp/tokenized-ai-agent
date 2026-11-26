@@ -36,6 +36,17 @@ const {
 
 const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
 const { startAgentWithCleanSettings } = require("./elizaos/agentSettings");
+const {
+  conversationScopeKey,
+  clearConversationRoom,
+  withRoomLock,
+  takeRoomTurn,
+} = require("./elizaos/conversationRoom");
+const {
+  createAgentMemoryGate,
+  runStillGoing,
+  settledWithin,
+} = require("./elizaos/agentMemory");
 const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
@@ -407,6 +418,12 @@ let isSapphire;
 // The key that opens each prompt's session key. Used through this, never read.
 let decryptor;
 let expectedChainId;
+// The chain the oracle answers on, once known: set by `start` after it has checked it, or read
+// from the provider the first time a conversation's scope is needed (tests, and a caller that has
+// not started the oracle). Never changes while the process runs.
+let deploymentChainId;
+// The read of the chain under way, while there is one.
+let chainIdRead;
 
 /**
  * Gives the oracle its keys and builds what it talks to the chain with. Called once by
@@ -463,6 +480,7 @@ function initForTest(testComponents) {
   isSapphire = testComponents.isSapphire;
   if (testComponents.decryptor) decryptor = testComponents.decryptor;
   expectedChainId = testComponents.expectedChainId;
+  deploymentChainId = testComponents.chainId;
   if (testComponents.stateStore) {
     stateStore = testComponents.stateStore;
     lastProcessedBlockInMemory = null;
@@ -483,6 +501,22 @@ const txMutex = new Mutex();
 // Job Queue: Limits concurrency to 5.
 // This implements the "Promise queue with concurrency control" pattern from p-queue docs.
 const queue = new PQueue({ concurrency: 5 });
+
+// The events whose handlers ask the model, and so use a conversation's room: the owner and the
+// conversation are their first two arguments.
+const ROOM_EVENTS = new Set(["PromptSubmitted", "RegenerationRequested"]);
+
+// How long a conversation's room is kept taken after a run the framework has timed out, waiting
+// for the framework's own processing of it to end before the room is emptied and the next prompt
+// of the conversation is let in. A bound, so processing that never ends cannot hold the
+// conversation for ever; past it the room is emptied anyway.
+const LATE_RUN_WAIT_MS = 5 * 60 * 1000;
+
+// The agent is used only once nothing an earlier process left is in its database (see
+// elizaos/agentMemory.js). Tried at start, and again before a run until it has succeeded.
+const agentMemoryReady = createAgentMemoryGate({
+  report: (error) => Sentry.captureException(error, { tags: { site: "agent_memory_sweep" } }),
+});
 
 // We store the raw ENCRYPTED string (IV + Ciphertext).
 // Average size ~1KB - 4KB.
@@ -755,6 +789,10 @@ async function initializeEliza() {
       },
     });
 
+    // Before any event is handled. A failure is printed and reported by the gate, and leaves the
+    // agent unused: queryElizaOS asks again before each run, and fails over until it succeeds.
+    await agentMemoryReady(elizaOS.getAgent(senseAiAgentId)).catch(() => {});
+
     // Watch the framework's tool service: say what it connected to, and alert if the market-data
     // tools are not there. Not waited for, and not a reason to stop. The service can take
     // minutes to start, and only some answers need its tools. `follow` never rejects.
@@ -983,12 +1021,40 @@ async function reconstructHistory(startMessageCID, sessionKey) {
 // --- AI Model Query Functions ---
 
 /**
+ * The name of a conversation outside the oracle: its room in the agent framework, and its history
+ * at ChainGPT. Made from the chain, the agent contract, the conversation id and the wallet that
+ * owns the conversation (the contract only takes a conversation's prompts from its owner), so no
+ * two deployments and no two owners share one. The chain is read from the provider at most once.
+ *
+ * @param {string} conversationId
+ * @param {string} owner
+ * @returns {Promise<string>}
+ */
+async function conversationScopeOf(conversationId, owner) {
+  if (deploymentChainId === undefined) {
+    // One read for every prompt that arrives before it answers; a read that failed is made again.
+    chainIdRead ??= provider.getNetwork().finally(() => {
+      chainIdRead = undefined;
+    });
+    ({ chainId: deploymentChainId } = await chainIdRead);
+  }
+
+  return conversationScopeKey({
+    chainId: deploymentChainId,
+    agentAddress: contract?.target,
+    conversationId,
+    owner,
+  });
+}
+
+/**
  * Query the ChainGPT API for a response.
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @param {string} conversationId - The unique on-chain ID for this conversation.
+ * @param {string} userWallet - The wallet that owns the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryChainGPT(conversationHistory, conversationId) {
+async function queryChainGPT(conversationHistory, conversationId, userWallet) {
   console.log(`[ChainGPT] Querying ChainGPT for convId: ${conversationId}`);
   if (!process.env.CHAIN_GPT_API_KEY) {
     throw new Error("CHAIN_GPT_API_KEY is not set in the environment file.");
@@ -1001,8 +1067,12 @@ async function queryChainGPT(conversationHistory, conversationId) {
 
   const question = userPrompts[userPrompts.length - 1].content;
 
-  // Use the on-chain conversationId to generate a deterministic UUID.
-  const conversationUUID = uuidv5(conversationId.toString(), NAMESPACE_UUID);
+  // ChainGPT keeps the earlier turns under this id (`chatHistory: "on"`), so it is named for the
+  // deployment, the conversation and its owner, as the agent framework's room is.
+  const conversationUUID = uuidv5(
+    await conversationScopeOf(conversationId.toString(), userWallet),
+    NAMESPACE_UUID,
+  );
 
   const res = await fetch("https://api.chaingpt.org/chat/stream", {
     method: "POST",
@@ -1160,9 +1230,14 @@ function registerProvenanceHandlers(runtime) {
 /**
  * Query the ElizaOS third-party service with structured I/O.
  * Uses the internal ElizaOS runtime initialized in the TEE.
+ *
+ * The run happens in the conversation's own room (see elizaos/conversationRoom.js): named for
+ * the deployment, the conversation and its owner, emptied before the history is written into it
+ * and again when the run ends, whichever way it ends, and used by one run at a time.
+ *
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
- * @param {string} conversationId - The on-chain conversation ID, used as the room ID.
- * @param {string} userWallet - The user's wallet address for entity/room isolation.
+ * @param {string} conversationId - The on-chain conversation ID.
+ * @param {string} userWallet - The wallet that owns the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
 async function queryElizaOS(conversationHistory, conversationId, userWallet, liveStream) {
@@ -1175,8 +1250,55 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
   const runtime = elizaOS.getAgent(senseAiAgentId);
   if (!runtime) throw new Error("Eliza Agent Runtime not found");
 
-  const roomId = stringToUuid(conversationId);
-  const entityId = stringToUuid(userWallet);
+  // Throws until the agent database holds nothing an earlier process left; the next tier answers.
+  await agentMemoryReady(runtime);
+
+  const room = await conversationRoomOf(conversationId, userWallet);
+
+  return withRoomLock(room.roomId, async (hold) => {
+    // A clear that fails is printed by clearConversationRoom and costs the answer nothing.
+    await clearConversationRoom(runtime, room, "before the run");
+    try {
+      return await runInRoom(runtime, room, conversationHistory, conversationId, userWallet, stream);
+    } finally {
+      // A run the framework has timed out goes on writing into the room. The answer (here, the
+      // timeout) goes back now so the next tier can answer, while the room stays taken until that
+      // processing ends, or for LATE_RUN_WAIT_MS at most, and is emptied then.
+      const lingering = runStillGoing(runtime, room.roomId);
+      if (lingering) {
+        hold(
+          settledWithin(lingering, LATE_RUN_WAIT_MS).then(() =>
+            clearConversationRoom(runtime, room, "after the run"),
+          ),
+        );
+      } else {
+        await clearConversationRoom(runtime, room, "after the run");
+      }
+    }
+  });
+}
+
+/**
+ * A conversation's room in the agent framework, and the owner's entity in it: both named from the
+ * conversation's scope (conversationScopeOf), so neither is shared with another conversation or
+ * another owner.
+ *
+ * @returns {Promise<{ roomId: string, entityId: string }>}
+ */
+async function conversationRoomOf(conversationId, owner) {
+  const scope = await conversationScopeOf(conversationId, owner);
+  return { roomId: stringToUuid(scope), entityId: stringToUuid(`${scope}:owner`) };
+}
+
+/** One ElizaOS run in a room that queryElizaOS has emptied and holds. */
+async function runInRoom(
+  runtime,
+  { roomId, entityId },
+  conversationHistory,
+  conversationId,
+  userWallet,
+  stream,
+) {
   const agentEntityId = runtime.agentId;
   const worldId = stringToUuid("onchain-world");
   console.log(
@@ -1205,11 +1327,13 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
   // We loop through the historical context reconstructed from Autonomys and insert it into PGLite.
   // This gives the stateless/ephemeral TEE the necessary context for RAG/Conversation.
   for (const msg of pastContext) {
-    // Create a deterministic ID for the historical message based on content + timestamp
-    // to avoid duplicates if this logic runs multiple times in the same session.
+    // A deterministic ID for the historical message from its room, content and timestamp, so a
+    // message repeated in the history is written once. The room is part of it because memory ids
+    // are unique across the whole database: without it, the same message in another room would
+    // be found there and left out of this one.
     const msgHash = crypto
       .createHash("sha256")
-      .update(msg.content + msg.createdAt)
+      .update(`${roomId}\n${msg.content}${msg.createdAt}`)
       .digest("hex");
     const memoryId = stringToUuid(msgHash);
 
@@ -1313,6 +1437,9 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
         {
           entityId,
           roomId,
+          // The room's own world. Given none, the framework makes a world for every room it sees,
+          // named after the room, and that world would stay in the database.
+          worldId,
           content: {
             // ONLY the user's prompt. Market context arrives via providers during
             // composition — hand-building it here bypassed the framework and made the two
@@ -1738,7 +1865,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // Direct provider bypass (used in tests and explicit operator config)
   if (aiProvider === "ChainGPT") {
     try {
-      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId, userWallet));
       providerTally.recordServed("chaingpt");
 
       return answer;
@@ -1815,7 +1942,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       // 4. Failover 1: ChainGPT. A new attempt on the stream: the steps shown so far stay.
       stream.attempt();
       try {
-        const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+        const answer = asAnswer(
+          await queryChainGPT(conversationHistory, conversationId, userWallet),
+        );
         // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
         // success AND as whatever the next catch then records (gemini or none).
         providerTally.recordServed("chaingpt");
@@ -2988,7 +3117,7 @@ async function retryClaimedJob(job) {
     await oracleRole.ready();
 
     // Retries share the concurrency queue with fresh events.
-    await queue.add(() => handler(...event.args, event));
+    await enqueueEventWork(job.eventName, event.args, () => handler(...event.args, event));
   } catch (error) {
     const role = await lostOracleRole(error);
     if (role.lost || role.refused) {
@@ -3152,7 +3281,7 @@ async function processPastEvents(fromBlock, toBlock) {
       if (allEvents.length > 0) {
         console.log(`     Found ${allEvents.length} events in batch. Queueing...`);
 
-        const tasks = allEvents.map((event) => queue.add(() => dispatchEvent(event)));
+        const tasks = allEvents.map((event) => enqueueEvent(event));
 
         // Wait for ALL tasks in this batch to complete before updating state.
         // This ensures if the process crashes, we re-process this batch rather than skipping it.
@@ -3230,6 +3359,35 @@ function reportUndecodableLog(log) {
 }
 
 /**
+ * Hands an event's work to the work queue. A prompt or a regeneration first waits for its
+ * conversation's turn (takeRoomTurn), outside the queue: the prompts of one conversation are
+ * answered one at a time, so the ones waiting would otherwise each hold a place in the queue that
+ * another owner's prompt could use. Gives back what the work gives.
+ *
+ * @param {string} eventName
+ * @param {ArrayLike<unknown>} args The event's arguments.
+ * @param {() => Promise<unknown>} work
+ */
+async function enqueueEventWork(eventName, args, work) {
+  if (!ROOM_EVENTS.has(eventName)) return queue.add(work);
+  // Both events start with the conversation's owner and then its id, which the contract tests pin.
+  const [owner, conversationId] = args;
+  let roomId;
+  try {
+    ({ roomId } = await conversationRoomOf(String(conversationId), owner));
+  } catch {
+    // No room can be named for it: its handler meets the same and fails its own way.
+    return queue.add(work);
+  }
+  return takeRoomTurn(roomId, () => queue.add(work));
+}
+
+/** enqueueEventWork for an event read from the chain. */
+function enqueueEvent(event) {
+  return enqueueEventWork(event.eventName, event.args, () => dispatchEvent(event));
+}
+
+/**
  * Hand one oracle-work event to its handler.
  * @param {import("ethers").EventLog} event
  */
@@ -3263,7 +3421,7 @@ async function pollEvents(startBlock) {
     roleReady: () => oracleRole.ready(),
     queryEvents: (fromBlock, toBlock) =>
       queryOracleWorkEvents(contract, fromBlock, toBlock, { onUndecodable: reportUndecodableLog }),
-    handleEvent: (event) => queue.add(() => dispatchEvent(event)),
+    handleEvent: (event) => enqueueEvent(event),
     settle: settleBatch,
     persistCursor,
     rewindCursor,
@@ -3338,6 +3496,7 @@ async function start() {
   // against this same url.
   const { chainId } = await provider.getNetwork();
   assertChainOfKeys(chainId);
+  deploymentChainId = chainId;
   ({ store: stateStore } = createStateStore({
     postgresUrl: agentStateDbUrl,
     chainId,
@@ -3473,5 +3632,6 @@ module.exports = {
   ensureOracleAuthorized,
   processPastEvents,
   retryFailedJobs,
+  enqueueEventWork,
   wireAgentDbForPluginSql,
 };

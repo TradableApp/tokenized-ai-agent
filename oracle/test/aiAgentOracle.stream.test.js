@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const { expect } = require("chai");
 const sinon = require("sinon");
+const { agentMemorySurface } = require("./helpers/fakeAgentMemory");
 const proxyquire = require("proxyquire").noCallThru();
 const { ethers } = require("ethers");
 
@@ -64,12 +65,17 @@ function recordingSink(events) {
 function makeEliza(scriptFor) {
   const handlers = {};
   const runtime = {
-    agentId: "agent-uuid",
+    // What the oracle confines and sweeps before the agent answers.
+    ...agentMemorySurface(),
+    agentId: "00000000-0000-4000-8000-0000000000a9",
     // The runtime's own logger, which the oracle replaces with a cleaned one.
     logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } },
     ensureConnection: sinon.stub().resolves(),
     createMemory: sinon.stub().resolves(),
     getMemoryById: sinon.stub().resolves(null),
+    // What the oracle empties a conversation's room with, before and after each run.
+    deleteAllMemories: sinon.stub().resolves(),
+    deleteRoom: sinon.stub().resolves(),
     composeState: sinon.stub().callsFake(async (message) => ({
       values: {},
       text: "",
@@ -121,7 +127,7 @@ function loadOracle({ scriptFor = () => ({ thoughts: [], answer: "An answer." })
 
   const uploads = [];
   const contract = {
-    target: "0xMockedContractAddress",
+    target: "0x000000000000000000000000000000000000C0dE",
     isJobFinalized: sinon.stub().resolves(false),
     submitAnswer: sinon.stub().callsFake(async () => ({
       wait: async () => {

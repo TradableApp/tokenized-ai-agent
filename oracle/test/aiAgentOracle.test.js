@@ -72,7 +72,7 @@ describe("aiAgentOracle", function () {
       },
       signer: { address: "0xOracleAddress" },
       contract: {
-        target: "0xMockedContractAddress",
+        target: "0x000000000000000000000000000000000000C0dE",
         submitAnswer: sinon.stub().resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),
         submitBranch: sinon.stub().resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),
         submitConversationMetadata: sinon
@@ -376,7 +376,7 @@ describe("aiAgentOracle", function () {
 
   describe("queryAIModel Dispatcher", () => {
     // Define clear, named constants for test arguments
-    const FAKE_USER_ADDRESS = "0xUser";
+    const FAKE_USER_ADDRESS = "0x00000000000000000000000000000000000000a1";
     const FAKE_CONVERSATION_ID = 1;
     const FAKE_PROMPT_MESSAGE_ID = 2;
     const FAKE_ANSWER_MESSAGE_ID = 3;
@@ -1297,7 +1297,7 @@ describe("aiAgentOracle", function () {
         const tx = txHash(name);
         await seedFailedJob({ transactionHash: tx, logIndex: 0, blockNumber: 101 });
         mockedProvider.getTransactionReceipt.resolves({
-          logs: [{ address: "0xMockedContractAddress", index: 0, transactionHash: tx }],
+          logs: [{ address: "0x000000000000000000000000000000000000C0dE", index: 0, transactionHash: tx }],
           blockNumber: 101,
           transactionHash: tx,
         });
@@ -1666,8 +1666,8 @@ describe("aiAgentOracle", function () {
       mockedProvider.getTransactionReceipt.resolves({
         logs: [
           // Same transaction, same contract, a different log: the index must pick the right one.
-          { address: "0xMockedContractAddress", index: 0, transactionHash: tx, which: "other" },
-          { address: "0xMockedContractAddress", index: 1, transactionHash: tx, which: "ours" },
+          { address: "0x000000000000000000000000000000000000C0dE", index: 0, transactionHash: tx, which: "other" },
+          { address: "0x000000000000000000000000000000000000C0dE", index: 1, transactionHash: tx, which: "ours" },
         ],
         blockNumber: 101,
         transactionHash: tx,
@@ -1739,7 +1739,7 @@ describe("aiAgentOracle", function () {
       await seedFailedJob();
       const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
       mockedProvider.getTransactionReceipt.resolves({
-        logs: [{ address: "0xMockedContractAddress", index: 0 }],
+        logs: [{ address: "0x000000000000000000000000000000000000C0dE", index: 0 }],
       });
       const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
       mockedContract.interface.parseLog.throws(
@@ -1991,7 +1991,7 @@ describe("aiAgentOracle", function () {
         provider: { getNetwork: sinon.stub().resolves({ chainId: 1 }) },
         signer: { address: "0xOracleAddress" },
         contract: {
-          target: "0xMockedContractAddress",
+          target: "0x000000000000000000000000000000000000C0dE",
           submitAnswer: sinon
             .stub()
             .resolves({ wait: () => Promise.resolve({ hash: "0xTxHash" }) }),

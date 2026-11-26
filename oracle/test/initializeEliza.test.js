@@ -5,6 +5,7 @@ const chai = require("chai");
 const chaiAsPromised = require("chai-as-promised");
 const proxyquire = require("proxyquire").noCallThru();
 const sinon = require("sinon");
+const { agentMemorySurface } = require("./helpers/fakeAgentMemory");
 
 const { withTestKeys } = require("./helpers/oracleTestKeys");
 
@@ -39,12 +40,17 @@ function makeFramework({
   const seen = { added: null, startCalls: 0, started: false, handled: 0, startedWhenHandled: null };
 
   const runtime = {
-    agentId: "agent-uuid",
+    // What the oracle confines and sweeps before the agent answers.
+    ...agentMemorySurface(),
+    agentId: "00000000-0000-4000-8000-0000000000a9",
     // The runtime's own logger, which the oracle replaces with a cleaned one.
     logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } },
     ensureConnection: sinon.stub().resolves(),
     createMemory: sinon.stub().resolves(),
     getMemoryById: sinon.stub().resolves(null),
+    // What the oracle empties a conversation's room with, before and after each run.
+    deleteAllMemories: sinon.stub().resolves(),
+    deleteRoom: sinon.stub().resolves(),
     composeState: composeFails
       ? sinon.stub().rejects(composeFails)
       : sinon.stub().resolves({ values: {}, text: "", data: { providers: {} } }),
@@ -118,6 +124,21 @@ function loadOracle(framework, extraStubs = {}) {
   );
 }
 
+/**
+ * Points a loaded oracle at a deployment, as start() does, so a conversation's room can be named:
+ * a provider that names the chain, and the agent contract. Nothing here reaches a network.
+ */
+function atDeployment(oracle) {
+  oracle.initForTest({
+    provider: { getNetwork: sinon.stub().resolves({ chainId: 84532n }) },
+    contract: { target: "0x000000000000000000000000000000000000c0de" },
+  });
+  return oracle;
+}
+
+// The wallet that owns the conversation the tests prompt in.
+const OWNER = "0x00000000000000000000000000000000000000a1";
+
 function refusedConnection() {
   return Object.assign(new Error(`connect ECONNREFUSED ${DATABASE_ADDRESS}`), {
     code: "ECONNREFUSED",
@@ -158,9 +179,9 @@ describe("the oracle's start of the agent", function () {
     ["added", { addFails: refusedConnection() }],
   ]) {
     it(`logs only the kind of error when the agent cannot be ${where}`, async function () {
-      const oracle = loadOracle(makeFramework(failure));
+      const oracle = atDeployment(loadOracle(makeFramework(failure)));
 
-      await expect(oracle.queryElizaOS(history, "room-1", "0xuser")).to.be.rejectedWith(
+      await expect(oracle.queryElizaOS(history, "1", OWNER)).to.be.rejectedWith(
         /ECONNREFUSED/,
       );
 
@@ -173,9 +194,9 @@ describe("the oracle's start of the agent", function () {
 
   it("hands the framework the agent cleaned for storing, not the character as it is", async function () {
     const framework = makeFramework();
-    const oracle = loadOracle(framework);
+    const oracle = atDeployment(loadOracle(framework));
 
-    await oracle.queryElizaOS(history, "room-1", "0xuser");
+    await oracle.queryElizaOS(history, "1", OWNER);
 
     const [added] = framework.seen.added;
     expect(added.character.settings.mcp, "no tool servers in what is stored").to.deep.equal({});
@@ -187,9 +208,9 @@ describe("the oracle's start of the agent", function () {
 
   it("waits for the agent to have started before it answers", async function () {
     const framework = makeFramework({ startTakesMs: 30 });
-    const oracle = loadOracle(framework);
+    const oracle = atDeployment(loadOracle(framework));
 
-    await oracle.queryElizaOS(history, "room-1", "0xuser");
+    await oracle.queryElizaOS(history, "1", OWNER);
 
     expect(framework.seen.handled).to.equal(1);
     expect(framework.seen.startedWhenHandled).to.equal(true);
@@ -197,9 +218,9 @@ describe("the oracle's start of the agent", function () {
 
   it("does not answer when the agent did not start", async function () {
     const framework = makeFramework({ startFails: refusedConnection() });
-    const oracle = loadOracle(framework);
+    const oracle = atDeployment(loadOracle(framework));
 
-    await expect(oracle.queryElizaOS(history, "room-1", "0xuser")).to.be.rejected;
+    await expect(oracle.queryElizaOS(history, "1", OWNER)).to.be.rejected;
 
     expect(framework.seen.startCalls).to.equal(1);
     expect(framework.seen.handled).to.equal(0);
@@ -207,9 +228,9 @@ describe("the oracle's start of the agent", function () {
 
   // The rejection reaches the start-up's own handler, which prints and reports it whole.
   it("rejects with an error that keeps the code and carries no address when the agent cannot start", async function () {
-    const oracle = loadOracle(makeFramework({ startFails: refusedConnection() }));
+    const oracle = atDeployment(loadOracle(makeFramework({ startFails: refusedConnection() })));
 
-    const error = await oracle.queryElizaOS(history, "room-1", "0xuser").then(
+    const error = await oracle.queryElizaOS(history, "1", OWNER).then(
       () => null,
       (rejection) => rejection,
     );
@@ -249,9 +270,9 @@ describe("errors on the answer path are printed described", function () {
       .join("\n");
 
   it("when the context cannot be composed, and the run still answers", async function () {
-    const oracle = loadOracle(makeFramework({ composeFails: failedRequest() }));
+    const oracle = atDeployment(loadOracle(makeFramework({ composeFails: failedRequest() })));
 
-    const answer = await oracle.queryElizaOS(history, "room-1", "0xuser");
+    const answer = await oracle.queryElizaOS(history, "1", OWNER);
 
     expect(answer.text).to.equal("an answer");
     expect(printed()).to.match(/Context composition failed/);
@@ -259,9 +280,9 @@ describe("errors on the answer path are printed described", function () {
   });
 
   it("when the provenance handlers cannot be subscribed, and the run still answers", async function () {
-    const oracle = loadOracle(makeFramework({ subscribeFails: failedRequest() }));
+    const oracle = atDeployment(loadOracle(makeFramework({ subscribeFails: failedRequest() })));
 
-    const answer = await oracle.queryElizaOS(history, "room-1", "0xuser");
+    const answer = await oracle.queryElizaOS(history, "1", OWNER);
 
     expect(answer.text).to.equal("an answer");
     expect(printed()).to.match(/Could not subscribe provenance handlers/);
@@ -272,9 +293,9 @@ describe("errors on the answer path are printed described", function () {
   function loadDispatcher(framework) {
     sinon.stub(global, "fetch").rejects(new Error("unreachable in a test"));
     const queryGeminiDirect = sinon.stub().resolves("A direct answer.");
-    const oracle = loadOracle(framework, {
+    const oracle = atDeployment(loadOracle(framework, {
       "./geminiDirect": { classifyIntent: async () => "MARKET", queryGeminiDirect },
-    });
+    }));
     return oracle;
   }
 
@@ -285,7 +306,7 @@ describe("errors on the answer path are printed described", function () {
     it(`when the agent's run ${how} and the answer falls back to another model`, async function () {
       const oracle = loadDispatcher(makeFramework(failure));
 
-      const answer = await oracle.queryAIModel(history, "room-1", "0xuser");
+      const answer = await oracle.queryAIModel(history, "1", OWNER);
 
       expect(answer.text).to.equal("A direct answer.");
       expect(printed()).to.match(/Falling back to ChainGPT/);
