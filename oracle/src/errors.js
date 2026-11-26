@@ -54,6 +54,44 @@ function isRetryableError(error) {
 }
 
 /**
+ * A stored file's body passed its byte limit while it was being read, or its declared length
+ * was already over it. Reading stopped there and the connection was closed.
+ *
+ * Bad input, so the event is dropped: every file the oracle writes is well under the limit
+ * (`storage/storedFileFetch.js`), so a file over it was not written as part of a conversation,
+ * and the content id that names it came from the user's payload or from a file sealed with the
+ * user's own key. Retrying would read the same bytes again.
+ *
+ * `limitBytes` and `bytesRead` are numbers only, for the log line.
+ */
+class StoredFileTooLargeError extends BadInputError {
+  constructor({ limitBytes, bytesRead }) {
+    super(
+      `Stored file is over its ${limitBytes}-byte limit; reading stopped after ${bytesRead} bytes.`,
+    );
+    this.name = "StoredFileTooLargeError";
+    this.limitBytes = limitBytes;
+    this.bytesRead = bytesRead;
+  }
+}
+
+/**
+ * A stored file did not arrive in full within its time limit, and the request was ended.
+ *
+ * Retryable where it reaches the handler, which is only a conversation's key file: without the
+ * key nothing can be answered, and a gateway that is slow now may serve it in a minute. A history
+ * walk never lets it reach the handler: it stops at the file and the prompt is answered with the
+ * newer messages read so far, as for any other fetch that fails.
+ */
+class StoredFileTimeoutError extends RetryableError {
+  constructor({ timeoutMs }) {
+    super(`Stored file did not arrive within ${timeoutMs} ms; the request was ended.`);
+    this.name = "StoredFileTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
  * The codes ethers gives a request that did not get a usable answer.
  *
  * - SERVER_ERROR, TIMEOUT, NETWORK_ERROR: the provider refused it or answered with an error
@@ -103,10 +141,33 @@ function isRpcErrorThatIsNotARevert(error) {
   return typeof message === "string" && message !== "" && !/revert/i.test(message);
 }
 
+/**
+ * A file was not uploaded because it is larger than the largest file the oracle writes
+ * (`LARGEST_WRITTEN_FILE_BYTES`), which is what every reader of stored files allows for. A file
+ * over it would be refused by the next prompt that reads it, so it is never written.
+ *
+ * Retryable: no such file can be built from the limits the oracle holds, so reaching this is the
+ * oracle's own fault; the event is queued and asked again (a model can answer shorter), and a
+ * prompt that never fits is refunded by the escrow's timeout.
+ */
+class StoredFileWriteRefusedError extends RetryableError {
+  constructor({ limitBytes, sizeBytes }) {
+    super(
+      `File of ${sizeBytes} bytes not uploaded: over the ${limitBytes}-byte written-file limit.`,
+    );
+    this.name = "StoredFileWriteRefusedError";
+    this.limitBytes = limitBytes;
+    this.sizeBytes = sizeBytes;
+  }
+}
+
 module.exports = {
   BadInputError,
   isBadInputError,
   RetryableError,
   isRetryableError,
+  StoredFileTooLargeError,
+  StoredFileTimeoutError,
+  StoredFileWriteRefusedError,
   isTransientProviderError,
 };

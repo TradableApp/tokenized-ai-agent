@@ -1,11 +1,18 @@
 const { z } = require("zod");
 const { BadInputError } = require("./errors");
 const { errorKind } = require("./errorDescription");
+const { isContentId } = require("./storage/contentId");
 
 // --- Global Constants (Aligned with Frontend) ---
 const MAX_PROMPT_LENGTH = 5000; // Matches Chat.jsx
 const MAX_TITLE_LENGTH = 100; // Matches RenameConversationModal.jsx
 const MAX_INSTRUCTIONS_LENGTH = 1000; // Safe buffer for regeneration instructions
+
+// A content id the oracle will fetch, or store as a parent for a later fetch: only the shapes
+// its storage paths produce (storage/contentId.js), read when the payload is checked, so the
+// mock and local IPFS forms are taken only where those modes are on. A refusal is the issue's
+// code ("custom"), never the value.
+const ContentId = z.string().refine((value) => isContentId(value), { message: "not a content id" });
 
 // --- Schemas ---
 
@@ -15,7 +22,7 @@ const PromptSubmittedSchema = z.object({
   isNewConversation: z.boolean(),
   // These can be null/undefined for new conversations
   previousMessageId: z.string().nullable().optional(),
-  previousMessageCID: z.string().nullable().optional(),
+  previousMessageCID: ContentId.nullable().optional(),
   // Sapphire specific: The session key is sometimes passed inside the payload
   sessionKey: z.string().optional(),
 });
@@ -23,8 +30,8 @@ const PromptSubmittedSchema = z.object({
 // 2. RegenerationRequested
 const RegenerationRequestedSchema = z.object({
   instructions: z.string().min(1).max(MAX_INSTRUCTIONS_LENGTH),
-  promptMessageCID: z.string().min(1),
-  originalAnswerMessageCID: z.string().min(1),
+  promptMessageCID: ContentId,
+  originalAnswerMessageCID: ContentId,
   sessionKey: z.string().optional(),
 });
 
@@ -111,4 +118,4 @@ function issuesOf(error) {
     .join(", ");
 }
 
-module.exports = { validatePayload };
+module.exports = { validatePayload, MAX_PROMPT_LENGTH };

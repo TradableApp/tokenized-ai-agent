@@ -19,6 +19,8 @@
  * layer only moves bytes.
  */
 
+const { fetchStoredFile } = require("./storedFileFetch");
+
 let apiUrl = null;
 
 function ensureInitialized() {
@@ -88,17 +90,21 @@ async function uploadData(dataBuffer, _tags = []) {
  * @returns {Promise<string>} The raw data as a UTF-8 string (matches the other
  *          providers, since payloads are AES-GCM ciphertext strings).
  */
-async function fetchData(cid) {
+async function fetchData(cid, { maxBytes, timeoutMs } = {}) {
   ensureInitialized();
 
-  const res = await fetch(`${apiUrl}/api/v0/cat?arg=${encodeURIComponent(cid)}`, {
-    method: "POST",
-  });
-  if (!res.ok) {
-    throw new Error(`IPFS cat failed for ${cid} (status ${res.status}): ${await res.text()}`);
-  }
+  // Bounded as every stored file fetch is (storedFileFetch.js), though only a local node is read.
+  const body = await fetchStoredFile(
+    (signal) =>
+      fetch(`${apiUrl}/api/v0/cat?arg=${encodeURIComponent(cid)}`, { method: "POST", signal }),
+    {
+      maxBytes,
+      timeoutMs,
+      refusal: (res) => new Error(`IPFS cat failed for ${cid} (status ${res.status})`),
+    },
+  );
 
-  const data = await res.text();
+  const data = body.toString("utf-8");
   console.log(`Data fetched from local IPFS. CID: ${cid}, Size: ${data.length} bytes`);
 
   return data;

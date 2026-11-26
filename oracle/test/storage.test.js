@@ -114,6 +114,34 @@ describe("storage router", function () {
     });
   });
 
+  describe("uploadData refuses a file it would later refuse to read", () => {
+    const { LARGEST_WRITTEN_FILE_BYTES } = require("../src/storage/storedFileFetch");
+    const { isRetryableError, isBadInputError } = require("../src/errors");
+
+    it("uploads a file of exactly the largest written size", async () => {
+      await storage.uploadData(Buffer.alloc(LARGEST_WRITTEN_FILE_BYTES, 0x41));
+
+      expect(autonomysStub.uploadData.calledOnce).to.equal(true);
+    });
+
+    it("refuses one byte more before any provider is asked, as retryable and not as bad input", async () => {
+      let refused;
+      try {
+        await storage.uploadData(Buffer.alloc(LARGEST_WRITTEN_FILE_BYTES + 1, 0x41));
+      } catch (error) {
+        refused = error;
+      }
+
+      expect(refused, "refused").to.be.an("error");
+      expect(refused.name).to.equal("StoredFileWriteRefusedError");
+      expect(isRetryableError(refused)).to.equal(true);
+      expect(isBadInputError(refused)).to.equal(false);
+      expect(autonomysStub.uploadData.called).to.equal(false);
+      expect(arweaveStub.uploadData.called).to.equal(false);
+      expect(mirrorStub.mirrorInBackground.called).to.equal(false);
+    });
+  });
+
   describe("fetchData", () => {
     it("should correctly route to the arweave provider for a valid Arweave CID", async () => {
       // Exactly 43 chars, valid Base64URL characters
@@ -124,14 +152,70 @@ describe("storage router", function () {
       expect(data).to.equal("arweave_data");
     });
 
-    it("should throw an error for an unsupported CID format", async () => {
+    it("should throw an error for an unsupported CID format, without repeating it", async () => {
       const invalidCid = "this-is-not-a-valid-cid";
       try {
         await storage.fetchData(invalidCid);
         expect.fail("fetchData should have thrown an error for an invalid CID");
       } catch (error) {
-        expect(error.message).to.equal(`Unsupported CID format: ${invalidCid}`);
+        expect(error.message).to.include("Unsupported content id");
+        expect(error.message).to.not.include(invalidCid);
       }
+    });
+
+    it("fetches nothing for an id that is not a content id, and prints none of it", async () => {
+      const forged = `${"A".repeat(43)}\n[Oracle] forged line`;
+      const printed = [];
+      sinon.stub(console, "log").callsFake((...args) => printed.push(args.join(" ")));
+      sinon.stub(console, "warn").callsFake((...args) => printed.push(args.join(" ")));
+      sinon.stub(console, "error").callsFake((...args) => printed.push(args.join(" ")));
+
+      let refused;
+      try {
+        await storage.fetchData(forged);
+      } catch (error) {
+        refused = error;
+      }
+
+      expect(refused, "refused").to.be.an("error");
+      expect(refused.message).to.not.include("forged line");
+      expect(arweaveStub.fetchData.called).to.equal(false);
+      expect(autonomysStub.fetchData.called).to.equal(false);
+      expect(printed.join("\n")).to.not.include("forged line");
+    });
+
+    it("takes and routes a 44-character Irys id as it does a 43-character one, and refuses 42 and 45", async () => {
+      for (const length of [43, 44]) {
+        const id = "Ab_-0".repeat(9).slice(0, length);
+        arweaveStub.fetchData.resetHistory();
+
+        expect(await storage.fetchData(id)).to.equal("arweave_data");
+        expect(arweaveStub.fetchData.calledOnceWith(id)).to.equal(true);
+      }
+      for (const length of [42, 45]) {
+        const id = "Ab_-0".repeat(10).slice(0, length);
+        arweaveStub.fetchData.resetHistory();
+
+        let refused;
+        try {
+          await storage.fetchData(id);
+        } catch (error) {
+          refused = error;
+        }
+        expect(refused, `refused at ${length}`).to.be.an("error");
+        expect(arweaveStub.fetchData.called).to.equal(false);
+        expect(autonomysStub.fetchData.called).to.equal(false);
+      }
+    });
+
+    it("routes an Autonomys id to Auto Drive and passes the fetch limits on", async () => {
+      const autonomysCid = `bafkr6i${"a".repeat(52)}`;
+      const limits = { maxBytes: 1024, timeoutMs: 500 };
+
+      const data = await storage.fetchData(autonomysCid, limits);
+
+      expect(autonomysStub.fetchData.calledOnceWith(autonomysCid, limits)).to.equal(true);
+      expect(data).to.equal("autonomys_data");
     });
   });
 
@@ -159,7 +243,9 @@ describe("storage router — local IPFS mode (LOCAL_IPFS_API_URL set)", function
 
     ipfsStub = {
       initialize: sinon.stub().resolves(),
-      uploadData: sinon.stub().resolves("bafkreilocalcid"),
+      uploadData: sinon
+        .stub()
+        .resolves("bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
       fetchData: sinon.stub().resolves("ipfs_data"),
     };
     arweaveStub = { initializeIrys: sinon.stub().resolves() };
@@ -199,17 +285,23 @@ describe("storage router — local IPFS mode (LOCAL_IPFS_API_URL set)", function
 
     const cid = await storage.uploadData(buffer, tags);
     expect(ipfsStub.uploadData.calledOnceWith(buffer, tags)).to.be.true;
-    expect(cid).to.equal("bafkreilocalcid");
+    expect(cid).to.equal("bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
     // The in-memory tag index now resolves the just-uploaded CID (IPFS itself
     // has no tag query — this is what keeps session-key lookup working).
     const found = await storage.queryTransactionByTags(tags);
-    expect(found).to.equal("bafkreilocalcid");
+    expect(found).to.equal("bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
 
   it("fetchData routes to the local IPFS provider", async () => {
-    const data = await storage.fetchData("bafkreilocalcid");
-    expect(ipfsStub.fetchData.calledOnceWith("bafkreilocalcid")).to.be.true;
+    const data = await storage.fetchData(
+      "bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(
+      ipfsStub.fetchData.calledOnceWith(
+        "bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ),
+    ).to.be.true;
     expect(data).to.equal("ipfs_data");
   });
 

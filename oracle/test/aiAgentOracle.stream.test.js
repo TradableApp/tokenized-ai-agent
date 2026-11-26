@@ -31,7 +31,7 @@ const promptPayload = (promptText, extra = {}) =>
       promptText,
       isNewConversation: false,
       previousMessageId: "1",
-      previousMessageCID: "bafy-parent",
+      previousMessageCID: "bafkr6iparentaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       ...extra,
     }),
   );
@@ -840,7 +840,7 @@ describe("answer path and live stream", function () {
         scriptFor: () => ({ thoughts: ["Reconsidering the previous answer now."], answer: "A better answer." }),
       });
       const payload = ethers.toUtf8Bytes(
-        encryptForOracle({ promptMessageCID: "bafy-prompt", originalAnswerMessageCID: "bafy-old", instructions: "shorter" }),
+        encryptForOracle({ promptMessageCID: "bafkr6ipromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", originalAnswerMessageCID: "bafkr6ioldaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", instructions: "shorter" }),
       );
 
       await oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0xkey", fakeEvent());
@@ -857,7 +857,7 @@ describe("answer path and live stream", function () {
     // is pinned here too, so a done() dropped from one of its branches is caught.
     const regenPayload = () =>
       ethers.toUtf8Bytes(
-        encryptForOracle({ promptMessageCID: "bafy-prompt", originalAnswerMessageCID: "bafy-old", instructions: "shorter" }),
+        encryptForOracle({ promptMessageCID: "bafkr6ipromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", originalAnswerMessageCID: "bafkr6ioldaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", instructions: "shorter" }),
       );
     const regenerate = (oracle, payload = regenPayload()) =>
       oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0xkey", fakeEvent());

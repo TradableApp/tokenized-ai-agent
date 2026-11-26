@@ -711,8 +711,8 @@ describe("aiAgentOracle", function () {
         createEncryptedString(
           {
             instructions: "be more concise",
-            promptMessageCID: "cid-prompt",
-            originalAnswerMessageCID: "cid-answer",
+            promptMessageCID: "bafkr6icidpromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            originalAnswerMessageCID: "bafkr6icidansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           },
           FAKE_SESSION_KEY,
         ),
@@ -1049,7 +1049,7 @@ describe("aiAgentOracle", function () {
       expect(
         aiAgentOracle.shouldInitializeConversation({
           isNewConversation: false,
-          previousMessageCID: "bafyParentCid",
+          previousMessageCID: "bafkr6iparentaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         }),
       ).to.equal(false);
     });
@@ -1544,8 +1544,8 @@ describe("aiAgentOracle", function () {
         createEncryptedString(
           {
             instructions: "Make it shorter",
-            promptMessageCID: "fake_cid_prompt",
-            originalAnswerMessageCID: "fake_cid_prev_answer",
+            promptMessageCID: "bafkr6ipromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            originalAnswerMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           },
           FAKE_SESSION_KEY,
         ),
@@ -1686,6 +1686,42 @@ describe("aiAgentOracle", function () {
 
       // ...and the job is gone from the queue.
       expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+    });
+
+    it("drops a retried job whose event turns out to be bad input, instead of retrying it to exhaustion", async () => {
+      const fakePayload = {
+        promptText: "retried, then refused",
+        isNewConversation: false,
+        previousMessageCID: "not a content id",
+      };
+      const eventArgs = [
+        "0xUser",
+        1,
+        2,
+        3,
+        ethers.toUtf8Bytes(createEncryptedString(fakePayload, FAKE_SESSION_KEY)),
+        "key",
+      ];
+      const tx = txHash("retry-bad-input");
+      await seedFailedJob({ transactionHash: tx, logIndex: 0, blockNumber: 101 });
+      const mockedProvider = stubs["./contractUtility"].initializeOracle().provider;
+      mockedProvider.getTransactionReceipt.resolves({
+        logs: [{ address: "0xMockedContractAddress", index: 0, transactionHash: tx }],
+        blockNumber: 101,
+        transactionHash: tx,
+      });
+      mockedProvider.getBlock.resolves({ timestamp: Date.now() });
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      mockedContract.interface.parseLog.returns({ name: "PromptSubmitted", args: eventArgs });
+
+      await aiAgentOracle.retryFailedJobs();
+
+      expect(mockedContract.submitAnswer.called).to.equal(false);
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+      const critical = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((call) => String(call.args[0]).includes("CRITICAL"));
+      expect(critical).to.deep.equal([]);
     });
 
     it("should stop retrying a job after max retries, keeping it as exhausted", async () => {
@@ -1893,7 +1929,7 @@ describe("aiAgentOracle", function () {
         promptText: "Follow up question",
         isNewConversation: false,
         previousMessageId: "msg_457",
-        previousMessageCID: "fake_cid_prev_answer",
+        previousMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       };
 
       const encryptedPayloadString = createEncryptedString(clientPayload, FAKE_SESSION_KEY);
@@ -2063,7 +2099,7 @@ describe("aiAgentOracle", function () {
         promptText: "Follow up question",
         isNewConversation: false,
         previousMessageId: "msg_457",
-        previousMessageCID: "fake_cid_prev_answer",
+        previousMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         sessionKey: "0x" + FAKE_SESSION_KEY.toString("hex"),
       };
       const payloadString = JSON.stringify(clientPayload);
@@ -2105,8 +2141,8 @@ describe("aiAgentOracle", function () {
       const roflEncryptedKey = "0xkey";
       const clientPayload = {
         instructions: "Make it shorter",
-        promptMessageCID: "fake_cid_prompt",
-        originalAnswerMessageCID: "fake_cid_prev_answer",
+        promptMessageCID: "bafkr6ipromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        originalAnswerMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -2127,7 +2163,7 @@ describe("aiAgentOracle", function () {
         fakeEvent,
       );
 
-      expect(stubs["./storage/storage"].fetchData.calledOnceWith("fake_cid_prev_answer")).to.be
+      expect(stubs["./storage/storage"].fetchData.calledOnceWith("bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).to.be
         .true;
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(1);
 
@@ -2620,6 +2656,474 @@ describe("aiAgentOracle", function () {
       expect(history).to.have.lengthOf(limit);
       // The oldest message should be the 6th one in the chain (25 - 20 + 1)
       expect(history[0].content).to.equal("Message 6");
+    });
+  });
+
+  describe("history fetches are bounded", () => {
+    const errors = require("../src/errors");
+    const idFor = (n) =>
+      `bafkr6i${String(n)
+        // Not "a" for 0, the padding letter: idFor(10) must not be idFor(1).
+        .replace(/\d/g, (d) => "bcdefghijk"[d])
+        .padEnd(52, "a")}`;
+    const OTHER_KEY = crypto.randomBytes(32);
+    const message = (content, parentCID) => ({ role: "user", content, parentCID });
+    const fetchStub = () => stubs["./storage/storage"].fetchData;
+
+    function chain(length, contentFor = (i) => `Message ${i}`) {
+      for (let i = 1; i <= length; i += 1) {
+        fetchStub()
+          .withArgs(idFor(i))
+          .resolves(
+            createEncryptedString(
+              message(contentFor(i), i > 1 ? idFor(i - 1) : null),
+              FAKE_SESSION_KEY,
+            ),
+          );
+      }
+    }
+
+    // Refused at a file's own limit (not at what the walk has left).
+    function oversized() {
+      const limitBytes = aiAgentOracle.HISTORY_LIMITS.fileBytes;
+      return new errors.StoredFileTooLargeError({ limitBytes, bytesRead: limitBytes + 1 });
+    }
+
+    function callsFor(id) {
+      return fetchStub()
+        .getCalls()
+        .filter((call) => call.args[0] === id);
+    }
+
+    it("refuses the prompt as bad input when a file in the chain is over the file limit", async () => {
+      chain(1);
+      fetchStub()
+        .withArgs(idFor(2))
+        .resolves(createEncryptedString(message("newest", idFor(1)), FAKE_SESSION_KEY));
+      fetchStub().withArgs(idFor(1)).rejects(oversized());
+
+      let refused;
+      try {
+        await aiAgentOracle.reconstructHistory(idFor(2), FAKE_SESSION_KEY);
+      } catch (error) {
+        refused = error;
+      }
+
+      expect(refused, "the walk refused").to.be.an("error");
+      expect(errors.isBadInputError(refused)).to.equal(true);
+    });
+
+    it("ends the walk at a fetch that timed out, keeping the newer messages it read", async () => {
+      fetchStub()
+        .withArgs(idFor(2))
+        .resolves(createEncryptedString(message("newest", idFor(1)), FAKE_SESSION_KEY));
+      fetchStub()
+        .withArgs(idFor(1))
+        .rejects(new errors.StoredFileTimeoutError({ timeoutMs: 30000 }));
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(2), FAKE_SESSION_KEY);
+
+      expect(history).to.deep.equal([{ role: "user", content: "newest" }]);
+    });
+
+    it("ends the walk, keeping what it read, once its own time is spent", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      const bodies = new Map();
+      for (let n = 1; n <= 10; n += 1) {
+        bodies.set(
+          idFor(n),
+          createEncryptedString(
+            message(`Message ${n}`, n > 1 ? idFor(n - 1) : null),
+            FAKE_SESSION_KEY,
+          ),
+        );
+      }
+      // Each fetch takes 40 s of the walk's clock.
+      let now = 1_000_000;
+      sinon.stub(Date, "now").callsFake(() => now);
+      fetchStub().callsFake(async (id) => {
+        now += 40_000;
+        return bodies.get(id);
+      });
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(10), FAKE_SESSION_KEY);
+
+      const fetches = Math.ceil(limits.walkMs / 40_000);
+      expect(fetchStub().callCount).to.equal(fetches);
+      expect(history).to.have.lengthOf(fetches);
+      expect(history[history.length - 1].content).to.equal("Message 10");
+      // The last fetch was given only what was left of the walk's time.
+      const lastTimeout = fetchStub().lastCall.args[1].timeoutMs;
+      expect(lastTimeout).to.equal(limits.walkMs - (fetches - 1) * 40_000);
+    });
+
+    it("gives every fetch of a long chain of small files the walk's remaining bytes and time", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      chain(limits.files + 5);
+
+      const history = await aiAgentOracle.reconstructHistory(
+        idFor(limits.files + 5),
+        FAKE_SESSION_KEY,
+      );
+
+      expect(history).to.have.lengthOf(limits.files);
+      const calls = fetchStub().getCalls();
+      expect(calls).to.have.lengthOf(limits.files);
+      let previousBytes = Infinity;
+      for (const call of calls) {
+        const { maxBytes, timeoutMs } = call.args[1];
+        expect(maxBytes).to.be.at.most(limits.fileBytes).and.at.most(previousBytes);
+        expect(timeoutMs).to.be.above(0).and.at.most(limits.fileMs);
+        previousBytes = maxBytes;
+      }
+    });
+
+    it("ends a walk served from the cache once its time is spent, as it does one from storage", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      chain(10);
+      // First walk: every file fetched once, and cached.
+      await aiAgentOracle.reconstructHistory(idFor(10), FAKE_SESSION_KEY);
+      const fetchesBefore = fetchStub().callCount;
+      // Second walk: every reading of the clock is 40 s later than the one before.
+      let now = 1_000_000;
+      sinon.stub(Date, "now").callsFake(() => {
+        now += 40_000;
+        return now;
+      });
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(10), FAKE_SESSION_KEY);
+
+      expect(fetchStub().callCount, "served from the cache").to.equal(fetchesBefore);
+      expect(history.length).to.be.at.least(1).and.below(10);
+      expect(history[history.length - 1].content).to.equal("Message 10");
+      expect(history.length).to.be.at.most(Math.ceil(limits.walkMs / 40_000));
+    });
+
+    it("stops the walk, keeping what it read, once the bytes for one prompt are spent", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      // Sealed, a file of this size is about 70% of the file limit. The bulk is in a field the
+      // walk does not hand on (as an answer's reasoning is), so the contents' own budget does
+      // not bind first.
+      const padded = (parentCID) => ({
+        ...message("short", parentCID),
+        reasoning: "x".repeat(Math.floor(limits.fileBytes * 0.5)),
+      });
+      const fileChars = createEncryptedString(padded(null), FAKE_SESSION_KEY).length;
+      const fits = Math.floor(limits.walkBytes / fileChars);
+      expect(fits, "the test's files fit the walk at least once").to.be.at.least(1);
+      expect(fits, "the walk's byte limit binds before its file count").to.be.below(limits.files);
+      // As the providers do: a body over the fetch's maxBytes is refused at that limit, so the
+      // walk meets its spent bytes as a refusal at what it has left, not as a long string.
+      const served = fetchStub();
+      const bodies = new Map();
+      for (let i = 1; i <= fits + 3; i += 1) {
+        bodies.set(
+          idFor(i),
+          createEncryptedString(padded(i > 1 ? idFor(i - 1) : null), FAKE_SESSION_KEY),
+        );
+      }
+      served.callsFake(async (id, { maxBytes }) => {
+        const body = bodies.get(id);
+        if (body.length > maxBytes) {
+          throw new errors.StoredFileTooLargeError({
+            limitBytes: maxBytes,
+            bytesRead: maxBytes + 1,
+          });
+        }
+        return body;
+      });
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(fits + 3), FAKE_SESSION_KEY);
+
+      expect(history).to.have.lengthOf(fits);
+      expect(served.callCount).to.equal(fits + 1);
+      expect(served.lastCall.args[1].maxBytes).to.be.below(limits.fileBytes);
+    });
+
+    it("stops the walk, keeping the newer messages, once their content passes its own budget", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      const each = Math.floor(limits.contentChars / 3) + 1;
+      chain(6, () => "c".repeat(each));
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(6), FAKE_SESSION_KEY);
+
+      expect(history).to.have.lengthOf(2);
+      const total = history.reduce((sum, m) => sum + m.content.length, 0);
+      expect(total).to.be.at.most(limits.contentChars);
+    });
+
+    it("keeps a whole conversation of the longest prompts and of answers as long as the stream carries", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      const promptChars = 5000;
+      const answerChars = 64 * 1024;
+      for (let i = 1; i <= limits.files; i += 1) {
+        const isAnswer = i % 2 === 0;
+        fetchStub()
+          .withArgs(idFor(i))
+          .resolves(
+            createEncryptedString(
+              {
+                role: isAnswer ? "assistant" : "user",
+                content: (isAnswer ? "a" : "p").repeat(isAnswer ? answerChars : promptChars),
+                parentCID: i > 1 ? idFor(i - 1) : null,
+              },
+              FAKE_SESSION_KEY,
+            ),
+          );
+      }
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(limits.files), FAKE_SESSION_KEY);
+
+      expect(history).to.have.lengthOf(limits.files);
+    });
+
+    it("never caches a file that does not decrypt: the next prompt fetches it again", async () => {
+      fetchStub()
+        .withArgs(idFor(1))
+        .resolves(createEncryptedString(message("not this user's", null), OTHER_KEY));
+
+      expect(await aiAgentOracle.reconstructHistory(idFor(1), FAKE_SESSION_KEY)).to.deep.equal([]);
+      expect(await aiAgentOracle.reconstructHistory(idFor(1), FAKE_SESSION_KEY)).to.deep.equal([]);
+
+      expect(callsFor(idFor(1))).to.have.lengthOf(2);
+    });
+
+    it("never caches a file that decrypts but is not a message file", async () => {
+      fetchStub()
+        .withArgs(idFor(1))
+        .resolves(createEncryptedString({ role: "system", content: 7 }, FAKE_SESSION_KEY));
+
+      await aiAgentOracle.reconstructHistory(idFor(1), FAKE_SESSION_KEY);
+      await aiAgentOracle.reconstructHistory(idFor(1), FAKE_SESSION_KEY);
+
+      expect(callsFor(idFor(1))).to.have.lengthOf(2);
+    });
+
+    it("caches a file that decrypted and validated, and counts it by its size", async () => {
+      chain(2);
+
+      await aiAgentOracle.reconstructHistory(idFor(2), FAKE_SESSION_KEY);
+      await aiAgentOracle.reconstructHistory(idFor(2), FAKE_SESSION_KEY);
+
+      expect(callsFor(idFor(2))).to.have.lengthOf(1);
+      expect(callsFor(idFor(1))).to.have.lengthOf(1);
+      const cache = aiAgentOracle.historyCacheUsage();
+      expect(cache.maxBytes).to.equal(aiAgentOracle.HISTORY_LIMITS.cacheBytes);
+      expect(cache.bytes).to.be.above(0).and.below(4096);
+    });
+
+    describe("an answer too large to store", () => {
+      const {
+        ANSWER_ALLOWANCE_BYTES,
+        LARGEST_WRITTEN_FILE_BYTES,
+      } = require("../src/storage/storedFileFetch");
+      // Plain text whose JSON is over the answer's allowance.
+      const HUGE = "x".repeat(ANSWER_ALLOWANCE_BYTES + 1024);
+
+      function storedAnswers() {
+        return stubs["./storage/storage"].uploadData
+          .getCalls()
+          .map((call) => {
+            try {
+              return decryptSymmetrically(call.args[0].toString("utf-8"), FAKE_SESSION_KEY);
+            } catch {
+              return null;
+            }
+          })
+          .filter((file) => file && file.role === "assistant");
+      }
+
+      async function prompt() {
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(
+            { promptText: "write a lot", isNewConversation: true },
+            FAKE_SESSION_KEY,
+          ),
+        );
+        await aiAgentOracle.handlePrompt("0xUser", 5, 10, 11, payloadBytes, "0xkey", {
+          blockNumber: 1,
+          getBlock: () => Promise.resolve({ timestamp: 1 }),
+        });
+      }
+
+      it("is never uploaded, and the next tier answers in its place", async () => {
+        process.env.CHAIN_GPT_API_KEY = "fake-key";
+        stubs["node-fetch"].callsFake(async (url) => {
+          if (String(url).includes("chaingpt")) {
+            return { ok: true, text: async () => HUGE };
+          }
+          return {
+            ok: true,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "Mocked AI Response" }] } }],
+            }),
+            text: async () => "Mocked AI Response",
+          };
+        });
+
+        await prompt();
+
+        const chaingptAsked = stubs["node-fetch"]
+          .getCalls()
+          .some((call) => String(call.args[0]).includes("chaingpt"));
+        expect(chaingptAsked, "the oversized tier was asked").to.equal(true);
+        const [answer] = storedAnswers();
+        expect(answer, "an answer was stored").to.not.equal(undefined);
+        expect(answer.content).to.equal("Mocked AI Response");
+      });
+
+      it("is not uploaded when the only provider writes it", async () => {
+        process.env.AI_PROVIDER = "Gemini";
+        stubs["node-fetch"].resolves({
+          ok: true,
+          json: async () => ({ candidates: [{ content: { parts: [{ text: HUGE }] } }] }),
+          text: async () => HUGE,
+        });
+
+        await prompt().catch(() => {});
+
+        for (const call of stubs["./storage/storage"].uploadData.getCalls()) {
+          expect(call.args[0].length).to.be.below(ANSWER_ALLOWANCE_BYTES);
+        }
+        for (const file of storedAnswers()) {
+          expect(file.content).to.not.equal(HUGE);
+        }
+      });
+
+      it("fits every file the oracle writes under the size it will read", () => {
+        expect(aiAgentOracle.HISTORY_LIMITS.fileBytes).to.be.above(LARGEST_WRITTEN_FILE_BYTES);
+      });
+    });
+
+    describe("what the handler does with the prompt", () => {
+      function promptEvent(label, previousMessageCID) {
+        const clientPayload = {
+          promptText: "Follow up",
+          isNewConversation: false,
+          previousMessageId: "msg_1",
+          previousMessageCID,
+        };
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+        );
+        return {
+          blockNumber: 77,
+          transactionHash: txHash(label),
+          index: 0,
+          args: ["0xUser", 5, 10, 11, payloadBytes, "0xkey"],
+          getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+        };
+      }
+
+      async function handle(event) {
+        await aiAgentOracle.handleAndRecord(
+          "PromptSubmitted",
+          aiAgentOracle.handlePrompt,
+          ...event.args,
+          event,
+        );
+      }
+
+      const fatalAlerts = () =>
+        stubs["./alerting"].sendAlert
+          .getCalls()
+          .filter((call) => String(call.args[0]).includes("CRITICAL"));
+
+      it("drops a prompt whose parent is over the file limit: not queued, not answered, no alert", async () => {
+        fetchStub().withArgs(idFor(9)).rejects(oversized());
+
+        await handle(promptEvent("oversized-parent", idFor(9)));
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        expect(mockedContract().submitAnswer.called).to.equal(false);
+        expect(fatalAlerts()).to.deep.equal([]);
+      });
+
+      it("answers a prompt whose parent timed out, with the history read so far, and does not queue it", async () => {
+        fetchStub()
+          .withArgs(idFor(9))
+          .rejects(new errors.StoredFileTimeoutError({ timeoutMs: 30000 }));
+
+        await handle(promptEvent("slow-parent", idFor(9)));
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        expect(mockedContract().submitAnswer.calledOnce).to.equal(true);
+        expect(fatalAlerts()).to.deep.equal([]);
+      });
+
+      it("queues a prompt whose key file timed out: without the key nothing can be answered", async () => {
+        stubs["./storage/storage"].queryTransactionByTags.resolves(idFor(4));
+        fetchStub()
+          .withArgs(idFor(4))
+          .rejects(new errors.StoredFileTimeoutError({ timeoutMs: 30000 }));
+        const event = promptEvent("slow-key-file", null);
+        event.args[5] = "0x";
+
+        await handle(event);
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+        expect(mockedContract().submitAnswer.called).to.equal(false);
+      });
+
+      it("drops a prompt whose key file is over its own limit", async () => {
+        stubs["./storage/storage"].queryTransactionByTags.resolves(idFor(4));
+        const limitBytes = aiAgentOracle.HISTORY_LIMITS.keyFileBytes;
+        fetchStub()
+          .withArgs(idFor(4))
+          .rejects(new errors.StoredFileTooLargeError({ limitBytes, bytesRead: limitBytes + 1 }));
+        const event = promptEvent("big-key-file", null);
+        event.args[5] = "0x";
+
+        await handle(event);
+
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        expect(mockedContract().submitAnswer.called).to.equal(false);
+        expect(fatalAlerts()).to.deep.equal([]);
+      });
+
+      it("drops a prompt whose parent id is not a content id, fetches nothing and prints none of it", async () => {
+        const printed = [];
+        for (const level of ["log", "warn", "error"]) {
+          sinon
+            .stub(console, level)
+            .callsFake((...args) => printed.push(args.map(String).join(" ")));
+        }
+        const forged = `${"x".repeat(40)}\n[Oracle] forged line\n${"y".repeat(100000)}`;
+
+        await handle(promptEvent("forged-parent", forged));
+
+        expect(fetchStub().called).to.equal(false);
+        expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        expect(mockedContract().submitAnswer.called).to.equal(false);
+        expect(printed.join("\n")).to.not.include("forged line");
+      });
+
+      function mockedContract() {
+        return stubs["./contractUtility"].initializeOracle().contract;
+      }
+    });
+
+    it("fetches a conversation's key file with the key file's own small limit", async () => {
+      stubs["./storage/storage"].queryTransactionByTags.resolves(idFor(4));
+      fetchStub().withArgs(idFor(4)).resolves("00");
+      const clientPayload = { promptText: "hi", isNewConversation: true };
+      const payloadBytes = ethers.toUtf8Bytes(
+        createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+      );
+
+      // Only the fetch's limits are under test here; what the prompt then does is not.
+      await aiAgentOracle
+        .handlePrompt("0xUser", 5, 10, 11, payloadBytes, "0x", {
+          blockNumber: 1,
+          getBlock: () => Promise.resolve({ timestamp: 1 }),
+        })
+        .catch(() => {});
+
+      const [call] = callsFor(idFor(4));
+      expect(call, "the key file was fetched").to.not.equal(undefined);
+      expect(call.args[1].maxBytes).to.equal(4 * 1024);
+      expect(call.args[1].maxBytes).to.equal(aiAgentOracle.HISTORY_LIMITS.keyFileBytes);
+      expect(call.args[1].timeoutMs).to.be.above(0);
     });
   });
 });

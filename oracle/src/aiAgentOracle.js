@@ -47,6 +47,12 @@ const {
   queryTransactionByTags,
 } = require("./storage/storage");
 const {
+  ANSWER_ALLOWANCE_BYTES,
+  MAX_STORED_FILE_BYTES,
+  STORED_FILE_TIMEOUT_MS,
+} = require("./storage/storedFileFetch");
+const { printableContentId } = require("./storage/contentId");
+const {
   createConversationFile,
   createConversationMetadataFile,
   createMessageFile,
@@ -57,11 +63,12 @@ const {
   isBadInputError,
   isRetryableError,
   isTransientProviderError,
+  StoredFileTooLargeError,
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
-const { validatePayload } = require("./payloadValidator");
+const { validatePayload, MAX_PROMPT_LENGTH } = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
 const { createRangePoller } = require("./eventPoller");
 const {
@@ -310,7 +317,7 @@ const { classifyIntent, queryGeminiDirect } = require("./geminiDirect");
 const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState, stepFromThought } = require("./answerProvenance");
 const { encryptSymmetrically } = require("./stream/frameCrypto");
-const { noopSink, resolveReplicaId } = require("./stream/streamContract");
+const { LIMITS: STREAM_LIMITS, noopSink, resolveReplicaId } = require("./stream/streamContract");
 const {
   createAnswerStream,
   createOfflineStream,
@@ -484,12 +491,58 @@ const txMutex = new Mutex();
 // This implements the "Promise queue with concurrency control" pattern from p-queue docs.
 const queue = new PQueue({ concurrency: 5 });
 
-// We store the raw ENCRYPTED string (IV + Ciphertext).
-// Average size ~1KB - 4KB.
-// 100,000 items * 4KB = ~400MB of RAM.
-// This fits comfortably within the 4GB TEE limit while keeping hot conversations in memory.
+// --- History walk limits ---
+// A prompt names its parent by a content id from the user's payload, and each message file
+// names its own parent, so the whole chain is the user's to choose. These bound the work one
+// prompt can cause, however the chain was built.
+const MIB = 1024 * 1024;
+// Files read for one prompt: the messages the model is given (all of them reach it), and at
+// most 100 whatever AI_CONTEXT_MESSAGES_LIMIT says. 20 in every compose file.
+const HISTORY_FILES = Math.min(Math.max(AI_CONTEXT_MESSAGES_LIMIT, 0), 100);
+const HISTORY_LIMITS = Object.freeze({
+  files: HISTORY_FILES,
+  // One file: the largest file the oracle writes, with room (storage/storedFileFetch.js).
+  fileBytes: MAX_STORED_FILE_BYTES,
+  fileMs: STORED_FILE_TIMEOUT_MS,
+  // All files of one prompt, from storage or the cache: four files of the largest size, and
+  // hundreds of files as written in practice (a few KB each). Once spent, the walk stops and the
+  // model is given the newer messages it has; nothing is refused.
+  walkBytes: 4 * MAX_STORED_FILE_BYTES,
+  // The whole walk: three fetches at their own limit. Past it the walk stops, as at a fetch that
+  // timed out, and the model is given the newer messages it has.
+  walkMs: 3 * STORED_FILE_TIMEOUT_MS,
+  // The text handed to the model, summed over the messages' contents (characters). A history
+  // alternates prompt and answer, so half its messages are prompts at their longest
+  // (MAX_PROMPT_LENGTH, 5,000) and half are answers as long as the live stream carries one
+  // (answerTextBytes, 64 KiB; an answer in practice is a few thousand characters): 705,360 for
+  // 20 messages. No conversation of real prompts and normal answers is cut; past it the walk
+  // stops and keeps the newer messages. The bytes read (walkBytes) are bounded separately.
+  contentChars:
+    Math.ceil(HISTORY_FILES / 2) * MAX_PROMPT_LENGTH +
+    Math.ceil(HISTORY_FILES / 2) * STREAM_LIMITS.answerTextBytes,
+  // A conversation's key file is the hex of one wrapped 32-byte key, a few hundred characters.
+  keyFileBytes: 4 * 1024,
+  // The cache of files that decrypted and validated, counted by characters (a sealed file is
+  // base64, one byte a character). A file as written is a few KB, so this holds tens of thousands.
+  cacheBytes: 128 * MIB,
+});
+
+// Worst case held by fetches in flight: a prompt reads one file at a time (its key file, if any,
+// before its walk), and the queue runs 5 handlers at once (retries share it), so 5 files at
+// HISTORY_LIMITS.fileBytes (8 MiB) are in flight at most. Reading one file holds its chunks and
+// their copy, the text, the decoded ciphertext, the plaintext and the parsed object: under 8 times
+// the file, so under 5 x 8 x 8 MiB = 320 MiB, plus the cache's 128 MiB. Each handler also keeps
+// its history, at most HISTORY_LIMITS.contentChars characters (about 1.4 MB as UTF-16), and its
+// copies in the model request. The smallest machine the oracle runs on has 4 GiB for everything.
+//
+// We store the raw ENCRYPTED string (IV + Ciphertext), and only once it decrypted with the
+// prompt's key and read as a message file: a file that does neither is fetched again next time,
+// never kept. Bounded by bytes as well as by count, since one entry can be up to 8 MiB.
 const rawMessageCache = new LRUCache({
   max: 100000,
+  maxSize: HISTORY_LIMITS.cacheBytes,
+  maxEntrySize: HISTORY_LIMITS.fileBytes,
+  sizeCalculation: (value) => Math.max(1, value.length),
   ttl: 1000 * 60 * 60 * 24, // 24 Hours (Renamed from maxAge)
 });
 
@@ -887,7 +940,12 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     if (!keyFileCID) {
       throw new Error(`Could not find Key File for conversation ${conversationId}.`);
     }
-    const fetchedHex = await fetchData(keyFileCID);
+    // The lookup can match a file anyone uploaded with these tags, so it gets the key file's
+    // own small limit: over it is bad input and the event is dropped.
+    const fetchedHex = await fetchData(keyFileCID, {
+      maxBytes: HISTORY_LIMITS.keyFileBytes,
+      timeoutMs: HISTORY_LIMITS.fileMs,
+    });
     return await requireDecryptor().decrypt(Buffer.from(fetchedHex, "hex"));
   }
 
@@ -903,8 +961,46 @@ function decryptMessageFile(encryptedString, sessionKey) {
   return decryptSymmetrically(encryptedString, sessionKey);
 }
 
+const MESSAGE_ROLES = new Set(["user", "assistant"]);
+
+/** Does this hold what the walk reads from a MessageFile: a role, its content and its parent? */
+function isMessageFile(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    MESSAGE_ROLES.has(value.role) &&
+    (typeof value.content === "string" || value.content === null) &&
+    (value.parentCID === undefined ||
+      value.parentCID === null ||
+      typeof value.parentCID === "string")
+  );
+}
+
+/**
+ * A refusal at the walk's remaining bytes, not at a file's own limit: the walk has read enough.
+ * Each file is fetched with a limit of the smaller of a file's own limit and the bytes the walk
+ * has left, so a refusal below the file limit can only be the walk's budget; a refusal at the
+ * file limit means the file itself is too large.
+ */
+function isWalkBytesSpent(error) {
+  return error instanceof StoredFileTooLargeError && error.limitBytes < HISTORY_LIMITS.fileBytes;
+}
+
 /**
  * Walks backwards up the message chain on decentralised storage to reconstruct conversation history.
+ *
+ * Bounded as a whole (`HISTORY_LIMITS`): at most `files` files, `walkBytes` read from storage or
+ * the cache, and `walkMs`; each fetch gets the smaller of its own limits and what the walk has
+ * left. What ends the walk early:
+ * - the chain's end, the file count, the walk's bytes or time spent, or the contents' budget
+ *   reached: the history read so far is used;
+ * - a fetch that fails (a 404, a gateway error, a timeout, an id that is not a content id) or a
+ *   file that does not decrypt or is not a message file: the same (a branch's chain can reach
+ *   files sealed with another conversation's key), and that file is never cached. A gateway slow
+ *   for everyone so costs answers their older context, never the answers themselves;
+ * - a file over its own byte limit: thrown, as bad input, so the prompt is dropped. The oracle
+ *   never writes such a file (`storage.uploadData` refuses one).
  * @param {string} startMessageCID The CID of the latest message in the thread.
  * @param {string | null} sessionKey The key for decryption (EVM only).
  * @returns {Promise<Array<object>>} An array of message objects for the AI context.
@@ -915,62 +1011,106 @@ async function reconstructHistory(startMessageCID, sessionKey) {
     return [];
   }
 
-  // Limit history fetching to avoid infinite loops and excessive costs.
   const history = [];
   let currentCid = startMessageCID;
   let cacheHits = 0;
   let networkFetches = 0;
-  console.log(`[History] Starting reconstruction from CID: ${startMessageCID}`);
+  let bytesLeft = HISTORY_LIMITS.walkBytes;
+  let contentCharsLeft = HISTORY_LIMITS.contentChars;
+  const deadline = Date.now() + HISTORY_LIMITS.walkMs;
+  // Ids are printed only once they have a content id's shape: a parent id is the user's text.
+  console.log(`[History] Starting reconstruction from CID: ${printableContentId(startMessageCID)}`);
 
-  // Limit history fetching to avoid infinite loops and excessive costs.
-  for (let i = 0; i < AI_CONTEXT_MESSAGES_LIMIT; i += 1) {
-    if (!currentCid) {
+  for (let depth = 1; depth <= HISTORY_LIMITS.files && currentCid; depth += 1) {
+    if (bytesLeft <= 0) {
+      console.warn(`[History] The walk's ${HISTORY_LIMITS.walkBytes} bytes are spent; stopping.`);
+      break;
+    }
+    // Checked every turn, so a walk served from the cache is held to the same time as one served
+    // from storage, and ends the same way: keeping what it read.
+    const msLeft = deadline - Date.now();
+    if (msLeft <= 0) {
+      console.warn(`[History] The walk's ${HISTORY_LIMITS.walkMs} ms are spent; stopping.`);
       break;
     }
 
-    let encryptedString;
-
-    // 1. Check Cache (Hit = 0ms latency)
-    if (rawMessageCache.has(currentCid)) {
-      encryptedString = rawMessageCache.get(currentCid);
+    // 1. Check Cache (Hit = 0ms latency). It holds only files that decrypted and validated.
+    let encryptedString = rawMessageCache.get(currentCid);
+    const fromCache = encryptedString !== undefined;
+    if (fromCache) {
       cacheHits += 1;
-      // console.log(`[Cache] Hit for CID: ${currentCid.slice(0, 8)}...`);
     } else {
-      // 2. Fetch from Network (Miss = ~500ms+ latency)
-      // console.log(`[Cache] Miss for CID: ${currentCid.slice(0, 8)}...`);
+      // 2. Fetch from Network, within what the walk has left of its bytes and time.
       try {
-        encryptedString = await fetchData(currentCid);
-        // 3. Populate Cache for next time
-        rawMessageCache.set(currentCid, encryptedString);
+        encryptedString = await fetchData(currentCid, {
+          maxBytes: Math.min(HISTORY_LIMITS.fileBytes, bytesLeft),
+          timeoutMs: Math.min(HISTORY_LIMITS.fileMs, msLeft),
+        });
         networkFetches += 1;
       } catch (error) {
+        if (isWalkBytesSpent(error)) {
+          console.warn(
+            `[History] The walk's ${HISTORY_LIMITS.walkBytes} bytes are spent; stopping.`,
+          );
+          break;
+        }
+        // Over a file's own limit: bad input, and the handler drops the prompt. Anything else,
+        // a timeout included, ends the walk here.
+        if (isBadInputError(error)) throw error;
         console.error(
-          `[History] Failed to fetch CID ${currentCid} from storage.`,
+          `[History] Failed to fetch message ${depth} of the chain from storage.`,
           describedError(error),
         );
         break;
       }
     }
 
-    // 4. Decrypt (Fast CPU op)
+    if (typeof encryptedString !== "string" || encryptedString.length > bytesLeft) {
+      console.warn(`[History] Message ${depth} of the chain does not fit the walk; stopping.`);
+      break;
+    }
+    // Counted whether it came from storage or the cache: decrypting it is the walk's work too.
+    // Characters, which are bytes for the files read here: a sealed file is base64 text.
+    bytesLeft -= encryptedString.length;
+
+    // 3. Decrypt (Fast CPU op) and read it as a message file.
+    let messageFile;
     try {
-      const messageFile = decryptMessageFile(encryptedString, sessionKey);
-
-      history.unshift({
-        role: messageFile.role,
-        content: messageFile.content,
-      });
-
-      // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID or answerMessageCID).
-      currentCid = messageFile.parentCID;
+      messageFile = decryptMessageFile(encryptedString, sessionKey);
     } catch (error) {
       // Only the kind: a failed parse quotes the start of the decrypted message.
       console.error(
-        `[History] Failed to reconstruct history at CID ${currentCid} (${errorKind(error)}). Stopping history build.`,
+        `[History] Failed to reconstruct history at message ${depth} of the chain (${errorKind(error)}). Stopping history build.`,
       );
-
       break;
     }
+    if (!isMessageFile(messageFile)) {
+      console.error(
+        `[History] Message ${depth} of the chain is not a message file. Stopping history build.`,
+      );
+      break;
+    }
+
+    // 4. Populate Cache for next time, now that it is known to be this conversation's file.
+    if (!fromCache) rawMessageCache.set(currentCid, encryptedString);
+
+    const contentChars = typeof messageFile.content === "string" ? messageFile.content.length : 0;
+    if (contentChars > contentCharsLeft) {
+      console.warn(
+        `[History] The history's ${HISTORY_LIMITS.contentChars} characters are reached; stopping.`,
+      );
+      break;
+    }
+    contentCharsLeft -= contentChars;
+
+    history.unshift({
+      role: messageFile.role,
+      content: messageFile.content,
+    });
+
+    // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID
+    // or answerMessageCID). Its shape is checked by the storage router before it is fetched.
+    currentCid = messageFile.parentCID;
   }
 
   console.log(
@@ -978,6 +1118,11 @@ async function reconstructHistory(startMessageCID, sessionKey) {
   );
 
   return history;
+}
+
+/** The cache's size in characters and its limit (read by tests). */
+function historyCacheUsage() {
+  return { bytes: rawMessageCache.calculatedSize, maxBytes: HISTORY_LIMITS.cacheBytes };
 }
 
 // --- AI Model Query Functions ---
@@ -1704,6 +1849,37 @@ function asAnswer(text) {
   return { text, reasoning: [], sources: [] };
 }
 
+/**
+ * A tier's answer that is too large to store. Thrown inside the tier's own try, so it is that
+ * tier not answering: the next tier is asked, and when none is left the oracle's no-answer path
+ * runs. Never trimmed (what is streamed is what is stored) and never uploaded.
+ */
+class AnswerTooLargeToStoreError extends Error {
+  constructor(answerJsonBytes) {
+    super(
+      `The answer's ${answerJsonBytes} bytes of JSON are over the ${ANSWER_ALLOWANCE_BYTES} allowed to store.`,
+    );
+    this.name = "AnswerTooLargeToStoreError";
+  }
+}
+
+/**
+ * The answer, when it can be stored. Its text, as JSON in the MessageFile, must fit
+ * ANSWER_ALLOWANCE_BYTES: with the reasoning and sources the stream already holds to their
+ * limits, that keeps the file under LARGEST_WRITTEN_FILE_BYTES (storage/storedFileFetch.js), the
+ * size every reader allows. The live stream's own limit is lower (answerTextBytes, 64 KiB): an
+ * answer between the two is stored and sent without its answer frame, and the dApp shows the
+ * stored copy.
+ */
+function storableAnswer(answer) {
+  const text = typeof answer?.text === "string" ? answer.text : "";
+  const answerJsonBytes = Buffer.byteLength(JSON.stringify(text), "utf-8");
+  if (answerJsonBytes > ANSWER_ALLOWANCE_BYTES) {
+    throw new AnswerTooLargeToStoreError(answerJsonBytes);
+  }
+  return answer;
+}
+
 async function queryAIModel(conversationHistory, conversationId, userWallet, liveStream) {
   // The answer's live stream (see stream/answerStream.js); an offline one for a caller with none.
   const stream = liveStream ?? createOfflineStream();
@@ -1738,7 +1914,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // Direct provider bypass (used in tests and explicit operator config)
   if (aiProvider === "ChainGPT") {
     try {
-      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      const answer = storableAnswer(
+        asAnswer(await queryChainGPT(conversationHistory, conversationId)),
+      );
       providerTally.recordServed("chaingpt");
 
       return answer;
@@ -1752,7 +1930,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   }
   if (aiProvider === "Gemini") {
     try {
-      const answer = asAnswer(await queryGeminiDirect(conversationHistory));
+      const answer = storableAnswer(asAnswer(await queryGeminiDirect(conversationHistory)));
       // AFTER the await, never before: recording first means a throw is counted as both a
       // gemini success and a `none` failure from the catch below.
       providerTally.recordServed("gemini");
@@ -1773,7 +1951,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // 2. Path A: 1st Party Tradable Backend
   if (intent === "TRADABLE") {
     try {
-      const answer = asAnswer(await queryTradableAssistant(conversationHistory, userWallet));
+      const answer = storableAnswer(
+        asAnswer(await queryTradableAssistant(conversationHistory, userWallet)),
+      );
       providerTally.recordServed("tradable");
 
       return answer;
@@ -1786,7 +1966,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // 3. Path B: 3rd Party ElizaOS (Google Vertex/Gemini via Plugin)
   try {
     // We pass conversationId here to ensure proper room isolation in Eliza
-    const answer = await queryElizaOS(conversationHistory, conversationId, userWallet, stream);
+    const answer = storableAnswer(
+      await queryElizaOS(conversationHistory, conversationId, userWallet, stream),
+    );
     providerTally.recordServed("elizaos");
 
     return answer;
@@ -1799,6 +1981,12 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       console.warn(
         "[Failover] A tool step failed in the ElizaOS run and nothing answered without it. " +
           "Answering with the direct Gemini call.",
+      );
+    } else if (err instanceof AnswerTooLargeToStoreError) {
+      // ElizaOS did answer; its answer cannot be stored, so the next tier is asked.
+      console.warn(
+        "[Failover] ElizaOS answer too large to store. Falling back to ChainGPT.",
+        describedError(err),
       );
     } else {
       /* A retired or misspelled GOOGLE_* model id surfaces here, not at startup: Gemini
@@ -1815,7 +2003,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       // 4. Failover 1: ChainGPT. A new attempt on the stream: the steps shown so far stay.
       stream.attempt();
       try {
-        const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+        const answer = storableAnswer(
+          asAnswer(await queryChainGPT(conversationHistory, conversationId)),
+        );
         // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
         // success AND as whatever the next catch then records (gemini or none).
         providerTally.recordServed("chaingpt");
@@ -1832,7 +2022,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
     //    this is a different failure domain from the ElizaOS path above)
     stream.attempt();
     try {
-      const answer = asAnswer(await queryGeminiDirect(conversationHistory));
+      const answer = storableAnswer(asAnswer(await queryGeminiDirect(conversationHistory)));
       providerTally.recordServed("gemini");
 
       return answer;
@@ -3002,6 +3192,21 @@ async function retryClaimedJob(job) {
       );
       return;
     }
+    // Bad input stays bad: dropped, as handleAndRecord drops it on the first attempt, and never
+    // retried to exhaustion and its CRITICAL alert.
+    if (isBadInputError(error)) {
+      console.warn(
+        `[Retry] ${job.eventName} (tx ${job.transactionHash}) is bad input; dropped. Error: ${describeError(error)}`,
+      );
+      try {
+        await stateStore.completeJob(job.id);
+      } catch (storeError) {
+        console.error(
+          `[Retry] ${job.eventName} (tx ${job.transactionHash}) could not be removed from the queue: ${describeError(storeError)}`,
+        );
+      }
+      return;
+    }
     await recordFailedRetry(job, error);
     return;
   }
@@ -3457,6 +3662,8 @@ module.exports = {
   handleMetadataUpdate,
   queryAIModel,
   reconstructHistory,
+  HISTORY_LIMITS,
+  historyCacheUsage,
   parseMockDelayMs,
   hasMockDropSentinel,
   hasMockReasoningSentinel,

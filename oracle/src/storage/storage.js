@@ -4,6 +4,9 @@ const ipfs = require("./ipfs");
 const mirror = require("./mirror");
 const crypto = require("crypto");
 const { describeError } = require("../errorDescription");
+const { contentIdKind, isContentId, printableContentId } = require("./contentId");
+const { LARGEST_WRITTEN_FILE_BYTES } = require("./storedFileFetch");
+const { StoredFileWriteRefusedError } = require("../errors");
 
 // Mock storage in-memory cache (for USE_MOCK_STORAGE mode)
 const mockStorageCache = new Map();
@@ -43,22 +46,14 @@ const USE_IN_MEMORY_TAG_INDEX = USE_MOCK_STORAGE || USE_LOCAL_IPFS;
  * @returns {object} The appropriate storage utility module.
  */
 function getProviderFromCID(cid) {
-  // Autonomys Auto Drive CID validation
-  // Format: CIDv1 with base32 encoding
-  // Starts with 'bafkr6i' (base32 prefix + CIDv1 identifier)
-  // Uses base32 character set: a-z, 2-7
-  if (cid && /^bafkr6i[a-z2-7]{52}$/.test(cid)) {
-    return autonomys;
-  }
+  // The shapes are in contentId.js, shared with the payload schema: an Autonomys CIDv1
+  // (`bafkr6i` + 52 base32) is checked before the broader Arweave/Irys id (43 or 44 base64url).
+  const kind = contentIdKind(cid);
+  if (kind === "autonomys") return autonomys;
+  if (kind === "arweave") return arweave;
 
-  // Heuristic for Arweave/Irys: Base64URL (check second - less specific)
-  // Standard Arweave is 43 chars, but Irys can sometimes return 44 chars.
-  // We check for a valid range and character set.
-  if (cid && cid.length >= 43 && cid.length <= 44 && /^[a-zA-Z0-9_-]+$/.test(cid)) {
-    return arweave;
-  }
-
-  throw new Error(`Unsupported CID format: ${cid}`);
+  // The id is not repeated: it is the user's choice, and could hold anything.
+  throw new Error(`Unsupported content id (${printableContentId(cid)}).`);
 }
 
 // --- Public API ---
@@ -99,6 +94,15 @@ async function initializeStorage() {
  * @returns {Promise<string>} The resulting CID.
  */
 async function uploadData(dataBuffer, tags = []) {
+  // Never write a file the oracle would refuse to read back (storedFileFetch.js): every reader
+  // allows LARGEST_WRITTEN_FILE_BYTES, so nothing larger is uploaded, in any mode.
+  if (dataBuffer.length > LARGEST_WRITTEN_FILE_BYTES) {
+    throw new StoredFileWriteRefusedError({
+      limitBytes: LARGEST_WRITTEN_FILE_BYTES,
+      sizeBytes: dataBuffer.length,
+    });
+  }
+
   if (USE_MOCK_STORAGE) {
     // Generate a deterministic mock CID based on the data hash
     const hash = crypto.createHash("sha256").update(dataBuffer).digest("hex");
@@ -153,10 +157,19 @@ function ensureFileNameTag(tags) {
 /**
  * Fetches data from the correct storage provider based on its CID.
  * In MOCK mode, retrieves data from in-memory cache.
+ *
+ * Nothing is fetched for an id that is not a content id a storage path produces
+ * (`contentId.js`), in any mode. Every provider fetch is bounded by bytes and time
+ * (`storedFileFetch.js`); `limits` can only make those bounds tighter.
  * @param {string} cid The Content ID of the data to fetch.
+ * @param {{maxBytes?: number, timeoutMs?: number}} [limits] Passed to the provider.
  * @returns {Promise<string>} The raw data as a String (for consistency).
  */
-async function fetchData(cid) {
+async function fetchData(cid, limits = {}) {
+  if (!isContentId(cid)) {
+    throw new Error(`Unsupported content id (${printableContentId(cid)}).`);
+  }
+
   if (USE_MOCK_STORAGE) {
     if (mockStorageCache.has(cid)) {
       const data = mockStorageCache.get(cid);
@@ -172,11 +185,11 @@ async function fetchData(cid) {
     // Localnet routes EVERY CID to the local node (getProviderFromCID is bypassed):
     // all CIDs this run were produced by ipfs.uploadData. A stale `mock_…` CID from
     // a prior USE_MOCK_STORAGE run would 404 here, but each e2e run starts fresh.
-    return ipfs.fetchData(cid);
+    return ipfs.fetchData(cid, limits);
   }
 
   const provider = getProviderFromCID(cid);
-  return provider.fetchData(cid);
+  return provider.fetchData(cid, limits);
 }
 
 /**
