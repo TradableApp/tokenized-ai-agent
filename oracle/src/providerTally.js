@@ -24,8 +24,8 @@
 /**
  * The tiers `queryAIModel` can return from, in dispatch order.
  *
- * `none` is a real outcome, not a placeholder: it means every tier failed and the user received
- * the "All AI providers are currently unavailable" string. Without it, a total provider outage
+ * `none` is a real outcome, not a placeholder: it means every tier failed, `queryAIModel` threw
+ * NoModelAnswerError and nothing was submitted for that run. Without it, a total provider outage
  * would show as zeros across the board — indistinguishable from an hour in which nobody asked
  * anything. Those two must not look the same.
  */

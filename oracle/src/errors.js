@@ -54,6 +54,26 @@ function isRetryableError(error) {
 }
 
 /**
+ * No model produced an answer: every tier of the fallback chain failed, or the one provider that
+ * `AI_PROVIDER` names did.
+ *
+ * Thrown by `queryAIModel` instead of returning an answer, so nothing is stored and nothing is
+ * submitted. Submitting is what releases the user's fee to the treasury and closes the refund, so
+ * an error sentence submitted as the answer charged the user for nothing. A model outage is
+ * transient, so this is a RetryableError: the prompt waits in the retry queue, and the user can
+ * claim the refund after an hour if it is still unanswered by then.
+ *
+ * Whether a model answered is decided by this type alone. An answer whose text happens to start
+ * with "Error" is still an answer.
+ */
+class NoModelAnswerError extends RetryableError {
+  constructor(message, options) {
+    super(message, options);
+    this.name = "NoModelAnswerError";
+  }
+}
+
+/**
  * The codes ethers gives a request that did not get a usable answer.
  *
  * - SERVER_ERROR, TIMEOUT, NETWORK_ERROR: the provider refused it or answered with an error
@@ -108,5 +128,6 @@ module.exports = {
   isBadInputError,
   RetryableError,
   isRetryableError,
+  NoModelAnswerError,
   isTransientProviderError,
 };

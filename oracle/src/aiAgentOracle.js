@@ -56,6 +56,7 @@ const {
   BadInputError,
   isBadInputError,
   isRetryableError,
+  NoModelAnswerError,
   isTransientProviderError,
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
@@ -1699,6 +1700,9 @@ function shouldInitializeConversation({
  *          The normalized answer object (CU-86d3cfa41) — string-only provider
  *          paths carry empty reasoning/sources, and so does the ElizaOS path (its sources and
  *          steps go to the live stream as they are known).
+ * @throws {NoModelAnswerError} When no model answered: every tier failed, or the one provider
+ *          `AI_PROVIDER` names did. Nothing is returned for the handler to store or submit, so
+ *          the user is not charged; the error is retryable, so the prompt waits in the retry queue.
  */
 function asAnswer(text) {
   return { text, reasoning: [], sources: [] };
@@ -1745,9 +1749,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
     } catch (err) {
       console.error("[queryAIModel] ChainGPT provider failed.", describeError(err));
       // Bypass configured but the provider failed — no answer produced.
+      Sentry.captureException(err, { tags: { site: "ai_all_tiers_failed" } });
       providerTally.recordServed("none");
 
-      return asAnswer("Error: Could not generate a response from the ChainGPT service.");
+      throw new NoModelAnswerError("No model answered: the ChainGPT provider failed.");
     }
   }
   if (aiProvider === "Gemini") {
@@ -1761,9 +1766,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
     } catch (err) {
       console.error("[queryAIModel] Direct Gemini provider failed.", describeError(err));
       // Bypass configured but the provider failed — no answer produced.
+      Sentry.captureException(err, { tags: { site: "ai_all_tiers_failed" } });
       providerTally.recordServed("none");
 
-      return asAnswer("Error: Could not generate a response from the Gemini service.");
+      throw new NoModelAnswerError("No model answered: the direct Gemini provider failed.");
     }
   }
 
@@ -1842,9 +1848,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       // "nobody asked anything". A total outage must not look like a quiet hour.
       providerTally.recordServed("none");
 
-      return asAnswer(
-        "Error: Could not generate a response. All AI providers are currently unavailable.",
-      );
+      // Thrown, never returned as text: an error sentence returned here was stored and submitted
+      // as the answer, which released the user's fee and closed the refund.
+      throw new NoModelAnswerError("No model answered: every tier of the fallback chain failed.");
     }
   }
 }
@@ -1975,6 +1981,8 @@ async function handlePrompt(
 
     history.push({ role: "user", content: promptText, createdAt: Date.now() });
 
+    // Throws NoModelAnswerError when no model answered. Nothing below runs then: nothing is
+    // stored or submitted, the catch ends the run interrupted, and the retry queue takes it.
     const answer = await queryAIModel(history, conversationId.toString(), user, stream);
     // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
     // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
@@ -2391,6 +2399,7 @@ async function handleRegeneration(
       });
     }
 
+    // Throws NoModelAnswerError when no model answered (see handlePrompt).
     const answer = await queryAIModel(history, conversationId.toString(), user, stream);
     // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
     // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
