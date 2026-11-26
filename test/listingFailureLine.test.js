@@ -29,6 +29,19 @@ describe("scripts: what a failed run prints", () => {
     expect(text).to.match(/\n\s+at .+listingFailureLine\.test\.js:\d+:\d+/);
   });
 
+  it("removes a configured key written without its address, when the setting came after loading", () => {
+    const before = process.env.FAILURE_TEXT_TEST_RPC_URL;
+    process.env.FAILURE_TEXT_TEST_RPC_URL = "https://rpc.example/v2/zyxwvutsrqponmlkjihgfedcba987654";
+    try {
+      const text = failureText(new Error("POST /v2/zyxwvutsrqponmlkjihgfedcba987654 refused"));
+      expect(text).to.not.include("zyxwvutsrqponmlkjihgfedcba987654");
+      expect(text).to.include("refused");
+    } finally {
+      if (before === undefined) delete process.env.FAILURE_TEXT_TEST_RPC_URL;
+      else process.env.FAILURE_TEXT_TEST_RPC_URL = before;
+    }
+  });
+
   it("prints something for a thrown value that is not an error", () => {
     expect(failureText(undefined, Refusal)).to.be.a("string").and.not.equal("");
   });

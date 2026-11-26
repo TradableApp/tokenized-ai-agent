@@ -2,6 +2,7 @@
 
 // The oracle's remover of addresses: whole addresses, configured secrets and network peers.
 const { withoutAddresses } = require("../../oracle/src/errorDescription");
+const { refreshRequestSecrets } = require("../../oracle/src/requestSecrets");
 
 /**
  * What a script prints when a run fails.
@@ -19,6 +20,9 @@ const { withoutAddresses } = require("../../oracle/src/errorDescription");
  */
 function failureText(error, Refusal) {
   if (Refusal && error instanceof Refusal) return error.message;
+  // The configured secrets are read again here: this module can be loaded before the settings
+  // file is, and a key written without its address ("POST /v2/<key>") is removed by value.
+  refreshRequestSecrets();
   const message = withoutAddresses(String(error?.message ?? error));
   const frames =
     typeof error?.stack === "string"
