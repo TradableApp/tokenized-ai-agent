@@ -711,8 +711,8 @@ describe("aiAgentOracle", function () {
         createEncryptedString(
           {
             instructions: "be more concise",
-            promptMessageCID: "cid-prompt",
-            originalAnswerMessageCID: "cid-answer",
+            promptMessageCID: "bafkr6icidpromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            originalAnswerMessageCID: "bafkr6icidansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           },
           FAKE_SESSION_KEY,
         ),
@@ -1049,7 +1049,7 @@ describe("aiAgentOracle", function () {
       expect(
         aiAgentOracle.shouldInitializeConversation({
           isNewConversation: false,
-          previousMessageCID: "bafyParentCid",
+          previousMessageCID: "bafkr6iparentaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         }),
       ).to.equal(false);
     });
@@ -1544,8 +1544,8 @@ describe("aiAgentOracle", function () {
         createEncryptedString(
           {
             instructions: "Make it shorter",
-            promptMessageCID: "fake_cid_prompt",
-            originalAnswerMessageCID: "fake_cid_prev_answer",
+            promptMessageCID: "bafkr6ipromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            originalAnswerMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           },
           FAKE_SESSION_KEY,
         ),
@@ -1893,7 +1893,7 @@ describe("aiAgentOracle", function () {
         promptText: "Follow up question",
         isNewConversation: false,
         previousMessageId: "msg_457",
-        previousMessageCID: "fake_cid_prev_answer",
+        previousMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       };
 
       const encryptedPayloadString = createEncryptedString(clientPayload, FAKE_SESSION_KEY);
@@ -2063,7 +2063,7 @@ describe("aiAgentOracle", function () {
         promptText: "Follow up question",
         isNewConversation: false,
         previousMessageId: "msg_457",
-        previousMessageCID: "fake_cid_prev_answer",
+        previousMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         sessionKey: "0x" + FAKE_SESSION_KEY.toString("hex"),
       };
       const payloadString = JSON.stringify(clientPayload);
@@ -2105,8 +2105,8 @@ describe("aiAgentOracle", function () {
       const roflEncryptedKey = "0xkey";
       const clientPayload = {
         instructions: "Make it shorter",
-        promptMessageCID: "fake_cid_prompt",
-        originalAnswerMessageCID: "fake_cid_prev_answer",
+        promptMessageCID: "bafkr6ipromptaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        originalAnswerMessageCID: "bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -2127,7 +2127,7 @@ describe("aiAgentOracle", function () {
         fakeEvent,
       );
 
-      expect(stubs["./storage/storage"].fetchData.calledOnceWith("fake_cid_prev_answer")).to.be
+      expect(stubs["./storage/storage"].fetchData.calledOnceWith("bafkr6iprevansweraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).to.be
         .true;
       expect(stubs["./storage/storage"].uploadData.callCount).to.equal(1);
 
@@ -2625,7 +2625,10 @@ describe("aiAgentOracle", function () {
 
   describe("history fetches are bounded", () => {
     const errors = require("../src/errors");
-    const idFor = (n) => `bafkr6i${String(n).replace(/\d/g, (d) => "abcdefghij"[d]).padEnd(52, "a")}`;
+    const idFor = (n) =>
+      `bafkr6i${String(n)
+        .replace(/\d/g, (d) => "abcdefghij"[d])
+        .padEnd(52, "a")}`;
     const OTHER_KEY = crypto.randomBytes(32);
     const message = (content, parentCID) => ({ role: "user", content, parentCID });
     const fetchStub = () => stubs["./storage/storage"].fetchData;
@@ -2635,9 +2638,18 @@ describe("aiAgentOracle", function () {
         fetchStub()
           .withArgs(idFor(i))
           .resolves(
-            createEncryptedString(message(contentFor(i), i > 1 ? idFor(i - 1) : null), FAKE_SESSION_KEY),
+            createEncryptedString(
+              message(contentFor(i), i > 1 ? idFor(i - 1) : null),
+              FAKE_SESSION_KEY,
+            ),
           );
       }
+    }
+
+    // Refused at a file's own limit (not at what the walk has left).
+    function oversized() {
+      const limitBytes = aiAgentOracle.HISTORY_LIMITS.fileBytes;
+      return new errors.StoredFileTooLargeError({ limitBytes, bytesRead: limitBytes + 1 });
     }
 
     function callsFor(id) {
@@ -2651,9 +2663,7 @@ describe("aiAgentOracle", function () {
       fetchStub()
         .withArgs(idFor(2))
         .resolves(createEncryptedString(message("newest", idFor(1)), FAKE_SESSION_KEY));
-      fetchStub()
-        .withArgs(idFor(1))
-        .rejects(new errors.StoredFileTooLargeError({ limitBytes: 1024, bytesRead: 1100 }));
+      fetchStub().withArgs(idFor(1)).rejects(oversized());
 
       let refused;
       try {
@@ -2689,7 +2699,10 @@ describe("aiAgentOracle", function () {
       const limits = aiAgentOracle.HISTORY_LIMITS;
       chain(limits.files + 5);
 
-      const history = await aiAgentOracle.reconstructHistory(idFor(limits.files + 5), FAKE_SESSION_KEY);
+      const history = await aiAgentOracle.reconstructHistory(
+        idFor(limits.files + 5),
+        FAKE_SESSION_KEY,
+      );
 
       expect(history).to.have.lengthOf(limits.files);
       const calls = fetchStub().getCalls();
@@ -2762,7 +2775,9 @@ describe("aiAgentOracle", function () {
           previousMessageId: "msg_1",
           previousMessageCID,
         };
-        const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, FAKE_SESSION_KEY));
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+        );
         return {
           blockNumber: 77,
           transactionHash: txHash(label),
@@ -2787,9 +2802,7 @@ describe("aiAgentOracle", function () {
           .filter((call) => String(call.args[0]).includes("CRITICAL"));
 
       it("drops a prompt whose parent is over the file limit: not queued, not answered, no alert", async () => {
-        fetchStub()
-          .withArgs(idFor(9))
-          .rejects(new errors.StoredFileTooLargeError({ limitBytes: 1024, bytesRead: 1100 }));
+        fetchStub().withArgs(idFor(9)).rejects(oversized());
 
         await handle(promptEvent("oversized-parent", idFor(9)));
 
@@ -2813,7 +2826,9 @@ describe("aiAgentOracle", function () {
       it("drops a prompt whose parent id is not a content id, fetches nothing and prints none of it", async () => {
         const printed = [];
         for (const level of ["log", "warn", "error"]) {
-          sinon.stub(console, level).callsFake((...args) => printed.push(args.map(String).join(" ")));
+          sinon
+            .stub(console, level)
+            .callsFake((...args) => printed.push(args.map(String).join(" ")));
         }
         const forged = `${"x".repeat(40)}\n[Oracle] forged line\n${"y".repeat(100000)}`;
 
@@ -2834,7 +2849,9 @@ describe("aiAgentOracle", function () {
       stubs["./storage/storage"].queryTransactionByTags.resolves(idFor(4));
       fetchStub().withArgs(idFor(4)).resolves("00");
       const clientPayload = { promptText: "hi", isNewConversation: true };
-      const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, FAKE_SESSION_KEY));
+      const payloadBytes = ethers.toUtf8Bytes(
+        createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+      );
 
       // Only the fetch's limits are under test here; what the prompt then does is not.
       await aiAgentOracle

@@ -2,8 +2,9 @@ const { createAutoDriveApi } = require("@autonomys/auto-drive");
 const { NetworkId } = require("@autonomys/auto-utils");
 const { sendAlert } = require("../alerting");
 const { describeError, describedError } = require("../errorDescription");
-const { RetryableError, isRetryableError } = require("../errors");
+const { RetryableError, isRetryableError, isBadInputError } = require("../errors");
 const { isTransientUploadError, uploadWithRetry } = require("./uploadRetry");
+const { fetchStoredFile } = require("./storedFileFetch");
 
 let autoDriveApi = null;
 const API_BASE_URL = "https://mainnet.auto-drive.autonomys.xyz/api";
@@ -253,22 +254,38 @@ async function uploadData(dataBuffer, tags = [], retryOptions = {}) {
 }
 
 /**
- * Fetches data from Autonomys Auto Drive.
- * @param {string} cid The CID of the data to fetch.
+ * Fetches data from Autonomys Auto Drive, within a byte limit counted as the body arrives and a
+ * total time limit (`storedFileFetch.js`).
+ *
+ * The SDK's `downloadFile` gives no way to end a download: it takes no signal, reads the
+ * object's metadata first, and inflates a file uploaded compressed. So the oracle sends the
+ * SDK's own download request (`sendDownloadRequest`: the same download service, account and
+ * `/downloads/<cid>?ignoreEncoding=true` path `downloadFile` uses, which passes the signal on to
+ * `fetch`) and reads the body itself. The oracle uploads with no compression and no password
+ * (`uploadData`), so the bytes are the file as uploaded; a file uploaded compressed by anyone
+ * else comes back as stored, is never inflated, and does not decrypt.
+ * @param {string} cid The CID of the data to fetch; the router checks its shape before it gets here.
+ * @param {{maxBytes?: number, timeoutMs?: number}} [limits] Tighter limits than the defaults.
  * @returns {Promise<string>} The raw data as a UTF-8 String (for compatibility with both Arweave and Autonomys logic).
  */
-async function fetchData(cid) {
+async function fetchData(cid, { maxBytes, timeoutMs } = {}) {
   if (!autoDriveApi) {
     throw new Error("Autonomys Auto Drive not initialized.");
   }
 
   try {
-    const stream = await autoDriveApi.downloadFile(cid);
-    let fileBuffer = Buffer.alloc(0);
-
-    for await (const chunk of stream) {
-      fileBuffer = Buffer.concat([fileBuffer, chunk]);
-    }
+    const fileBuffer = await fetchStoredFile(
+      (signal) =>
+        autoDriveApi.sendDownloadRequest(`/downloads/${cid}?ignoreEncoding=true`, {
+          method: "GET",
+          signal,
+        }),
+      {
+        maxBytes,
+        timeoutMs,
+        refusal: (response) => new Error(`Failed to download file: ${response.status}`),
+      },
+    );
     console.log(`Data fetched from Autonomys. CID: ${cid}, Size: ${fileBuffer.length} bytes`);
 
     // Convert Buffer to String to match the Arweave implementation
@@ -278,7 +295,11 @@ async function fetchData(cid) {
 
     console.error(errorMessage, describedError(e));
 
-    await sendAlert("Autonomys Download Failed", errorMessage);
+    // A file over the limit is the doing of whoever named it, not a provider fault: no alert,
+    // or every such prompt would page the operator.
+    if (!isBadInputError(e)) {
+      await sendAlert("Autonomys Download Failed", errorMessage);
+    }
 
     throw e;
   }

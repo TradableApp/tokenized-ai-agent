@@ -191,7 +191,9 @@ describe("storage router — local IPFS mode (LOCAL_IPFS_API_URL set)", function
 
     ipfsStub = {
       initialize: sinon.stub().resolves(),
-      uploadData: sinon.stub().resolves("bafkreilocalcid"),
+      uploadData: sinon
+        .stub()
+        .resolves("bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
       fetchData: sinon.stub().resolves("ipfs_data"),
     };
     arweaveStub = { initializeIrys: sinon.stub().resolves() };
@@ -231,17 +233,23 @@ describe("storage router — local IPFS mode (LOCAL_IPFS_API_URL set)", function
 
     const cid = await storage.uploadData(buffer, tags);
     expect(ipfsStub.uploadData.calledOnceWith(buffer, tags)).to.be.true;
-    expect(cid).to.equal("bafkreilocalcid");
+    expect(cid).to.equal("bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
     // The in-memory tag index now resolves the just-uploaded CID (IPFS itself
     // has no tag query — this is what keeps session-key lookup working).
     const found = await storage.queryTransactionByTags(tags);
-    expect(found).to.equal("bafkreilocalcid");
+    expect(found).to.equal("bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
 
   it("fetchData routes to the local IPFS provider", async () => {
-    const data = await storage.fetchData("bafkreilocalcid");
-    expect(ipfsStub.fetchData.calledOnceWith("bafkreilocalcid")).to.be.true;
+    const data = await storage.fetchData(
+      "bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    expect(
+      ipfsStub.fetchData.calledOnceWith(
+        "bafkreilocalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ),
+    ).to.be.true;
     expect(data).to.equal("ipfs_data");
   });
 

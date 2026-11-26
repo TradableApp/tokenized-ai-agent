@@ -203,7 +203,9 @@ describe("stored file fetches are bounded", function () {
         expect(isBadInputError(error)).to.equal(true);
         expect(isRetryableError(error)).to.equal(false);
         expect(error.limitBytes).to.equal(MIB);
-        expect(error.bytesRead).to.be.above(MIB).and.at.most(MIB + READ_SLACK);
+        expect(error.bytesRead)
+          .to.be.above(MIB)
+          .and.at.most(MIB + READ_SLACK);
         const [record] = served.records.filter((r) => r.path.includes(cid));
         expect(await closedWithin(record)).to.equal(true);
         expect(record.written).to.be.below(8 * MIB);
@@ -284,5 +286,59 @@ describe("stored file fetches are bounded", function () {
     expect(error.bytesRead).to.be.at.most(MIB + CHUNK);
     expect(pulled).to.be.below(2 * MIB);
     expect(cancelled).to.equal(true);
+  });
+
+  it("takes a body of exactly the limit and refuses one byte more", async () => {
+    const { arweave } = loadProviders("http://127.0.0.1:9");
+
+    globalThis.fetch.callsFake(() => Promise.resolve(new Response(Buffer.alloc(MIB, 0x41))));
+    expect(await arweave.fetchData(ARWEAVE_ID, { maxBytes: MIB })).to.have.lengthOf(MIB);
+
+    globalThis.fetch.callsFake(() => Promise.resolve(new Response(Buffer.alloc(MIB + 1, 0x41))));
+    const error = await rejectionOf(arweave.fetchData(ARWEAVE_ID, { maxBytes: MIB }));
+    expect(error.name).to.equal("StoredFileTooLargeError");
+  });
+
+  it("never reads more than the default limit, whatever limit a caller asks for", async () => {
+    const { MAX_STORED_FILE_BYTES } = require("../src/storage/storedFileFetch");
+    const { arweave } = loadProviders("http://127.0.0.1:9");
+    globalThis.fetch.callsFake(() =>
+      Promise.resolve(new Response(Buffer.alloc(MAX_STORED_FILE_BYTES + 1, 0x41))),
+    );
+
+    const error = await rejectionOf(
+      arweave.fetchData(ARWEAVE_ID, { maxBytes: 4 * MAX_STORED_FILE_BYTES }),
+    );
+
+    expect(error.name).to.equal("StoredFileTooLargeError");
+    expect(error.limitBytes).to.equal(MAX_STORED_FILE_BYTES);
+  });
+});
+
+describe("the stored file limit", () => {
+  const {
+    LARGEST_WRITTEN_FILE_BYTES,
+    MAX_STORED_FILE_BYTES,
+    STORED_FILE_TIMEOUT_MS,
+  } = require("../src/storage/storedFileFetch");
+  const { LIMITS, sealedFrameChars } = require("../src/stream/streamContract");
+
+  it("is above the largest file the oracle writes, with room, and not far above it", () => {
+    // Reasoning (every attempt's steps at the frame limit), sources, a 1 MiB answer, the rest.
+    const plaintext =
+      LIMITS.maxAttempts * LIMITS.maxStepsPerAttempt * LIMITS.framePlaintextBytes +
+      LIMITS.maxAttempts * LIMITS.framePlaintextBytes +
+      MIB +
+      1024;
+
+    expect(LARGEST_WRITTEN_FILE_BYTES).to.equal(sealedFrameChars(plaintext));
+    expect(MAX_STORED_FILE_BYTES).to.be.above(LARGEST_WRITTEN_FILE_BYTES * 1.1);
+    expect(MAX_STORED_FILE_BYTES).to.be.below(LARGEST_WRITTEN_FILE_BYTES * 1.5);
+  });
+
+  it("gives the largest written file time to arrive at 2 Mbit/s", () => {
+    const seconds = (LARGEST_WRITTEN_FILE_BYTES * 8) / 2e6;
+
+    expect(STORED_FILE_TIMEOUT_MS).to.be.above(seconds * 1000);
   });
 });

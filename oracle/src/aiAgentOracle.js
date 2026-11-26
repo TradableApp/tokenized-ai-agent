@@ -46,6 +46,8 @@ const {
   fetchData,
   queryTransactionByTags,
 } = require("./storage/storage");
+const { MAX_STORED_FILE_BYTES, STORED_FILE_TIMEOUT_MS } = require("./storage/storedFileFetch");
+const { printableContentId } = require("./storage/contentId");
 const {
   createConversationFile,
   createConversationMetadataFile,
@@ -57,6 +59,8 @@ const {
   isBadInputError,
   isRetryableError,
   isTransientProviderError,
+  StoredFileTooLargeError,
+  StoredFileTimeoutError,
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
@@ -484,12 +488,46 @@ const txMutex = new Mutex();
 // This implements the "Promise queue with concurrency control" pattern from p-queue docs.
 const queue = new PQueue({ concurrency: 5 });
 
-// We store the raw ENCRYPTED string (IV + Ciphertext).
-// Average size ~1KB - 4KB.
-// 100,000 items * 4KB = ~400MB of RAM.
-// This fits comfortably within the 4GB TEE limit while keeping hot conversations in memory.
+// --- History walk limits ---
+// A prompt names its parent by a content id from the user's payload, and each message file
+// names its own parent, so the whole chain is the user's to choose. These bound the work one
+// prompt can cause, however the chain was built.
+const MIB = 1024 * 1024;
+const HISTORY_LIMITS = Object.freeze({
+  // Files read for one prompt: the messages the model is given (all of them reach it), and at
+  // most 100 whatever AI_CONTEXT_MESSAGES_LIMIT says. 20 in every compose file.
+  files: Math.min(Math.max(AI_CONTEXT_MESSAGES_LIMIT, 0), 100),
+  // One file: the largest file the oracle writes, with room (storage/storedFileFetch.js).
+  fileBytes: MAX_STORED_FILE_BYTES,
+  fileMs: STORED_FILE_TIMEOUT_MS,
+  // All files of one prompt, from storage or the cache: four files of the largest size, and
+  // hundreds of files as written in practice (a few KB each). Once spent, the walk stops and the
+  // model is given the newer messages it has; nothing is refused.
+  walkBytes: 4 * MAX_STORED_FILE_BYTES,
+  // The whole walk: three fetches at their own limit. Past it, a fetch is a retryable timeout.
+  walkMs: 3 * STORED_FILE_TIMEOUT_MS,
+  // A conversation's key file is the hex of one wrapped 32-byte key, a few hundred characters.
+  keyFileBytes: 4 * 1024,
+  // The cache of files that decrypted and validated, counted by characters (a sealed file is
+  // base64, one byte a character). A file as written is a few KB, so this holds tens of thousands.
+  cacheBytes: 128 * MIB,
+});
+
+// Worst case held by fetches in flight: a prompt reads one file at a time (its key file, if any,
+// before its walk), and the queue runs 5 handlers at once (retries share it), so 5 files at
+// HISTORY_LIMITS.fileBytes (8 MiB) are in flight at most. Reading one file holds its chunks and
+// their copy, the text, the decoded ciphertext, the plaintext and the parsed object: under 8 times
+// the file, so under 5 x 8 x 8 MiB = 320 MiB, plus the cache's 128 MiB. The smallest machine the
+// oracle runs on has 4 GiB for everything.
+//
+// We store the raw ENCRYPTED string (IV + Ciphertext), and only once it decrypted with the
+// prompt's key and read as a message file: a file that does neither is fetched again next time,
+// never kept. Bounded by bytes as well as by count, since one entry can be up to 8 MiB.
 const rawMessageCache = new LRUCache({
   max: 100000,
+  maxSize: HISTORY_LIMITS.cacheBytes,
+  maxEntrySize: HISTORY_LIMITS.fileBytes,
+  sizeCalculation: (value) => Math.max(1, value.length),
   ttl: 1000 * 60 * 60 * 24, // 24 Hours (Renamed from maxAge)
 });
 
@@ -887,7 +925,12 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     if (!keyFileCID) {
       throw new Error(`Could not find Key File for conversation ${conversationId}.`);
     }
-    const fetchedHex = await fetchData(keyFileCID);
+    // The lookup can match a file anyone uploaded with these tags, so it gets the key file's
+    // own small limit: over it is bad input and the event is dropped.
+    const fetchedHex = await fetchData(keyFileCID, {
+      maxBytes: HISTORY_LIMITS.keyFileBytes,
+      timeoutMs: HISTORY_LIMITS.fileMs,
+    });
     return await requireDecryptor().decrypt(Buffer.from(fetchedHex, "hex"));
   }
 
@@ -903,8 +946,40 @@ function decryptMessageFile(encryptedString, sessionKey) {
   return decryptSymmetrically(encryptedString, sessionKey);
 }
 
+const MESSAGE_ROLES = new Set(["user", "assistant"]);
+
+/** Does this hold what the walk reads from a MessageFile: a role, its content and its parent? */
+function isMessageFile(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    MESSAGE_ROLES.has(value.role) &&
+    (typeof value.content === "string" || value.content === null) &&
+    (value.parentCID === undefined ||
+      value.parentCID === null ||
+      typeof value.parentCID === "string")
+  );
+}
+
+/** A refusal at the walk's remaining bytes, not at a file's own limit: the walk has read enough. */
+function isWalkBytesSpent(error) {
+  return error instanceof StoredFileTooLargeError && error.limitBytes < HISTORY_LIMITS.fileBytes;
+}
+
 /**
  * Walks backwards up the message chain on decentralised storage to reconstruct conversation history.
+ *
+ * Bounded as a whole (`HISTORY_LIMITS`): at most `files` files, `walkBytes` read from storage or
+ * the cache, and `walkMs`; each fetch gets the smaller of its own limits and what the walk has
+ * left. What ends the walk early:
+ * - the chain's end, the file count, or the walk's bytes spent: the history read so far is used;
+ * - a fetch that fails (a 404, a gateway error, an id that is not a content id) or a file that
+ *   does not decrypt or is not a message file: the same (a branch's chain can reach files sealed
+ *   with another conversation's key), and that file is never cached;
+ * - a file over its own byte limit: thrown, as bad input, so the prompt is dropped;
+ * - a fetch past its time, or the walk past its time: thrown, as retryable, so the prompt is
+ *   queued and answered later with its whole history rather than now without it.
  * @param {string} startMessageCID The CID of the latest message in the thread.
  * @param {string | null} sessionKey The key for decryption (EVM only).
  * @returns {Promise<Array<object>>} An array of message objects for the AI context.
@@ -915,62 +990,89 @@ async function reconstructHistory(startMessageCID, sessionKey) {
     return [];
   }
 
-  // Limit history fetching to avoid infinite loops and excessive costs.
   const history = [];
   let currentCid = startMessageCID;
   let cacheHits = 0;
   let networkFetches = 0;
-  console.log(`[History] Starting reconstruction from CID: ${startMessageCID}`);
+  let bytesLeft = HISTORY_LIMITS.walkBytes;
+  const deadline = Date.now() + HISTORY_LIMITS.walkMs;
+  // Ids are printed only once they have a content id's shape: a parent id is the user's text.
+  console.log(`[History] Starting reconstruction from CID: ${printableContentId(startMessageCID)}`);
 
-  // Limit history fetching to avoid infinite loops and excessive costs.
-  for (let i = 0; i < AI_CONTEXT_MESSAGES_LIMIT; i += 1) {
-    if (!currentCid) {
+  for (let depth = 1; depth <= HISTORY_LIMITS.files && currentCid; depth += 1) {
+    if (bytesLeft <= 0) {
+      console.warn(`[History] The walk's ${HISTORY_LIMITS.walkBytes} bytes are spent; stopping.`);
       break;
     }
 
-    let encryptedString;
-
-    // 1. Check Cache (Hit = 0ms latency)
-    if (rawMessageCache.has(currentCid)) {
-      encryptedString = rawMessageCache.get(currentCid);
+    // 1. Check Cache (Hit = 0ms latency). It holds only files that decrypted and validated.
+    let encryptedString = rawMessageCache.get(currentCid);
+    const fromCache = encryptedString !== undefined;
+    if (fromCache) {
       cacheHits += 1;
-      // console.log(`[Cache] Hit for CID: ${currentCid.slice(0, 8)}...`);
     } else {
-      // 2. Fetch from Network (Miss = ~500ms+ latency)
-      // console.log(`[Cache] Miss for CID: ${currentCid.slice(0, 8)}...`);
+      // 2. Fetch from Network, within what the walk has left of its bytes and time.
+      const msLeft = deadline - Date.now();
+      if (msLeft <= 0) throw new StoredFileTimeoutError({ timeoutMs: HISTORY_LIMITS.walkMs });
       try {
-        encryptedString = await fetchData(currentCid);
-        // 3. Populate Cache for next time
-        rawMessageCache.set(currentCid, encryptedString);
+        encryptedString = await fetchData(currentCid, {
+          maxBytes: Math.min(HISTORY_LIMITS.fileBytes, bytesLeft),
+          timeoutMs: Math.min(HISTORY_LIMITS.fileMs, msLeft),
+        });
         networkFetches += 1;
       } catch (error) {
+        if (isWalkBytesSpent(error)) {
+          console.warn(
+            `[History] The walk's ${HISTORY_LIMITS.walkBytes} bytes are spent; stopping.`,
+          );
+          break;
+        }
+        // Over a file's limit (dropped) or out of time (queued): the handler decides.
+        if (isBadInputError(error) || isRetryableError(error)) throw error;
         console.error(
-          `[History] Failed to fetch CID ${currentCid} from storage.`,
+          `[History] Failed to fetch message ${depth} of the chain from storage.`,
           describedError(error),
         );
         break;
       }
     }
 
-    // 4. Decrypt (Fast CPU op)
+    if (typeof encryptedString !== "string" || encryptedString.length > bytesLeft) {
+      console.warn(`[History] Message ${depth} of the chain does not fit the walk; stopping.`);
+      break;
+    }
+    // Counted whether it came from storage or the cache: decrypting it is the walk's work too.
+    bytesLeft -= encryptedString.length;
+
+    // 3. Decrypt (Fast CPU op) and read it as a message file.
+    let messageFile;
     try {
-      const messageFile = decryptMessageFile(encryptedString, sessionKey);
-
-      history.unshift({
-        role: messageFile.role,
-        content: messageFile.content,
-      });
-
-      // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID or answerMessageCID).
-      currentCid = messageFile.parentCID;
+      messageFile = decryptMessageFile(encryptedString, sessionKey);
     } catch (error) {
       // Only the kind: a failed parse quotes the start of the decrypted message.
       console.error(
-        `[History] Failed to reconstruct history at CID ${currentCid} (${errorKind(error)}). Stopping history build.`,
+        `[History] Failed to reconstruct history at message ${depth} of the chain (${errorKind(error)}). Stopping history build.`,
       );
-
       break;
     }
+    if (!isMessageFile(messageFile)) {
+      console.error(
+        `[History] Message ${depth} of the chain is not a message file. Stopping history build.`,
+      );
+      break;
+    }
+
+    // 4. Populate Cache for next time, now that it is known to be this conversation's file.
+    if (!fromCache) rawMessageCache.set(currentCid, encryptedString);
+
+    history.unshift({
+      role: messageFile.role,
+      content: messageFile.content,
+    });
+
+    // The parentCID of a MessageFile is the CID of the parent message (whether promptMessageCID
+    // or answerMessageCID). Its shape is checked by the storage router before it is fetched.
+    currentCid = messageFile.parentCID;
   }
 
   console.log(
@@ -978,6 +1080,11 @@ async function reconstructHistory(startMessageCID, sessionKey) {
   );
 
   return history;
+}
+
+/** The cache's size in characters and its limit (read by tests). */
+function historyCacheUsage() {
+  return { bytes: rawMessageCache.calculatedSize, maxBytes: HISTORY_LIMITS.cacheBytes };
 }
 
 // --- AI Model Query Functions ---
@@ -3457,6 +3564,8 @@ module.exports = {
   handleMetadataUpdate,
   queryAIModel,
   reconstructHistory,
+  HISTORY_LIMITS,
+  historyCacheUsage,
   parseMockDelayMs,
   hasMockDropSentinel,
   hasMockReasoningSentinel,

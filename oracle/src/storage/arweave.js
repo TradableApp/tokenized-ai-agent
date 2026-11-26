@@ -2,6 +2,7 @@ const { Uploader } = require("@irys/upload");
 const { BaseEth } = require("@irys/upload-ethereum");
 const { sendAlert } = require("../alerting");
 const { describeError, describedError } = require("../errorDescription");
+const { fetchStoredFile } = require("./storedFileFetch");
 
 let irysUploader;
 const graphqlEndpoint = "https://uploader.irys.xyz/graphql"; // Use the main query endpoint
@@ -135,18 +136,25 @@ async function uploadData(dataBuffer, tags = []) {
 }
 
 /**
- * Fetches data from Arweave.
- * @param {string} cid The Arweave transaction ID (CID) of the data to fetch.
+ * Fetches data from Arweave through the Irys gateway, within a byte limit counted as the body
+ * arrives and a total time limit (`storedFileFetch.js`).
+ * @param {string} cid The Arweave transaction ID (CID) of the data to fetch; the router checks
+ *   its shape before it gets here.
+ * @param {{maxBytes?: number, timeoutMs?: number}} [limits] Tighter limits than the defaults.
  * @returns {Promise<string>} The raw data as a string.
  */
-async function fetchData(cid) {
-  const response = await fetch(`https://gateway.irys.xyz/${cid}`);
+async function fetchData(cid, { maxBytes, timeoutMs } = {}) {
+  const body = await fetchStoredFile(
+    (signal) => fetch(`https://gateway.irys.xyz/${cid}`, { signal }),
+    {
+      maxBytes,
+      timeoutMs,
+      refusal: (response) =>
+        new Error(`Failed to fetch CID ${cid} from gateway. Status: ${response.status}`),
+    },
+  );
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch CID ${cid} from gateway. Status: ${response.status}`);
-  }
-
-  return response.text();
+  return body.toString("utf-8");
 }
 
 /**

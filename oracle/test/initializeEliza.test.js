@@ -373,7 +373,9 @@ describe("a payload that decrypts but does not parse", function () {
     const history = await oracle.reconstructHistory("cid-1", key);
 
     expect(history).to.deep.equal([]);
-    expect(printed()).to.match(/Failed to reconstruct history at CID cid-1/);
+    // Where it stopped, by position: the id is the user's choice and is not printed.
+    expect(printed()).to.match(/Failed to reconstruct history at message 1 of the chain/);
+    expect(printed()).to.not.include("at CID cid-1");
     expect(printed()).to.not.include("my private");
   });
 });

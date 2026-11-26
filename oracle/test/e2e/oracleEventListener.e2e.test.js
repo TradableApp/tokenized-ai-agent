@@ -68,7 +68,7 @@ describe("E2E: Oracle Event Listener", function () {
         promptText: "Follow up about gas fees",
         isNewConversation: false,
         previousMessageId: "msg_101",
-        previousMessageCID: "fake_cid_prev",
+        previousMessageCID: "bafkr6iprevaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       };
       const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
 

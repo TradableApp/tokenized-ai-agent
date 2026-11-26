@@ -47,7 +47,7 @@ describe("local IPFS provider (ipfs.js)", function () {
         return { ok: true, json: async () => ({ Version: "0.17.0" }) };
       }
       expect(url).to.contain("/api/v0/cat?arg=bafkreiabc");
-      return { ok: true, text: async () => "decrypted-elsewhere-ciphertext" };
+      return new Response("decrypted-elsewhere-ciphertext");
     });
 
     await ipfs.initialize("http://localhost:5001");
@@ -68,7 +68,7 @@ describe("local IPFS provider (ipfs.js)", function () {
         return { ok: true, text: async () => '{"Name":"f","Hash":"bafkreiround","Size":"1"}' };
       }
       // cat returns what was stored
-      return { ok: true, text: async () => stored };
+      return new Response(stored);
     });
 
     await ipfs.initialize("http://localhost:5001");

@@ -54,6 +54,42 @@ function isRetryableError(error) {
 }
 
 /**
+ * A stored file's body passed its byte limit while it was being read, or its declared length
+ * was already over it. Reading stopped there and the connection was closed.
+ *
+ * Bad input, so the event is dropped: every file the oracle writes is well under the limit
+ * (`storage/storedFileFetch.js`), so a file over it was not written as part of a conversation,
+ * and the content id that names it came from the user's payload or from a file sealed with the
+ * user's own key. Retrying would read the same bytes again.
+ *
+ * `limitBytes` and `bytesRead` are numbers only, for the log line.
+ */
+class StoredFileTooLargeError extends BadInputError {
+  constructor({ limitBytes, bytesRead }) {
+    super(
+      `Stored file is over its ${limitBytes}-byte limit; reading stopped after ${bytesRead} bytes.`,
+    );
+    this.name = "StoredFileTooLargeError";
+    this.limitBytes = limitBytes;
+    this.bytesRead = bytesRead;
+  }
+}
+
+/**
+ * A stored file did not arrive in full within its time limit, and the request was ended.
+ *
+ * Retryable: a gateway that is slow now may serve the same file in a minute, and the file may
+ * be a real part of the conversation. The retry queue's backoff spaces the attempts.
+ */
+class StoredFileTimeoutError extends RetryableError {
+  constructor({ timeoutMs }) {
+    super(`Stored file did not arrive within ${timeoutMs} ms; the request was ended.`);
+    this.name = "StoredFileTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
  * The codes ethers gives a request that did not get a usable answer.
  *
  * - SERVER_ERROR, TIMEOUT, NETWORK_ERROR: the provider refused it or answered with an error
@@ -108,5 +144,7 @@ module.exports = {
   isBadInputError,
   RetryableError,
   isRetryableError,
+  StoredFileTooLargeError,
+  StoredFileTimeoutError,
   isTransientProviderError,
 };
