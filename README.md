@@ -32,7 +32,7 @@ Oracle Node (Oasis ROFL / TEE) ────────────────�
 
 1.  **Smart Contracts:** Handle ERC-20 payments, ID reservation, and emit events.
 2.  **Oracle (ROFL):** Listens to events, performs verifiable inference inside an Intel TDX enclave, and manages encryption keys.
-3.  **Storage:** Encrypted conversation history is stored on Autonomys (Irys/Arweave when `STORAGE_PROVIDER=irys`), with an optional public GCS bucket as a read cache.
+3.  **Storage:** Encrypted conversation history is stored on Autonomys (Irys/Arweave when `STORAGE_PROVIDER=irys`; with `STORAGE_PROVIDER=autonomys-only` Irys is not used at all), with an optional public GCS bucket as a read cache.
 4.  **Indexing:** The Graph indexes the contract events to reconstruct chat history for the UI.
 
 ---
@@ -46,7 +46,7 @@ Oracle Node (Oasis ROFL / TEE) ────────────────�
 - **Oasis CLI** (For deploying to the ROFL network)
 - **Wallets:**
   - EVM private key for deploying and owning the contracts (Base Sepolia/Mainnet)
-  - Storage credentials, as the oracle's start-up check requires them: with `STORAGE_PROVIDER` unset (the default) or any value but `irys`, both `AUTONOMYS_API_KEY` and `IRYS_PAYMENT_PRIVATE_KEY` (uploads go to Autonomys; the Irys key keeps older Arweave ids readable); with `STORAGE_PROVIDER=irys`, `IRYS_PAYMENT_PRIVATE_KEY` alone. Neither is asked for with `USE_MOCK_STORAGE=true` or `LOCAL_IPFS_API_URL` set (`oracle/src/startupConfig.js`)
+  - Storage credentials, as the oracle's start-up check requires them: with `STORAGE_PROVIDER` unset (the default), both `AUTONOMYS_API_KEY` and `IRYS_PAYMENT_PRIVATE_KEY` (uploads go to Autonomys; the Irys key keeps older Arweave ids readable); with `STORAGE_PROVIDER=irys`, `IRYS_PAYMENT_PRIVATE_KEY` alone; with `STORAGE_PROVIDER=autonomys-only`, `AUTONOMYS_API_KEY` alone (Irys is never started, and Arweave ids are not read, so this is for a deployment that has never written to Arweave). Any other value is refused at start-up. Neither key is asked for with `USE_MOCK_STORAGE=true` or `LOCAL_IPFS_API_URL` set (`oracle/src/startupConfig.js`)
 
 ### 1. Installation
 
@@ -80,8 +80,11 @@ cp oracle/.env.oracle.example oracle/.env.oracle.base-testnet
 #   its encryption key are made by the ROFL key service inside the TEE, and the oracle refuses
 #   to start when PRIVATE_KEY is set (oracle/src/oracleKeys.js, oracle/src/startupConfig.js)
 # - AUTONOMYS_API_KEY and IRYS_PAYMENT_PRIVATE_KEY: storage. Both are required while
-#   STORAGE_PROVIDER is unset (the default) or anything but irys; with STORAGE_PROVIDER=irys only
-#   IRYS_PAYMENT_PRIVATE_KEY is (oracle/src/startupConfig.js)
+#   STORAGE_PROVIDER is unset (the default); with STORAGE_PROVIDER=irys only
+#   IRYS_PAYMENT_PRIVATE_KEY is, and with STORAGE_PROVIDER=autonomys-only only AUTONOMYS_API_KEY
+#   is (Irys is never started; Arweave ids are not read). Any other value is refused at start-up
+#   (oracle/src/startupConfig.js). STORAGE_PROVIDER is not a secret: it goes below the
+#   "ORC BUNDLE CONFIGURATION (PLAINTEXT)" line
 # - AI_PROVIDER: "Gemini" or "ChainGPT" (optional bypass; unset = full routing hierarchy)
 ```
 
