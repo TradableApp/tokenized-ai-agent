@@ -19,7 +19,9 @@
  *   see agentMemory.js);
  * - the runs of one room take turns (`withRoomLock`), since a run that ends empties the room
  *   another run of it would still be reading, and a room's prompts wait for their turn before they
- *   take a place in the oracle's work queue (`takeRoomTurn`), so the ones waiting hold none.
+ *   take a place in the oracle's work queue (`takeRoomTurn`), so the ones waiting hold none;
+ * - a conversation's metadata updates take turns of their own (`takeMetadataTurn`), on the same
+ *   primitive but apart from its prompts: they never use the room.
  */
 
 const { describeError } = require("../errorDescription");
@@ -144,9 +146,11 @@ function chained(queues, key, task) {
   return run;
 }
 
-// The tail of each room's runs, and of each room's turns at the work queue.
+// The tail of each room's runs, of each room's turns at the work queue, and of each
+// conversation's metadata updates.
 const roomLocks = new Map();
 const roomTurns = new Map();
+const metadataTurns = new Map();
 
 /**
  * Runs `task` once every earlier task for the same room, and whatever each held the room for, has
@@ -182,10 +186,30 @@ function takeRoomTurn(roomId, enter) {
   );
 }
 
+/**
+ * Gives a conversation's metadata update (a rename or a delete) its turn: `enter` is called once
+ * every earlier update of the same conversation handed in here has settled, so one conversation's
+ * updates are applied one at a time, in the order they were handed in. Other conversations are not
+ * held up, and neither is the conversation's own prompts' turn or room lock: an update does not
+ * use the room. A throw goes back to its caller and does not stop the next. Gives back what
+ * `enter` gives.
+ *
+ * Within this process only.
+ *
+ * @template T
+ * @param {string} conversationKey The conversation's on-chain id (one agent contract per process).
+ * @param {() => Promise<T>} enter Puts the update in the queue and gives back its result.
+ * @returns {Promise<T>}
+ */
+function takeMetadataTurn(conversationKey, enter) {
+  return chained(metadataTurns, conversationKey, () => enter());
+}
+
 module.exports = {
   conversationScopeKey,
   clearConversationRoom,
   withRoomLock,
   takeRoomTurn,
+  takeMetadataTurn,
   ROOM_MEMORY_TABLES,
 };

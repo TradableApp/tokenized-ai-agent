@@ -41,6 +41,7 @@ const {
   clearConversationRoom,
   withRoomLock,
   takeRoomTurn,
+  takeMetadataTurn,
 } = require("./elizaos/conversationRoom");
 const {
   createAgentMemoryGate,
@@ -65,6 +66,7 @@ const {
 } = require("./formatters");
 const {
   BadInputError,
+  RetryableError,
   isBadInputError,
   isRetryableError,
   isTransientProviderError,
@@ -102,6 +104,7 @@ const { createRoleGate } = require("./oracleRoleGate");
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
 const FAILED_JOBS_FILE_PATH = path.resolve(__dirname, "../failed-jobs.json");
+const METADATA_UPDATES_FILE_PATH = path.resolve(__dirname, "../metadata-updates.json");
 
 /**
  * Where the cursor and the failed-job queue are kept (see oracleState/store.js).
@@ -114,6 +117,7 @@ const FAILED_JOBS_FILE_PATH = path.resolve(__dirname, "../failed-jobs.json");
 let stateStore = createFileStateStore({
   statePath: STATE_FILE_PATH,
   jobsPath: FAILED_JOBS_FILE_PATH,
+  metadataPath: METADATA_UPDATES_FILE_PATH,
 });
 
 /**
@@ -2790,12 +2794,114 @@ async function handleBranch(
   }
 }
 
+// The newest metadata update this process has applied for each conversation (on-chain id →
+// position). The state store is the record that survives a restart; this covers a record that
+// could not be written after its transaction landed.
+const metadataAppliedInProcess = new Map();
+
+/**
+ * Where a request event sits on the chain: its block, then its log index in that block. The order
+ * a conversation's metadata updates must be applied in. Throws when either is missing: every event
+ * read from the chain, a retried one included, carries both.
+ *
+ * @returns {{ blockNumber: number, logIndex: number }}
+ */
+function chainPositionOf(event) {
+  const blockNumber = event?.blockNumber;
+  const logIndex = event?.index;
+  if (
+    !Number.isSafeInteger(blockNumber) ||
+    blockNumber < 0 ||
+    !Number.isSafeInteger(logIndex) ||
+    logIndex < 0
+  ) {
+    throw new Error(
+      "A metadata update needs its event's position on the chain (block and log index)",
+    );
+  }
+  return { blockNumber, logIndex };
+}
+
+function isLaterOnChain(a, b) {
+  return (
+    a.blockNumber > b.blockNumber || (a.blockNumber === b.blockNumber && a.logIndex > b.logIndex)
+  );
+}
+
+/**
+ * The newest metadata update applied for a conversation, from the state store and this process,
+ * or null. A store that cannot be read is a RetryableError: applying without the record could
+ * undo a newer update, so the event waits for the retry queue instead.
+ */
+async function lastAppliedMetadataUpdate(conversationKey) {
+  let stored;
+  try {
+    stored = await stateStore.lastMetadataUpdate(conversationKey);
+  } catch (error) {
+    throw new RetryableError(
+      `Could not read the last metadata update applied for conversation ${conversationKey}: ${describeError(error)}`,
+      { cause: error },
+    );
+  }
+  const inProcess = metadataAppliedInProcess.get(conversationKey) ?? null;
+  if (stored && inProcess) return isLaterOnChain(inProcess, stored) ? inProcess : stored;
+  return stored ?? inProcess;
+}
+
+/**
+ * Is this update at or before one already applied for its conversation? Then it is not applied:
+ * the later one is what the owner asked for last, and an equal one is this same request, already
+ * applied (a range scanned again, or a retry whose completion could not be recorded).
+ */
+async function isSupersededMetadataUpdate(conversationKey, position) {
+  const applied = await lastAppliedMetadataUpdate(conversationKey);
+  if (!applied || isLaterOnChain(position, applied)) return false;
+  console.log(
+    `  Metadata update for ${conversationKey} at block ${position.blockNumber}, log ${position.logIndex} is not newer than the one applied (block ${applied.blockNumber}, log ${applied.logIndex}); skipped.`,
+  );
+  return true;
+}
+
+/**
+ * Records the update just applied. Never throws: its transaction has landed, and a throw would
+ * send the event to the retry queue and submit it again. A record that fails is kept for this
+ * process, printed and reported.
+ */
+async function recordAppliedMetadataUpdate(conversationKey, position) {
+  const inProcess = metadataAppliedInProcess.get(conversationKey);
+  if (!inProcess || isLaterOnChain(position, inProcess)) {
+    metadataAppliedInProcess.set(conversationKey, position);
+  }
+  try {
+    await stateStore.recordMetadataUpdate({ conversationId: conversationKey, ...position });
+  } catch (error) {
+    console.error(
+      `  Could not record the metadata update applied for conversation ${conversationKey}; it is kept for this process only: ${describeError(error)}`,
+    );
+    Sentry.captureException(error, { tags: { site: "metadata_order_record" } });
+  }
+}
+
+/**
+ * A rename or delete of a conversation: writes the new metadata file and submits its CID.
+ *
+ * Updates of one conversation are applied in the order the chain emitted them (block, then log
+ * index). Within the process they take turns (`takeMetadataTurn` in enqueueEventWork); across a
+ * retry or a restart, an update at or before the newest one applied for the conversation (the
+ * state store's record) is skipped before anything is uploaded, and checked again inside the
+ * transaction lock. A skip needs nothing on chain: the fee was paid to the treasury when the
+ * update was requested, and nothing is held for it.
+ */
 async function handleMetadataUpdate(user, conversationId, payload, roflEncryptedKey, event) {
   console.log(
     `[EVENT] Processing MetadataUpdateRequested for convId: ${conversationId} in block ${event.blockNumber}`,
   );
   try {
-    const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
+    const conversationKey = conversationId.toString();
+    const position = chainPositionOf(event);
+    if (await isSupersededMetadataUpdate(conversationKey, position)) return;
+
+    const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationKey);
 
     const decryptedData = isSapphire
       ? payload
@@ -2817,6 +2923,9 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
     const metadataCID = await uploadData(Buffer.from(encryptedMeta));
 
     await txMutex.runExclusive(async () => {
+      // Again here, where no other submission of this process runs: the record is what decides.
+      if (await isSupersededMetadataUpdate(conversationKey, position)) return;
+
       console.log(`  Submitting metadata update for ${conversationId}...`);
 
       const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
@@ -2825,6 +2934,8 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
       console.log(
         `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
       );
+
+      await recordAppliedMetadataUpdate(conversationKey, position);
     });
   } catch (error) {
     console.error(
@@ -3362,13 +3473,21 @@ function reportUndecodableLog(log) {
  * Hands an event's work to the work queue. A prompt or a regeneration first waits for its
  * conversation's turn (takeRoomTurn), outside the queue: the prompts of one conversation are
  * answered one at a time, so the ones waiting would otherwise each hold a place in the queue that
- * another owner's prompt could use. Gives back what the work gives.
+ * another owner's prompt could use. A metadata update waits for its conversation's metadata turn
+ * (takeMetadataTurn) the same way, so one conversation's updates are applied one at a time and in
+ * the order they are handed in here, which is the chain's order for the events of a scan; it does
+ * not wait for the conversation's prompts, since it does not use the room. Gives back what the work
+ * gives.
  *
  * @param {string} eventName
  * @param {ArrayLike<unknown>} args The event's arguments.
  * @param {() => Promise<unknown>} work
  */
 async function enqueueEventWork(eventName, args, work) {
+  if (eventName === "MetadataUpdateRequested") {
+    // (user, conversationId, …), which the contract tests pin.
+    return takeMetadataTurn(String(args[1]), () => queue.add(work));
+  }
   if (!ROOM_EVENTS.has(eventName)) return queue.add(work);
   // Both events start with the conversation's owner and then its id, which the contract tests pin.
   const [owner, conversationId] = args;
@@ -3503,6 +3622,7 @@ async function start() {
     contractAddress: contract.target,
     statePath: STATE_FILE_PATH,
     jobsPath: FAILED_JOBS_FILE_PATH,
+    metadataPath: METADATA_UPDATES_FILE_PATH,
   }));
   console.log(`[OracleState] Cursor and failed jobs are kept in: ${stateStore.backend}.`);
 

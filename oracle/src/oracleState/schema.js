@@ -1,7 +1,8 @@
 "use strict";
 
 /**
- * The oracle's durable state: where it is on the chain, and which events it still owes a retry.
+ * The oracle's durable state: where it is on the chain, which events it still owes a retry, and
+ * which metadata update of each conversation it applied last.
  *
  * These tables live in the oracle's OWN database (`oracle_agent`), not the shared `senseai` one,
  * and are created by the same plugin-sql migration run that creates the agent tables (see
@@ -116,10 +117,50 @@ const oracleFailedJobTable = oracleStateSchema.table(
   ],
 );
 
+/**
+ * One row per (chain, contract, conversation): the position on the chain (block number, then log
+ * index) of the newest `MetadataUpdateRequested` whose file the oracle has submitted for that
+ * conversation. An update at or before it is not applied: it would undo a later one.
+ *
+ * Usage: the store's `recordMetadataUpdate` only ever moves a row forward, with the guard in the
+ * statement itself.
+ */
+const oracleMetadataUpdateTable = oracleStateSchema.table(
+  "oracle_metadata_updates",
+  {
+    chainId: bigint("chain_id", { mode: "number" }).notNull(),
+    contractAddress: text("contract_address").notNull(),
+    // A uint256 in its decimal form: wider than any integer column.
+    conversationId: text("conversation_id").notNull(),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    logIndex: integer("log_index").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    primaryKey({
+      name: "oracle_metadata_updates_pk",
+      columns: [table.chainId, table.contractAddress, table.conversationId],
+    }),
+    check(
+      "oracle_metadata_updates_address_hex",
+      sql`${table.contractAddress} ~ '^0x[0-9a-f]{40}$'`,
+    ),
+    check(
+      "oracle_metadata_updates_conversation_decimal",
+      sql`${table.conversationId} ~ '^(0|[1-9][0-9]*)$'`,
+    ),
+    check("oracle_metadata_updates_block_nonneg", sql`${table.blockNumber} >= 0`),
+    check("oracle_metadata_updates_log_index_nonneg", sql`${table.logIndex} >= 0`),
+  ],
+);
+
 /** What agentSchemaMigrator registers with plugin-sql's migration service. */
 const oracleStatePlugin = Object.freeze({
   name: ORACLE_STATE_PLUGIN_NAME,
-  schema: { oracleCursorTable, oracleFailedJobTable },
+  schema: { oracleCursorTable, oracleFailedJobTable, oracleMetadataUpdateTable },
 });
 
 module.exports = {
@@ -127,6 +168,7 @@ module.exports = {
   ORACLE_STATE_PLUGIN_NAME,
   oracleCursorTable,
   oracleFailedJobTable,
+  oracleMetadataUpdateTable,
   oracleStatePlugin,
   oracleStateSchema,
 };

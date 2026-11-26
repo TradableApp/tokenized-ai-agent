@@ -261,6 +261,9 @@ describe("the agent database on the framework's real schema", function () {
       await db.execute(
         `INSERT INTO oracle_state.oracle_failed_jobs (chain_id, contract_address, transaction_hash, log_index, event_name, block_number, next_attempt_at) VALUES (84532, '${contract}', '0x${"ab".repeat(32)}', 0, 'PromptSubmitted', 7, now())`,
       );
+      await db.execute(
+        `INSERT INTO oracle_state.oracle_metadata_updates (chain_id, contract_address, conversation_id, block_number, log_index) VALUES (84532, '${contract}', '7', 7, 0) ON CONFLICT DO NOTHING`,
+      );
     }
 
     /** A room as a run leaves it: owner, messages with an embedding, a fact, a log, a component. */
@@ -366,6 +369,9 @@ describe("the agent database on the framework's real schema", function () {
       );
       const cursorsBefore = await count(`SELECT count(*) AS n FROM oracle_state.oracle_cursors`);
       const jobsBefore = await count(`SELECT count(*) AS n FROM oracle_state.oracle_failed_jobs`);
+      const metadataBefore = await count(
+        `SELECT count(*) AS n FROM oracle_state.oracle_metadata_updates`,
+      );
 
       // Read here, so the prompt tests above run whatever this module holds.
       const { sweepAgentMemory } = require("../src/elizaos/agentMemory");
@@ -382,6 +388,11 @@ describe("the agent database on the framework's real schema", function () {
       expect(jobsBefore).to.equal(1);
       expect(await count(`SELECT count(*) AS n FROM oracle_state.oracle_cursors`), "cursor").to.equal(1);
       expect(await count(`SELECT count(*) AS n FROM oracle_state.oracle_failed_jobs`), "failed jobs").to.equal(1);
+      expect(metadataBefore).to.equal(1);
+      expect(
+        await count(`SELECT count(*) AS n FROM oracle_state.oracle_metadata_updates`),
+        "metadata positions",
+      ).to.equal(1);
     });
   });
 });

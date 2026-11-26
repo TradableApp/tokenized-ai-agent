@@ -321,14 +321,20 @@ function behavesLikeAStateStore(setup) {
       await ctx.store.recordMetadataUpdate(at(120, 4, "7"));
       await ctx.store.recordMetadataUpdate(at(90, 1, "8"));
 
-      expect(await ctx.store.lastMetadataUpdate("8")).to.deep.equal({ blockNumber: 90, logIndex: 1 });
+      expect(await ctx.store.lastMetadataUpdate("8")).to.deep.equal({
+        blockNumber: 90,
+        logIndex: 1,
+      });
       expect(await ctx.store.lastMetadataUpdate("9")).to.equal(null);
     });
 
     it("takes a conversation id as a bigint, a safe integer or a decimal string alike", async () => {
       await ctx.store.recordMetadataUpdate(at(120, 4, 7n));
 
-      expect(await ctx.store.lastMetadataUpdate(7)).to.deep.equal({ blockNumber: 120, logIndex: 4 });
+      expect(await ctx.store.lastMetadataUpdate(7)).to.deep.equal({
+        blockNumber: 120,
+        logIndex: 4,
+      });
       expect(await ctx.store.lastMetadataUpdate("7")).to.deep.equal({
         blockNumber: 120,
         logIndex: 4,
@@ -355,7 +361,8 @@ function behavesLikeAStateStore(setup) {
         at(1, 0, "-1"),
         at(1, 0, "07"),
         at(1, 0, 1.5),
-        at(1, 0, undefined),
+        // Not at(1, 0, undefined): the default would give it a conversation.
+        { conversationId: undefined, blockNumber: 1, logIndex: 0 },
         at(-1, 0),
         at(1, -1),
         at(1, 1.5),
@@ -368,9 +375,10 @@ function behavesLikeAStateStore(setup) {
         } catch (e) {
           error = e;
         }
-        expect(error, JSON.stringify(bad, (_k, v) => (v === undefined ? "undefined" : v))).to.be.instanceOf(
-          TypeError,
-        );
+        expect(
+          error,
+          JSON.stringify(bad, (_k, v) => (v === undefined ? "undefined" : v)),
+        ).to.be.instanceOf(TypeError);
       }
       let readError;
       try {

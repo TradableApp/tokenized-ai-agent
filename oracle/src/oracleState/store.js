@@ -1,7 +1,8 @@
 "use strict";
 
 /**
- * Where the oracle keeps its chain cursor and its failed-job queue.
+ * Where the oracle keeps its chain cursor, its failed-job queue, and the position of the metadata
+ * update it applied last for each conversation.
  *
  * One interface, two backends:
  *  - Postgres (`createPostgresStateStore`) — the oracle's own `oracle_agent` database. Survives a
@@ -22,6 +23,11 @@
  *                                          (nothing changes an exhausted job afterwards)
  *   listExhaustedJobs()                  → the jobs given up on, for whoever follows them up
  *   countFailedJobs()                    → { pending, exhausted }
+ *   lastMetadataUpdate(conversationId)   → { blockNumber, logIndex } of the newest metadata update
+ *                                          applied for that conversation, or null
+ *   recordMetadataUpdate({ conversationId, blockNumber, logIndex })
+ *                                        → true if stored; false if that or a newer position is
+ *                                          already there (it never moves back)
  *
  * Time comes from the injected `now()` (the oracle's clock), not the database's, so both
  * backends agree and tests can move it.
@@ -32,10 +38,11 @@ const { describeError } = require("../errorDescription");
 const fs = require("node:fs/promises");
 const { and, asc, eq, inArray, lte, sql } = require("drizzle-orm");
 
-const { oracleCursorTable, oracleFailedJobTable } = require("./schema");
+const { oracleCursorTable, oracleFailedJobTable, oracleMetadataUpdateTable } = require("./schema");
 
 const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
 const TX_HASH_PATTERN = /^0x[0-9a-f]{64}$/;
+const DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/;
 
 /** A block number as a safe non-negative integer; BigInt (ethers) and numeric strings accepted. */
 function toBlockNumber(value, what) {
@@ -88,6 +95,41 @@ function normalizeJob(job) {
   };
 }
 
+/** A conversation id (a uint256) in its decimal form, from a bigint, a safe integer or a string. */
+function toConversationId(value, what) {
+  let text;
+  if (typeof value === "bigint" && value >= 0n) text = value.toString();
+  else if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+    text = String(value);
+  } else if (typeof value === "string") text = value;
+  if (text === undefined || !DECIMAL_PATTERN.test(text)) {
+    throw new TypeError(`${what}: expected a conversation id, got ${String(value)}`);
+  }
+  return text;
+}
+
+/** Validate a metadata update's conversation and position. Throws TypeError on anything else. */
+function normalizeMetadataUpdate(update) {
+  const logIndex = update?.logIndex;
+  if (!Number.isSafeInteger(logIndex) || logIndex < 0) {
+    throw new TypeError(
+      `recordMetadataUpdate: log index must be a non-negative integer, got ${String(logIndex)}`,
+    );
+  }
+  return {
+    conversationId: toConversationId(update?.conversationId, "recordMetadataUpdate"),
+    blockNumber: toBlockNumber(update?.blockNumber, "recordMetadataUpdate"),
+    logIndex,
+  };
+}
+
+/** Is position `a` after position `b`? Block number first, then log index. */
+function isLaterPosition(a, b) {
+  return (
+    a.blockNumber > b.blockNumber || (a.blockNumber === b.blockNumber && a.logIndex > b.logIndex)
+  );
+}
+
 function errorText(error) {
   if (error === undefined || error === null) return null;
   // Bounded: an RPC or storage error can carry a whole response body.
@@ -115,6 +157,8 @@ function createPostgresStateStore({ db, chainId, contractAddress, now = () => ne
   const jobs = oracleFailedJobTable;
   const thisCursor = and(eq(cursors.chainId, chain), eq(cursors.contractAddress, address));
   const theseJobs = and(eq(jobs.chainId, chain), eq(jobs.contractAddress, address));
+  const updates = oracleMetadataUpdateTable;
+  const theseUpdates = and(eq(updates.chainId, chain), eq(updates.contractAddress, address));
 
   async function writeCursor(block, { allowBackwards }) {
     const rows = await db
@@ -267,15 +311,53 @@ function createPostgresStateStore({ db, chainId, contractAddress, now = () => ne
       for (const row of rows) counts[row.status] = Number(row.n);
       return counts;
     },
+
+    async lastMetadataUpdate(conversationId) {
+      const id = toConversationId(conversationId, "lastMetadataUpdate");
+      const rows = await db
+        .select({ blockNumber: updates.blockNumber, logIndex: updates.logIndex })
+        .from(updates)
+        .where(and(theseUpdates, eq(updates.conversationId, id)))
+        .limit(1);
+      return rows.length > 0
+        ? { blockNumber: Number(rows[0].blockNumber), logIndex: Number(rows[0].logIndex) }
+        : null;
+    },
+
+    async recordMetadataUpdate(update) {
+      const u = normalizeMetadataUpdate(update);
+      const at = now();
+      const rows = await db
+        .insert(updates)
+        .values({
+          chainId: chain,
+          contractAddress: address,
+          conversationId: u.conversationId,
+          blockNumber: u.blockNumber,
+          logIndex: u.logIndex,
+          updatedAt: at,
+        })
+        .onConflictDoUpdate({
+          target: [updates.chainId, updates.contractAddress, updates.conversationId],
+          set: { blockNumber: u.blockNumber, logIndex: u.logIndex, updatedAt: at },
+          // The guard is in the statement itself, so two writers cannot race it backwards.
+          setWhere: sql`(${updates.blockNumber}, ${updates.logIndex}) < (${u.blockNumber}, ${u.logIndex})`,
+        })
+        .returning({ blockNumber: updates.blockNumber });
+      // No row back means the WHERE refused the update: the stored position is the same or later.
+      return rows.length > 0;
+    },
   };
 }
 
 /**
  * The file backend. One oracle process, one contract: the files carry no chain or contract.
  *
- * @param {{ statePath: string, jobsPath: string, now?: () => Date }} options
+ * `metadataPath` holds the metadata positions; without it they are kept in memory only.
+ *
+ * @param {{ statePath: string, jobsPath: string, metadataPath?: string, now?: () => Date }} options
  */
-function createFileStateStore({ statePath, jobsPath, now = () => new Date() }) {
+function createFileStateStore({ statePath, jobsPath, metadataPath, now = () => new Date() }) {
   // Every job operation is read-modify-write on one file, so they run one at a time.
   let tail = Promise.resolve();
   function exclusive(task) {
@@ -311,6 +393,31 @@ function createFileStateStore({ statePath, jobsPath, now = () => new Date() }) {
     const block = (await readJson(statePath))?.lastProcessedBlock;
     // 0 was the old file's way of saying "nothing yet".
     return Number.isSafeInteger(block) && block > 0 ? block : null;
+  }
+
+  // Conversation id → [block number, log index]; the file's contents, or the memory without one.
+  let metadataInMemory = {};
+
+  async function readMetadataUpdates() {
+    if (!metadataPath) return metadataInMemory;
+    const parsed = await readJson(metadataPath);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  }
+
+  async function writeMetadataUpdates(entries) {
+    if (!metadataPath) {
+      metadataInMemory = entries;
+      return;
+    }
+    await fs.writeFile(metadataPath, JSON.stringify(entries));
+  }
+
+  function storedPosition(entry) {
+    if (!Array.isArray(entry) || entry.length !== 2) return null;
+    const [blockNumber, logIndex] = entry;
+    if (!Number.isSafeInteger(blockNumber) || blockNumber < 0) return null;
+    if (!Number.isSafeInteger(logIndex) || logIndex < 0) return null;
+    return { blockNumber, logIndex };
   }
 
   async function updateJob(id, change) {
@@ -424,7 +531,26 @@ function createFileStateStore({ statePath, jobsPath, now = () => new Date() }) {
       }
       return counts;
     },
+
+    async lastMetadataUpdate(conversationId) {
+      const id = toConversationId(conversationId, "lastMetadataUpdate");
+      const entries = await readMetadataUpdates();
+      return Object.hasOwn(entries, id) ? storedPosition(entries[id]) : null;
+    },
+
+    async recordMetadataUpdate(update) {
+      const u = normalizeMetadataUpdate(update);
+      return exclusive(async () => {
+        const entries = await readMetadataUpdates();
+        const stored = Object.hasOwn(entries, u.conversationId)
+          ? storedPosition(entries[u.conversationId])
+          : null;
+        if (stored !== null && !isLaterPosition(u, stored)) return false;
+        await writeMetadataUpdates({ ...entries, [u.conversationId]: [u.blockNumber, u.logIndex] });
+        return true;
+      });
+    },
   };
 }
 
-module.exports = { createFileStateStore, createPostgresStateStore };
+module.exports = { createFileStateStore, createPostgresStateStore, isLaterPosition };

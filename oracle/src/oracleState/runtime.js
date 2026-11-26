@@ -41,7 +41,8 @@ function defaultCreateDb(connectionString) {
  *
  * @param {{
  *   postgresUrl?: string|null, chainId: number|bigint, contractAddress: string,
- *   statePath: string, jobsPath: string, createDb?: (url: string) => object,
+ *   statePath: string, jobsPath: string, metadataPath?: string,
+ *   createDb?: (url: string) => object,
  * }} options
  * @returns {{ store: object }}
  */
@@ -51,10 +52,11 @@ function createStateStore({
   contractAddress,
   statePath,
   jobsPath,
+  metadataPath,
   createDb = defaultCreateDb,
 }) {
   if (!postgresUrl || !postgresUrl.trim()) {
-    return { store: createFileStateStore({ statePath, jobsPath }) };
+    return { store: createFileStateStore({ statePath, jobsPath, metadataPath }) };
   }
   return {
     store: createPostgresStateStore({ db: createDb(postgresUrl), chainId, contractAddress }),

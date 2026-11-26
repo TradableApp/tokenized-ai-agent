@@ -2263,7 +2263,8 @@ describe("aiAgentOracle", function () {
 
     /** The titles submitted on chain for a conversation, in the order they were submitted. */
     function submitted(conversationId = 123) {
-      return contract.submitConversationMetadata.getCalls()
+      return contract.submitConversationMetadata
+        .getCalls()
         .filter((call) => String(call.args[0]) === String(conversationId))
         .map((call) => uploaded.get(call.args[1]))
         .map((file) => (file.isDeleted ? `deleted:${file.title}` : file.title));
@@ -2389,7 +2390,10 @@ describe("aiAgentOracle", function () {
         metadataPath: tempState.metadataPath,
       });
       const restarted = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
-      restarted.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore: reopened });
+      restarted.initForTest({
+        ...stubs["./contractUtility"].initializeOracle(),
+        stateStore: reopened,
+      });
 
       await restarted.retryFailedJobs();
 
