@@ -3304,6 +3304,11 @@ function reportUndecodableLog(log) {
  * Hand one oracle-work event to its handler.
  * @param {import("ethers").EventLog} event
  */
+/** Hands an event's work to the work queue, and gives back what the work gives. */
+function enqueueEventWork(_eventName, _args, work) {
+  return queue.add(work);
+}
+
 async function dispatchEvent(event) {
   const handler = EVENT_HANDLERS[event.eventName];
   if (!handler) {
@@ -3545,5 +3550,6 @@ module.exports = {
   ensureOracleAuthorized,
   processPastEvents,
   retryFailedJobs,
+  enqueueEventWork,
   wireAgentDbForPluginSql,
 };

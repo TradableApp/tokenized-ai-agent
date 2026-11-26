@@ -5,6 +5,7 @@ const chai = require("chai");
 const chaiAsPromised = require("chai-as-promised");
 const proxyquire = require("proxyquire").noCallThru();
 const sinon = require("sinon");
+const { agentMemorySurface } = require("./helpers/fakeAgentMemory");
 
 const { withTestKeys } = require("./helpers/oracleTestKeys");
 
@@ -39,7 +40,9 @@ function makeFramework({
   const seen = { added: null, startCalls: 0, started: false, handled: 0, startedWhenHandled: null };
 
   const runtime = {
-    agentId: "agent-uuid",
+    // What the oracle confines and sweeps before the agent answers.
+    ...agentMemorySurface(),
+    agentId: "00000000-0000-4000-8000-0000000000a9",
     // The runtime's own logger, which the oracle replaces with a cleaned one.
     logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } },
     ensureConnection: sinon.stub().resolves(),
@@ -48,9 +51,6 @@ function makeFramework({
     // What the oracle empties a conversation's room with, before and after each run.
     deleteAllMemories: sinon.stub().resolves(),
     deleteRoom: sinon.stub().resolves(),
-    deleteCache: sinon.stub().resolves(),
-    getLogs: sinon.stub().resolves([]),
-    deleteLog: sinon.stub().resolves(),
     composeState: composeFails
       ? sinon.stub().rejects(composeFails)
       : sinon.stub().resolves({ values: {}, text: "", data: { providers: {} } }),

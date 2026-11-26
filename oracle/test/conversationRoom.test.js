@@ -7,6 +7,7 @@ const {
   conversationScopeKey,
   clearConversationRoom,
   withRoomLock,
+  takeRoomTurn,
   ROOM_MEMORY_TABLES,
 } = require("../src/elizaos/conversationRoom");
 
@@ -95,31 +96,25 @@ describe("conversationScopeKey", () => {
 });
 
 /** A runtime with the deletion methods the framework offers, recording what it was asked. */
-function fakeRuntime({ agentLogs = 0, failing = {} } = {}) {
+function fakeRuntime({ failing = {} } = {}) {
   const calls = [];
-  let logs = Array.from({ length: agentLogs }, (_, i) => ({ id: `log-${i}`, roomId: "agent-1" }));
-  const step = (name, fn) =>
+  const step = (name) =>
     sinon.spy(async (...args) => {
       calls.push([name, ...args]);
       if (failing[name]) throw failing[name];
-      return fn ? fn(...args) : undefined;
     });
 
   const runtime = {
     agentId: "agent-1",
     deleteAllMemories: step("deleteAllMemories"),
     deleteRoom: step("deleteRoom"),
-    deleteCache: step("deleteCache"),
-    getLogs: step("getLogs", ({ roomId, count }) =>
-      logs.filter((log) => log.roomId === roomId).slice(0, count),
-    ),
-    deleteLog: step("deleteLog", (id) => {
-      logs = logs.filter((log) => log.id !== id);
-    }),
+    adapter: { deleteEntity: step("deleteEntity") },
   };
 
-  return { runtime, calls, logsLeft: () => logs.length };
+  return { runtime, calls };
 }
+
+const ROOM = { roomId: "room-x", entityId: "entity-x" };
 
 describe("clearConversationRoom", () => {
   let consoleError;
@@ -135,7 +130,7 @@ describe("clearConversationRoom", () => {
   it("empties every memory table the framework writes for a room, then deletes the room", async () => {
     const { runtime, calls } = fakeRuntime();
 
-    const failed = await clearConversationRoom(runtime, "room-x", "before the run");
+    const failed = await clearConversationRoom(runtime, ROOM, "before the run");
 
     expect(failed).to.deep.equal([]);
     expect(ROOM_MEMORY_TABLES).to.include.members(["messages", "facts"]);
@@ -149,30 +144,22 @@ describe("clearConversationRoom", () => {
     expect(consoleError.called).to.equal(false);
   });
 
-  it("removes the reflection marker the framework keeps for the room", async () => {
+  it("removes the owner's entity of the room after the room", async () => {
     const { runtime, calls } = fakeRuntime();
 
-    await clearConversationRoom(runtime, "room-x", "after the run");
+    await clearConversationRoom(runtime, ROOM, "after the run");
 
-    expect(calls).to.deep.include(["deleteCache", "room-x-reflection-last-processed"]);
-  });
-
-  it("removes the model-call records kept under the agent's own room", async () => {
-    // A model call made while no run is marked as current is recorded under the agent's own room,
-    // with the whole prompt in it.
-    const { runtime, logsLeft } = fakeRuntime({ agentLogs: 250 });
-
-    const failed = await clearConversationRoom(runtime, "room-x", "after the run");
-
-    expect(failed).to.deep.equal([]);
-    expect(logsLeft()).to.equal(0);
+    expect(calls).to.deep.include(["deleteEntity", "entity-x"]);
+    const roomDelete = calls.findIndex(([name]) => name === "deleteRoom");
+    const entityDelete = calls.findIndex(([name]) => name === "deleteEntity");
+    expect(entityDelete).to.be.greaterThan(roomDelete);
   });
 
   it("goes on with the other parts when one fails, and says which part failed", async () => {
     const boom = Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
     const { runtime, calls } = fakeRuntime({ failing: { deleteAllMemories: boom } });
 
-    const failed = await clearConversationRoom(runtime, "room-x", "after the run");
+    const failed = await clearConversationRoom(runtime, ROOM, "after the run");
 
     expect(failed).to.include("messages");
     expect(
@@ -191,7 +178,7 @@ describe("clearConversationRoom", () => {
   });
 
   it("never throws, even for a runtime without the deletion methods", async () => {
-    const failed = await clearConversationRoom({ agentId: "agent-1" }, "room-x", "before the run");
+    const failed = await clearConversationRoom({ agentId: "agent-1" }, ROOM, "before the run");
 
     expect(failed).to.include("room");
     expect(consoleError.called).to.equal(true);
@@ -259,5 +246,109 @@ describe("withRoomLock", () => {
 
   it("gives back what the task returned", async () => {
     expect(await withRoomLock("room-c", async () => 42)).to.equal(42);
+  });
+});
+
+describe("withRoomLock — holding a room past the task", () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+
+  it("gives the task's result back at once and keeps the room until what it held settles", async () => {
+    const held = deferred();
+    let nextRan = false;
+
+    const first = withRoomLock("room-h", async (hold) => {
+      hold(held.promise);
+      return "first";
+    });
+    const next = withRoomLock("room-h", async () => {
+      nextRan = true;
+    });
+
+    expect(await first).to.equal("first");
+    for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+    expect(nextRan, "the room is still held").to.equal(false);
+    held.resolve();
+    await next;
+    expect(nextRan).to.equal(true);
+  });
+
+  it("lets the next task in when what was held rejects", async () => {
+    const first = withRoomLock("room-r", async (hold) => {
+      hold(Promise.reject(new Error("late")));
+    });
+    await first;
+
+    expect(await withRoomLock("room-r", async () => "ran")).to.equal("ran");
+  });
+});
+
+describe("takeRoomTurn", () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+
+  it("calls the next of a room's entries only once the earlier one's work is done", async () => {
+    const gate = deferred();
+    const entered = [];
+
+    const first = takeRoomTurn("room-t", async () => {
+      entered.push("first");
+      await gate.promise;
+    });
+    const second = takeRoomTurn("room-t", async () => {
+      entered.push("second");
+    });
+
+    for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+    expect(entered).to.deep.equal(["first"]);
+    gate.resolve();
+    await Promise.all([first, second]);
+    expect(entered).to.deep.equal(["first", "second"]);
+  });
+
+  it("waits for the room's lock, held past a run included, before calling the next entry", async () => {
+    const held = deferred();
+    let entered = false;
+
+    await withRoomLock("room-u", async (hold) => {
+      hold(held.promise);
+    });
+    const turn = takeRoomTurn("room-u", async () => {
+      entered = true;
+    });
+
+    for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+    expect(entered).to.equal(false);
+    held.resolve();
+    await turn;
+    expect(entered).to.equal(true);
+  });
+
+  it("does not hold up another room, and passes a throw on", async () => {
+    const gate = deferred();
+    const blocked = takeRoomTurn("room-v", () => gate.promise);
+
+    expect(await takeRoomTurn("room-w", async () => "other")).to.equal("other");
+    const failing = takeRoomTurn("room-w", async () => {
+      throw new Error("boom");
+    });
+    let thrown;
+    await failing.catch((error) => {
+      thrown = error;
+    });
+    expect(thrown?.message).to.equal("boom");
+    expect(await takeRoomTurn("room-w", async () => "next")).to.equal("next");
+    gate.resolve();
+    await blocked;
   });
 });
