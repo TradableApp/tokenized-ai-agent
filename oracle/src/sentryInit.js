@@ -206,6 +206,10 @@ function describedException(exception) {
  * caller's user agent and stream position, so all of that is dropped, from the event and from the
  * trace header the envelope is given. An event raised outside a request keeps its trace.
  *
+ * `sdkProcessingMetadata` and its fields are the SDK's own and not part of its documented event
+ * shape, so they can move with a release. `test/sentryIncomingRequests.test.js` runs the real SDK
+ * and fails if they do: run it whenever `@sentry/node` changes version.
+ *
  * @param {object} event an already scrubbed copy, so reading it cannot throw.
  */
 function withoutServedRequest(event) {

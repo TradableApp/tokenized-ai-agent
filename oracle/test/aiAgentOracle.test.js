@@ -2391,7 +2391,7 @@ describe("aiAgentOracle", function () {
         }),
       };
 
-      const NOTICE = /Prompts Could( Not)? Be Read$/;
+      const NOTICE = /Requests Could( Not)? Be Read$/;
       // The line of the notice each case is counted on.
       const COUNTED_AS = {
         "a version byte other than 1": /did not open: 1/,
@@ -2524,8 +2524,8 @@ describe("aiAgentOracle", function () {
 
           const [, second] = notices();
           expect(second.title).to.match(/^CRITICAL: /);
-          expect(second.message).to.include("Prompts read since the last notice: 0");
-          expect(second.message).to.include("Prompts that could not be read: 3");
+          expect(second.message).to.include("Requests read since the last notice: 0");
+          expect(second.message).to.include("Requests that could not be read: 3");
           expect(second.message).to.match(/oracle public key/);
           expect(`${second.title}\n${second.message}`).to.not.match(/0x[0-9a-f]{8,}/i);
         });
@@ -2540,8 +2540,8 @@ describe("aiAgentOracle", function () {
 
           const [, second] = notices();
           expect(second.title).to.not.match(/^CRITICAL/);
-          expect(second.message).to.include("Prompts read since the last notice: 1");
-          expect(second.message).to.include("Prompts that could not be read: 3");
+          expect(second.message).to.include("Requests read since the last notice: 1");
+          expect(second.message).to.include("Requests that could not be read: 3");
         });
 
         it("counts an event with no wrapped key and no stored key file", async () => {
@@ -2589,7 +2589,7 @@ describe("aiAgentOracle", function () {
             const [notice] = stubs["./alerting"].sendAlert
               .getCalls()
               .filter((c) => NOTICE.test(String(c.args[0])));
-            expect(String(notice.args[1])).to.include("Prompts read since the last notice: 1");
+            expect(String(notice.args[1])).to.include("Requests read since the last notice: 1");
           });
         }
       });

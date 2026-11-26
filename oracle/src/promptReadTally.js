@@ -54,14 +54,15 @@ function createPromptReadTally({ intervalMs = NOTICE_INTERVAL_MS, now = monotoni
     const total = unreadableTotal();
     const critical = read === 0 && total >= CRITICAL_AFTER;
     const title = critical
-      ? "CRITICAL: No Prompts Could Be Read"
-      : "Some Prompts Could Not Be Read";
+      ? "CRITICAL: No Requests Could Be Read"
+      : "Some Requests Could Not Be Read";
     const lines = [
-      `Prompts read since the last notice: ${read}`,
-      `Prompts that could not be read: ${total}`,
+      `Requests read since the last notice: ${read}`,
+      `Requests that could not be read: ${total}`,
       ...Object.values(UNREADABLE).map((kind) => `- ${KIND_WORDS[kind]}: ${unreadable[kind]}`),
       "",
-      "Each was dropped unanswered. A single prompt that cannot be read is a sender's mistake. " +
+      "A request is a prompt, a regeneration, a branch or a rename or delete. Each one that " +
+        "could not be read was dropped. A single one is a sender's mistake. " +
         "If none is being read, check that the " +
         "oracle public key the dApp encrypts to (the dApp's VITE_ORACLE_PUBLIC_KEY) is this " +
         "oracle's, and that the deployed dApp build is the current one.",

@@ -401,7 +401,7 @@ const MOCK_SETTINGS = [
 function mockSettingProblems(env) {
   return MOCK_SETTINGS.filter((setting) => setting.isOn(env)).map(
     ({ name, effect }) =>
-      `${name} is set, but NETWORK_NAME is a deployed network — ${effect}; remove it`,
+      `${name} is set, but NETWORK_NAME is a deployed network (a testnet is one) — ${effect}; remove it`,
   );
 }
 

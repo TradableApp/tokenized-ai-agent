@@ -41,8 +41,8 @@ describe("prompt read tally", () => {
     const notice = tally.takeNotice();
 
     expect(notice.title).to.not.match(/^CRITICAL/);
-    expect(notice.message).to.include("Prompts read since the last notice: 2");
-    expect(notice.message).to.include("Prompts that could not be read: 3");
+    expect(notice.message).to.include("Requests read since the last notice: 2");
+    expect(notice.message).to.include("Requests that could not be read: 3");
     expect(notice.message).to.match(/did not open: 2/);
     expect(notice.message).to.match(/not UTF-8 text: 1/);
     expect(notice.message).to.match(/not 32 bytes: 0/);
@@ -92,8 +92,8 @@ describe("prompt read tally", () => {
     tally.noteRead();
     const second = tally.takeNotice();
     expect(second, "after the hour").to.not.equal(null);
-    expect(second.message).to.include("Prompts that could not be read: 1");
-    expect(second.message).to.include("Prompts read since the last notice: 1");
+    expect(second.message).to.include("Requests that could not be read: 1");
+    expect(second.message).to.include("Requests read since the last notice: 1");
     expect(tally.takeNotice(), "nothing new").to.equal(null);
   });
 
