@@ -27,12 +27,19 @@ const MARKER = "# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===";
 // gate itself is covered by its own case, which omits it via `omitAgentDb`.
 const AGENT_DB_LINE = "- POSTGRES_AGENT_DATABASE=oracle_agent";
 
+// The bundle measures the compose file, so an image is accepted only when named by its digest.
+const DIGEST = `sha256:${"0123456789abcdef".repeat(4)}`;
+const PINNED_IMAGE = `ghcr.io/tradableapp/tokenized-ai-agent:test@${DIGEST}`;
+
 /** Wraps config lines in enough compose shape to exercise the bounded scan, not a stub. */
-function composeFixture(configLines, { marker = MARKER, omitAgentDb = false, secretLines = [] } = {}) {
+function composeFixture(
+  configLines,
+  { marker = MARKER, omitAgentDb = false, secretLines = [], imageLine = `image: ${PINNED_IMAGE}`, moreServices = [] } = {},
+) {
   return [
     "services:",
     "  oracle:",
-    "    image: ghcr.io/tradableapp/tokenized-ai-agent:test",
+    ...(imageLine === null ? [] : [`    ${imageLine}`]),
     "    environment:",
     "      # === 🔐 ROFL SECRETS ===",
     "      - PRIVATE_KEY=${PRIVATE_KEY:-}",
@@ -46,13 +53,14 @@ function composeFixture(configLines, { marker = MARKER, omitAgentDb = false, sec
     '      - "3000:3000"',
     "    volumes:",
     "      - /run/rofl-appd.sock:/run/rofl-appd.sock",
+    ...moreServices,
     "",
   ].join("\n");
 }
 
-function runPreflight(contents) {
+function runPreflight(contents, name = "compose.base-testnet.yaml") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ta-preflight-"));
-  const file = path.join(dir, "compose.base-testnet.yaml");
+  const file = path.join(dir, name);
   fs.writeFileSync(file, contents);
 
   try {
@@ -153,6 +161,103 @@ describe("rofl-preflight.sh", function () {
     const { code } = runPreflight(composeFixture(["- LOG_LEVEL=warn"]).replace(/\n/g, "\r\n"));
 
     expect(code).to.equal(0);
+  });
+
+  describe("every image is pinned by digest", function () {
+    const refusesImage = ({ code, out }, service) => {
+      expect(code, out).to.equal(1);
+      expect(out).to.include("not pinned by digest");
+      expect(out).to.include(`'${service}'`);
+      expect(out).to.include("compose.base-testnet.yaml");
+      expect(out).to.include("bun run image:pin:base-testnet");
+    };
+
+    it("accepts an image named by tag and digest", function () {
+      const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"]));
+
+      expect(code, out).to.equal(0);
+      expect(out).to.not.include("not pinned by digest");
+    });
+
+    it("accepts a quoted reference, and one named by digest alone", function () {
+      for (const imageLine of [`image: "${PINNED_IMAGE}"`, `image: ghcr.io/tradableapp/tokenized-ai-agent@${DIGEST}`]) {
+        const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine }));
+
+        expect(code, `${imageLine}\n${out}`).to.equal(0);
+      }
+    });
+
+    it("refuses an image named by tag alone", function () {
+      refusesImage(
+        runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine: "image: ghcr.io/tradableapp/tokenized-ai-agent:test" })),
+        "oracle",
+      );
+    });
+
+    it("refuses a digest that is short, long, upper case or not hex", function () {
+      const hex = "0123456789abcdef".repeat(4);
+      for (const digest of [hex.slice(1), `${hex}0`, hex.toUpperCase(), `${hex.slice(1)}g`, ""]) {
+        const imageLine = `image: ghcr.io/tradableapp/tokenized-ai-agent:test@sha256:${digest}`;
+        refusesImage(runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine })), "oracle");
+      }
+    });
+
+    it("refuses a digest of another algorithm, and two digests", function () {
+      for (const imageLine of [
+        `image: ghcr.io/tradableapp/tokenized-ai-agent:test@sha512:${"ab".repeat(64)}`,
+        `image: ghcr.io/tradableapp/tokenized-ai-agent:test@${DIGEST}@${DIGEST}`,
+      ]) {
+        refusesImage(runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine })), "oracle");
+      }
+    });
+
+    it("refuses an image interpolated from the environment", function () {
+      const imageLine = "image: ${ORACLE_IMAGE}";
+      refusesImage(runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine })), "oracle");
+    });
+
+    it("refuses one unpinned service among several, and names that one", function () {
+      const result = runPreflight(
+        composeFixture(["- LOG_LEVEL=warn"], {
+          moreServices: [
+            "  pinned-sidecar:",
+            `    image: ghcr.io/example/sidecar:1@${DIGEST}`,
+            "  sidecar:",
+            "    image: ghcr.io/example/sidecar:1",
+          ],
+        }),
+      );
+
+      refusesImage(result, "sidecar");
+      expect(result.out).to.not.include("'oracle'");
+      expect(result.out).to.not.include("'pinned-sidecar'");
+    });
+
+    it("refuses a service with no image", function () {
+      refusesImage(runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine: null })), "oracle");
+    });
+
+    it("refuses a compose with no service at all", function () {
+      const { code, out } = runPreflight(["version: '3'", "volumes:", "  data: {}", ""].join("\n"));
+
+      expect(code).to.equal(1);
+      expect(out).to.include("not pinned by digest");
+    });
+
+    it("reads a CRLF compose and a trailing comment on the image line", function () {
+      const imageLine = `image: ${PINNED_IMAGE}   # the release that went live`;
+      const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine }).replace(/\n/g, "\r\n"));
+
+      expect(code, out).to.equal(0);
+    });
+
+    it("names the release command for a mainnet compose", function () {
+      const imageLine = "image: ghcr.io/tradableapp/tokenized-ai-agent:base-mainnet-latest";
+      const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine }), "compose.base-mainnet.yaml");
+
+      expect(code).to.equal(1);
+      expect(out).to.include("bun run release:base-mainnet");
+    });
   });
 
   describe("POSTGRES_AGENT_DATABASE gate", function () {
@@ -302,6 +407,57 @@ describe("rofl-preflight.sh", function () {
         expect(pairsHostWithValue(text), `${name} pairs POSTGRES_HOST with a value`).to.equal(false);
       }
     });
+
+    // Which tracked files may be bundled today. The testnet-side files name the image that was
+    // pushed by its digest; no mainnet image has been pushed yet, so the two mainnet files name a
+    // tag alone and are refused until a release writes the digest of what it pushed.
+    const IMAGE_REFS = path.join(REPO_ROOT, "scripts", "rofl-image-refs.sh");
+    const unpinned = (name) =>
+      execFileSync("bash", ["-c", '. "$1"; rofl_unpinned_images "$2"', "_", IMAGE_REFS, path.join(REPO_ROOT, name)], {
+        encoding: "utf8",
+      });
+    const scripts = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")).scripts;
+    const imageRef = (name) =>
+      /^\s+image:\s*(\S+)\s*$/m.exec(fs.readFileSync(path.join(REPO_ROOT, name), "utf8"))[1];
+
+    it("lists the five compose files this check is about", function () {
+      expect([...composeFiles].sort()).to.deep.equal(
+        ["compose.base-mainnet.yaml", "compose.base-testnet.yaml", "compose.mainnet.yaml", "compose.testnet.yaml", "compose.yaml"],
+      );
+    });
+
+    for (const name of ["compose.yaml", "compose.base-testnet.yaml", "compose.testnet.yaml"]) {
+      it(`${name} names every image by its digest`, function () {
+        expect(unpinned(name), name).to.equal("");
+      });
+    }
+
+    for (const [name, env] of [
+      ["compose.base-testnet.yaml", "base-testnet"],
+      ["compose.testnet.yaml", "testnet"],
+    ]) {
+      it(`${name} pins the tag that image:push:${env} pushes, and image:pin:${env} pins it`, function () {
+        const tagged = imageRef(name).replace(/@sha256:[0-9a-f]{64}$/, "");
+        expect(scripts[`image:push:${env}`]).to.equal(`docker push ${tagged} && bun run image:pin:${env}`);
+        expect(scripts[`image:build:${env}`]).to.include(` -t ${tagged} `);
+        expect(scripts[`image:pin:${env}`]).to.equal(`bash scripts/pin-image-digest.sh ${name}`);
+      });
+    }
+
+    for (const [name, env] of [
+      ["compose.base-mainnet.yaml", "base-mainnet"],
+      ["compose.mainnet.yaml", "mainnet"],
+    ]) {
+      it(`${name} is refused until a release writes its digest`, function () {
+        expect(unpinned(name), name).to.include("oracle");
+        const { code, out } = runPreflight(fs.readFileSync(path.join(REPO_ROOT, name), "utf8"), name);
+
+        expect(code).to.equal(1);
+        expect(out).to.include("not pinned by digest");
+        expect(out).to.include(`bun run release:${env}`);
+        expect(scripts[`release:${env}`]).to.equal(`bash ./scripts/release-mainnet.sh ${name}`);
+      });
+    }
   });
 
   it("says on the ✅ line when the staleness check was skipped", function () {
