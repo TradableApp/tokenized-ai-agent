@@ -64,6 +64,15 @@ function endRequest(controller, body) {
   if (body && typeof body.cancel === "function") body.cancel().catch(() => {});
 }
 
+/**
+ * The error for a response that is not ok when the caller names none: the status only, never
+ * the status text or the body, which are the service's words.
+ */
+function defaultRefusal(response) {
+  const status = Number.isInteger(response?.status) ? response.status : "unknown";
+  return new Error(`Stored file fetch refused: status ${status}.`);
+}
+
 /** Reads the body chunk by chunk, stopping at the first chunk that passes `limitBytes`. */
 async function readCapped(response, limitBytes, controller) {
   const declared = declaredLength(response);
@@ -101,14 +110,19 @@ async function readCapped(response, limitBytes, controller) {
  *   also what anything but a finite number means.
  * @param {number} [options.timeoutMs] the time limit, at most `STORED_FILE_TIMEOUT_MS`, which is
  *   also what anything but a finite number means.
- * @param {(response: Response) => Error} options.refusal the error for a response that is not ok.
+ * @param {(response: Response) => Error} [options.refusal] the error for a response that is not
+ *   ok; when not given, a plain Error naming only the status (`defaultRefusal`).
  * @returns {Promise<Buffer>} the body.
  * @throws {StoredFileTooLargeError} over the byte limit (bad input).
  * @throws {StoredFileTimeoutError} over the time limit.
  */
 async function fetchStoredFile(
   send,
-  { maxBytes = MAX_STORED_FILE_BYTES, timeoutMs = STORED_FILE_TIMEOUT_MS, refusal } = {},
+  {
+    maxBytes = MAX_STORED_FILE_BYTES,
+    timeoutMs = STORED_FILE_TIMEOUT_MS,
+    refusal = defaultRefusal,
+  } = {},
 ) {
   // A limit that is not a finite number (NaN, a string, null, an infinity) is the default,
   // never no limit; a finite one can only tighten the default.
@@ -129,7 +143,7 @@ async function fetchStoredFile(
     const response = await send(controller.signal);
     if (!response.ok) {
       endRequest(controller, response.body);
-      throw refusal(response);
+      throw (typeof refusal === "function" ? refusal : defaultRefusal)(response);
     }
     return await readCapped(response, limitBytes, controller);
   } catch (error) {

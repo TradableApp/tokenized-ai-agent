@@ -1021,6 +1021,13 @@ async function reconstructHistory(startMessageCID, sessionKey) {
       console.warn(`[History] The walk's ${HISTORY_LIMITS.walkBytes} bytes are spent; stopping.`);
       break;
     }
+    // Checked every turn, so a walk served from the cache is held to the same time as one served
+    // from storage, and ends the same way: keeping what it read.
+    const msLeft = deadline - Date.now();
+    if (msLeft <= 0) {
+      console.warn(`[History] The walk's ${HISTORY_LIMITS.walkMs} ms are spent; stopping.`);
+      break;
+    }
 
     // 1. Check Cache (Hit = 0ms latency). It holds only files that decrypted and validated.
     let encryptedString = rawMessageCache.get(currentCid);
@@ -1029,11 +1036,6 @@ async function reconstructHistory(startMessageCID, sessionKey) {
       cacheHits += 1;
     } else {
       // 2. Fetch from Network, within what the walk has left of its bytes and time.
-      const msLeft = deadline - Date.now();
-      if (msLeft <= 0) {
-        console.warn(`[History] The walk's ${HISTORY_LIMITS.walkMs} ms are spent; stopping.`);
-        break;
-      }
       try {
         encryptedString = await fetchData(currentCid, {
           maxBytes: Math.min(HISTORY_LIMITS.fileBytes, bytesLeft),
