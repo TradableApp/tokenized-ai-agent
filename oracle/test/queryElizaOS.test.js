@@ -1385,6 +1385,42 @@ describe("enqueueEventWork — a conversation's prompts in the work queue", () =
 
   const thoughts = [{ thought: "Reading the market for the user now", text: "An answer." }];
 
+  it("reads the chain from the provider once for prompts that arrive together", async () => {
+    const oracle = loadOracle(makeElizaStub({ providerData: {}, thoughts }));
+    const getNetwork = sinon.stub().callsFake(
+      () => new Promise((resolve) => setTimeout(() => resolve({ chainId: DEPLOYMENT.chainId }), 5)),
+    );
+    oracle.initForTest({
+      provider: { getNetwork },
+      contract: { target: DEPLOYMENT.agent },
+      isSapphire: false,
+    });
+
+    await Promise.all([
+      oracle.enqueueEventWork("PromptSubmitted", [OWNER, 1n], async () => "first"),
+      oracle.enqueueEventWork("PromptSubmitted", [OWNER, 2n], async () => "second"),
+    ]);
+
+    expect(getNetwork.callCount).to.equal(1);
+  });
+
+  it("reads the chain again after a read that failed", async () => {
+    const oracle = loadOracle(makeElizaStub({ providerData: {}, thoughts }));
+    const getNetwork = sinon.stub();
+    getNetwork.onFirstCall().rejects(new Error("no answer"));
+    getNetwork.resolves({ chainId: DEPLOYMENT.chainId });
+    oracle.initForTest({
+      provider: { getNetwork },
+      contract: { target: DEPLOYMENT.agent },
+      isSapphire: false,
+    });
+
+    expect(await oracle.enqueueEventWork("PromptSubmitted", [OWNER, 1n], async () => "first")).to.equal("first");
+    expect(await oracle.enqueueEventWork("PromptSubmitted", [OWNER, 1n], async () => "second")).to.equal("second");
+
+    expect(getNetwork.callCount).to.equal(2);
+  });
+
   it("holds no place in the queue for a prompt waiting on another of its conversation", async () => {
     // One owner sends more prompts into one conversation than the queue has places. They are
     // answered one at a time; the ones waiting must leave the queue to other owners.
