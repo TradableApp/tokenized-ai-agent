@@ -70,6 +70,9 @@ const SENSITIVE_KEYS = [
   "urlpath",
   "urlquery",
   "querystring",
+  // The live stream's proof header. Requests the oracle serves are not recorded at all (see
+  // outgoingRequestIntegrations); this keeps the header out of an event by name all the same.
+  "streamproof",
 ];
 
 /** Collapse case and separators so PRIVATE_KEY, privateKey and private-key all compare equal. */
@@ -236,13 +239,20 @@ function redactedStandIn(event, error) {
  * Nothing is recorded about the oracle's own outgoing requests: no span, no breadcrumb, no
  * trace header added to them. Their addresses carry access keys (an RPC provider's in the
  * path, others in the query), and a span or breadcrumb stores the path and the query as
- * fields of their own. The oracle serves no requests, so there is no trace for these to
- * belong to; what is given up is the timing of single outgoing calls.
+ * fields of their own. What is given up is the timing of single outgoing calls.
+ *
+ * Nothing is recorded about the requests the oracle serves either (the live reasoning stream):
+ * no transaction and no span, whatever trace header the caller sends. A served request's path
+ * names an answer and its headers carry the stream proof and the caller's user agent, none of
+ * which is sent to Sentry; and a caller does not decide what is sampled.
  */
 function outgoingRequestIntegrations() {
   const silent = { breadcrumbs: false, tracePropagation: false, ignoreOutgoingRequests: () => true };
 
-  return [Sentry.httpIntegration(silent), Sentry.nativeNodeFetchIntegration(silent)];
+  return [
+    Sentry.httpIntegration({ ...silent, ignoreIncomingRequests: () => true }),
+    Sentry.nativeNodeFetchIntegration(silent),
+  ];
 }
 
 /**
