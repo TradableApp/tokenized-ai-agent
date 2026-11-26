@@ -5,6 +5,8 @@ const mirror = require("./mirror");
 const crypto = require("crypto");
 const { describeError } = require("../errorDescription");
 const { contentIdKind, isContentId, printableContentId } = require("./contentId");
+const { LARGEST_WRITTEN_FILE_BYTES } = require("./storedFileFetch");
+const { StoredFileWriteRefusedError } = require("../errors");
 
 // Mock storage in-memory cache (for USE_MOCK_STORAGE mode)
 const mockStorageCache = new Map();
@@ -92,6 +94,15 @@ async function initializeStorage() {
  * @returns {Promise<string>} The resulting CID.
  */
 async function uploadData(dataBuffer, tags = []) {
+  // Never write a file the oracle would refuse to read back (storedFileFetch.js): every reader
+  // allows LARGEST_WRITTEN_FILE_BYTES, so nothing larger is uploaded, in any mode.
+  if (dataBuffer.length > LARGEST_WRITTEN_FILE_BYTES) {
+    throw new StoredFileWriteRefusedError({
+      limitBytes: LARGEST_WRITTEN_FILE_BYTES,
+      sizeBytes: dataBuffer.length,
+    });
+  }
+
   if (USE_MOCK_STORAGE) {
     // Generate a deterministic mock CID based on the data hash
     const hash = crypto.createHash("sha256").update(dataBuffer).digest("hex");

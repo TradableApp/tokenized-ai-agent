@@ -2779,9 +2779,14 @@ describe("aiAgentOracle", function () {
 
     it("stops the walk, keeping what it read, once the bytes for one prompt are spent", async () => {
       const limits = aiAgentOracle.HISTORY_LIMITS;
-      // Sealed, a file of this content is about 70% of the file limit.
-      const content = "x".repeat(Math.floor(limits.fileBytes * 0.5));
-      const fileChars = createEncryptedString(message(content, null), FAKE_SESSION_KEY).length;
+      // Sealed, a file of this size is about 70% of the file limit. The bulk is in a field the
+      // walk does not hand on (as an answer's reasoning is), so the contents' own budget does
+      // not bind first.
+      const padded = (parentCID) => ({
+        ...message("short", parentCID),
+        reasoning: "x".repeat(Math.floor(limits.fileBytes * 0.5)),
+      });
+      const fileChars = createEncryptedString(padded(null), FAKE_SESSION_KEY).length;
       const fits = Math.floor(limits.walkBytes / fileChars);
       expect(fits, "the test's files fit the walk at least once").to.be.at.least(1);
       expect(fits, "the walk's byte limit binds before its file count").to.be.below(limits.files);
@@ -2792,7 +2797,7 @@ describe("aiAgentOracle", function () {
       for (let i = 1; i <= fits + 3; i += 1) {
         bodies.set(
           idFor(i),
-          createEncryptedString(message(content, i > 1 ? idFor(i - 1) : null), FAKE_SESSION_KEY),
+          createEncryptedString(padded(i > 1 ? idFor(i - 1) : null), FAKE_SESSION_KEY),
         );
       }
       served.callsFake(async (id, { maxBytes }) => {

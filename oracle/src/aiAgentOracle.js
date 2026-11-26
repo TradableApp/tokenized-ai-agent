@@ -46,7 +46,11 @@ const {
   fetchData,
   queryTransactionByTags,
 } = require("./storage/storage");
-const { MAX_STORED_FILE_BYTES, STORED_FILE_TIMEOUT_MS } = require("./storage/storedFileFetch");
+const {
+  ANSWER_ALLOWANCE_BYTES,
+  MAX_STORED_FILE_BYTES,
+  STORED_FILE_TIMEOUT_MS,
+} = require("./storage/storedFileFetch");
 const { printableContentId } = require("./storage/contentId");
 const {
   createConversationFile,
@@ -60,12 +64,11 @@ const {
   isRetryableError,
   isTransientProviderError,
   StoredFileTooLargeError,
-  StoredFileTimeoutError,
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
-const { validatePayload } = require("./payloadValidator");
+const { validatePayload, MAX_PROMPT_LENGTH } = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
 const { createRangePoller } = require("./eventPoller");
 const {
@@ -314,7 +317,7 @@ const { classifyIntent, queryGeminiDirect } = require("./geminiDirect");
 const { recordAnswerActivity } = require("./answerActivity");
 const { sourcesFromState, stepFromThought } = require("./answerProvenance");
 const { encryptSymmetrically } = require("./stream/frameCrypto");
-const { noopSink, resolveReplicaId } = require("./stream/streamContract");
+const { LIMITS: STREAM_LIMITS, noopSink, resolveReplicaId } = require("./stream/streamContract");
 const {
   createAnswerStream,
   createOfflineStream,
@@ -493,10 +496,11 @@ const queue = new PQueue({ concurrency: 5 });
 // names its own parent, so the whole chain is the user's to choose. These bound the work one
 // prompt can cause, however the chain was built.
 const MIB = 1024 * 1024;
+// Files read for one prompt: the messages the model is given (all of them reach it), and at
+// most 100 whatever AI_CONTEXT_MESSAGES_LIMIT says. 20 in every compose file.
+const HISTORY_FILES = Math.min(Math.max(AI_CONTEXT_MESSAGES_LIMIT, 0), 100);
 const HISTORY_LIMITS = Object.freeze({
-  // Files read for one prompt: the messages the model is given (all of them reach it), and at
-  // most 100 whatever AI_CONTEXT_MESSAGES_LIMIT says. 20 in every compose file.
-  files: Math.min(Math.max(AI_CONTEXT_MESSAGES_LIMIT, 0), 100),
+  files: HISTORY_FILES,
   // One file: the largest file the oracle writes, with room (storage/storedFileFetch.js).
   fileBytes: MAX_STORED_FILE_BYTES,
   fileMs: STORED_FILE_TIMEOUT_MS,
@@ -504,8 +508,18 @@ const HISTORY_LIMITS = Object.freeze({
   // hundreds of files as written in practice (a few KB each). Once spent, the walk stops and the
   // model is given the newer messages it has; nothing is refused.
   walkBytes: 4 * MAX_STORED_FILE_BYTES,
-  // The whole walk: three fetches at their own limit. Past it, a fetch is a retryable timeout.
+  // The whole walk: three fetches at their own limit. Past it the walk stops, as at a fetch that
+  // timed out, and the model is given the newer messages it has.
   walkMs: 3 * STORED_FILE_TIMEOUT_MS,
+  // The text handed to the model, summed over the messages' contents (characters). A history
+  // alternates prompt and answer, so half its messages are prompts at their longest
+  // (MAX_PROMPT_LENGTH, 5,000) and half are answers as long as the live stream carries one
+  // (answerTextBytes, 64 KiB; an answer in practice is a few thousand characters): 705,360 for
+  // 20 messages. No conversation of real prompts and normal answers is cut; past it the walk
+  // stops and keeps the newer messages. The bytes read (walkBytes) are bounded separately.
+  contentChars:
+    Math.ceil(HISTORY_FILES / 2) * MAX_PROMPT_LENGTH +
+    Math.ceil(HISTORY_FILES / 2) * STREAM_LIMITS.answerTextBytes,
   // A conversation's key file is the hex of one wrapped 32-byte key, a few hundred characters.
   keyFileBytes: 4 * 1024,
   // The cache of files that decrypted and validated, counted by characters (a sealed file is
@@ -517,8 +531,9 @@ const HISTORY_LIMITS = Object.freeze({
 // before its walk), and the queue runs 5 handlers at once (retries share it), so 5 files at
 // HISTORY_LIMITS.fileBytes (8 MiB) are in flight at most. Reading one file holds its chunks and
 // their copy, the text, the decoded ciphertext, the plaintext and the parsed object: under 8 times
-// the file, so under 5 x 8 x 8 MiB = 320 MiB, plus the cache's 128 MiB. The smallest machine the
-// oracle runs on has 4 GiB for everything.
+// the file, so under 5 x 8 x 8 MiB = 320 MiB, plus the cache's 128 MiB. Each handler also keeps
+// its history, at most HISTORY_LIMITS.contentChars characters (about 1.4 MB as UTF-16), and its
+// copies in the model request. The smallest machine the oracle runs on has 4 GiB for everything.
 //
 // We store the raw ENCRYPTED string (IV + Ciphertext), and only once it decrypted with the
 // prompt's key and read as a message file: a file that does neither is fetched again next time,
@@ -973,13 +988,14 @@ function isWalkBytesSpent(error) {
  * Bounded as a whole (`HISTORY_LIMITS`): at most `files` files, `walkBytes` read from storage or
  * the cache, and `walkMs`; each fetch gets the smaller of its own limits and what the walk has
  * left. What ends the walk early:
- * - the chain's end, the file count, or the walk's bytes spent: the history read so far is used;
- * - a fetch that fails (a 404, a gateway error, an id that is not a content id) or a file that
- *   does not decrypt or is not a message file: the same (a branch's chain can reach files sealed
- *   with another conversation's key), and that file is never cached;
- * - a file over its own byte limit: thrown, as bad input, so the prompt is dropped;
- * - a fetch past its time, or the walk past its time: thrown, as retryable, so the prompt is
- *   queued and answered later with its whole history rather than now without it.
+ * - the chain's end, the file count, the walk's bytes or time spent, or the contents' budget
+ *   reached: the history read so far is used;
+ * - a fetch that fails (a 404, a gateway error, a timeout, an id that is not a content id) or a
+ *   file that does not decrypt or is not a message file: the same (a branch's chain can reach
+ *   files sealed with another conversation's key), and that file is never cached. A gateway slow
+ *   for everyone so costs answers their older context, never the answers themselves;
+ * - a file over its own byte limit: thrown, as bad input, so the prompt is dropped. The oracle
+ *   never writes such a file (`storage.uploadData` refuses one).
  * @param {string} startMessageCID The CID of the latest message in the thread.
  * @param {string | null} sessionKey The key for decryption (EVM only).
  * @returns {Promise<Array<object>>} An array of message objects for the AI context.
@@ -995,6 +1011,7 @@ async function reconstructHistory(startMessageCID, sessionKey) {
   let cacheHits = 0;
   let networkFetches = 0;
   let bytesLeft = HISTORY_LIMITS.walkBytes;
+  let contentCharsLeft = HISTORY_LIMITS.contentChars;
   const deadline = Date.now() + HISTORY_LIMITS.walkMs;
   // Ids are printed only once they have a content id's shape: a parent id is the user's text.
   console.log(`[History] Starting reconstruction from CID: ${printableContentId(startMessageCID)}`);
@@ -1013,7 +1030,10 @@ async function reconstructHistory(startMessageCID, sessionKey) {
     } else {
       // 2. Fetch from Network, within what the walk has left of its bytes and time.
       const msLeft = deadline - Date.now();
-      if (msLeft <= 0) throw new StoredFileTimeoutError({ timeoutMs: HISTORY_LIMITS.walkMs });
+      if (msLeft <= 0) {
+        console.warn(`[History] The walk's ${HISTORY_LIMITS.walkMs} ms are spent; stopping.`);
+        break;
+      }
       try {
         encryptedString = await fetchData(currentCid, {
           maxBytes: Math.min(HISTORY_LIMITS.fileBytes, bytesLeft),
@@ -1027,8 +1047,9 @@ async function reconstructHistory(startMessageCID, sessionKey) {
           );
           break;
         }
-        // Over a file's limit (dropped) or out of time (queued): the handler decides.
-        if (isBadInputError(error) || isRetryableError(error)) throw error;
+        // Over a file's own limit: bad input, and the handler drops the prompt. Anything else,
+        // a timeout included, ends the walk here.
+        if (isBadInputError(error)) throw error;
         console.error(
           `[History] Failed to fetch message ${depth} of the chain from storage.`,
           describedError(error),
@@ -1064,6 +1085,15 @@ async function reconstructHistory(startMessageCID, sessionKey) {
 
     // 4. Populate Cache for next time, now that it is known to be this conversation's file.
     if (!fromCache) rawMessageCache.set(currentCid, encryptedString);
+
+    const contentChars = typeof messageFile.content === "string" ? messageFile.content.length : 0;
+    if (contentChars > contentCharsLeft) {
+      console.warn(
+        `[History] The history's ${HISTORY_LIMITS.contentChars} characters are reached; stopping.`,
+      );
+      break;
+    }
+    contentCharsLeft -= contentChars;
 
     history.unshift({
       role: messageFile.role,
@@ -1811,6 +1841,37 @@ function asAnswer(text) {
   return { text, reasoning: [], sources: [] };
 }
 
+/**
+ * A tier's answer that is too large to store. Thrown inside the tier's own try, so it is that
+ * tier not answering: the next tier is asked, and when none is left the oracle's no-answer path
+ * runs. Never trimmed (what is streamed is what is stored) and never uploaded.
+ */
+class AnswerTooLargeToStoreError extends Error {
+  constructor(answerJsonBytes) {
+    super(
+      `The answer's ${answerJsonBytes} bytes of JSON are over the ${ANSWER_ALLOWANCE_BYTES} allowed to store.`,
+    );
+    this.name = "AnswerTooLargeToStoreError";
+  }
+}
+
+/**
+ * The answer, when it can be stored. Its text, as JSON in the MessageFile, must fit
+ * ANSWER_ALLOWANCE_BYTES: with the reasoning and sources the stream already holds to their
+ * limits, that keeps the file under LARGEST_WRITTEN_FILE_BYTES (storage/storedFileFetch.js), the
+ * size every reader allows. The live stream's own limit is lower (answerTextBytes, 64 KiB): an
+ * answer between the two is stored and sent without its answer frame, and the dApp shows the
+ * stored copy.
+ */
+function storableAnswer(answer) {
+  const text = typeof answer?.text === "string" ? answer.text : "";
+  const answerJsonBytes = Buffer.byteLength(JSON.stringify(text), "utf-8");
+  if (answerJsonBytes > ANSWER_ALLOWANCE_BYTES) {
+    throw new AnswerTooLargeToStoreError(answerJsonBytes);
+  }
+  return answer;
+}
+
 async function queryAIModel(conversationHistory, conversationId, userWallet, liveStream) {
   // The answer's live stream (see stream/answerStream.js); an offline one for a caller with none.
   const stream = liveStream ?? createOfflineStream();
@@ -1845,7 +1906,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // Direct provider bypass (used in tests and explicit operator config)
   if (aiProvider === "ChainGPT") {
     try {
-      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      const answer = storableAnswer(
+        asAnswer(await queryChainGPT(conversationHistory, conversationId)),
+      );
       providerTally.recordServed("chaingpt");
 
       return answer;
@@ -1859,7 +1922,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   }
   if (aiProvider === "Gemini") {
     try {
-      const answer = asAnswer(await queryGeminiDirect(conversationHistory));
+      const answer = storableAnswer(asAnswer(await queryGeminiDirect(conversationHistory)));
       // AFTER the await, never before: recording first means a throw is counted as both a
       // gemini success and a `none` failure from the catch below.
       providerTally.recordServed("gemini");
@@ -1880,7 +1943,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // 2. Path A: 1st Party Tradable Backend
   if (intent === "TRADABLE") {
     try {
-      const answer = asAnswer(await queryTradableAssistant(conversationHistory, userWallet));
+      const answer = storableAnswer(
+        asAnswer(await queryTradableAssistant(conversationHistory, userWallet)),
+      );
       providerTally.recordServed("tradable");
 
       return answer;
@@ -1893,7 +1958,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // 3. Path B: 3rd Party ElizaOS (Google Vertex/Gemini via Plugin)
   try {
     // We pass conversationId here to ensure proper room isolation in Eliza
-    const answer = await queryElizaOS(conversationHistory, conversationId, userWallet, stream);
+    const answer = storableAnswer(
+      await queryElizaOS(conversationHistory, conversationId, userWallet, stream),
+    );
     providerTally.recordServed("elizaos");
 
     return answer;
@@ -1922,7 +1989,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       // 4. Failover 1: ChainGPT. A new attempt on the stream: the steps shown so far stay.
       stream.attempt();
       try {
-        const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+        const answer = storableAnswer(
+          asAnswer(await queryChainGPT(conversationHistory, conversationId)),
+        );
         // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
         // success AND as whatever the next catch then records (gemini or none).
         providerTally.recordServed("chaingpt");
@@ -1939,7 +2008,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
     //    this is a different failure domain from the ElizaOS path above)
     stream.attempt();
     try {
-      const answer = asAnswer(await queryGeminiDirect(conversationHistory));
+      const answer = storableAnswer(asAnswer(await queryGeminiDirect(conversationHistory)));
       providerTally.recordServed("gemini");
 
       return answer;
@@ -3107,6 +3176,21 @@ async function retryClaimedJob(job) {
       console.warn(
         `[Retry] ${job.eventName} (tx ${job.transactionHash}) was refused for want of the oracle role; not counted as a failed attempt.`,
       );
+      return;
+    }
+    // Bad input stays bad: dropped, as handleAndRecord drops it on the first attempt, and never
+    // retried to exhaustion and its CRITICAL alert.
+    if (isBadInputError(error)) {
+      console.warn(
+        `[Retry] ${job.eventName} (tx ${job.transactionHash}) is bad input; dropped. Error: ${describeError(error)}`,
+      );
+      try {
+        await stateStore.completeJob(job.id);
+      } catch (storeError) {
+        console.error(
+          `[Retry] ${job.eventName} (tx ${job.transactionHash}) could not be removed from the queue: ${describeError(storeError)}`,
+        );
+      }
       return;
     }
     await recordFailedRetry(job, error);

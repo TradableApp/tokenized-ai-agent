@@ -21,6 +21,11 @@ const MIB = 1024 * KIB;
  *
  * Sealed, that is `LARGEST_WRITTEN_FILE_BYTES` (about 6.8 MiB). A user's prompt file is far
  * smaller (5,000 characters of prompt), and a file as written in practice is a few KB.
+ *
+ * Both halves are held when a file is written, not assumed: a model tier whose answer's JSON is
+ * over `ANSWER_ALLOWANCE_BYTES` counts as that tier not answering (`aiAgentOracle.js`,
+ * `storableAnswer`), and `storage.uploadData` refuses any file over `LARGEST_WRITTEN_FILE_BYTES`.
+ * So no file the oracle wrote is one it would refuse to read.
  */
 const ANSWER_ALLOWANCE_BYTES = 1 * MIB;
 const LARGEST_WRITTEN_FILE_PLAINTEXT_BYTES =
@@ -41,7 +46,9 @@ const MAX_STORED_FILE_BYTES = 8 * MIB;
 /**
  * The longest one stored file may take, from the request to the last byte of its body. The
  * largest file the oracle writes arrives within it at 2 Mbit/s; a file as written in practice
- * takes about a second. Past it the request is ended and the fetch is a retryable timeout.
+ * takes about a second. Past it the request is ended and the fetch fails as
+ * `StoredFileTimeoutError`: a history walk stops there and answers with what it read, and a
+ * key-file fetch, without which nothing can be answered, queues the event for retry.
  */
 const STORED_FILE_TIMEOUT_MS = 30 * 1000;
 
@@ -90,19 +97,27 @@ async function readCapped(response, limitBytes, controller) {
  * @param {(signal: AbortSignal) => Promise<Response>} send makes the request, passing `signal`
  *   to `fetch`, so the time limit and the byte limit can both end it.
  * @param {object} [options]
- * @param {number} [options.maxBytes] the byte limit, `MAX_STORED_FILE_BYTES` when not given.
- * @param {number} [options.timeoutMs] the time limit, `STORED_FILE_TIMEOUT_MS` when not given.
+ * @param {number} [options.maxBytes] the byte limit, at most `MAX_STORED_FILE_BYTES`, which is
+ *   also what anything but a finite number means.
+ * @param {number} [options.timeoutMs] the time limit, at most `STORED_FILE_TIMEOUT_MS`, which is
+ *   also what anything but a finite number means.
  * @param {(response: Response) => Error} options.refusal the error for a response that is not ok.
  * @returns {Promise<Buffer>} the body.
  * @throws {StoredFileTooLargeError} over the byte limit (bad input).
- * @throws {StoredFileTimeoutError} over the time limit (retryable).
+ * @throws {StoredFileTimeoutError} over the time limit.
  */
 async function fetchStoredFile(
   send,
   { maxBytes = MAX_STORED_FILE_BYTES, timeoutMs = STORED_FILE_TIMEOUT_MS, refusal } = {},
 ) {
-  const limitBytes = Math.min(Math.max(0, Math.floor(maxBytes)), MAX_STORED_FILE_BYTES);
-  const limitMs = Math.max(1, Math.floor(timeoutMs));
+  // A limit that is not a finite number (NaN, a string, null, an infinity) is the default,
+  // never no limit; a finite one can only tighten the default.
+  const limitBytes = Number.isFinite(maxBytes)
+    ? Math.min(Math.max(0, Math.floor(maxBytes)), MAX_STORED_FILE_BYTES)
+    : MAX_STORED_FILE_BYTES;
+  const limitMs = Number.isFinite(timeoutMs)
+    ? Math.min(Math.max(1, Math.floor(timeoutMs)), STORED_FILE_TIMEOUT_MS)
+    : STORED_FILE_TIMEOUT_MS;
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {

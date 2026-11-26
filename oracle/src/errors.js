@@ -78,8 +78,10 @@ class StoredFileTooLargeError extends BadInputError {
 /**
  * A stored file did not arrive in full within its time limit, and the request was ended.
  *
- * Retryable: a gateway that is slow now may serve the same file in a minute, and the file may
- * be a real part of the conversation. The retry queue's backoff spaces the attempts.
+ * Retryable where it reaches the handler, which is only a conversation's key file: without the
+ * key nothing can be answered, and a gateway that is slow now may serve it in a minute. A history
+ * walk never lets it reach the handler: it stops at the file and the prompt is answered with the
+ * newer messages read so far, as for any other fetch that fails.
  */
 class StoredFileTimeoutError extends RetryableError {
   constructor({ timeoutMs }) {
@@ -139,6 +141,26 @@ function isRpcErrorThatIsNotARevert(error) {
   return typeof message === "string" && message !== "" && !/revert/i.test(message);
 }
 
+/**
+ * A file was not uploaded because it is larger than the largest file the oracle writes
+ * (`LARGEST_WRITTEN_FILE_BYTES`), which is what every reader of stored files allows for. A file
+ * over it would be refused by the next prompt that reads it, so it is never written.
+ *
+ * Retryable: no such file can be built from the limits the oracle holds, so reaching this is the
+ * oracle's own fault; the event is queued and asked again (a model can answer shorter), and a
+ * prompt that never fits is refunded by the escrow's timeout.
+ */
+class StoredFileWriteRefusedError extends RetryableError {
+  constructor({ limitBytes, sizeBytes }) {
+    super(
+      `File of ${sizeBytes} bytes not uploaded: over the ${limitBytes}-byte written-file limit.`,
+    );
+    this.name = "StoredFileWriteRefusedError";
+    this.limitBytes = limitBytes;
+    this.sizeBytes = sizeBytes;
+  }
+}
+
 module.exports = {
   BadInputError,
   isBadInputError,
@@ -146,5 +168,6 @@ module.exports = {
   isRetryableError,
   StoredFileTooLargeError,
   StoredFileTimeoutError,
+  StoredFileWriteRefusedError,
   isTransientProviderError,
 };

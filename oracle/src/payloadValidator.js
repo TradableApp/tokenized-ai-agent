@@ -118,4 +118,4 @@ function issuesOf(error) {
     .join(", ");
 }
 
-module.exports = { validatePayload };
+module.exports = { validatePayload, MAX_PROMPT_LENGTH };
