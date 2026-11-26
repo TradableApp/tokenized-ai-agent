@@ -61,7 +61,13 @@ const {
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { createAlertThrottle, monotonicNow } = require("./alertThrottle");
-const { payloadText, unwrapSessionKey, isWrapNotOpened } = require("./userCiphertext");
+const {
+  payloadText,
+  unreadableKind,
+  unreadablePrompt,
+  unwrapSessionKey,
+} = require("./userCiphertext");
+const { UNREADABLE, createPromptReadTally } = require("./promptReadTally");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
@@ -891,7 +897,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     if (!keyFileCID) {
       // The event carried no key and the conversation has none stored: nothing can open the
       // prompt, and that is the sender's doing. A lookup that fails throws and is handled as such.
-      throw new BadInputError(
+      throw unreadablePrompt(
+        UNREADABLE.noKey,
         `No session key for conversation ${conversationId}: none sent, none stored.`,
       );
     }
@@ -902,6 +909,22 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
   throw new Error(
     "Could not determine session key: Not in payload and no conversationId provided for fallback.",
   );
+}
+
+/**
+ * The payload of an event whose session key has been read: as text, then decrypted (EVM), or as
+ * it is (Sapphire). Once the text is had, the prompt counts as read for the unreadable-prompt
+ * notice, whatever its decryption and schema then say.
+ */
+function openPromptPayload(payload, sessionKey) {
+  if (isSapphire) {
+    promptReads.noteRead();
+    return payload;
+  }
+  const text = payloadText(payload);
+  promptReads.noteRead();
+
+  return decryptSymmetrically(text, sessionKey);
 }
 
 // --- Storage & History Helpers ---
@@ -1931,9 +1954,7 @@ async function handlePrompt(
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
     stream = openAnswerStream(answerMessageId, sessionKey);
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(payloadText(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "PromptSubmitted");
 
@@ -2371,9 +2392,7 @@ async function handleRegeneration(
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
     stream = openAnswerStream(answerMessageId, sessionKey);
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(payloadText(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "RegenerationRequested");
 
@@ -2598,9 +2617,7 @@ async function handleBranch(
       originalConversationId.toString(),
     );
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(payloadText(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "BranchRequested");
 
@@ -2680,9 +2697,7 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(payloadText(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "MetadataUpdateRequested");
 
@@ -2819,20 +2834,24 @@ async function lostOracleRole(error) {
 // minutes says the same; the per-event lag is still logged.
 const LAG_ALERT_INTERVAL_MS = 10 * 60 * 1000;
 
-// A wrap that does not open is dropped as the sender's mistake. If the dApp wraps to a key this
-// oracle does not hold, every prompt fails that way and none is answered, so the condition is
-// said once an hour: often enough to be seen, and no more however many such prompts arrive.
-const UNOPENED_WRAP_ALERT_INTERVAL_MS = 60 * 60 * 1000;
-
 let lagAlerts;
-let unopenedWrapAlerts;
+// A prompt that cannot be read is dropped as the sender's mistake, and counted. If the dApp
+// encrypts to a key this oracle does not hold, every prompt fails that way and none is answered;
+// the counts, sent at most once an hour, tell that apart from a sender or two.
+let promptReads;
 
 /** The throttles, on a clock that only goes forward; a test may give its own (initForTest). */
 function buildAlertThrottles(now = monotonicNow) {
   lagAlerts = createAlertThrottle({ intervalMs: LAG_ALERT_INTERVAL_MS, now });
-  unopenedWrapAlerts = createAlertThrottle({ intervalMs: UNOPENED_WRAP_ALERT_INTERVAL_MS, now });
+  promptReads = createPromptReadTally({ now });
 }
 buildAlertThrottles();
+
+/** Sends the unreadable-prompt notice when one is due. */
+async function sendPromptReadNoticeIfDue() {
+  const notice = promptReads.takeNotice();
+  if (notice) await sendAlert(notice.title, notice.message);
+}
 
 /**
  * A wrapper for event handlers that distinguishes between retryable and fatal errors.
@@ -2869,6 +2888,7 @@ async function handleAndRecord(eventName, handler, ...args) {
     }
 
     await handler(...args);
+    await sendPromptReadNoticeIfDue();
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
     // Membership is by TYPE now, not by message text: payloadValidator raises BadInputError on a
@@ -2878,13 +2898,11 @@ async function handleAndRecord(eventName, handler, ...args) {
       console.warn(
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${describeError(error)}`,
       );
-      // We do NOT throw, we do NOT queue for retry, and the prompt itself raises no alert.
-      if (isWrapNotOpened(error) && unopenedWrapAlerts.shouldSend()) {
-        await sendAlert(
-          "Wrapped Session Keys Could Not Be Opened",
-          "A prompt's wrapped session key could not be opened with the oracle's key, and the prompt was dropped. One such prompt is a sender's mistake. If prompts are going unanswered, check that the dApp's oracle public key is this oracle's. This notice is sent at most once an hour.",
-        );
-      }
+      // We do NOT throw, we do NOT queue for retry, and the prompt itself raises no alert. A
+      // prompt that could not be read is counted, and the counts are sent once an hour.
+      const kind = unreadableKind(error);
+      if (kind) promptReads.noteUnreadable(kind);
+      await sendPromptReadNoticeIfDue();
 
       return;
     }

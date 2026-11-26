@@ -2,18 +2,39 @@
 
 /**
  * Reading what a prompt's sender controls: the session key wrapped to the oracle's public key,
- * and the payload bytes. Both are read with the oracle's own key, which is known to be healthy
- * by the time a prompt is handled (`createDecryptor` checks it). So a wrap or a payload that
- * cannot be read is the sender's doing, and is refused as `BadInputError`: dropped, with no
- * alert and no retry. A failure that is the oracle's own is passed on as it is.
+ * and the payload bytes. A wrap or a payload that cannot be read is refused as `BadInputError`:
+ * dropped, with no alert of its own and no retry. Each refusal carries its kind
+ * (`unreadableKind`), so the caller can count them (promptReadTally.js). A failure that is the
+ * oracle's own is passed on as it is.
+ *
+ * Nothing here can tell a sender's bad wrap from a wrap made to a key this oracle does not hold:
+ * `createDecryptor` checks only that the key is 32 bytes, and nothing compares it with the key
+ * the dApp encrypts to. That is what the counts are for: when no prompt is read at all, the
+ * notice is CRITICAL and names that key as the thing to check.
  */
 
 const { ethers } = require("ethers");
 
 const { BadInputError, isRetryableError } = require("./errors");
 const { errorKind } = require("./errorDescription");
+const { UNREADABLE } = require("./promptReadTally");
 
 const SESSION_KEY_BYTES = 32;
+
+/** A `BadInputError` for a prompt that could not be read, carrying its kind. */
+function unreadablePrompt(kind, message, options) {
+  const error = new BadInputError(message, options);
+  error.unreadablePrompt = kind;
+
+  return error;
+}
+
+/** The kind of a prompt that could not be read, or null for any other error. */
+function unreadableKind(error) {
+  if (!(error instanceof BadInputError)) return null;
+
+  return Object.values(UNREADABLE).includes(error.unreadablePrompt) ? error.unreadablePrompt : null;
+}
 
 /**
  * The rule `decryptSymmetrically` uses. A malformed wrap fails inside the ECIES code with a
@@ -45,9 +66,7 @@ function isOracleFault(error) {
  */
 async function unwrapSessionKey(decryptor, cipherBlob) {
   if (!cipherBlob || cipherBlob.length === 0) {
-    const refusal = new BadInputError("The wrapped session key is empty.");
-    refusal.wrapNotOpened = true;
-    throw refusal;
+    throw unreadablePrompt(UNREADABLE.wrapNotOpened, "The wrapped session key is empty.");
   }
 
   let sessionKey;
@@ -56,16 +75,16 @@ async function unwrapSessionKey(decryptor, cipherBlob) {
   } catch (error) {
     if (isOracleFault(error)) throw error;
     // The kind only: the message can quote bytes of the wrap.
-    const refusal = new BadInputError(
+    throw unreadablePrompt(
+      UNREADABLE.wrapNotOpened,
       `Could not open the wrapped session key (${errorKind(error)}).`,
     );
-    refusal.wrapNotOpened = true;
-    throw refusal;
   }
 
   // A wrap of any other length opens cleanly and fails later, when the key is first used.
   if (sessionKey.length !== SESSION_KEY_BYTES) {
-    throw new BadInputError(
+    throw unreadablePrompt(
+      UNREADABLE.keyWrongLength,
       `The wrapped session key is ${sessionKey.length} bytes, not ${SESSION_KEY_BYTES}.`,
     );
   }
@@ -87,17 +106,8 @@ function payloadText(payload) {
     // ethers says INVALID_ARGUMENT for bytes that are not UTF-8 or not bytes at all, both of
     // which are what the event carried. Its message quotes the offending bytes, so it goes.
     if (error?.code !== "INVALID_ARGUMENT") throw error;
-    throw new BadInputError("The event payload is not UTF-8 text.");
+    throw unreadablePrompt(UNREADABLE.payloadNotUtf8, "The event payload is not UTF-8 text.");
   }
 }
 
-/**
- * Whether bad input was a wrap that did not open. One such wrap is the sender's doing; every
- * wrap failing this way is what a dApp wrapping to a key the oracle does not hold looks like,
- * so the caller reports the condition (throttled), never the prompt.
- */
-function isWrapNotOpened(error) {
-  return error instanceof BadInputError && error.wrapNotOpened === true;
-}
-
-module.exports = { unwrapSessionKey, payloadText, isWrapNotOpened };
+module.exports = { unwrapSessionKey, payloadText, unreadablePrompt, unreadableKind };
