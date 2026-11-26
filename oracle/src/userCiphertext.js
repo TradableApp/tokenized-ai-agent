@@ -19,12 +19,20 @@ const SESSION_KEY_BYTES = 32;
  * The rule `decryptSymmetrically` uses. A malformed wrap fails inside the ECIES code with a
  * bare Error (a version byte, a length, a point off the curve, a tag that does not match), none
  * of which can be named positively without matching message text. So the other way round: a
- * RangeError is an allocation failure, and an error with a `code` is raised by the runtime;
- * both are the oracle's, and so is an error the oracle has already typed as one to retry. What
- * is left is the sender's.
+ * RangeError is an allocation failure, an error with a `code` is raised by the runtime, and a
+ * TypeError, ReferenceError or SyntaxError is a mistake in code (the oracle's, or a library's
+ * after an upgrade); all are the oracle's, and so is an error the oracle has already typed as one
+ * to retry. What is left is the sender's. The one input that made the ECIES code throw a
+ * TypeError, an empty wrap, is refused before it is called.
  */
+const PROGRAMMING_ERRORS = [RangeError, TypeError, ReferenceError, SyntaxError];
+
 function isOracleFault(error) {
-  return error instanceof RangeError || Boolean(error?.code) || isRetryableError(error);
+  return (
+    PROGRAMMING_ERRORS.some((Type) => error instanceof Type) ||
+    Boolean(error?.code) ||
+    isRetryableError(error)
+  );
 }
 
 /**
@@ -36,6 +44,12 @@ function isOracleFault(error) {
  * @throws {BadInputError} when the wrap cannot be opened or holds a key of another length.
  */
 async function unwrapSessionKey(decryptor, cipherBlob) {
+  if (!cipherBlob || cipherBlob.length === 0) {
+    const refusal = new BadInputError("The wrapped session key is empty.");
+    refusal.wrapNotOpened = true;
+    throw refusal;
+  }
+
   let sessionKey;
   try {
     sessionKey = await decryptor.decrypt(cipherBlob);

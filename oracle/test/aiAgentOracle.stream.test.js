@@ -301,7 +301,7 @@ describe("answer path and live stream", function () {
         458,
         459,
         promptPayload("How is BTC?"),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
       await oracle.flushStreamsForTest();
@@ -330,7 +330,7 @@ describe("answer path and live stream", function () {
         460,
         461,
         promptPayload("How is BTC?"),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
 
@@ -361,7 +361,7 @@ describe("answer path and live stream", function () {
         456,
         457,
         promptPayload("How is ETH?"),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
       await oracle.flushStreamsForTest();
@@ -388,8 +388,8 @@ describe("answer path and live stream", function () {
         }),
       });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("One"), "0xkey", fakeEvent());
-      await oracle.handlePrompt(USER, 9, 458, 459, promptPayload("Two"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("One"), "0x6b6579", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 458, 459, promptPayload("Two"), "0x6b6579", fakeEvent());
 
       const alerts = stubs["./alerting"].sendAlert
         .getCalls()
@@ -411,7 +411,7 @@ describe("answer path and live stream", function () {
         }),
       });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is BTC?"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is BTC?"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -437,7 +437,7 @@ describe("answer path and live stream", function () {
     it("opens the run with the proof for this answer, never the key", async () => {
       const { oracle, sink } = loadOracle();
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
 
       const open = sink.calls.find((c) => c.method === "open");
       expect(open.id).to.equal("457");
@@ -449,7 +449,7 @@ describe("answer path and live stream", function () {
       const events = [];
       const { oracle, sink } = loadOracle({ events });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       // sink.calls and the sink.* entries of `events` are pushed together, so the answer's
@@ -474,7 +474,7 @@ describe("answer path and live stream", function () {
         }),
       });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is ETH?"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is ETH?"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -508,7 +508,7 @@ describe("answer path and live stream", function () {
         }),
       });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is BTC?"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("How is BTC?"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -534,7 +534,7 @@ describe("answer path and live stream", function () {
         }),
       });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Price?"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Price?"), "0x6b6579", fakeEvent());
 
       const steps = sink.frames("457").filter((f) => f.type === "step");
       expect(steps.map((s) => s.data.description)).to.deep.equal(["Reading the latest market headlines."]);
@@ -553,8 +553,8 @@ describe("answer path and live stream", function () {
       });
 
       await Promise.all([
-        oracle.handlePrompt(USER, 9, 456, 457, promptPayload("alpha"), "0xkey", fakeEvent()),
-        oracle.handlePrompt(USER, 9, 458, 459, promptPayload("beta"), "0xkey", fakeEvent()),
+        oracle.handlePrompt(USER, 9, 456, 457, promptPayload("alpha"), "0x6b6579", fakeEvent()),
+        oracle.handlePrompt(USER, 9, 458, 459, promptPayload("beta"), "0x6b6579", fakeEvent()),
       ]);
       await oracle.flushStreamsForTest();
 
@@ -580,7 +580,7 @@ describe("answer path and live stream", function () {
       const revert = Object.assign(new Error("reverted"), { data: `${ALREADY_FINALIZED_SELECTOR}00` });
       contract.submitAnswer.rejects(revert);
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -593,7 +593,7 @@ describe("answer path and live stream", function () {
       const { oracle, sink, contract } = loadOracle();
       contract.isJobFinalized.onFirstCall().resolves(false).onSecondCall().resolves(true);
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -606,7 +606,7 @@ describe("answer path and live stream", function () {
       const { oracle, sink, contract } = loadOracle();
       contract.isJobFinalized.onThirdCall().resolves(true);
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -618,7 +618,7 @@ describe("answer path and live stream", function () {
       const { oracle, sink } = loadOracle();
       const garbage = ethers.toUtf8Bytes("not.anything");
 
-      await oracle.handlePrompt(USER, 9, 456, 457, garbage, "0xkey", fakeEvent()).catch(() => {});
+      await oracle.handlePrompt(USER, 9, 456, 457, garbage, "0x6b6579", fakeEvent()).catch(() => {});
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -631,7 +631,7 @@ describe("answer path and live stream", function () {
       const { oracle, sink, stubs, provider, storedAnswer } = loaded;
       receiptWaitFails(loaded, { hash: "0xOwnTx", status: 1 });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -653,7 +653,7 @@ describe("answer path and live stream", function () {
         const { oracle, sink, stubs } = loaded;
         receiptWaitFails(loaded, receipt);
 
-        await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+        await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
         await oracle.flushStreamsForTest();
 
         const frames = sink.frames("457");
@@ -669,14 +669,14 @@ describe("answer path and live stream", function () {
 
       let thrown;
       await oracle
-        .handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent())
+        .handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent())
         .catch((error) => {
           thrown = error;
         });
       await oracle.flushStreamsForTest();
       expect(thrown, "the failure still reaches the retry queue").to.exist;
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -722,12 +722,12 @@ describe("answer path and live stream", function () {
           answer: "The same answer either way.",
         });
         const good = loadOracle({ scriptFor: script });
-        await good.oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Same"), "0xkey", fakeEvent());
+        await good.oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Same"), "0x6b6579", fakeEvent());
 
         const bad = loadOracle({ scriptFor: script });
         bad.oracle.setStreamSink(broken);
         const started = Date.now();
-        await bad.oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Same"), "0xkey", fakeEvent());
+        await bad.oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Same"), "0x6b6579", fakeEvent());
 
         expect(Date.now() - started).to.be.lessThan(3000);
         expect(bad.contract.submitAnswer.calledOnce).to.equal(true);
@@ -748,7 +748,7 @@ describe("answer path and live stream", function () {
         close() {},
       });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0x6b6579", fakeEvent());
 
       expect(contract.submitAnswer.calledOnce).to.equal(true);
     });
@@ -758,7 +758,7 @@ describe("answer path and live stream", function () {
     it("streams and stores the reasoning sentinel's steps and sources through the stream", async () => {
       const { oracle, sink, storedAnswer } = loadOracle({ mockAi: true });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Explain BTC __E2E_REASONING__"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Explain BTC __E2E_REASONING__"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -786,7 +786,7 @@ describe("answer path and live stream", function () {
         456,
         457,
         promptPayload("Explain BTC __E2E_REASONING__ __E2E_STEP_MS__:60"),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
 
@@ -806,7 +806,7 @@ describe("answer path and live stream", function () {
     it("re-runs once on __E2E_RERUN__: an interrupted first run, then a real second run that opens with reset retry", async () => {
       const { oracle, sink, storedAnswer, contract } = loadOracle({ mockAi: true });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Explain BTC __E2E_REASONING__ __E2E_RERUN__"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Explain BTC __E2E_REASONING__ __E2E_RERUN__"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -825,7 +825,7 @@ describe("answer path and live stream", function () {
     it("ends with done abandoned on the drop sentinel", async () => {
       const { oracle, sink } = loadOracle({ mockAi: true });
 
-      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("never __E2E_DROP__"), "0xkey", fakeEvent());
+      await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("never __E2E_DROP__"), "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("457");
@@ -843,7 +843,7 @@ describe("answer path and live stream", function () {
         encryptForOracle({ promptMessageCID: "bafy-prompt", originalAnswerMessageCID: "bafy-old", instructions: "shorter" }),
       );
 
-      await oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0xkey", fakeEvent());
+      await oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0x6b6579", fakeEvent());
       await oracle.flushStreamsForTest();
 
       const frames = sink.frames("460");
@@ -860,7 +860,7 @@ describe("answer path and live stream", function () {
         encryptForOracle({ promptMessageCID: "bafy-prompt", originalAnswerMessageCID: "bafy-old", instructions: "shorter" }),
       );
     const regenerate = (oracle, payload = regenPayload()) =>
-      oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0xkey", fakeEvent());
+      oracle.handleRegeneration(USER, 9, 456, 457, 460, payload, "0x6b6579", fakeEvent());
 
     describe("every exit ends the run", () => {
       it("ends with done abandoned and no answer frame when submitAnswer reverts with JobAlreadyFinalized", async () => {

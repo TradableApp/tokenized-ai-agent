@@ -380,7 +380,7 @@ describe("aiAgentOracle", function () {
     const FAKE_CONVERSATION_ID = 1;
     const FAKE_PROMPT_MESSAGE_ID = 2;
     const FAKE_ANSWER_MESSAGE_ID = 3;
-    const FAKE_ROFL_KEY = "0xkey";
+    const FAKE_ROFL_KEY = "0x6b6579";
 
     it("falls through to the direct Gemini tier when AI_PROVIDER is unset and the upper tiers fail", async () => {
       // Routing: the generic stub's text is not JSON, so classification defaults to MARKET.
@@ -613,7 +613,7 @@ describe("aiAgentOracle", function () {
           getBlock: () => Promise.resolve({ timestamp: Date.now() }),
         };
 
-        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0xkey", fakeEvent);
+        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0x6b6579", fakeEvent);
 
         const answerCall = stubs["./formatters"].createMessageFile
           .getCalls()
@@ -651,7 +651,7 @@ describe("aiAgentOracle", function () {
           getBlock: () => Promise.resolve({ timestamp: Date.now() }),
         };
 
-        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0xkey", fakeEvent);
+        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0x6b6579", fakeEvent);
 
         const answerCall = stubs["./formatters"].createMessageFile
           .getCalls()
@@ -750,7 +750,7 @@ describe("aiAgentOracle", function () {
     it("records an `answer` when handlePrompt submits", async () => {
       const { mod, recordAnswerActivity } = loadWithSpy();
 
-      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent());
 
       expect(recordAnswerActivity.callCount, "exactly one row per answer").to.equal(1);
       expect(recordAnswerActivity.firstCall.args[0]).to.include({
@@ -771,7 +771,7 @@ describe("aiAgentOracle", function () {
         457,
         458,
         regenPayload(),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
 
@@ -808,7 +808,7 @@ describe("aiAgentOracle", function () {
         457,
         458,
         regenPayload(),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
 
@@ -847,7 +847,7 @@ describe("aiAgentOracle", function () {
       mod.initForTest(failing);
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(
@@ -869,7 +869,7 @@ describe("aiAgentOracle", function () {
       const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, garbage, "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, garbage, "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(
@@ -886,7 +886,7 @@ describe("aiAgentOracle", function () {
       const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
 
       await mod
-        .handleRegeneration("0xUser", 123, 456, 457, 458, garbage, "0xkey", fakeEvent())
+        .handleRegeneration("0xUser", 123, 456, 457, 458, garbage, "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(recordAnswerActivity.callCount).to.equal(0);
@@ -919,7 +919,7 @@ describe("aiAgentOracle", function () {
       mod.initForTest(failing);
 
       await mod
-        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(finalized.callCount, "the catch's re-check must have been reached").to.be.at.least(4);
@@ -963,7 +963,7 @@ describe("aiAgentOracle", function () {
       mod.initForTest(dropped);
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(
@@ -978,7 +978,7 @@ describe("aiAgentOracle", function () {
       const { mod, recordAnswerActivity } = loadWithSubmitFailure();
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent())
         .catch(() => {}); // rethrows after recording, so handleAndRecord can retry
 
       expect(recordAnswerActivity.callCount).to.equal(1);
@@ -992,7 +992,7 @@ describe("aiAgentOracle", function () {
       const { mod, recordAnswerActivity } = loadWithSubmitFailure();
 
       await mod
-        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(recordAnswerActivity.callCount).to.equal(1);
@@ -1026,7 +1026,7 @@ describe("aiAgentOracle", function () {
       }), stubs["./ecies"]);
       mod.initForTest(cancelled);
 
-      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent());
 
       expect(
         recordAnswerActivity.callCount,
@@ -1303,7 +1303,7 @@ describe("aiAgentOracle", function () {
         });
         mockedContract.interface.parseLog.returns({
           name: "PromptSubmitted",
-          args: ["0xUser", 1, 2, 3, payload, "key"],
+          args: ["0xUser", 1, 2, 3, payload, "0x6b6579"],
         });
         mockedProvider.getBlock.resolves({ timestamp: Date.now() });
       };
@@ -1513,7 +1513,7 @@ describe("aiAgentOracle", function () {
 
       // Define clear, named constants for all event arguments
       const USER_ADDRESS = "0xUser";
-      const ROFL_ENCRYPTED_KEY = "0xKey";
+      const ROFL_ENCRYPTED_KEY = "0x4b6579";
       const CONVERSATION_ID = 1;
 
       // Constants for PromptSubmitted
@@ -1646,7 +1646,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 1;
       const promptMessageId = 2;
       const answerMessageId = 3;
-      const roflEncryptedKey = "key";
+      const roflEncryptedKey = "0x6b6579";
 
       const fakePayload = { promptText: "hello from retry", isNewConversation: true };
       const fakePayloadBytes = ethers.toUtf8Bytes(
@@ -1829,7 +1829,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 123;
       const promptMessageId = 456;
       const answerMessageId = 457;
-      const roflEncryptedKey = "0xencryptedkey";
+      const roflEncryptedKey = "0x656e63727970746564";
 
       const clientPayload = {
         promptText: "Hello world",
@@ -1887,7 +1887,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 123;
       const promptMessageId = 458;
       const answerMessageId = 459;
-      const roflEncryptedKey = "0xencryptedkey";
+      const roflEncryptedKey = "0x656e63727970746564";
 
       const clientPayload = {
         promptText: "Follow up question",
@@ -1940,7 +1940,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 1;
       const promptMessageId = 2;
       const answerMessageId = 3;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
 
       const clientPayload = {
         promptText: "Hello world",
@@ -2102,7 +2102,7 @@ describe("aiAgentOracle", function () {
       const promptMessageId = 456;
       const originalAnswerMessageId = 457;
       const newAnswerMessageId = 458;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
       const clientPayload = {
         instructions: "Make it shorter",
         promptMessageCID: "fake_cid_prompt",
@@ -2153,7 +2153,7 @@ describe("aiAgentOracle", function () {
       const originalConversationId = 123;
       const branchPointMessageId = 457;
       const newConversationId = 124;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
       const clientPayload = { originalTitle: "My Conversation" };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -2187,7 +2187,7 @@ describe("aiAgentOracle", function () {
     it("should handle a metadata update request", async () => {
       const user = "0xUser";
       const conversationId = 123;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
       const clientPayload = { title: "A New Title", isDeleted: true };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -2229,7 +2229,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 123;
       const promptMessageId = 456;
       const answerMessageId = 457;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
 
       const clientPayload = { promptText: "This will fail", isNewConversation: true };
       const payloadBytes = ethers.toUtf8Bytes(
@@ -2286,7 +2286,7 @@ describe("aiAgentOracle", function () {
         blockNumber: 56696323,
         transactionHash: txHash("service-unavailable"),
         index: 7,
-        args: ["0xUser", 281, 619, 620, payloadBytes, "0xkey"],
+        args: ["0xUser", 281, 619, 620, payloadBytes, "0x6b6579"],
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
       };
       await aiAgentOracle.handleAndRecord(
@@ -2316,7 +2316,7 @@ describe("aiAgentOracle", function () {
       const promptMessageId = 2;
       const answerMessageId = 3;
       const payload = "0xpayload";
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
 
       const fakeEvent = {
         blockNumber: 101,
@@ -2500,7 +2500,7 @@ describe("aiAgentOracle", function () {
         blockNumber: 102,
         transactionHash: txHash("provider-refused"),
         index: 0,
-        args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+        args: ["0xUser", 1, 2, 3, "0xpayload", "0x6b6579"],
         // 500: nothing in its message is on the legacy list of retried words.
         getBlock: () => Promise.reject(refusedByProvider(500, "Internal Server Error")),
       };
@@ -2525,7 +2525,7 @@ describe("aiAgentOracle", function () {
           blockNumber: 103,
           transactionHash: txHash(`provider-${code}`),
           index: 0,
-          args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+          args: ["0xUser", 1, 2, 3, "0xpayload", "0x6b6579"],
           getBlock: () => Promise.reject(Object.assign(new Error("request failed"), { code })),
         };
 
@@ -2557,7 +2557,7 @@ describe("aiAgentOracle", function () {
         blockNumber: 104,
         transactionHash: txHash(name),
         index: 0,
-        args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+        args: ["0xUser", 1, 2, 3, "0xpayload", "0x6b6579"],
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
         error,
       });
@@ -2620,7 +2620,7 @@ describe("aiAgentOracle", function () {
           3,
           4,
           "0xpayload",
-          "0xkey",
+          "0x6b6579",
           event,
         );
 

@@ -66,12 +66,12 @@ describe("E2E: Error Recovery", function () {
       const fakeEvent = makeFakeEvent(7000, {
         transactionHash: tx,
         index: 4,
-        args: ["0xUser", 1, 400, 401, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 400, 401, payloadBytes, "0x6b6579"],
       });
 
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted", aiAgentOracle.handlePrompt,
-        "0xUser", 1, 400, 401, payloadBytes, "0xkey",
+        "0xUser", 1, 400, 401, payloadBytes, "0x6b6579",
         fakeEvent,
       );
 
@@ -104,12 +104,12 @@ describe("E2E: Error Recovery", function () {
         ),
       );
       const fakeEvent = makeFakeEvent(7001, {
-        args: ["0xUser", 1, 402, 403, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 402, 403, payloadBytes, "0x6b6579"],
       });
 
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted", aiAgentOracle.handlePrompt,
-        "0xUser", 1, 402, 403, payloadBytes, "0xkey",
+        "0xUser", 1, 402, 403, payloadBytes, "0x6b6579",
         fakeEvent,
       );
 
@@ -131,12 +131,12 @@ describe("E2E: Error Recovery", function () {
         ),
       );
       const fakeEvent = makeFakeEvent(7002, {
-        args: ["0xUser", 1, 404, 405, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 404, 405, payloadBytes, "0x6b6579"],
       });
 
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted", aiAgentOracle.handlePrompt,
-        "0xUser", 1, 404, 405, payloadBytes, "0xkey",
+        "0xUser", 1, 404, 405, payloadBytes, "0x6b6579",
         fakeEvent,
       );
 
@@ -172,7 +172,7 @@ describe("E2E: Error Recovery", function () {
       };
       mockedOracleComponents.provider.getTransactionReceipt.resolves(fakeReceipt);
 
-      const fakeArgs = ["0xUser", 1, 500, 501, payloadBytes, "0xkey"];
+      const fakeArgs = ["0xUser", 1, 500, 501, payloadBytes, "0x6b6579"];
       mockedOracleComponents.contract.interface.parseLog.returns({
         name: "PromptSubmitted",
         args: fakeArgs,
@@ -194,7 +194,7 @@ describe("E2E: Error Recovery", function () {
             SESSION_KEY,
           ),
         );
-        return ["0xUser", 1, 500, 501, payloadBytes, "0xkey"];
+        return ["0xUser", 1, 500, 501, payloadBytes, "0x6b6579"];
       };
       const log = (tx, index, topic = "0xprompt") => ({
         address: CONTRACT_TARGET,
@@ -283,7 +283,7 @@ describe("E2E: Error Recovery", function () {
         });
         mockedOracleComponents.contract.interface.parseLog.returns({
           name: "PromptSubmitted",
-          args: ["0xUser", 1, 500, 501, payloadBytes, "0xkey"],
+          args: ["0xUser", 1, 500, 501, payloadBytes, "0x6b6579"],
         });
       };
 
@@ -421,12 +421,12 @@ describe("E2E: Error Recovery", function () {
         ),
       );
       const fakeEvent = makeFakeEvent(9800, {
-        args: ["0xUser", 1, 900, 901, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 900, 901, payloadBytes, "0x6b6579"],
       });
 
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted", aiAgentOracle.handlePrompt,
-        "0xUser", 1, 900, 901, payloadBytes, "0xkey",
+        "0xUser", 1, 900, 901, payloadBytes, "0x6b6579",
         fakeEvent,
       );
 
