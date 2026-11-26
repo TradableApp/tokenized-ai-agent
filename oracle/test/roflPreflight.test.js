@@ -27,9 +27,10 @@ const MARKER = "# === 📄 ORC BUNDLE CONFIGURATION (PLAINTEXT) ===";
 // gate itself is covered by its own case, which omits it via `omitAgentDb`.
 const AGENT_DB_LINE = "- POSTGRES_AGENT_DATABASE=oracle_agent";
 
-// The bundle measures the compose file, so an image is accepted only when named by its digest.
+// The bundle measures the compose file, so an image is accepted only when named by its digest,
+// and by its digest alone: the registry transport refuses a reference with a tag and a digest.
 const DIGEST = `sha256:${"0123456789abcdef".repeat(4)}`;
-const PINNED_IMAGE = `ghcr.io/tradableapp/tokenized-ai-agent:test@${DIGEST}`;
+const PINNED_IMAGE = `ghcr.io/tradableapp/tokenized-ai-agent@${DIGEST}`;
 
 /** Wraps config lines in enough compose shape to exercise the bounded scan, not a stub. */
 function composeFixture(
@@ -172,19 +173,27 @@ describe("rofl-preflight.sh", function () {
       expect(out).to.include("bun run image:pin:base-testnet");
     };
 
-    it("accepts an image named by tag and digest", function () {
+    it("accepts an image named by its digest alone", function () {
       const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"]));
 
       expect(code, out).to.equal(0);
       expect(out).to.not.include("not pinned by digest");
     });
 
-    it("accepts a quoted reference, and one named by digest alone", function () {
-      for (const imageLine of [`image: "${PINNED_IMAGE}"`, `image: ghcr.io/tradableapp/tokenized-ai-agent@${DIGEST}`]) {
+    it("accepts a quoted reference, and a registry host with a port", function () {
+      for (const imageLine of [`image: "${PINNED_IMAGE}"`, `image: localhost:5000/tokenized-ai-agent@${DIGEST}`]) {
         const { code, out } = runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine }));
 
         expect(code, `${imageLine}\n${out}`).to.equal(0);
       }
+    });
+
+    it("refuses an image named by tag and digest", function () {
+      const imageLine = `image: ghcr.io/tradableapp/tokenized-ai-agent:test@${DIGEST}`;
+      const result = runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine }));
+
+      refusesImage(result, "oracle");
+      expect(result.out).to.include("tag and a digest");
     });
 
     it("refuses an image named by tag alone", function () {
@@ -197,15 +206,15 @@ describe("rofl-preflight.sh", function () {
     it("refuses a digest that is short, long, upper case or not hex", function () {
       const hex = "0123456789abcdef".repeat(4);
       for (const digest of [hex.slice(1), `${hex}0`, hex.toUpperCase(), `${hex.slice(1)}g`, ""]) {
-        const imageLine = `image: ghcr.io/tradableapp/tokenized-ai-agent:test@sha256:${digest}`;
+        const imageLine = `image: ghcr.io/tradableapp/tokenized-ai-agent@sha256:${digest}`;
         refusesImage(runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine })), "oracle");
       }
     });
 
     it("refuses a digest of another algorithm, and two digests", function () {
       for (const imageLine of [
-        `image: ghcr.io/tradableapp/tokenized-ai-agent:test@sha512:${"ab".repeat(64)}`,
-        `image: ghcr.io/tradableapp/tokenized-ai-agent:test@${DIGEST}@${DIGEST}`,
+        `image: ghcr.io/tradableapp/tokenized-ai-agent@sha512:${"ab".repeat(64)}`,
+        `image: ghcr.io/tradableapp/tokenized-ai-agent@${DIGEST}@${DIGEST}`,
       ]) {
         refusesImage(runPreflight(composeFixture(["- LOG_LEVEL=warn"], { imageLine })), "oracle");
       }
@@ -221,7 +230,7 @@ describe("rofl-preflight.sh", function () {
         composeFixture(["- LOG_LEVEL=warn"], {
           moreServices: [
             "  pinned-sidecar:",
-            `    image: ghcr.io/example/sidecar:1@${DIGEST}`,
+            `    image: ghcr.io/example/sidecar@${DIGEST}`,
             "  sidecar:",
             "    image: ghcr.io/example/sidecar:1",
           ],
@@ -417,8 +426,13 @@ describe("rofl-preflight.sh", function () {
         encoding: "utf8",
       });
     const scripts = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")).scripts;
-    const imageRef = (name) =>
-      /^\s+image:\s*(\S+)\s*$/m.exec(fs.readFileSync(path.join(REPO_ROOT, name), "utf8"))[1];
+    // The image line and the `# pinned from :<tag>` comment the pin script keeps above it.
+    const pinnedFrom = (name) => {
+      const m = /^\s+# pinned from :(\S+)\n\s+image:\s*([^@\s]+)@sha256:[0-9a-f]{64}\s*$/m.exec(
+        fs.readFileSync(path.join(REPO_ROOT, name), "utf8"),
+      );
+      return m && `${m[2]}:${m[1]}`;
+    };
 
     it("lists the five compose files this check is about", function () {
       expect([...composeFiles].sort()).to.deep.equal(
@@ -437,7 +451,8 @@ describe("rofl-preflight.sh", function () {
       ["compose.testnet.yaml", "testnet"],
     ]) {
       it(`${name} pins the tag that image:push:${env} pushes, and image:pin:${env} pins it`, function () {
-        const tagged = imageRef(name).replace(/@sha256:[0-9a-f]{64}$/, "");
+        const tagged = pinnedFrom(name);
+        expect(tagged, `${name} records the tag its digest was read from`).to.be.a("string");
         expect(scripts[`image:push:${env}`]).to.equal(`docker push ${tagged} && bun run image:pin:${env}`);
         expect(scripts[`image:build:${env}`]).to.include(` -t ${tagged} `);
         expect(scripts[`image:pin:${env}`]).to.equal(`bash scripts/pin-image-digest.sh ${name}`);
