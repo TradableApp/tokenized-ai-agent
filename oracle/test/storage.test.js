@@ -124,14 +124,46 @@ describe("storage router", function () {
       expect(data).to.equal("arweave_data");
     });
 
-    it("should throw an error for an unsupported CID format", async () => {
+    it("should throw an error for an unsupported CID format, without repeating it", async () => {
       const invalidCid = "this-is-not-a-valid-cid";
       try {
         await storage.fetchData(invalidCid);
         expect.fail("fetchData should have thrown an error for an invalid CID");
       } catch (error) {
-        expect(error.message).to.equal(`Unsupported CID format: ${invalidCid}`);
+        expect(error.message).to.include("Unsupported content id");
+        expect(error.message).to.not.include(invalidCid);
       }
+    });
+
+    it("fetches nothing for an id that is not a content id, and prints none of it", async () => {
+      const forged = `${"A".repeat(43)}\n[Oracle] forged line`;
+      const printed = [];
+      sinon.stub(console, "log").callsFake((...args) => printed.push(args.join(" ")));
+      sinon.stub(console, "warn").callsFake((...args) => printed.push(args.join(" ")));
+      sinon.stub(console, "error").callsFake((...args) => printed.push(args.join(" ")));
+
+      let refused;
+      try {
+        await storage.fetchData(forged);
+      } catch (error) {
+        refused = error;
+      }
+
+      expect(refused, "refused").to.be.an("error");
+      expect(refused.message).to.not.include("forged line");
+      expect(arweaveStub.fetchData.called).to.equal(false);
+      expect(autonomysStub.fetchData.called).to.equal(false);
+      expect(printed.join("\n")).to.not.include("forged line");
+    });
+
+    it("routes an Autonomys id to Auto Drive and passes the fetch limits on", async () => {
+      const autonomysCid = `bafkr6i${"a".repeat(52)}`;
+      const limits = { maxBytes: 1024, timeoutMs: 500 };
+
+      const data = await storage.fetchData(autonomysCid, limits);
+
+      expect(autonomysStub.fetchData.calledOnceWith(autonomysCid, limits)).to.equal(true);
+      expect(data).to.equal("autonomys_data");
     });
   });
 
