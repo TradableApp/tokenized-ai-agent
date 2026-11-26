@@ -96,7 +96,7 @@ if (typeof senseaiPluginModule.setErrorDescriber !== "function") {
   );
 }
 senseaiPluginModule.setErrorDescriber(describeError);
-const { createFileStateStore } = require("./oracleState/store");
+const { createFileStateStore, isLaterPosition } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
 const { createRoleGate } = require("./oracleRoleGate");
@@ -2822,12 +2822,6 @@ function chainPositionOf(event) {
   return { blockNumber, logIndex };
 }
 
-function isLaterOnChain(a, b) {
-  return (
-    a.blockNumber > b.blockNumber || (a.blockNumber === b.blockNumber && a.logIndex > b.logIndex)
-  );
-}
-
 /**
  * The newest metadata update applied for a conversation, from the state store and this process,
  * or null. A store that cannot be read is a RetryableError: applying without the record could
@@ -2844,7 +2838,7 @@ async function lastAppliedMetadataUpdate(conversationKey) {
     );
   }
   const inProcess = metadataAppliedInProcess.get(conversationKey) ?? null;
-  if (stored && inProcess) return isLaterOnChain(inProcess, stored) ? inProcess : stored;
+  if (stored && inProcess) return isLaterPosition(inProcess, stored) ? inProcess : stored;
   return stored ?? inProcess;
 }
 
@@ -2855,7 +2849,7 @@ async function lastAppliedMetadataUpdate(conversationKey) {
  */
 async function isSupersededMetadataUpdate(conversationKey, position) {
   const applied = await lastAppliedMetadataUpdate(conversationKey);
-  if (!applied || isLaterOnChain(position, applied)) return false;
+  if (!applied || isLaterPosition(position, applied)) return false;
   console.log(
     `  Metadata update for ${conversationKey} at block ${position.blockNumber}, log ${position.logIndex} is not newer than the one applied (block ${applied.blockNumber}, log ${applied.logIndex}); skipped.`,
   );
@@ -2869,7 +2863,7 @@ async function isSupersededMetadataUpdate(conversationKey, position) {
  */
 async function recordAppliedMetadataUpdate(conversationKey, position) {
   const inProcess = metadataAppliedInProcess.get(conversationKey);
-  if (!inProcess || isLaterOnChain(position, inProcess)) {
+  if (!inProcess || isLaterPosition(position, inProcess)) {
     metadataAppliedInProcess.set(conversationKey, position);
   }
   try {
