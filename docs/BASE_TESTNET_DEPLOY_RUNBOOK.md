@@ -498,7 +498,7 @@ ciphertext only.
   (unset: every interface, which the container's published port needs; leave it unset here),
   `STREAM_ALLOWED_ORIGINS`, `STREAM_GRACE_MS` (120000; the dApp assumes this value as a constant
   for how long it follows an answer, so changing it needs the dApp's constant changed too),
-  `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (25000; keep it below 30000, see below),
+  `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (25000; 30000 or more stops start-up, see below),
   `STREAM_MAX_CONN_PER_ANSWER` (4), `STREAM_MAX_CONN_TOTAL` (200, at most 256: a third of the
   server's socket budget of 768). Heartbeat, maximum connection time and the total cap are set
   from the Phase 0 measurement. A value that cannot work stops

@@ -200,6 +200,13 @@ function parseStreamConfig(env = process.env) {
       problems,
     ),
   };
+  if (config.maxConnMs !== null && config.maxConnMs >= PROXY_CONNECTION_LIMIT_MS) {
+    problems.push(
+      `STREAM_MAX_CONN_MS is not below ${PROXY_CONNECTION_LIMIT_MS} ms, where the ROFL proxy ` +
+        "closes a connection: the proxy would cut each stream before the server ends it " +
+        `(the default is ${PROXY_CONNECTION_LIMIT_MS - PROXY_LIMIT_HEADROOM_MS} ms)`,
+    );
+  }
   if (
     config.heartbeatMs !== null &&
     config.maxConnMs !== null &&
@@ -243,6 +250,7 @@ function readStreamConfig(env = process.env) {
 module.exports = {
   STREAM_SETTING_DEFAULTS,
   PROXY_CONNECTION_LIMIT_MS,
+  PROXY_LIMIT_HEADROOM_MS,
   DEFAULT_ALLOWED_ORIGINS,
   SOCKET_BUDGET,
   streamConfigProblems,
