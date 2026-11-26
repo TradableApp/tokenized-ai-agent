@@ -134,6 +134,14 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   /// @param user The address of the user cancelling the prompt.
   /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
+  /// @notice Emitted with the amounts of a cancellation: together they are the escrowed amount.
+  /// @dev Carries the user so an indexer needs no other event or stored record to file it.
+  /// @param escrowId The unique ID of the cancelled escrow.
+  /// @param user The user who cancelled.
+  /// @param fee The cancellation fee sent to the treasury (never more than was escrowed).
+  /// @param returned The rest of the escrowed amount, returned to the user's deposit.
+  event CancellationSettled(// solhint-disable-line gas-indexed-events
+  uint256 indexed escrowId, address indexed user, uint256 fee, uint256 returned);
 
   /// @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
   /// @param user The address of the user who paid.
@@ -511,12 +519,15 @@ contract SapphireAIAgentEscrow is Ownable2Step {
 
   /**
    * @notice Allows a user to cancel their own pending prompt.
-   * @dev Charges a fixed `cancellationFee` from the user's deposit and refunds the original `promptFee`.
+   * @dev The cancellation fee comes out of the escrowed amount: the treasury is paid the fee and
+   *      the rest goes back to the user's deposit. Nothing is taken from the deposit itself, so a
+   *      user with no deposit left can still cancel. The fee charged is never more than was
+   *      escrowed.
    *      Unlike `processRefund`, this reverts if the agent cannot record the cancellation: a
    *      cancellation exists to stop the oracle, so one the agent never hears of is refused, and
    *      the user's exit is then `processRefund` after the refund timeout.
    * @param _answerMessageId The ID of the answer message to cancel.
-   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee charged is above it.
    */
   function cancelPrompt(uint256 _answerMessageId, uint256 _maxFee) external {
     uint256 escrowId = _answerMessageId;
@@ -532,20 +543,27 @@ contract SapphireAIAgentEscrow is Ownable2Step {
       revert PromptNotCancellableYet();
     }
     // Who may cancel, and when, is settled first, as on the EVM escrow; then the fee.
-    _checkMaxFee(cancellationFee, _maxFee);
-    if (deposits[msg.sender] < cancellationFee) {
-      revert InsufficientDeposit();
+    uint256 amount = escrow.amount;
+    uint256 fee = cancellationFee;
+    if (fee > amount) {
+      fee = amount;
     }
+    _checkMaxFee(fee, _maxFee);
+    uint256 returned = amount - fee;
 
+    // EFFECTS BEFORE INTERACTIONS: every state write lands before any external call.
     --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
-    // Charge cancellation fee and refund original prompt fee in one operation.
-    deposits[msg.sender] = deposits[msg.sender] + escrow.amount - cancellationFee;
+    // Returned to the deposit, not sent to the wallet: this escrow's balances are deposits, as
+    // processRefund credits them.
+    deposits[msg.sender] += returned;
 
-    payable(treasury).sendValue(cancellationFee);
-    sapphireAIAgent.recordCancellation(msg.sender, _answerMessageId);
-
+    emit CancellationSettled(escrowId, msg.sender, fee, returned);
     emit PromptCancelled(msg.sender, _answerMessageId);
+    sapphireAIAgent.recordCancellation(msg.sender, _answerMessageId);
+    if (fee != 0) {
+      payable(treasury).sendValue(fee);
+    }
   }
 
   /**

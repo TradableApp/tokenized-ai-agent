@@ -79,9 +79,9 @@ describe("SapphireAIAgentEscrow — a re-entrant treasury cannot reach the user'
     expect(await escrow.deposits(user.address)).to.equal(INITIAL_DEPOSIT - BRANCH_FEE);
   });
 
-  // cancelPrompt pays the treasury with sendValue too, and then calls recordCancellation — the
-  // same shape: external work after a payout that can now run code. It holds for the same reason,
-  // that the callback runs as the TREASURY. The escrow also writes REFUNDED before the payout, but
+  // cancelPrompt pays the treasury with sendValue too, after recordCancellation — a payout that
+  // can now run code. It holds for the same reason, that the callback runs as the TREASURY. The
+  // escrow also writes REFUNDED and the deposit before any external call, but
   // this fixture does not prove that: the owner check rejects the treasury first, so removing the
   // status write leaves the test green. Asserting CEI here would need a re-entrant caller that is
   // the prompt owner, which the payout recipient cannot be.
