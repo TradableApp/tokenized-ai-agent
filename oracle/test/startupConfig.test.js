@@ -19,7 +19,10 @@ const { validateConfig, ConfigError } = require("../src/startupConfig");
 //
 // Both are boot-time-knowable. The rule here is: refuse to start, and name the variable.
 
-/** Minimum env for a valid Base testnet oracle with mock storage. */
+/**
+ * Minimum env for a valid Base testnet oracle. Real storage, with stand-in credentials: a
+ * deployed network refuses mock storage.
+ */
 function baseEnv(overrides = {}) {
   return {
     // "baseSepolia", not "base-testnet" — the latter is the ENV FILE naming convention
@@ -28,7 +31,8 @@ function baseEnv(overrides = {}) {
     // wrong one until the allowlist check caught it.
     NETWORK_NAME: "baseSepolia",
     AI_AGENT_CONTRACT_ADDRESS: "0x4a0C7e5807f9174499a8F56F2C69c61b39a4c64D",
-    USE_MOCK_STORAGE: "true",
+    IRYS_PAYMENT_PRIVATE_KEY: "not-a-real-irys-key",
+    AUTONOMYS_API_KEY: "not-a-real-autonomys-key",
     // Postgres is part of a complete configuration now — the agent runtime has no working
     // fallback. Kept in the shared fixture rather than added per-test so every existing case
     // keeps testing the thing it was written to test.
@@ -57,6 +61,9 @@ function localEnv(overrides = {}) {
     ...overrides,
   });
 }
+
+/** Spread into an override to take the fixture's storage credentials away. */
+const NO_STORAGE_CREDENTIALS = { IRYS_PAYMENT_PRIVATE_KEY: undefined, AUTONOMYS_API_KEY: undefined };
 
 describe("startup config validation", () => {
   it("accepts a complete configuration", () => {
@@ -375,7 +382,7 @@ describe("startup config validation", () => {
     // matching one, so a deployment with NO storage credentials at all started cleanly — the
     // exact failure this module exists to prevent.
     try {
-      validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined }));
+      validateConfig(baseEnv({ ...NO_STORAGE_CREDENTIALS }));
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.message).to.include("IRYS_PAYMENT_PRIVATE_KEY");
@@ -388,7 +395,7 @@ describe("startup config validation", () => {
     // so the safe reading is "needs both" — not "reject the value". Rejecting would make the
     // guard fail a deployment that storage.js would have handled.
     try {
-      validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined, STORAGE_PROVIDER: "autonmyos" }));
+      validateConfig(baseEnv({ ...NO_STORAGE_CREDENTIALS, STORAGE_PROVIDER: "autonmyos" }));
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.message).to.include("IRYS_PAYMENT_PRIVATE_KEY");
@@ -404,7 +411,7 @@ describe("startup config validation", () => {
     try {
       validateConfig(
         baseEnv({
-          USE_MOCK_STORAGE: undefined,
+          ...NO_STORAGE_CREDENTIALS,
           STORAGE_PROVIDER: "",
           IRYS_PAYMENT_PRIVATE_KEY: "0xabc",
         }),
@@ -425,7 +432,7 @@ describe("startup config validation", () => {
     try {
       validateConfig(
         baseEnv({
-          USE_MOCK_STORAGE: undefined,
+          ...NO_STORAGE_CREDENTIALS,
           STORAGE_PROVIDER: "irys",
           IRYS_PAYMENT_PRIVATE_KEY: "your_funding_wallet_private_key_here",
         }),
@@ -493,7 +500,7 @@ describe("startup config validation", () => {
 
   it("requires IRYS_PAYMENT_PRIVATE_KEY when Irys is the storage provider", () => {
     try {
-      validateConfig(baseEnv({ USE_MOCK_STORAGE: undefined, STORAGE_PROVIDER: "irys" }));
+      validateConfig(baseEnv({ ...NO_STORAGE_CREDENTIALS, STORAGE_PROVIDER: "irys" }));
       expect.fail("expected a ConfigError");
     } catch (err) {
       expect(err.message).to.include("IRYS_PAYMENT_PRIVATE_KEY");
@@ -511,7 +518,7 @@ describe("startup config validation", () => {
     expect(() =>
       validateConfig(
         baseEnv({
-          USE_MOCK_STORAGE: undefined,
+          ...NO_STORAGE_CREDENTIALS,
           STORAGE_PROVIDER: "irys",
           IRYS_PAYMENT_PRIVATE_KEY: "0xabc",
         }),
@@ -523,11 +530,11 @@ describe("startup config validation", () => {
     // storage.js has TWO early returns before any credential is touched — USE_MOCK_STORAGE and
     // USE_LOCAL_IPFS (`const USE_LOCAL_IPFS = !!LOCAL_IPFS_API_URL`). Demanding an Irys key here
     // would make the guard refuse a configuration storage.js handles perfectly well, which is
-    // the failure mode that gets guards deleted.
+    // the failure mode that gets guards deleted. A local network: a deployed one refuses it.
     expect(() =>
       validateConfig(
-        baseEnv({
-          USE_MOCK_STORAGE: undefined,
+        localEnv({
+          ...NO_STORAGE_CREDENTIALS,
           LOCAL_IPFS_API_URL: "http://127.0.0.1:5001",
         }),
       ),
@@ -541,7 +548,7 @@ describe("startup config validation", () => {
       try {
         validateConfig(
           baseEnv({
-            USE_MOCK_STORAGE: undefined,
+            ...NO_STORAGE_CREDENTIALS,
             STORAGE_PROVIDER: "irys",
             IRYS_PAYMENT_PRIVATE_KEY: value,
           }),
@@ -556,8 +563,75 @@ describe("startup config validation", () => {
   it("skips storage credentials entirely under mock storage", () => {
     // Localnet e2e runs with USE_MOCK_STORAGE=true and no credentials at all.
     expect(() =>
-      validateConfig(baseEnv({ STORAGE_PROVIDER: "autonomys", USE_MOCK_STORAGE: "true" })),
+      validateConfig(
+        localEnv({
+          ...NO_STORAGE_CREDENTIALS,
+          STORAGE_PROVIDER: "autonomys",
+          USE_MOCK_STORAGE: "true",
+        }),
+      ),
     ).to.not.throw();
+  });
+
+  // A deployed network charges real users. Mock answers, mock storage or a local IPFS node
+  // there would take their fee for an answer that is not real or a file the dApp cannot fetch.
+  describe("mock settings on a deployed network", () => {
+    const MOCK_SETTINGS = {
+      MOCK_AI: "true",
+      USE_MOCK_STORAGE: "true",
+      LOCAL_IPFS_API_URL: "http://10.9.8.7:5001/not-printed",
+    };
+    const DEPLOYED = ["base", "baseSepolia", "sapphire", "sapphire-testnet"];
+
+    for (const network of DEPLOYED) {
+      for (const [name, value] of Object.entries(MOCK_SETTINGS)) {
+        it(`refuses ${name} on ${network}, naming it and not printing its value`, () => {
+          let error;
+          try {
+            validateConfig(baseEnv({ NETWORK_NAME: network, [name]: value }));
+          } catch (caught) {
+            error = caught;
+          }
+
+          expect(error, "expected a ConfigError").to.be.instanceOf(ConfigError);
+          expect(error.message).to.include(name);
+          if (name === "LOCAL_IPFS_API_URL") {
+            expect(error.message).to.not.include("10.9.8.7");
+            expect(error.message).to.not.include("not-printed");
+          }
+        });
+      }
+    }
+
+    it("reports every mock setting at once", () => {
+      let error;
+      try {
+        validateConfig(baseEnv({ NETWORK_NAME: "base", ...MOCK_SETTINGS }));
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error, "expected a ConfigError").to.be.instanceOf(ConfigError);
+      for (const name of Object.keys(MOCK_SETTINGS)) {
+        expect(error.problems.some((p) => p.startsWith(name)), name).to.equal(true);
+      }
+    });
+
+    it("takes a value the oracle does not read as on, such as MOCK_AI=false, as off", () => {
+      expect(() =>
+        validateConfig(baseEnv({ MOCK_AI: "false", USE_MOCK_STORAGE: "false" })),
+      ).to.not.throw();
+    });
+
+    for (const network of ["base-localnet", "sapphire-localnet"]) {
+      it(`accepts all three on ${network}`, () => {
+        expect(() =>
+          validateConfig(
+            localEnv({ NETWORK_NAME: network, ...NO_STORAGE_CREDENTIALS, ...MOCK_SETTINGS }),
+          ),
+        ).to.not.throw();
+      });
+    }
   });
 
   it("treats a whitespace-only value as missing", () => {

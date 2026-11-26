@@ -380,7 +380,7 @@ describe("aiAgentOracle", function () {
     const FAKE_CONVERSATION_ID = 1;
     const FAKE_PROMPT_MESSAGE_ID = 2;
     const FAKE_ANSWER_MESSAGE_ID = 3;
-    const FAKE_ROFL_KEY = "0xkey";
+    const FAKE_ROFL_KEY = "0x6b6579";
 
     it("falls through to the direct Gemini tier when AI_PROVIDER is unset and the upper tiers fail", async () => {
       // Routing: the generic stub's text is not JSON, so classification defaults to MARKET.
@@ -613,7 +613,7 @@ describe("aiAgentOracle", function () {
           getBlock: () => Promise.resolve({ timestamp: Date.now() }),
         };
 
-        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0xkey", fakeEvent);
+        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0x6b6579", fakeEvent);
 
         const answerCall = stubs["./formatters"].createMessageFile
           .getCalls()
@@ -651,7 +651,7 @@ describe("aiAgentOracle", function () {
           getBlock: () => Promise.resolve({ timestamp: Date.now() }),
         };
 
-        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0xkey", fakeEvent);
+        await mockAi.handlePrompt("0xUser", 123, 456, 457, payloadBytes, "0x6b6579", fakeEvent);
 
         const answerCall = stubs["./formatters"].createMessageFile
           .getCalls()
@@ -750,7 +750,7 @@ describe("aiAgentOracle", function () {
     it("records an `answer` when handlePrompt submits", async () => {
       const { mod, recordAnswerActivity } = loadWithSpy();
 
-      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent());
 
       expect(recordAnswerActivity.callCount, "exactly one row per answer").to.equal(1);
       expect(recordAnswerActivity.firstCall.args[0]).to.include({
@@ -771,7 +771,7 @@ describe("aiAgentOracle", function () {
         457,
         458,
         regenPayload(),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
 
@@ -808,7 +808,7 @@ describe("aiAgentOracle", function () {
         457,
         458,
         regenPayload(),
-        "0xkey",
+        "0x6b6579",
         fakeEvent(),
       );
 
@@ -847,7 +847,7 @@ describe("aiAgentOracle", function () {
       mod.initForTest(failing);
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(
@@ -869,7 +869,7 @@ describe("aiAgentOracle", function () {
       const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, garbage, "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, garbage, "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(
@@ -886,7 +886,7 @@ describe("aiAgentOracle", function () {
       const garbage = ethers.toUtf8Bytes("not-an-encrypted-payload");
 
       await mod
-        .handleRegeneration("0xUser", 123, 456, 457, 458, garbage, "0xkey", fakeEvent())
+        .handleRegeneration("0xUser", 123, 456, 457, 458, garbage, "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(recordAnswerActivity.callCount).to.equal(0);
@@ -919,7 +919,7 @@ describe("aiAgentOracle", function () {
       mod.initForTest(failing);
 
       await mod
-        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(finalized.callCount, "the catch's re-check must have been reached").to.be.at.least(4);
@@ -963,7 +963,7 @@ describe("aiAgentOracle", function () {
       mod.initForTest(dropped);
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(
@@ -978,7 +978,7 @@ describe("aiAgentOracle", function () {
       const { mod, recordAnswerActivity } = loadWithSubmitFailure();
 
       await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
+        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent())
         .catch(() => {}); // rethrows after recording, so handleAndRecord can retry
 
       expect(recordAnswerActivity.callCount).to.equal(1);
@@ -992,7 +992,7 @@ describe("aiAgentOracle", function () {
       const { mod, recordAnswerActivity } = loadWithSubmitFailure();
 
       await mod
-        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0xkey", fakeEvent())
+        .handleRegeneration("0xUser", 123, 456, 457, 458, regenPayload(), "0x6b6579", fakeEvent())
         .catch(() => {});
 
       expect(recordAnswerActivity.callCount).to.equal(1);
@@ -1026,7 +1026,7 @@ describe("aiAgentOracle", function () {
       }), stubs["./ecies"]);
       mod.initForTest(cancelled);
 
-      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0x6b6579", fakeEvent());
 
       expect(
         recordAnswerActivity.callCount,
@@ -1303,7 +1303,7 @@ describe("aiAgentOracle", function () {
         });
         mockedContract.interface.parseLog.returns({
           name: "PromptSubmitted",
-          args: ["0xUser", 1, 2, 3, payload, "key"],
+          args: ["0xUser", 1, 2, 3, payload, "0x6b6579"],
         });
         mockedProvider.getBlock.resolves({ timestamp: Date.now() });
       };
@@ -1513,7 +1513,7 @@ describe("aiAgentOracle", function () {
 
       // Define clear, named constants for all event arguments
       const USER_ADDRESS = "0xUser";
-      const ROFL_ENCRYPTED_KEY = "0xKey";
+      const ROFL_ENCRYPTED_KEY = "0x4b6579";
       const CONVERSATION_ID = 1;
 
       // Constants for PromptSubmitted
@@ -1646,7 +1646,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 1;
       const promptMessageId = 2;
       const answerMessageId = 3;
-      const roflEncryptedKey = "key";
+      const roflEncryptedKey = "0x6b6579";
 
       const fakePayload = { promptText: "hello from retry", isNewConversation: true };
       const fakePayloadBytes = ethers.toUtf8Bytes(
@@ -1818,7 +1818,9 @@ describe("aiAgentOracle", function () {
         await aiAgentOracle.getSessionKey(null, null, "123");
         expect.fail("Should have thrown");
       } catch (error) {
-        expect(error.message).to.include("Could not find Key File");
+        // None sent and none stored: the sender's doing.
+        expect(error.name).to.equal("BadInputError");
+        expect(error.message).to.include("No session key for conversation 123");
       }
     });
   });
@@ -1829,7 +1831,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 123;
       const promptMessageId = 456;
       const answerMessageId = 457;
-      const roflEncryptedKey = "0xencryptedkey";
+      const roflEncryptedKey = "0x656e63727970746564";
 
       const clientPayload = {
         promptText: "Hello world",
@@ -1887,7 +1889,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 123;
       const promptMessageId = 458;
       const answerMessageId = 459;
-      const roflEncryptedKey = "0xencryptedkey";
+      const roflEncryptedKey = "0x656e63727970746564";
 
       const clientPayload = {
         promptText: "Follow up question",
@@ -1940,7 +1942,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 1;
       const promptMessageId = 2;
       const answerMessageId = 3;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
 
       const clientPayload = {
         promptText: "Hello world",
@@ -2102,7 +2104,7 @@ describe("aiAgentOracle", function () {
       const promptMessageId = 456;
       const originalAnswerMessageId = 457;
       const newAnswerMessageId = 458;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
       const clientPayload = {
         instructions: "Make it shorter",
         promptMessageCID: "fake_cid_prompt",
@@ -2153,7 +2155,7 @@ describe("aiAgentOracle", function () {
       const originalConversationId = 123;
       const branchPointMessageId = 457;
       const newConversationId = 124;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
       const clientPayload = { originalTitle: "My Conversation" };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -2187,7 +2189,7 @@ describe("aiAgentOracle", function () {
     it("should handle a metadata update request", async () => {
       const user = "0xUser";
       const conversationId = 123;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
       const clientPayload = { title: "A New Title", isDeleted: true };
       const payloadBytes = ethers.toUtf8Bytes(
         createEncryptedString(clientPayload, FAKE_SESSION_KEY),
@@ -2229,7 +2231,7 @@ describe("aiAgentOracle", function () {
       const conversationId = 123;
       const promptMessageId = 456;
       const answerMessageId = 457;
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
 
       const clientPayload = { promptText: "This will fail", isNewConversation: true };
       const payloadBytes = ethers.toUtf8Bytes(
@@ -2286,7 +2288,7 @@ describe("aiAgentOracle", function () {
         blockNumber: 56696323,
         transactionHash: txHash("service-unavailable"),
         index: 7,
-        args: ["0xUser", 281, 619, 620, payloadBytes, "0xkey"],
+        args: ["0xUser", 281, 619, 620, payloadBytes, "0x6b6579"],
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
       };
       await aiAgentOracle.handleAndRecord(
@@ -2305,15 +2307,18 @@ describe("aiAgentOracle", function () {
       expect(jobs[0].blockNumber).to.equal(56696323);
     });
     it("should send a critical alert for a non-retryable error", async () => {
-      // Simulate a fatal error like a decryption failure.
-      stubs["./ecies"].eciesDecrypt.rejects(new Error("Decryption failed"));
+      // A failure of the oracle's own decryption (its runtime reports it with a code), which is
+      // not the sender's doing.
+      stubs["./ecies"].eciesDecrypt.rejects(
+        Object.assign(new Error("Decryption failed"), { code: "ERR_CRYPTO_OPERATION_FAILED" }),
+      );
 
       const user = "0xUser";
       const conversationId = 1;
       const promptMessageId = 2;
       const answerMessageId = 3;
       const payload = "0xpayload";
-      const roflEncryptedKey = "0xkey";
+      const roflEncryptedKey = "0x6b6579";
 
       const fakeEvent = {
         blockNumber: 101,
@@ -2335,6 +2340,439 @@ describe("aiAgentOracle", function () {
       expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
     });
 
+    // A prompt's wrapped session key and its payload bytes are the sender's. Read with the
+    // oracle's own healthy key, anything malformed in them is bad input: dropped, with no fatal
+    // alert, no Sentry event and no `answer_failed`, however many such prompts are sent. A wrap
+    // that cannot be opened is also what every prompt looks like when the dApp wraps to a key the
+    // oracle does not hold, so that one case is said once an hour, never once per prompt.
+    describe("a wrapped key or payload the sender got wrong", () => {
+      const realEcies = require("../src/ecies");
+
+      const oraclePublicKey = () => realEcies.publicKeyFromPrivateKey(process.env.PRIVATE_KEY);
+      const wrap = (key) => realEcies.eciesEncrypt(oraclePublicKey(), key);
+      const validPayload = () =>
+        ethers.toUtf8Bytes(
+          createEncryptedString(
+            { promptText: "hello", isNewConversation: true, previousMessageCID: null },
+            FAKE_SESSION_KEY,
+          ),
+        );
+
+      const cases = {
+        "a version byte other than 1": async () => {
+          const blob = await wrap(FAKE_SESSION_KEY);
+          blob[0] = 0x02;
+          return { blob, payload: validPayload() };
+        },
+        "a wrap too short to hold a key": async () => ({
+          blob: Buffer.concat([Buffer.from([0x01]), crypto.randomBytes(92)]),
+          payload: validPayload(),
+        }),
+        "a public key that is not a point on the curve": async () => ({
+          blob: Buffer.concat([
+            Buffer.from([0x01, 0x04]),
+            Buffer.alloc(64, 0xff),
+            crypto.randomBytes(12 + 48),
+          ]),
+          payload: validPayload(),
+        }),
+        "a wrap whose authentication tag does not match": async () => {
+          const blob = await wrap(FAKE_SESSION_KEY);
+          blob[blob.length - 1] ^= 0x01;
+          return { blob, payload: validPayload() };
+        },
+        "a well-formed wrap of a 16-byte key": async () => ({
+          blob: await wrap(crypto.randomBytes(16)),
+          payload: validPayload(),
+        }),
+        "payload bytes that are not UTF-8": async () => ({
+          blob: await wrap(FAKE_SESSION_KEY),
+          payload: Uint8Array.from([0x41, 0xff, 0xfe, 0x2e, 0x42]),
+        }),
+      };
+
+      const NOTICE = /Requests Could( Not)? Be Read$/;
+      // The line of the notice each case is counted on.
+      const COUNTED_AS = {
+        "a version byte other than 1": /did not open: 1/,
+        "a wrap too short to hold a key": /did not open: 1/,
+        "a public key that is not a point on the curve": /did not open: 1/,
+        "a wrap whose authentication tag does not match": /did not open: 1/,
+        "a well-formed wrap of a 16-byte key": /not 32 bytes: 1/,
+        "payload bytes that are not UTF-8": /not UTF-8 text: 1/,
+      };
+
+      for (const [name, build] of Object.entries(cases)) {
+        it(`drops ${name} as bad input, with no fatal alert and no Sentry event`, async () => {
+          stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+          const recordAnswerActivity = sinon.stub().resolves();
+          const mod = withTestKeys(
+            proxyquire("../src/aiAgentOracle", {
+              ...stubs,
+              "./answerActivity": { recordAnswerActivity },
+            }),
+            stubs["./ecies"],
+          );
+          mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+          const { blob, payload } = await build();
+          const fakeEvent = {
+            blockNumber: 104,
+            transactionHash: txHash(`bad-input-${name}`),
+            index: 0,
+            args: ["0xUser", 1, 2, 3, payload, ethers.hexlify(blob)],
+            getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+          };
+
+          await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
+
+          const calls = stubs["./alerting"].sendAlert.getCalls();
+          expect(calls, "the counted notice and nothing else").to.have.lengthOf(1);
+          expect(String(calls[0].args[0])).to.match(NOTICE);
+          expect(String(calls[0].args[0])).to.not.match(/^CRITICAL/);
+          expect(String(calls[0].args[1])).to.match(COUNTED_AS[name]);
+          expect(stubs["@sentry/node"].captureException.called, "no Sentry event").to.be.false;
+          expect(
+            recordAnswerActivity.getCalls().filter((c) => c.args[0]?.kind === "answer_failed"),
+            "no answer_failed",
+          ).to.have.lengthOf(0);
+          expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+          expect(
+            stubs["./contractUtility"].initializeOracle().contract.submitAnswer.called,
+          ).to.be.false;
+        });
+      }
+
+      describe("the counted notice", () => {
+        const HOUR = 60 * 60 * 1000;
+        let clock;
+        let mod;
+        let sequence;
+
+        beforeEach(() => {
+          stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+          clock = { ms: 1_000_000 };
+          sequence = 0;
+          mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+          mod.initForTest({
+            ...stubs["./contractUtility"].initializeOracle(),
+            stateStore,
+            monotonicNow: () => clock.ms,
+          });
+        });
+
+        async function send(blob, payload) {
+          sequence += 1;
+          const fakeEvent = {
+            blockNumber: 300 + sequence,
+            transactionHash: txHash(`counted-${sequence}`),
+            index: 0,
+            args: ["0xUser", 1, 2, 3, payload, ethers.hexlify(blob)],
+            getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+          };
+          await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
+        }
+        const unopened = async () =>
+          send(...Object.values(await cases["a wrap whose authentication tag does not match"]()));
+        // Opens and decodes, then fails the schema: read, though not answered.
+        const readButNotAnswered = async () =>
+          send(
+            await wrap(FAKE_SESSION_KEY),
+            ethers.toUtf8Bytes(createEncryptedString({}, FAKE_SESSION_KEY)),
+          );
+        const notices = () =>
+          stubs["./alerting"].sendAlert
+            .getCalls()
+            .filter((c) => NOTICE.test(String(c.args[0])))
+            .map((c) => ({ title: String(c.args[0]), message: String(c.args[1]) }));
+
+        it("is sent once an hour however many prompts cannot be read, and not before", async () => {
+          await unopened();
+          await unopened();
+          await unopened();
+          expect(notices(), "the first, at once").to.have.lengthOf(1);
+
+          clock.ms += HOUR - 1;
+          await unopened();
+          expect(notices(), "held inside the hour").to.have.lengthOf(1);
+
+          clock.ms += 1;
+          await unopened();
+          expect(notices(), "sent again at the hour").to.have.lengthOf(2);
+        });
+
+        it("costs the event nothing when the notice cannot be sent", async () => {
+          stubs["./alerting"].sendAlert.rejects(new Error("alert channel down"));
+          try {
+            await unopened(); // dropped; its notice fails to send
+            clock.ms += HOUR;
+            await readButNotAnswered();
+            await unopened();
+            await readButNotAnswered(); // a handled event with a notice due
+          } finally {
+            stubs["./alerting"].sendAlert.resolves();
+          }
+
+          expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        });
+
+        it("is CRITICAL when none was read in the hour and three or more could not be", async () => {
+          await unopened(); // the first notice, which resets the counts
+          await unopened();
+          await unopened();
+          clock.ms += HOUR;
+          await unopened();
+
+          const [, second] = notices();
+          expect(second.title).to.match(/^CRITICAL: /);
+          expect(second.message).to.include("Requests read since the last notice: 0");
+          expect(second.message).to.include("Requests that could not be read: 3");
+          expect(second.message).to.match(/oracle public key/);
+          expect(`${second.title}\n${second.message}`).to.not.match(/0x[0-9a-f]{8,}/i);
+        });
+
+        it("is a plain notice when prompts were also read in the hour", async () => {
+          await unopened();
+          await readButNotAnswered();
+          await unopened();
+          await unopened();
+          clock.ms += HOUR;
+          await unopened();
+
+          const [, second] = notices();
+          expect(second.title).to.not.match(/^CRITICAL/);
+          expect(second.message).to.include("Requests read since the last notice: 1");
+          expect(second.message).to.include("Requests that could not be read: 3");
+        });
+
+        it("counts an event with no wrapped key and no stored key file", async () => {
+          stubs["./storage/storage"].queryTransactionByTags.resolves(null);
+          await send(Buffer.alloc(0), ethers.toUtf8Bytes("x"));
+
+          expect(notices()[0].message).to.match(/none stored: 1/);
+        });
+      });
+
+      // The read count is kept where each handler has both the session key and the payload text.
+      describe("prompts read, in every handler", () => {
+        const HANDLERS = {
+          RegenerationRequested: { handler: "handleRegeneration", before: ["0xUser", 1, 2, 3, 4] },
+          BranchRequested: { handler: "handleBranch", before: ["0xUser", 1, 2, 9] },
+          MetadataUpdateRequested: { handler: "handleMetadataUpdate", before: ["0xUser", 1] },
+          PromptSubmitted: { handler: "handlePrompt", before: ["0xUser", 1, 2, 3] },
+        };
+
+        for (const [eventName, { handler, before }] of Object.entries(HANDLERS)) {
+          it(`${eventName}: a prompt whose key and payload were read is counted as read`, async () => {
+            stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+            const mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+            mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+            const run = async (blob, payload, label) => {
+              const args = [...before, payload, ethers.hexlify(blob)];
+              await mod.handleAndRecord(eventName, mod[handler], ...args, {
+                blockNumber: 400,
+                transactionHash: txHash(`${eventName}-${label}`),
+                index: 0,
+                args,
+                getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+              });
+            };
+            // Read, then refused by the schema: no notice, nothing could not be read.
+            await run(
+              await wrap(FAKE_SESSION_KEY),
+              ethers.toUtf8Bytes(createEncryptedString({}, FAKE_SESSION_KEY)),
+              "read",
+            );
+            const blob = await wrap(FAKE_SESSION_KEY);
+            blob[blob.length - 1] ^= 0x01;
+            await run(blob, ethers.toUtf8Bytes("x"), "unread");
+
+            const [notice] = stubs["./alerting"].sendAlert
+              .getCalls()
+              .filter((c) => NOTICE.test(String(c.args[0])));
+            expect(String(notice.args[1])).to.include("Requests read since the last notice: 1");
+          });
+        }
+      });
+
+      it("still alerts when the oracle has no decryption key of its own", async () => {
+        const mod = proxyquire("../src/aiAgentOracle", stubs);
+        mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+        const blob = await wrap(FAKE_SESSION_KEY);
+        const fakeEvent = {
+          blockNumber: 105,
+          transactionHash: txHash("no-oracle-key"),
+          index: 0,
+          args: ["0xUser", 1, 2, 3, validPayload(), ethers.hexlify(blob)],
+          getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+        };
+
+        await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
+
+        sinon.assert.calledWithMatch(stubs["./alerting"].sendAlert, "CRITICAL: Oracle Fatal Error");
+      });
+    });
+
+    // Every handler reads its session key the same way. What the sender controls is the wrap; an
+    // event with none falls back to the conversation's stored key file, which the oracle wrote.
+    describe("reading the session key, in every handler", () => {
+      const realEcies = require("../src/ecies");
+      const wrap = (key) =>
+        realEcies.eciesEncrypt(realEcies.publicKeyFromPrivateKey(process.env.PRIVATE_KEY), key);
+      const somePayload = () =>
+        ethers.toUtf8Bytes(createEncryptedString({ promptText: "hello" }, FAKE_SESSION_KEY));
+
+      // Each handler's arguments before its payload and wrapped key.
+      const HANDLERS = {
+        PromptSubmitted: { handler: "handlePrompt", before: ["0xUser", 1, 2, 3] },
+        RegenerationRequested: { handler: "handleRegeneration", before: ["0xUser", 1, 2, 3, 4] },
+        BranchRequested: { handler: "handleBranch", before: ["0xUser", 1, 2, 9] },
+        MetadataUpdateRequested: { handler: "handleMetadataUpdate", before: ["0xUser", 1] },
+      };
+
+      function load() {
+        stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+        const recordAnswerActivity = sinon.stub().resolves();
+        const mod = withTestKeys(
+          proxyquire("../src/aiAgentOracle", {
+            ...stubs,
+            "./answerActivity": { recordAnswerActivity },
+          }),
+          stubs["./ecies"],
+        );
+        mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+        return { mod, recordAnswerActivity };
+      }
+
+      async function handle(mod, eventName, wrapped, label) {
+        const { handler, before } = HANDLERS[eventName];
+        const args = [...before, somePayload(), wrapped];
+        const fakeEvent = {
+          blockNumber: 120,
+          transactionHash: txHash(`${eventName}-${label}`),
+          index: 0,
+          args,
+          getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+        };
+        await mod.handleAndRecord(eventName, mod[handler], ...args, fakeEvent);
+      }
+
+      async function expectDroppedAsBadInput(recordAnswerActivity) {
+        const titles = stubs["./alerting"].sendAlert.getCalls().map((c) => String(c.args[0]));
+        expect(titles.filter((t) => t.startsWith("CRITICAL")), "no critical alert").to.deep.equal(
+          [],
+        );
+        expect(stubs["@sentry/node"].captureException.called, "no Sentry event").to.be.false;
+        expect(
+          recordAnswerActivity.getCalls().filter((c) => c.args[0]?.kind === "answer_failed"),
+          "no failure record",
+        ).to.have.lengthOf(0);
+        expect(await stateStore.countFailedJobs(), "no retry").to.deep.equal({
+          pending: 0,
+          exhausted: 0,
+        });
+      }
+
+      for (const eventName of Object.keys(HANDLERS)) {
+        it(`${eventName}: drops a wrap that does not open as bad input`, async () => {
+          const { mod, recordAnswerActivity } = load();
+          const blob = await wrap(FAKE_SESSION_KEY);
+          blob[blob.length - 1] ^= 0x01;
+
+          await handle(mod, eventName, ethers.hexlify(blob), "unopened");
+
+          await expectDroppedAsBadInput(recordAnswerActivity);
+        });
+
+        it(`${eventName}: drops an event with no wrapped key and no stored key file as bad input`, async () => {
+          const { mod, recordAnswerActivity } = load();
+          stubs["./storage/storage"].queryTransactionByTags.resolves(null);
+
+          await handle(mod, eventName, "0x", "no-key");
+
+          await expectDroppedAsBadInput(recordAnswerActivity);
+          expect(stubs["./storage/storage"].queryTransactionByTags.called, "the lookup ran").to.be
+            .true;
+        });
+      }
+
+      it("does not drop an event with no wrapped key when the key-file lookup itself fails", async () => {
+        const { mod } = load();
+        stubs["./storage/storage"].queryTransactionByTags.rejects(
+          new RetryableError("storage is unreachable"),
+        );
+
+        await handle(mod, "PromptSubmitted", "0x", "lookup-failed");
+
+        expect(await stateStore.countFailedJobs(), "queued for retry").to.deep.equal({
+          pending: 1,
+          exhausted: 0,
+        });
+      });
+
+      it("stays fatal when a stored key file is found but does not open: the oracle wrote it", async () => {
+        const { mod } = load();
+        const stored = await wrap(FAKE_SESSION_KEY);
+        stored[stored.length - 1] ^= 0x01;
+        stubs["./storage/storage"].queryTransactionByTags.resolves("stored-key-file-cid");
+        stubs["./storage/storage"].fetchData.resolves(stored.toString("hex"));
+
+        await handle(mod, "PromptSubmitted", "0x", "stored-key-unopened");
+
+        sinon.assert.calledWithMatch(stubs["./alerting"].sendAlert, "CRITICAL: Oracle Fatal Error");
+      });
+    });
+
+    it("sends the processing lag alert once for a run of lagging events, not once per event", async () => {
+      const handler = sinon.stub().resolves();
+      const hourOld = Math.floor(Date.now() / 1000) - 60 * 60;
+      for (const index of [0, 1, 2]) {
+        const fakeEvent = {
+          blockNumber: 200 + index,
+          transactionHash: txHash(`lagging-${index}`),
+          index,
+          getBlock: () => Promise.resolve({ timestamp: hourOld }),
+        };
+        await aiAgentOracle.handleAndRecord("PromptSubmitted", handler, fakeEvent);
+      }
+
+      expect(handler.callCount, "every event is still handled").to.equal(3);
+      const lagAlerts = stubs["./alerting"].sendAlert
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes("Processing Lag"));
+      expect(lagAlerts).to.have.lengthOf(1);
+    });
+
+    it("sends the processing lag alert again ten minutes later, and not before", async () => {
+      const clock = { ms: 1_000_000 };
+      aiAgentOracle.initForTest({
+        ...stubs["./contractUtility"].initializeOracle(),
+        stateStore,
+        monotonicNow: () => clock.ms,
+      });
+      const handler = sinon.stub().resolves();
+      const hourOld = Math.floor(Date.now() / 1000) - 60 * 60;
+      const lagAlertCount = () =>
+        stubs["./alerting"].sendAlert
+          .getCalls()
+          .filter((c) => String(c.args[0]).includes("Processing Lag")).length;
+      const lagging = (index) =>
+        aiAgentOracle.handleAndRecord("PromptSubmitted", handler, {
+          blockNumber: 210 + index,
+          transactionHash: txHash(`lagging-again-${index}`),
+          index,
+          getBlock: () => Promise.resolve({ timestamp: hourOld }),
+        });
+
+      await lagging(0);
+      expect(lagAlertCount(), "the first").to.equal(1);
+      clock.ms += 10 * 60 * 1000 - 1;
+      await lagging(1);
+      expect(lagAlertCount(), "held inside ten minutes").to.equal(1);
+      clock.ms += 1;
+      await lagging(2);
+      expect(lagAlertCount(), "sent again at ten minutes").to.equal(2);
+    });
+
     it("queues an event for retry when the provider refuses a request made while handling it", async () => {
       // Reading the event's block is a provider request like any other, and the provider
       // refusing it says nothing about the event: a paid prompt must not be dropped for it.
@@ -2342,7 +2780,7 @@ describe("aiAgentOracle", function () {
         blockNumber: 102,
         transactionHash: txHash("provider-refused"),
         index: 0,
-        args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+        args: ["0xUser", 1, 2, 3, "0xpayload", "0x6b6579"],
         // 500: nothing in its message is on the legacy list of retried words.
         getBlock: () => Promise.reject(refusedByProvider(500, "Internal Server Error")),
       };
@@ -2367,7 +2805,7 @@ describe("aiAgentOracle", function () {
           blockNumber: 103,
           transactionHash: txHash(`provider-${code}`),
           index: 0,
-          args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+          args: ["0xUser", 1, 2, 3, "0xpayload", "0x6b6579"],
           getBlock: () => Promise.reject(Object.assign(new Error("request failed"), { code })),
         };
 
@@ -2399,7 +2837,7 @@ describe("aiAgentOracle", function () {
         blockNumber: 104,
         transactionHash: txHash(name),
         index: 0,
-        args: ["0xUser", 1, 2, 3, "0xpayload", "0xkey"],
+        args: ["0xUser", 1, 2, 3, "0xpayload", "0x6b6579"],
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
         error,
       });
@@ -2413,8 +2851,11 @@ describe("aiAgentOracle", function () {
         );
 
       it("is not printed or put in an alert when the error is fatal", async () => {
+        // With a runtime code, so it is the oracle's fault and not the sender's.
         stubs["./ecies"].eciesDecrypt.rejects(
-          new Error(`Decryption service at ${ADDRESS} refused`),
+          Object.assign(new Error(`Decryption service at ${ADDRESS} refused`), {
+            code: "ERR_CRYPTO_OPERATION_FAILED",
+          }),
         );
 
         await handle(eventFailingWith("fatal-with-address"));
@@ -2459,7 +2900,7 @@ describe("aiAgentOracle", function () {
           3,
           4,
           "0xpayload",
-          "0xkey",
+          "0x6b6579",
           event,
         );
 

@@ -16,13 +16,13 @@ describe("formatters", function () {
         id: "conv_123",
         ownerAddress: "0xabc",
         createdAt: now,
-        roflEncryptedKey: "0xkey",
+        roflEncryptedKey: "0x6b6579",
       });
       expect(file).to.deep.equal({
         id: "conv_123",
         ownerAddress: "0xabc",
         createdAt: now,
-        roflEncryptedKey: "0xkey",
+        roflEncryptedKey: "0x6b6579",
       });
     });
 
@@ -31,7 +31,7 @@ describe("formatters", function () {
         id: "conv_456",
         ownerAddress: "0xabc",
         createdAt: now,
-        roflEncryptedKey: "0xkey",
+        roflEncryptedKey: "0x6b6579",
         branchedFromConversationId: "conv_123",
         branchedAtMessageId: "msg_789",
       });

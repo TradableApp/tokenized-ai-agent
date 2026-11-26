@@ -60,6 +60,14 @@ const {
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
+const { createAlertThrottle, monotonicNow } = require("./alertThrottle");
+const {
+  payloadText,
+  unreadableKind,
+  unreadablePrompt,
+  unwrapSessionKey,
+} = require("./userCiphertext");
+const { UNREADABLE, createPromptReadTally } = require("./promptReadTally");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
@@ -463,6 +471,7 @@ function initForTest(testComponents) {
   isSapphire = testComponents.isSapphire;
   if (testComponents.decryptor) decryptor = testComponents.decryptor;
   expectedChainId = testComponents.expectedChainId;
+  if (testComponents.monotonicNow) buildAlertThrottles(testComponents.monotonicNow);
   if (testComponents.stateStore) {
     stateStore = testComponents.stateStore;
     lastProcessedBlockInMemory = null;
@@ -872,7 +881,8 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
     }
   } else if (roflEncryptedKey && roflEncryptedKey !== "0x") {
     const cipherBlob = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
-    return await requireDecryptor().decrypt(cipherBlob);
+    // The wrap is the sender's; the decryptor is ours, so a missing one stays a fault.
+    return await unwrapSessionKey(requireDecryptor(), cipherBlob);
   }
 
   if (conversationId) {
@@ -885,7 +895,12 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
       { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },
     ]);
     if (!keyFileCID) {
-      throw new Error(`Could not find Key File for conversation ${conversationId}.`);
+      // The event carried no key and the conversation has none stored: nothing can open the
+      // prompt, and that is the sender's doing. A lookup that fails throws and is handled as such.
+      throw unreadablePrompt(
+        UNREADABLE.noKey,
+        `No session key for conversation ${conversationId}: none sent, none stored.`,
+      );
     }
     const fetchedHex = await fetchData(keyFileCID);
     return await requireDecryptor().decrypt(Buffer.from(fetchedHex, "hex"));
@@ -894,6 +909,22 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
   throw new Error(
     "Could not determine session key: Not in payload and no conversationId provided for fallback.",
   );
+}
+
+/**
+ * The payload of an event whose session key has been read: as text, then decrypted (EVM), or as
+ * it is (Sapphire). Once the text is had, the prompt counts as read for the unreadable-prompt
+ * notice, whatever its decryption and schema then say.
+ */
+function openPromptPayload(payload, sessionKey) {
+  if (isSapphire) {
+    promptReads.noteRead();
+    return payload;
+  }
+  const text = payloadText(payload);
+  promptReads.noteRead();
+
+  return decryptSymmetrically(text, sessionKey);
 }
 
 // --- Storage & History Helpers ---
@@ -1923,9 +1954,7 @@ async function handlePrompt(
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
     stream = openAnswerStream(answerMessageId, sessionKey);
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "PromptSubmitted");
 
@@ -2291,10 +2320,14 @@ async function handlePrompt(
       });
     }
 
-    Sentry.captureException(error, {
-      tags: { site: "handle_prompt" },
-      extra: { convId: conversationId?.toString() },
-    });
+    // Bad input is the sender's: it is dropped by handleAndRecord with no alert, and is not
+    // reported to Sentry here either.
+    if (!isBadInputError(error)) {
+      Sentry.captureException(error, {
+        tags: { site: "handle_prompt" },
+        extra: { convId: conversationId?.toString() },
+      });
+    }
     console.error(`Error in handlePrompt for convId ${conversationId}:`, describedError(error));
 
     // Bad input is dropped for good; anything else may be retried as a new run.
@@ -2359,9 +2392,7 @@ async function handleRegeneration(
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
     stream = openAnswerStream(answerMessageId, sessionKey);
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "RegenerationRequested");
 
@@ -2586,9 +2617,7 @@ async function handleBranch(
       originalConversationId.toString(),
     );
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "BranchRequested");
 
@@ -2668,9 +2697,7 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
   try {
     const sessionKey = await getSessionKey(payload, roflEncryptedKey, conversationId.toString());
 
-    const decryptedData = isSapphire
-      ? payload
-      : decryptSymmetrically(ethers.toUtf8String(payload), sessionKey);
+    const decryptedData = openPromptPayload(payload, sessionKey);
 
     const clientPayload = validatePayload(decryptedData, "MetadataUpdateRequested");
 
@@ -2803,6 +2830,37 @@ async function lostOracleRole(error) {
   }
 }
 
+// The lag alert is checked once per event, so a backlog would send one per event. One per ten
+// minutes says the same; the per-event lag is still logged.
+const LAG_ALERT_INTERVAL_MS = 10 * 60 * 1000;
+
+let lagAlerts;
+// A prompt that cannot be read is dropped as the sender's mistake, and counted. If the dApp
+// encrypts to a key this oracle does not hold, every prompt fails that way and none is answered;
+// the counts, sent at most once an hour, tell that apart from a sender or two.
+let promptReads;
+
+/** The throttles, on a clock that only goes forward; a test may give its own (initForTest). */
+function buildAlertThrottles(now = monotonicNow) {
+  lagAlerts = createAlertThrottle({ intervalMs: LAG_ALERT_INTERVAL_MS, now });
+  promptReads = createPromptReadTally({ now });
+}
+buildAlertThrottles();
+
+/**
+ * Sends the unreadable-prompt notice when one is due. Never throws: a notice that cannot be sent
+ * is logged and its counts are gone, and the event being handled is not failed or queued for it.
+ */
+async function sendPromptReadNoticeIfDue() {
+  const notice = promptReads.takeNotice();
+  if (!notice) return;
+  try {
+    await sendAlert(notice.title, notice.message);
+  } catch (error) {
+    console.error("[Alerts] The unreadable-prompt notice was not sent:", describeError(error));
+  }
+}
+
 /**
  * A wrapper for event handlers that distinguishes between retryable and fatal errors.
  * Retryable errors are saved to a queue for later processing.
@@ -2830,7 +2888,7 @@ async function handleAndRecord(eventName, handler, ...args) {
     console.log(`[Lag] ${eventName} block=${event.blockNumber} block_to_start_s=${lagInSeconds}`);
     const lagThreshold = 300; // 5 minutes
 
-    if (lagInSeconds > lagThreshold) {
+    if (lagInSeconds > lagThreshold && lagAlerts.shouldSend()) {
       await sendAlert(
         "High Oracle Processing Lag Detected",
         `The oracle is currently processing events that are over ${Math.floor(lagInSeconds / 60)} minutes old. The system is under heavy load and may not be keeping up. Consider deploying additional oracle instances to handle the demand.`,
@@ -2838,6 +2896,7 @@ async function handleAndRecord(eventName, handler, ...args) {
     }
 
     await handler(...args);
+    await sendPromptReadNoticeIfDue();
   } catch (error) {
     // 1. MALICIOUS / BAD INPUT ERRORS (Drop silently or log warning, DO NOT RETRY)
     // Membership is by TYPE now, not by message text: payloadValidator raises BadInputError on a
@@ -2847,7 +2906,12 @@ async function handleAndRecord(eventName, handler, ...args) {
       console.warn(
         `[Security] Dropping malformed/invalid payload for ${eventName} in block ${event.blockNumber}. Error: ${describeError(error)}`,
       );
-      // We do NOT throw, we do NOT alert, we do NOT queue for retry.
+      // We do NOT throw, we do NOT queue for retry, and the prompt itself raises no alert. A
+      // prompt that could not be read is counted, and the counts are sent once an hour.
+      const kind = unreadableKind(error);
+      if (kind) promptReads.noteUnreadable(kind);
+      await sendPromptReadNoticeIfDue();
+
       return;
     }
 

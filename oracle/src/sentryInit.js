@@ -70,6 +70,9 @@ const SENSITIVE_KEYS = [
   "urlpath",
   "urlquery",
   "querystring",
+  // The live stream's proof header. Requests the oracle serves are not recorded at all (see
+  // outgoingRequestIntegrations); this keeps the header out of an event by name all the same.
+  "streamproof",
 ];
 
 /** Collapse case and separators so PRIVATE_KEY, privateKey and private-key all compare equal. */
@@ -196,11 +199,52 @@ function describedException(exception) {
 }
 
 /**
+ * An event raised while a request was being served carries that request: the http integration
+ * gives each served request a scope of its own holding the request (its URL and headers), a
+ * transaction name made of its method and path, and the trace the caller sent. The oracle serves
+ * only the live reasoning stream, whose path names an answer and whose headers carry the
+ * caller's user agent and stream position, so all of that is dropped, from the event and from the
+ * trace header the envelope is given. An event raised outside a request keeps its trace.
+ *
+ * `sdkProcessingMetadata` and its fields are the SDK's own and not part of its documented event
+ * shape, so they can move with a release. `test/sentryIncomingRequests.test.js` runs the real SDK
+ * and fails if they do: run it whenever `@sentry/node` changes version.
+ *
+ * @param {object} event an already scrubbed copy, so reading it cannot throw.
+ */
+function withoutServedRequest(event) {
+  if (!event || typeof event !== "object") return event;
+  const metadata = event.sdkProcessingMetadata;
+  const served =
+    event.request !== undefined ||
+    (metadata && typeof metadata === "object" && metadata.normalizedRequest !== undefined);
+  if (!served) return event;
+
+  const { request: _request, transaction: _transaction, ...rest } = event;
+  const result = { ...rest };
+  if (rest.contexts && typeof rest.contexts === "object") {
+    const { trace: _trace, ...contexts } = rest.contexts;
+    result.contexts = contexts;
+  }
+  if (metadata && typeof metadata === "object") {
+    const {
+      normalizedRequest: _normalizedRequest,
+      ipAddress: _ipAddress,
+      dynamicSamplingContext: _dynamicSamplingContext,
+      ...kept
+    } = metadata;
+    result.sdkProcessingMetadata = kept;
+  }
+
+  return result;
+}
+
+/**
  * An event as it is sent: every field scrubbed (`scrubSensitiveData`), and then each exception's
  * message, the error's own and each linked cause's, described. A copy; the event is not changed.
  */
 function scrubbedEvent(event) {
-  const scrubbed = scrubSensitiveData(event);
+  const scrubbed = withoutServedRequest(scrubSensitiveData(event));
   const values = scrubbed?.exception?.values;
   if (!Array.isArray(values)) return scrubbed;
 
@@ -236,13 +280,20 @@ function redactedStandIn(event, error) {
  * Nothing is recorded about the oracle's own outgoing requests: no span, no breadcrumb, no
  * trace header added to them. Their addresses carry access keys (an RPC provider's in the
  * path, others in the query), and a span or breadcrumb stores the path and the query as
- * fields of their own. The oracle serves no requests, so there is no trace for these to
- * belong to; what is given up is the timing of single outgoing calls.
+ * fields of their own. What is given up is the timing of single outgoing calls.
+ *
+ * Nothing is recorded about the requests the oracle serves either (the live reasoning stream):
+ * no transaction and no span, whatever trace header the caller sends. A served request's path
+ * names an answer and its headers carry the stream proof and the caller's user agent, none of
+ * which is sent to Sentry; and a caller does not decide what is sampled.
  */
 function outgoingRequestIntegrations() {
   const silent = { breadcrumbs: false, tracePropagation: false, ignoreOutgoingRequests: () => true };
 
-  return [Sentry.httpIntegration(silent), Sentry.nativeNodeFetchIntegration(silent)];
+  return [
+    Sentry.httpIntegration({ ...silent, ignoreIncomingRequests: () => true }),
+    Sentry.nativeNodeFetchIntegration(silent),
+  ];
 }
 
 /**

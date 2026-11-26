@@ -202,8 +202,9 @@ describe("alerting", function () {
       expect(fetchStub.called).to.be.false;
     });
 
-    it("sends email on mainnet by default (no override flag)", async () => {
-      process.env.NETWORK_NAME = "base-mainnet";
+    // The names are NETWORK_NAME as the deploys set it: compose.base-mainnet.yaml says "base".
+    it("sends email on Base mainnet by default (no override flag)", async () => {
+      process.env.NETWORK_NAME = "base";
       setSendGridVars();
 
       await sendAlert("Prod incident", "needs attention");
@@ -220,17 +221,19 @@ describe("alerting", function () {
       expect(fetchStub.calledOnce).to.be.true;
     });
 
-    it("treats bare 'mainnet' as mainnet for email", async () => {
-      process.env.NETWORK_NAME = "mainnet";
-      setSendGridVars();
+    for (const network of ["baseSepolia", "sapphire-testnet", "sapphire-localnet"]) {
+      it(`does NOT send email on ${network} by default`, async () => {
+        process.env.NETWORK_NAME = network;
+        setSendGridVars();
 
-      await sendAlert("Prod incident", "needs attention");
+        await sendAlert("Testnet incident", "not for the inbox");
 
-      expect(fetchStub.calledOnce).to.be.true;
-    });
+        expect(fetchStub.called).to.be.false;
+      });
+    }
 
     it("ALERT_EMAIL_ENABLED=true forces email on a non-mainnet network", async () => {
-      process.env.NETWORK_NAME = "base-testnet";
+      process.env.NETWORK_NAME = "baseSepolia";
       process.env.ALERT_EMAIL_ENABLED = "true";
       setSendGridVars();
 
@@ -240,7 +243,7 @@ describe("alerting", function () {
     });
 
     it("ALERT_EMAIL_ENABLED=false suppresses email on mainnet", async () => {
-      process.env.NETWORK_NAME = "base-mainnet";
+      process.env.NETWORK_NAME = "base";
       process.env.ALERT_EMAIL_ENABLED = "false";
       setSendGridVars();
 

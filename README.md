@@ -46,7 +46,7 @@ Oracle Node (Oasis ROFL / TEE) ────────────────�
 - **Oasis CLI** (For deploying to the ROFL network)
 - **Wallets:**
   - EVM private key for deploying and owning the contracts (Base Sepolia/Mainnet)
-  - Storage credentials, as the oracle's start-up check requires them: with `STORAGE_PROVIDER` unset (the default) or any value but `irys`, both `AUTONOMYS_API_KEY` and `IRYS_PAYMENT_PRIVATE_KEY` (uploads go to Autonomys; the Irys key keeps older Arweave ids readable); with `STORAGE_PROVIDER=irys`, `IRYS_PAYMENT_PRIVATE_KEY` alone. Neither is asked for with `USE_MOCK_STORAGE=true` or `LOCAL_IPFS_API_URL` set (`oracle/src/startupConfig.js`)
+  - Storage credentials, as the oracle's start-up check requires them: with `STORAGE_PROVIDER` unset (the default) or any value but `irys`, both `AUTONOMYS_API_KEY` and `IRYS_PAYMENT_PRIVATE_KEY` (uploads go to Autonomys; the Irys key keeps older Arweave ids readable); with `STORAGE_PROVIDER=irys`, `IRYS_PAYMENT_PRIVATE_KEY` alone. Neither is asked for with `USE_MOCK_STORAGE=true` or `LOCAL_IPFS_API_URL` set, which only a local network accepts: on a deployed network (`base`, `baseSepolia`, `sapphire`, `sapphire-testnet`) either of them, or `MOCK_AI=true`, stops the start (`oracle/src/startupConfig.js`)
 
 ### 1. Installation
 

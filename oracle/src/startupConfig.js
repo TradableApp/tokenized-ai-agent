@@ -321,6 +321,10 @@ function validateConfig(env = process.env) {
     // per-key checks do not apply. initializeEliza warns about the missing isolation at boot.
   }
 
+  const isDeployedNetwork =
+    !isBlank(network) && SUPPORTED_NETWORKS.includes(network) && !keyIsOperators;
+  if (isDeployedNetwork) problems.push(...mockSettingProblems(env));
+
   // Both of storage.js's early returns, mirrored. Mock storage never touches a credential
   // (localnet e2e runs with none configured), and LOCAL_IPFS mode returns before Irys or
   // Autonomys is initialised — so demanding credentials there would make the guard refuse a
@@ -367,6 +371,38 @@ function validateConfig(env = process.env) {
   }
 
   if (problems.length) throw new ConfigError(problems);
+}
+
+/**
+ * The settings that make the oracle stand in for its model or its storage, each read as its
+ * consumer reads it (aiAgentOracle.js, storage/storage.js). They exist for a local network and
+ * its e2e runs. A deployed network's keys come from the ROFL key service and its users pay real
+ * fees, so there they would charge for a mock answer, or for a file the dApp cannot fetch.
+ */
+const MOCK_SETTINGS = [
+  {
+    name: "MOCK_AI",
+    isOn: (env) => env.MOCK_AI === "true",
+    effect: "every answer would be a mock answer, paid for by the user",
+  },
+  {
+    name: "USE_MOCK_STORAGE",
+    isOn: (env) => env.USE_MOCK_STORAGE === "true",
+    effect: "files would be kept in memory only and lost, after the user has paid",
+  },
+  {
+    name: "LOCAL_IPFS_API_URL",
+    isOn: (env) => Boolean(env.LOCAL_IPFS_API_URL),
+    effect: "files would go to a local IPFS node the dApp cannot fetch from",
+  },
+];
+
+/** One problem per mock setting that is on, by name, never with its value. */
+function mockSettingProblems(env) {
+  return MOCK_SETTINGS.filter((setting) => setting.isOn(env)).map(
+    ({ name, effect }) =>
+      `${name} is set, but NETWORK_NAME is a deployed network (a testnet is one) — ${effect}; remove it`,
+  );
 }
 
 /**

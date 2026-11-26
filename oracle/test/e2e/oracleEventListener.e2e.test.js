@@ -43,7 +43,7 @@ describe("E2E: Oracle Event Listener", function () {
 
       await aiAgentOracle.handlePrompt(
         "0xUser1", 1, 100, 101,
-        payloadBytes, "0xencryptedkey",
+        payloadBytes, "0x656e63727970746564",
         makeFakeEvent(5000),
       );
 
@@ -74,7 +74,7 @@ describe("E2E: Oracle Event Listener", function () {
 
       await aiAgentOracle.handlePrompt(
         "0xUser1", 1, 102, 103,
-        payloadBytes, "0xencryptedkey",
+        payloadBytes, "0x656e63727970746564",
         makeFakeEvent(5001),
       );
 
@@ -95,7 +95,7 @@ describe("E2E: Oracle Event Listener", function () {
 
       await aiAgentOracle.handlePrompt(
         "0xUser1", 1, 200, 201,
-        payloadBytes, "0xkey",
+        payloadBytes, "0x6b6579",
         makeFakeEvent(5002),
       );
 
@@ -108,12 +108,12 @@ describe("E2E: Oracle Event Listener", function () {
     it("drops malformed payloads silently, leaving the checkpoint to the batch", async function () {
       const malformedPayload = ethers.toUtf8Bytes("not-encrypted-at-all");
       const fakeEvent = makeFakeEvent(6000, {
-        args: ["0xUser", 1, 300, 301, malformedPayload, "0xkey"],
+        args: ["0xUser", 1, 300, 301, malformedPayload, "0x6b6579"],
       });
 
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted", aiAgentOracle.handlePrompt,
-        "0xUser", 1, 300, 301, malformedPayload, "0xkey",
+        "0xUser", 1, 300, 301, malformedPayload, "0x6b6579",
         fakeEvent,
       );
 
@@ -142,12 +142,12 @@ describe("E2E: Oracle Event Listener", function () {
       const fakeEvent = makeFakeEvent(6001, {
         transactionHash: tx,
         index: 2,
-        args: ["0xUser", 1, 302, 303, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 302, 303, payloadBytes, "0x6b6579"],
       });
 
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted", aiAgentOracle.handlePrompt,
-        "0xUser", 1, 302, 303, payloadBytes, "0xkey",
+        "0xUser", 1, 302, 303, payloadBytes, "0x6b6579",
         fakeEvent,
       );
 
@@ -185,12 +185,12 @@ describe("E2E: Oracle Event Listener", function () {
       };
       const payloadBytes = ethers.toUtf8Bytes(createEncryptedString(clientPayload, SESSION_KEY));
       const fakeEvent = makeFakeEvent(6002, {
-        args: ["0xUser", 1, 304, 305, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 304, 305, payloadBytes, "0x6b6579"],
       });
 
       await aiAgentOracle.handleAndRecord(
         "PromptSubmitted", aiAgentOracle.handlePrompt,
-        "0xUser", 1, 304, 305, payloadBytes, "0xkey",
+        "0xUser", 1, 304, 305, payloadBytes, "0x6b6579",
         fakeEvent,
       );
 
@@ -216,7 +216,7 @@ describe("E2E: Oracle Event Listener", function () {
         blockNumber,
         transactionIndex: 0,
         index: 0,
-        args: ["0xUser", 1, blockNumber, blockNumber + 1, "0x1234", "0xkey"],
+        args: ["0xUser", 1, blockNumber, blockNumber + 1, "0x1234", "0x6b6579"],
         getBlock,
       });
       mockedOracleComponents.contract.queryFilter
@@ -252,7 +252,7 @@ describe("E2E: Oracle Event Listener", function () {
       const failing = makeFakeEvent(1001, {
         eventName: "PromptSubmitted",
         transactionIndex: 0,
-        args: ["0xUser", 1, 700, 701, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 700, 701, payloadBytes, "0x6b6579"],
       });
       let releaseSlowEvent;
       const held = new Promise((resolve) => {
@@ -263,7 +263,7 @@ describe("E2E: Oracle Event Listener", function () {
         blockNumber: 1003,
         transactionIndex: 0,
         index: 1,
-        args: ["0xUser", 1, 702, 703, "0x1234", "0xkey"],
+        args: ["0xUser", 1, 702, 703, "0x1234", "0x6b6579"],
         getBlock: () => held.then(() => ({ timestamp: Math.floor(Date.now() / 1000) })),
       };
       mockedOracleComponents.contract.queryFilter.onFirstCall().resolves([failing, slow]).resolves([]);
@@ -297,7 +297,7 @@ describe("E2E: Oracle Event Listener", function () {
       const fakeEvent = makeFakeEvent(1002, {
         eventName: "PromptSubmitted",
         transactionIndex: 0,
-        args: ["0xUser", 1, 700, 701, payloadBytes, "0xkey"],
+        args: ["0xUser", 1, 700, 701, payloadBytes, "0x6b6579"],
       });
       mockedOracleComponents.contract.queryFilter.onFirstCall().resolves([fakeEvent]).resolves([]);
 
@@ -332,7 +332,7 @@ describe("E2E: Oracle Event Listener", function () {
             i * 2,
             i * 2 + 1,
             "0x1234",
-            "0xkey",
+            "0x6b6579",
           ],
           getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
         });
@@ -362,21 +362,21 @@ describe("E2E: Oracle Event Listener", function () {
         eventName: "PromptSubmitted",
         blockNumber: 2000,
         transactionIndex: 5,
-        args: ["0xUser", 1, 10, 11, "0x", "0xkey"],
+        args: ["0xUser", 1, 10, 11, "0x", "0x6b6579"],
         getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
       };
       const eventB = {
         eventName: "PromptSubmitted",
         blockNumber: 2000,
         transactionIndex: 2,
-        args: ["0xUser", 1, 20, 21, "0x", "0xkey"],
+        args: ["0xUser", 1, 20, 21, "0x", "0x6b6579"],
         getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
       };
       const eventC = {
         eventName: "PromptSubmitted",
         blockNumber: 1999,
         transactionIndex: 10,
-        args: ["0xUser", 1, 30, 31, "0x", "0xkey"],
+        args: ["0xUser", 1, 30, 31, "0x", "0x6b6579"],
         getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
       };
 
