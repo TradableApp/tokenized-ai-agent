@@ -2391,9 +2391,16 @@ describe("aiAgentOracle", function () {
         }),
       };
 
-      const UNOPENED_NOTICE = "Wrapped Session Keys Could Not Be Opened";
-      // The wrap opens in these two; only its content is wrong.
-      const OPENS = ["a well-formed wrap of a 16-byte key", "payload bytes that are not UTF-8"];
+      const NOTICE = /Prompts Could( Not)? Be Read$/;
+      // The line of the notice each case is counted on.
+      const COUNTED_AS = {
+        "a version byte other than 1": /did not open: 1/,
+        "a wrap too short to hold a key": /did not open: 1/,
+        "a public key that is not a point on the curve": /did not open: 1/,
+        "a wrap whose authentication tag does not match": /did not open: 1/,
+        "a well-formed wrap of a 16-byte key": /not 32 bytes: 1/,
+        "payload bytes that are not UTF-8": /not UTF-8 text: 1/,
+      };
 
       for (const [name, build] of Object.entries(cases)) {
         it(`drops ${name} as bad input, with no fatal alert and no Sentry event`, async () => {
@@ -2418,10 +2425,11 @@ describe("aiAgentOracle", function () {
 
           await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
 
-          const titles = stubs["./alerting"].sendAlert.getCalls().map((c) => String(c.args[0]));
-          expect(titles, "the hourly notice and nothing else").to.deep.equal(
-            OPENS.includes(name) ? [] : [UNOPENED_NOTICE],
-          );
+          const calls = stubs["./alerting"].sendAlert.getCalls();
+          expect(calls, "the counted notice and nothing else").to.have.lengthOf(1);
+          expect(String(calls[0].args[0])).to.match(NOTICE);
+          expect(String(calls[0].args[0])).to.not.match(/^CRITICAL/);
+          expect(String(calls[0].args[1])).to.match(COUNTED_AS[name]);
           expect(stubs["@sentry/node"].captureException.called, "no Sentry event").to.be.false;
           expect(
             recordAnswerActivity.getCalls().filter((c) => c.args[0]?.kind === "answer_failed"),
@@ -2434,27 +2442,141 @@ describe("aiAgentOracle", function () {
         });
       }
 
-      it("says once, not once per prompt, that wrapped keys are not opening", async () => {
-        stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
-        const mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
-        mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
-        for (const index of [0, 1, 2]) {
-          const { blob, payload } = await cases["a wrap whose authentication tag does not match"]();
+      describe("the counted notice", () => {
+        const HOUR = 60 * 60 * 1000;
+        let clock;
+        let mod;
+        let sequence;
+
+        beforeEach(() => {
+          stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+          clock = { ms: 1_000_000 };
+          sequence = 0;
+          mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+          mod.initForTest({
+            ...stubs["./contractUtility"].initializeOracle(),
+            stateStore,
+            monotonicNow: () => clock.ms,
+          });
+        });
+
+        async function send(blob, payload) {
+          sequence += 1;
           const fakeEvent = {
-            blockNumber: 110 + index,
-            transactionHash: txHash(`unopened-${index}`),
+            blockNumber: 300 + sequence,
+            transactionHash: txHash(`counted-${sequence}`),
             index: 0,
             args: ["0xUser", 1, 2, 3, payload, ethers.hexlify(blob)],
             getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
           };
           await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
         }
+        const unopened = async () =>
+          send(...Object.values(await cases["a wrap whose authentication tag does not match"]()));
+        // Opens and decodes, then fails the schema: read, though not answered.
+        const readButNotAnswered = async () =>
+          send(
+            await wrap(FAKE_SESSION_KEY),
+            ethers.toUtf8Bytes(createEncryptedString({}, FAKE_SESSION_KEY)),
+          );
+        const notices = () =>
+          stubs["./alerting"].sendAlert
+            .getCalls()
+            .filter((c) => NOTICE.test(String(c.args[0])))
+            .map((c) => ({ title: String(c.args[0]), message: String(c.args[1]) }));
 
-        const calls = stubs["./alerting"].sendAlert.getCalls();
-        expect(calls.map((c) => String(c.args[0]))).to.deep.equal([UNOPENED_NOTICE]);
-        // It names what to check and carries nothing of the prompt or the wrap.
-        expect(String(calls[0].args[1])).to.match(/public key/);
-        expect(String(calls[0].args[1])).to.not.match(/0x[0-9a-f]{8,}/i);
+        it("is sent once an hour however many prompts cannot be read, and not before", async () => {
+          await unopened();
+          await unopened();
+          await unopened();
+          expect(notices(), "the first, at once").to.have.lengthOf(1);
+
+          clock.ms += HOUR - 1;
+          await unopened();
+          expect(notices(), "held inside the hour").to.have.lengthOf(1);
+
+          clock.ms += 1;
+          await unopened();
+          expect(notices(), "sent again at the hour").to.have.lengthOf(2);
+        });
+
+        it("is CRITICAL when none was read in the hour and three or more could not be", async () => {
+          await unopened(); // the first notice, which resets the counts
+          await unopened();
+          await unopened();
+          clock.ms += HOUR;
+          await unopened();
+
+          const [, second] = notices();
+          expect(second.title).to.match(/^CRITICAL: /);
+          expect(second.message).to.include("Prompts read since the last notice: 0");
+          expect(second.message).to.include("Prompts that could not be read: 3");
+          expect(second.message).to.match(/oracle public key/);
+          expect(`${second.title}\n${second.message}`).to.not.match(/0x[0-9a-f]{8,}/i);
+        });
+
+        it("is a plain notice when prompts were also read in the hour", async () => {
+          await unopened();
+          await readButNotAnswered();
+          await unopened();
+          await unopened();
+          clock.ms += HOUR;
+          await unopened();
+
+          const [, second] = notices();
+          expect(second.title).to.not.match(/^CRITICAL/);
+          expect(second.message).to.include("Prompts read since the last notice: 1");
+          expect(second.message).to.include("Prompts that could not be read: 3");
+        });
+
+        it("counts an event with no wrapped key and no stored key file", async () => {
+          stubs["./storage/storage"].queryTransactionByTags.resolves(null);
+          await send(Buffer.alloc(0), ethers.toUtf8Bytes("x"));
+
+          expect(notices()[0].message).to.match(/none stored: 1/);
+        });
+      });
+
+      // The read count is kept where each handler has both the session key and the payload text.
+      describe("prompts read, in every handler", () => {
+        const HANDLERS = {
+          RegenerationRequested: { handler: "handleRegeneration", before: ["0xUser", 1, 2, 3, 4] },
+          BranchRequested: { handler: "handleBranch", before: ["0xUser", 1, 2, 9] },
+          MetadataUpdateRequested: { handler: "handleMetadataUpdate", before: ["0xUser", 1] },
+          PromptSubmitted: { handler: "handlePrompt", before: ["0xUser", 1, 2, 3] },
+        };
+
+        for (const [eventName, { handler, before }] of Object.entries(HANDLERS)) {
+          it(`${eventName}: a prompt whose key and payload were read is counted as read`, async () => {
+            stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+            const mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+            mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+            const run = async (blob, payload, label) => {
+              const args = [...before, payload, ethers.hexlify(blob)];
+              await mod.handleAndRecord(eventName, mod[handler], ...args, {
+                blockNumber: 400,
+                transactionHash: txHash(`${eventName}-${label}`),
+                index: 0,
+                args,
+                getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+              });
+            };
+            // Read, then refused by the schema: no notice, nothing could not be read.
+            await run(
+              await wrap(FAKE_SESSION_KEY),
+              ethers.toUtf8Bytes(createEncryptedString({}, FAKE_SESSION_KEY)),
+              "read",
+            );
+            const blob = await wrap(FAKE_SESSION_KEY);
+            blob[blob.length - 1] ^= 0x01;
+            await run(blob, ethers.toUtf8Bytes("x"), "unread");
+
+            const [notice] = stubs["./alerting"].sendAlert
+              .getCalls()
+              .filter((c) => NOTICE.test(String(c.args[0])));
+            expect(String(notice.args[1])).to.include("Prompts read since the last notice: 1");
+          });
+        }
       });
 
       it("still alerts when the oracle has no decryption key of its own", async () => {

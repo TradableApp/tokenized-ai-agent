@@ -108,6 +108,46 @@ describe("ciphertext a user sends", () => {
     });
   });
 
+  describe("the kind each refusal carries", () => {
+    const { unreadableKind } = require("../src/userCiphertext");
+    const { UNREADABLE } = require("../src/promptReadTally");
+
+    it("names a wrap that does not open, an empty one included", async () => {
+      const blob = await wrap(crypto.randomBytes(32));
+      blob[blob.length - 1] ^= 0x01;
+
+      expect(unreadableKind(await refusal(unwrapSessionKey(decryptor, blob)))).to.equal(
+        UNREADABLE.wrapNotOpened,
+      );
+      expect(unreadableKind(await refusal(unwrapSessionKey(decryptor, Buffer.alloc(0))))).to.equal(
+        UNREADABLE.wrapNotOpened,
+      );
+    });
+
+    it("names a wrapped key of the wrong length", async () => {
+      const error = await refusal(unwrapSessionKey(decryptor, await wrap(crypto.randomBytes(16))));
+
+      expect(unreadableKind(error)).to.equal(UNREADABLE.keyWrongLength);
+    });
+
+    it("names a payload that is not UTF-8", () => {
+      let error;
+      try {
+        payloadText(Uint8Array.from([0xff, 0xfe]));
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(unreadableKind(error)).to.equal(UNREADABLE.payloadNotUtf8);
+    });
+
+    it("names nothing for other errors, bad input included", () => {
+      expect(unreadableKind(new BadInputError("schema"))).to.equal(null);
+      expect(unreadableKind(new Error("x"))).to.equal(null);
+      expect(unreadableKind(undefined)).to.equal(null);
+    });
+  });
+
   describe("payloadText", () => {
     it("reads the payload bytes as UTF-8 text", () => {
       expect(payloadText(new TextEncoder().encode("iv.data"))).to.equal("iv.data");
