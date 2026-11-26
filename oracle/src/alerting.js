@@ -43,9 +43,15 @@ function isEmailAlertingEnabled() {
   const override = process.env.ALERT_EMAIL_ENABLED;
   if (override === "true") return true;
   if (override === "false") return false;
-  const network = process.env.NETWORK_NAME || "";
-  return network === "sapphire" || network === "mainnet" || network.endsWith("-mainnet");
+  return MAINNET_NETWORKS.has(process.env.NETWORK_NAME || "");
 }
+
+/**
+ * The mainnet names NETWORK_NAME takes: the mainnet entries of `CHAIN_IDS` in oracleKeys.js
+ * (Base 8453, Sapphire 23294), which is also what compose.base-mainnet.yaml sets. Written out
+ * rather than imported, since oracleKeys.js loads this module.
+ */
+const MAINNET_NETWORKS = new Set(["base", "sapphire"]);
 
 /**
  * Sends a formatted alert email via SendGrid.
