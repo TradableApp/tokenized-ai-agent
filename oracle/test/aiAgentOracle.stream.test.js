@@ -70,6 +70,12 @@ function makeEliza(scriptFor) {
     ensureConnection: sinon.stub().resolves(),
     createMemory: sinon.stub().resolves(),
     getMemoryById: sinon.stub().resolves(null),
+    // What the oracle empties a conversation's room with, before and after each run.
+    deleteAllMemories: sinon.stub().resolves(),
+    deleteRoom: sinon.stub().resolves(),
+    deleteCache: sinon.stub().resolves(),
+    getLogs: sinon.stub().resolves([]),
+    deleteLog: sinon.stub().resolves(),
     composeState: sinon.stub().callsFake(async (message) => ({
       values: {},
       text: "",
@@ -121,7 +127,7 @@ function loadOracle({ scriptFor = () => ({ thoughts: [], answer: "An answer." })
 
   const uploads = [];
   const contract = {
-    target: "0xMockedContractAddress",
+    target: "0x000000000000000000000000000000000000C0dE",
     isJobFinalized: sinon.stub().resolves(false),
     submitAnswer: sinon.stub().callsFake(async () => ({
       wait: async () => {

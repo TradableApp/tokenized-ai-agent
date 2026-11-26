@@ -28,7 +28,24 @@ const FAKE_AGENT_ID = "fake-agent-id";
 
 /** conversationHistory is an array whose LAST entry is the new prompt (see queryElizaOS). */
 const history = content => [{ role: "user", content }];
-const ROOM_ID = "room-1";
+// The on-chain conversation id, and the wallet that owns it.
+const CONVERSATION_ID = "1";
+const OWNER = "0x00000000000000000000000000000000000000a1";
+const OTHER_OWNER = "0x00000000000000000000000000000000000000b2";
+
+// The deployment the oracle answers for: the chain and the agent contract.
+const DEPLOYMENT = { chainId: 84532n, agent: "0x000000000000000000000000000000000000c0de" };
+
+/**
+ * The agent framework's database as far as a run touches it: memories by table and room, the
+ * rooms, the log records and the cache. Deleting a room removes its memories and log records, as
+ * the database's foreign keys do.
+ */
+function makeAgentDb() {
+  const db = { memories: [], rooms: new Set(), logs: [], cache: new Map() };
+  db.inRoom = (roomId) => db.memories.filter((memory) => memory.roomId === roomId);
+  return db;
+}
 
 /** Builds an ElizaOS stub that records what it was asked to do. */
 function makeElizaStub({ providerData, thoughts }) {
@@ -44,6 +61,10 @@ function makeElizaStub({ providerData, thoughts }) {
   // Built per call rather than once, because handler registration is keyed on the runtime
   // INSTANCE: a test that can only ever see one runtime cannot tell instance-keying apart from
   // a one-way boolean, which is exactly how the restart-safety gap survived a round of review.
+  const db = makeAgentDb();
+  captured.db = db;
+  captured.handled = [];
+
   const makeRuntime = () => {
     const own = { eventHandlers: {} };
     const runtime = {
@@ -51,9 +72,34 @@ function makeElizaStub({ providerData, thoughts }) {
       // The runtime's own logger, which the oracle replaces with a cleaned one.
       logger: { warn() {}, error() {}, info() {}, debug() {}, child() { return this; } },
       ownHandlers: own.eventHandlers,
-      ensureConnection: sinon.stub().resolves(),
-      createMemory: sinon.stub().resolves(),
-      getMemoryById: sinon.stub().resolves(null),
+      ensureConnection: sinon.spy(async ({ roomId }) => {
+        db.rooms.add(roomId);
+      }),
+      createMemory: sinon.spy(async (memory, tableName) => {
+        db.memories.push({ ...memory, tableName });
+        return memory.id;
+      }),
+      getMemoryById: sinon.spy(async (id) => db.memories.find((memory) => memory.id === id) ?? null),
+      deleteAllMemories: sinon.spy(async (roomId, tableName) => {
+        db.memories = db.memories.filter(
+          (memory) => !(memory.roomId === roomId && memory.tableName === tableName),
+        );
+      }),
+      deleteRoom: sinon.spy(async (roomId) => {
+        db.rooms.delete(roomId);
+        db.memories = db.memories.filter((memory) => memory.roomId !== roomId);
+        db.logs = db.logs.filter((log) => log.roomId !== roomId);
+      }),
+      log: sinon.spy(async (entry) => {
+        db.logs.push({ id: `log-${db.logs.length}-${Math.random()}`, ...entry });
+      }),
+      getLogs: sinon.spy(async ({ roomId, count }) =>
+        db.logs.filter((log) => log.roomId === roomId).slice(0, count ?? 10),
+      ),
+      deleteLog: sinon.spy(async (id) => {
+        db.logs = db.logs.filter((log) => log.id !== id);
+      }),
+      deleteCache: sinon.spy(async (key) => db.cache.delete(key)),
       composeState: sinon.stub().callsFake(async (_message, includeList, onlyInclude) => {
         captured.composeArgs = { includeList, onlyInclude };
         return { values: {}, text: "", data: { providers: providerData } };
@@ -81,6 +127,26 @@ function makeElizaStub({ providerData, thoughts }) {
     }
     async handleMessage(_target, message, options) {
       captured.text = message.content.text;
+      // What the run found in its room when it began, and the writes the framework makes during
+      // one: the incoming message, a fact the reflection step draws from it, and a record of the
+      // model call both under the room and under the agent's own room (where the framework puts
+      // a model call made while no run is marked as current).
+      captured.handled.push({
+        roomId: message.roomId,
+        worldId: message.worldId,
+        found: db.inRoom(message.roomId).map((memory) => memory.content?.text),
+      });
+      await runtime.createMemory(
+        { id: `incoming-${captured.handled.length}`, roomId: message.roomId, content: message.content },
+        "messages",
+      );
+      await runtime.createMemory(
+        { id: `fact-${captured.handled.length}`, roomId: message.roomId, content: { text: "a fact" } },
+        "facts",
+      );
+      await runtime.log({ roomId: message.roomId, type: "useModel:TEXT_LARGE", body: { prompt: message.content.text } });
+      await runtime.log({ roomId: runtime.agentId, type: "useModel:TEXT_SMALL", body: { prompt: message.content.text } });
+      if (script.beforeAnswer) await script.beforeAnswer(message);
       // Drive the runtime's own signals in the order ElizaOS emits them — including
       // ACTION_COMPLETED, which is what CLEARS the action label. Emitting only ACTION_STARTED
       // made this stub a half-model of the runtime: `currentAction` was never cleared, so an
@@ -89,11 +155,11 @@ function makeElizaStub({ providerData, thoughts }) {
       // cannot detect a regression in the clearing logic.
       for (const t of script.thoughts) {
         if (t.action && captured.eventHandlers.ACTION_STARTED) {
-          await captured.eventHandlers.ACTION_STARTED({ roomId: ROOM_ID, content: {} , actionName: t.action });
+          await captured.eventHandlers.ACTION_STARTED({ roomId: message.roomId, content: {}, actionName: t.action });
         }
         await options.onResponse({ text: t.text ?? "partial", thought: t.thought, actions: t.actions });
         if (t.action && captured.eventHandlers.ACTION_COMPLETED) {
-          await captured.eventHandlers.ACTION_COMPLETED({ roomId: ROOM_ID, content: {}, actionName: t.action });
+          await captured.eventHandlers.ACTION_COMPLETED({ roomId: message.roomId, content: {}, actionName: t.action });
         }
       }
       // NOT awaited, deliberately — this mirrors @elizaos/core exactly. In async mode (the mode
@@ -125,14 +191,36 @@ function makeElizaStub({ providerData, thoughts }) {
     script.thoughts = next;
   }
 
-  return { ElizaOS, captured, runtime, replaceRuntime, setThoughts };
+  /** Runs `fn(message)` in each run after the framework's writes and before the answer. */
+  function beforeAnswer(fn) {
+    script.beforeAnswer = fn;
+  }
+
+  return { ElizaOS, captured, runtime, replaceRuntime, setThoughts, beforeAnswer };
 }
 
-function loadOracle(elizaStub, extraStubs = {}) {
+/**
+ * Points a loaded oracle at a deployment, as start() does: a provider that names the chain and
+ * the agent contract it answers for. Nothing here reaches a network.
+ */
+function atDeployment(oracle, { chainId, agent } = DEPLOYMENT) {
+  oracle.initForTest({
+    provider: { getNetwork: sinon.stub().resolves({ chainId }) },
+    contract: { target: agent },
+    isSapphire: false,
+  });
+  return oracle;
+}
+
+function loadOracle(elizaStub, extraStubs = {}, deployment = DEPLOYMENT) {
   // The module builds a signer at load time; the committed .env.oracle.example carries a
   // placeholder key that ethers rejects. Same approach as aiAgentOracle.test.js — give it a
   // real throwaway key so the failure under test is the behaviour, not the setup.
   process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
+  return atDeployment(loadOracleModule(elizaStub, extraStubs), deployment);
+}
+
+function loadOracleModule(elizaStub, extraStubs) {
   return withTestKeys(proxyquire("../src/aiAgentOracle", {
     "@elizaos/core": {
       setAllowedEnvVars() {},
@@ -157,7 +245,7 @@ function loadOracle(elizaStub, extraStubs = {}) {
  */
 function loadOracleWithBrainConfigured(elizaStub, configured) {
   process.env.PRIVATE_KEY = ethers.Wallet.createRandom().privateKey;
-  return withTestKeys(proxyquire("../src/aiAgentOracle", {
+  return atDeployment(withTestKeys(proxyquire("../src/aiAgentOracle", {
     "@elizaos/core": {
       setAllowedEnvVars() {},
       ElizaOS: elizaStub.ElizaOS,
@@ -174,7 +262,7 @@ function loadOracleWithBrainConfigured(elizaStub, configured) {
       getHandles: async () => null,
       isConfigured: () => configured,
     },
-  }));
+  })));
 }
 
 /**
@@ -184,7 +272,7 @@ function loadOracleWithBrainConfigured(elizaStub, configured) {
  */
 async function storedReasoningOf(oracle, text) {
   const stream = createOfflineStream();
-  await oracle.queryElizaOS(history(text), ROOM_ID, "entity-1", stream);
+  await oracle.queryElizaOS(history(text), CONVERSATION_ID, OWNER, stream);
   await stream.flush();
   return stream.record().reasoning.map(({ title, description }) => ({ title, description }));
 }
@@ -221,7 +309,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "thinking" }] });
     const oracle = loadOracle(stub);
 
-    await oracle.queryElizaOS(history("What is the sentiment on SOL?"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("What is the sentiment on SOL?"), CONVERSATION_ID, OWNER);
 
     expect(stub.captured.text).to.equal("What is the sentiment on SOL?");
     expect(stub.captured.text).to.not.match(/MARKET CONTEXT/);
@@ -235,7 +323,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
     const oracle = loadOracle(stub);
 
-    await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
     expect(stub.captured.composeArgs.includeList).to.have.members([
       "MACRO_SENTIMENT",
@@ -249,7 +337,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const oracle = loadOracle(stub);
     const stream = createOfflineStream();
 
-    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1", stream);
+    const result = await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER, stream);
     await stream.flush();
 
     // The stored sources are the stream's record, cleaned and cut to the contract's limits; the
@@ -304,7 +392,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const oracle = loadOracle(stub);
 
     let thrown = null;
-    await oracle.queryElizaOS(history("What is the BTC price?"), ROOM_ID, "entity-1").catch(e => {
+    await oracle.queryElizaOS(history("What is the BTC price?"), CONVERSATION_ID, OWNER).catch(e => {
       thrown = e;
     });
 
@@ -329,7 +417,7 @@ describe("queryElizaOS — provider-composed context", () => {
       ],
     });
     const oracle = loadOracle(stub);
-    await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1").catch(() => {});
+    await oracle.queryElizaOS(history("BTC price?"), CONVERSATION_ID, OWNER).catch(() => {});
 
     stub.setThoughts([{ thought: "Fetching the asset sentiment now", action: "GET_ASSET_SENTIMENT" }]);
     const reasoning = await storedReasoningOf(oracle, "again");
@@ -356,7 +444,7 @@ describe("queryElizaOS — provider-composed context", () => {
         EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
       },
     });
-    await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
     elizaLogger.error("[WITH-MODEL-RETRY] Failed to parse response: a-users-question");
     elizaLogger.warn("[WITH-MODEL-RETRY] a-users-question");
@@ -384,7 +472,7 @@ describe("queryElizaOS — provider-composed context", () => {
         EventType: { ACTION_STARTED: "ACTION_STARTED", ACTION_COMPLETED: "ACTION_COMPLETED" },
       },
     });
-    await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
     elizaLogger.warn(
       {
@@ -419,7 +507,7 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    const answer = await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1");
+    const answer = await oracle.queryElizaOS(history("BTC price?"), CONVERSATION_ID, OWNER);
 
     expect(answer.text).to.equal("Bitcoin is trading near $61,000.");
   });
@@ -480,7 +568,7 @@ describe("queryElizaOS — provider-composed context", () => {
         "./elizaos/character.js": WITH_A_TOOL_SERVER,
       });
 
-      const answer = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+      const answer = await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
       expect(answer.text).to.equal("An answer.");
       expect(watch.follow.calledOnce).to.equal(true);
@@ -492,7 +580,7 @@ describe("queryElizaOS — provider-composed context", () => {
       const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
       const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
 
-      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+      await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
       expect(watch.follow.called).to.equal(false);
     });
@@ -502,7 +590,7 @@ describe("queryElizaOS — provider-composed context", () => {
       const stub = makeElizaStub({ providerData, thoughts: FAILED_RUN });
       const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
 
-      await oracle.queryElizaOS(history("BTC price?"), ROOM_ID, "entity-1").catch(() => {});
+      await oracle.queryElizaOS(history("BTC price?"), CONVERSATION_ID, OWNER).catch(() => {});
 
       expect(watch.countRejectedRun.calledOnceWithExactly("toolError")).to.equal(true);
     });
@@ -521,7 +609,7 @@ describe("queryElizaOS — provider-composed context", () => {
       });
       const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
 
-      const thrown = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1").catch(e => e);
+      const thrown = await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER).catch(e => e);
 
       expect(thrown.kind).to.equal("noTool");
       expect(watch.countRejectedRun.calledOnceWithExactly("noTool")).to.equal(true);
@@ -539,7 +627,7 @@ describe("queryElizaOS — provider-composed context", () => {
       const log = sinon.stub(console, "log").callsFake((...args) => printedLines.push(args.join(" ")));
 
       try {
-        await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+        await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
       } finally {
         log.restore();
       }
@@ -553,7 +641,7 @@ describe("queryElizaOS — provider-composed context", () => {
       const stub = makeElizaStub({ providerData, thoughts: [{ text: "An answer." }] });
       const oracle = loadOracle(stub, { "./elizaos/toolServerWatch": module });
 
-      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+      await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
       expect(watch.countRejectedRun.called).to.equal(false);
     });
@@ -606,7 +694,7 @@ describe("queryElizaOS — provider-composed context", () => {
       });
       const { oracle, fetch, queryGeminiDirect } = loadDispatcher(stub);
 
-      const answer = await oracle.queryAIModel(history("BTC price?"), ROOM_ID, "entity-1");
+      const answer = await oracle.queryAIModel(history("BTC price?"), CONVERSATION_ID, OWNER);
 
       expect(answer.text).to.equal("A direct answer.");
       expect(queryGeminiDirect.calledOnce).to.equal(true);
@@ -620,7 +708,7 @@ describe("queryElizaOS — provider-composed context", () => {
       };
       const { oracle, fetch, queryGeminiDirect } = loadDispatcher(stub);
 
-      const answer = await oracle.queryAIModel(history("BTC price?"), ROOM_ID, "entity-1");
+      const answer = await oracle.queryAIModel(history("BTC price?"), CONVERSATION_ID, OWNER);
 
       expect(calledChainGPT(fetch)).to.equal(true);
       expect(answer.text).to.equal("A direct answer.");
@@ -642,7 +730,7 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    const answer = await oracle.queryElizaOS(history("BTC news?"), ROOM_ID, "entity-1");
+    const answer = await oracle.queryElizaOS(history("BTC news?"), CONVERSATION_ID, OWNER);
 
     expect(answer.text).to.equal("Bitcoin news today: ETF inflows accelerated.");
   });
@@ -660,7 +748,7 @@ describe("queryElizaOS — provider-composed context", () => {
 
     let threw = false;
     try {
-      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+      await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
     } catch {
       threw = true;
     }
@@ -692,7 +780,7 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    await oracle.queryElizaOS(history("first"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("first"), CONVERSATION_ID, OWNER);
     const first = stub.captured.runtimes[0];
     expect(first.ownHandlers.ACTION_STARTED, "first runtime must be wired").to.be.a("function");
 
@@ -759,7 +847,7 @@ describe("queryElizaOS — provider-composed context", () => {
 
     let message = "";
     try {
-      await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+      await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
     } catch (err) {
       message = String(err?.message ?? err);
     }
@@ -775,7 +863,7 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData, thoughts: [{ thought: "t" }] });
     const oracle = loadOracleWithBrainConfigured(stub, false);
 
-    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
     expect(result.text).to.be.a("string");
   });
@@ -795,9 +883,9 @@ describe("queryElizaOS — provider-composed context", () => {
       realRegister(event, handler);
     };
 
-    await oracle.queryElizaOS(history("a"), ROOM_ID, "entity-1");
-    await oracle.queryElizaOS(history("b"), ROOM_ID, "entity-1");
-    await oracle.queryElizaOS(history("c"), ROOM_ID, "entity-1");
+    await oracle.queryElizaOS(history("a"), CONVERSATION_ID, OWNER);
+    await oracle.queryElizaOS(history("b"), CONVERSATION_ID, OWNER);
+    await oracle.queryElizaOS(history("c"), CONVERSATION_ID, OWNER);
 
     expect(registrations, "one runtime, one registration pass").to.equal(2);
   });
@@ -817,7 +905,7 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    const result = await oracle.queryElizaOS(history("What is the latest news on Bitcoin?"), ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("What is the latest news on Bitcoin?"), CONVERSATION_ID, OWNER);
 
     expect(result.text, "a code payload must never be the stored answer").to.not.match(/```/);
     expect(result.text).to.equal("Analysing current market intelligence for Bitcoin. Stand by.");
@@ -839,7 +927,7 @@ describe("queryElizaOS — provider-composed context", () => {
     });
     const oracle = loadOracle(stub);
 
-    const result = await oracle.queryElizaOS(history("What is the latest news on Bitcoin?"), ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("What is the latest news on Bitcoin?"), CONVERSATION_ID, OWNER);
 
     expect(result.text).to.equal("Bitcoin is consolidating near $61k with declining volume; momentum is neutral.");
   });
@@ -868,7 +956,7 @@ describe("queryElizaOS — provider-composed context", () => {
       },
     });
 
-    const result = await oracle.queryElizaOS(history("How is Bitcoin doing?"), ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("How is Bitcoin doing?"), CONVERSATION_ID, OWNER);
 
     expect(seen, "the selected answer must reach the sanitiser").to.deep.equal([
       "<response>Bitcoin is near $61k.</response>",
@@ -883,9 +971,294 @@ describe("queryElizaOS — provider-composed context", () => {
     const stub = makeElizaStub({ providerData: {}, thoughts: [{ thought: "t" }] });
     const oracle = loadOracle(stub);
 
-    const result = await oracle.queryElizaOS(history("hi"), ROOM_ID, "entity-1");
+    const result = await oracle.queryElizaOS(history("hi"), CONVERSATION_ID, OWNER);
 
     expect(result.sources).to.deep.equal([]);
     expect(result.text).to.be.a("string");
+  });
+});
+
+// The framework's database sits outside the enclave and keeps what is written into a room. The
+// oracle rebuilds a conversation's history from storage for every prompt, so a room only has to
+// hold one run: it is named for the deployment, the conversation and its owner, and emptied before
+// the history goes in and again when the run ends, however it ends.
+describe("queryElizaOS — the conversation's room", () => {
+  before(async () => {
+    await initInboundPrompt();
+  });
+
+  afterEach(() => {
+    sinon.restore();
+  });
+
+  const thoughts = [{ thought: "Reading the market for the user now", text: "An answer." }];
+  const withPast = (content) => [
+    { role: "user", content: "an earlier question", createdAt: 1 },
+    { role: "assistant", content: "an earlier answer", createdAt: 2 },
+    { role: "user", content },
+  ];
+
+  /** Everything the database still holds for a room, and under the agent's own room. */
+  const leftIn = (db, roomId) => ({
+    memories: db.inRoom(roomId).length,
+    room: db.rooms.has(roomId),
+    logs: db.logs.filter((log) => log.roomId === roomId).length,
+    agentRoomLogs: db.logs.filter((log) => log.roomId === "agent-uuid").length,
+  });
+  const nothing = { memories: 0, room: false, logs: 0, agentRoomLogs: 0 };
+
+  it("puts two owners of the same conversation number in different rooms", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+    const oracle = loadOracle(stub);
+
+    await oracle.queryElizaOS(history("mine"), CONVERSATION_ID, OWNER);
+    await oracle.queryElizaOS(history("theirs"), CONVERSATION_ID, OTHER_OWNER);
+
+    const [first, second] = stub.captured.handled.map((run) => run.roomId);
+    expect(first).to.be.a("string");
+    expect(second).to.not.equal(first);
+  });
+
+  it("puts the same conversation and owner in another room for another agent contract", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+
+    await loadOracle(stub).queryElizaOS(history("a"), CONVERSATION_ID, OWNER);
+    await loadOracle(stub, {}, { ...DEPLOYMENT, agent: "0x000000000000000000000000000000000000beef" })
+      .queryElizaOS(history("b"), CONVERSATION_ID, OWNER);
+
+    const [first, second] = stub.captured.handled.map((run) => run.roomId);
+    expect(second).to.not.equal(first);
+  });
+
+  it("puts the same conversation and owner in another room on another chain", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+
+    await loadOracle(stub).queryElizaOS(history("a"), CONVERSATION_ID, OWNER);
+    await loadOracle(stub, {}, { ...DEPLOYMENT, chainId: 8453n })
+      .queryElizaOS(history("b"), CONVERSATION_ID, OWNER);
+
+    const [first, second] = stub.captured.handled.map((run) => run.roomId);
+    expect(second).to.not.equal(first);
+  });
+
+  it("does not use the bare conversation number as the room", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+
+    await loadOracle(stub).queryElizaOS(history("a"), CONVERSATION_ID, OWNER);
+
+    expect(stub.captured.handled[0].roomId).to.not.equal(CONVERSATION_ID);
+  });
+
+  it("keeps the run in the oracle's own world", async () => {
+    // Given no world, the framework makes one named after the room for every room it sees.
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+
+    await loadOracle(stub).queryElizaOS(history("a"), CONVERSATION_ID, OWNER);
+
+    expect(stub.captured.handled[0].worldId).to.equal("onchain-world");
+  });
+
+  it("leaves nothing of the conversation in the database after a run that answers", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+    const oracle = loadOracle(stub);
+
+    const answer = await oracle.queryElizaOS(withPast("now"), CONVERSATION_ID, OWNER);
+
+    expect(answer.text).to.equal("An answer.");
+    expect(leftIn(stub.captured.db, stub.captured.handled[0].roomId)).to.deep.equal(nothing);
+  });
+
+  it("leaves nothing after a run the framework fails, a timeout among them", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+    const realHandleMessage = stub.ElizaOS.prototype.handleMessage;
+    stub.ElizaOS.prototype.handleMessage = async function (target, message, options) {
+      await realHandleMessage.call(this, target, message, {
+        ...options,
+        onComplete: () => options.onError(new Error("Run exceeded timeout")),
+      });
+    };
+    const oracle = loadOracle(stub);
+
+    let thrown;
+    try {
+      await oracle.queryElizaOS(withPast("now"), CONVERSATION_ID, OWNER);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown?.message).to.equal("Run exceeded timeout");
+    expect(leftIn(stub.captured.db, stub.captured.handled[0].roomId)).to.deep.equal(nothing);
+  });
+
+  it("leaves nothing after handleMessage throws before the run starts", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+    let roomId;
+    stub.ElizaOS.prototype.handleMessage = async (_target, message) => {
+      roomId = message.roomId;
+      throw new Error("boom");
+    };
+    const oracle = loadOracle(stub);
+
+    let threw = false;
+    try {
+      await oracle.queryElizaOS(withPast("now"), CONVERSATION_ID, OWNER);
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).to.equal(true);
+    expect(roomId).to.be.a("string");
+    expect(leftIn(stub.captured.db, roomId)).to.deep.equal(nothing);
+  });
+
+  it("leaves nothing after a run thrown away for a failed tool step", async () => {
+    const stub = makeElizaStub({
+      providerData: {},
+      thoughts: [
+        {
+          text: "I'm sorry, I wasn't able to get the information you requested.",
+          thought: "Error calling MCP tool: 429 Too Many Requests. Providing a helpful response to the user.",
+          actions: ["REPLY"],
+        },
+      ],
+    });
+    const oracle = loadOracle(stub);
+
+    let threw = false;
+    try {
+      await oracle.queryElizaOS(withPast("now"), CONVERSATION_ID, OWNER);
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).to.equal(true);
+    expect(leftIn(stub.captured.db, stub.captured.handled[0].roomId)).to.deep.equal(nothing);
+  });
+
+  it("empties what an earlier run left in the room before the history goes in", async () => {
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+    const oracle = loadOracle(stub);
+    await oracle.queryElizaOS(history("first"), CONVERSATION_ID, OWNER);
+    const roomId = stub.captured.handled[0].roomId;
+
+    // What a run that was cut short, or an earlier build, could have left behind.
+    stub.captured.db.memories.push(
+      { id: "stale-1", roomId, tableName: "messages", content: { text: "left from before" } },
+      { id: "stale-2", roomId, tableName: "facts", content: { text: "an old fact" } },
+    );
+    await oracle.queryElizaOS(withPast("second"), CONVERSATION_ID, OWNER);
+
+    expect(stub.captured.handled[1].found).to.have.members([
+      "an earlier question",
+      "an earlier answer",
+    ]);
+  });
+
+  it("answers when the room cannot be emptied, and says so", async () => {
+    const consoleError = sinon.stub(console, "error");
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+    stub.runtime.deleteRoom = sinon.stub().rejects(new Error("connection terminated"));
+    stub.runtime.deleteAllMemories = sinon.stub().rejects(new Error("connection terminated"));
+    const oracle = loadOracle(stub);
+
+    const answer = await oracle.queryElizaOS(history("now"), CONVERSATION_ID, OWNER);
+
+    expect(answer.text).to.equal("An answer.");
+    const printed = consoleError.getCalls().map((call) => call.args.join(" ")).join("\n");
+    expect(printed).to.match(/could not clear/i);
+    expect(printed).to.include("connection terminated");
+  });
+
+  it("runs two prompts of one conversation one after the other", async () => {
+    // A run that ends empties the room; a second run in the same room at the same time would lose
+    // its history partway through.
+    const stub = makeElizaStub({ providerData: {}, thoughts });
+    let open;
+    const gate = new Promise((resolve) => {
+      open = resolve;
+    });
+    stub.beforeAnswer(async (message) => {
+      if (message.content.text === "first") await gate;
+    });
+    const oracle = loadOracle(stub);
+
+    const first = oracle.queryElizaOS(history("first"), CONVERSATION_ID, OWNER);
+    const second = oracle.queryElizaOS(history("second"), CONVERSATION_ID, OWNER);
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+
+    expect(stub.captured.handled.map((run) => run.found.length)).to.have.length(1);
+    open();
+    await Promise.all([first, second]);
+    expect(stub.captured.handled).to.have.length(2);
+    expect(stub.captured.handled[1].found, "the second run starts in an empty room").to.deep.equal(
+      [],
+    );
+  });
+});
+
+// ChainGPT keeps a conversation's earlier turns itself, under the id the oracle sends. That id is
+// named for the deployment, the conversation and its owner, as the room is.
+describe("queryChainGPT — the conversation id it is given", () => {
+  const saved = {};
+
+  beforeEach(() => {
+    for (const name of ["AI_PROVIDER", "CHAIN_GPT_API_KEY"]) saved[name] = process.env[name];
+    process.env.AI_PROVIDER = "ChainGPT";
+    process.env.CHAIN_GPT_API_KEY = "not-a-real-key";
+  });
+
+  afterEach(() => {
+    sinon.restore();
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  /** The conversation ids ChainGPT was sent, one per call. */
+  function sentIds(fetch) {
+    return fetch
+      .getCalls()
+      .filter((call) => String(call.args[0]) === "https://api.chaingpt.org/chat/stream")
+      .map((call) => JSON.parse(call.args[1].body).sdkUniqueId);
+  }
+
+  function stubFetch() {
+    return sinon.stub(global, "fetch").resolves({ ok: true, text: async () => "An answer." });
+  }
+
+  it("differs for two owners of the same conversation number", async () => {
+    const fetch = stubFetch();
+    const oracle = loadOracle(makeElizaStub({ providerData: {}, thoughts: [] }));
+
+    await oracle.queryAIModel(history("mine"), CONVERSATION_ID, OWNER);
+    await oracle.queryAIModel(history("theirs"), CONVERSATION_ID, OTHER_OWNER);
+
+    const [first, second] = sentIds(fetch);
+    expect(first).to.be.a("string");
+    expect(second).to.not.equal(first);
+  });
+
+  it("differs for another agent contract", async () => {
+    const fetch = stubFetch();
+    const stub = makeElizaStub({ providerData: {}, thoughts: [] });
+
+    await loadOracle(stub).queryAIModel(history("a"), CONVERSATION_ID, OWNER);
+    await loadOracle(stub, {}, { ...DEPLOYMENT, agent: "0x000000000000000000000000000000000000beef" })
+      .queryAIModel(history("b"), CONVERSATION_ID, OWNER);
+
+    const [first, second] = sentIds(fetch);
+    expect(second).to.not.equal(first);
+  });
+
+  it("is the same for every prompt of one conversation", async () => {
+    const fetch = stubFetch();
+    const oracle = loadOracle(makeElizaStub({ providerData: {}, thoughts: [] }));
+
+    await oracle.queryAIModel(history("one"), CONVERSATION_ID, OWNER);
+    await oracle.queryAIModel(history("two"), CONVERSATION_ID, OWNER.toUpperCase().replace("0X", "0x"));
+
+    const [first, second] = sentIds(fetch);
+    expect(second).to.equal(first);
   });
 });
