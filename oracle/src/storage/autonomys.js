@@ -5,6 +5,7 @@ const { describeError, describedError } = require("../errorDescription");
 const { RetryableError, isRetryableError, isBadInputError } = require("../errors");
 const { isTransientUploadError, uploadWithRetry } = require("./uploadRetry");
 const { fetchStoredFile } = require("./storedFileFetch");
+const { KEY_FOR_CONVERSATION_TAG, keyFileName } = require("./keyFile");
 
 let autoDriveApi = null;
 const API_BASE_URL = "https://mainnet.auto-drive.autonomys.xyz/api";
@@ -306,9 +307,14 @@ async function fetchData(cid, { maxBytes, timeoutMs } = {}) {
 }
 
 /**
- * Queries for files by name in the user's Autonomys Auto Drive.
+ * Finds a file by its exact name in the account's own Auto Drive files ("my files").
+ *
+ * Auto Drive keeps no tags, so the name is the only thing to search by: a File-Name (or `name`)
+ * tag gives it, and a SenseAI-Key-For-Conversation tag gives the key file's fixed name
+ * (`keyFile.js`). The SDK's search matches a name or CID but does not promise an exact match,
+ * so only a result whose name is exactly the one asked for is taken.
  * @param {Array<{name: string, value: string}>} tags The tags to search for.
- * @returns {Promise<string|null>} The first matching CID, or null.
+ * @returns {Promise<string|null>} The CID of a file with that exact name, or null.
  */
 async function queryTransactionByTags(tags) {
   if (!autoDriveApi) {
@@ -318,13 +324,12 @@ async function queryTransactionByTags(tags) {
   let searchValue = null;
 
   for (const tag of tags) {
-    // Map our internal tag names to what we can search in Auto Drive (Filename)
-    if (
-      tag.name === "File-Name" ||
-      tag.name === "name" ||
-      tag.name === "SenseAI-Key-For-Conversation"
-    ) {
+    if (tag.name === "File-Name" || tag.name === "name") {
       searchValue = tag.value;
+      break;
+    }
+    if (tag.name === KEY_FOR_CONVERSATION_TAG) {
+      searchValue = keyFileName(tag.value);
       break;
     }
   }
@@ -339,11 +344,12 @@ async function queryTransactionByTags(tags) {
 
   try {
     const results = await autoDriveApi.searchByNameOrCIDInMyFiles(searchValue);
+    const match = (results || []).find((result) => result && result.name === searchValue);
 
-    if (results && results.length > 0) {
-      console.log(`Found ${results.length} matching file(s) for query: "${searchValue}"`);
+    if (match) {
+      console.log(`Found a file named "${searchValue}" in this account's files`);
 
-      return results[0].headCid;
+      return match.headCid;
     }
     console.log(`No files found matching query: "${searchValue}"`);
 

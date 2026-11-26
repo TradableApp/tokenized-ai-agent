@@ -46,6 +46,7 @@ const {
   fetchData,
   queryTransactionByTags,
 } = require("./storage/storage");
+const { keyFileLookupTags, keyFileUploadTags } = require("./storage/keyFile");
 const {
   ANSWER_ALLOWANCE_BYTES,
   MAX_STORED_FILE_BYTES,
@@ -933,10 +934,7 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
       `[Crypto] Key not in payload for convId ${conversationId}, querying storage for fallback...`,
     );
     const { chainId } = await provider.getNetwork();
-    const keyFileCID = await queryTransactionByTags([
-      { name: "Content-Type", value: "application/rofl-key" },
-      { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },
-    ]);
+    const keyFileCID = await queryTransactionByTags(keyFileLookupTags(chainId, conversationId));
     if (!keyFileCID) {
       throw new Error(`Could not find Key File for conversation ${conversationId}.`);
     }
@@ -2234,10 +2232,9 @@ async function handlePrompt(
     let chainId;
     if (!isNewConversation && !previousMessageCID) {
       ({ chainId } = await provider.getNetwork());
-      const existingKeyCID = await queryTransactionByTags([
-        { name: "Content-Type", value: "application/rofl-key" },
-        { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },
-      ]);
+      const existingKeyCID = await queryTransactionByTags(
+        keyFileLookupTags(chainId, conversationId),
+      );
       conversationKeyExists = !!existingKeyCID;
       if (!conversationKeyExists) {
         console.warn(
@@ -2258,10 +2255,7 @@ async function handlePrompt(
       if (chainId === undefined) {
         ({ chainId } = await provider.getNetwork());
       }
-      const keyFileTags = [
-        { name: "Content-Type", value: "application/rofl-key" },
-        { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },
-      ];
+      const keyFileTags = keyFileUploadTags(chainId, conversationId);
       // For Sapphire, the sessionKey is received raw in the payload.
       // We must now encrypt it for persistent storage.
       let keyToStore;
@@ -2788,10 +2782,7 @@ async function handleBranch(
     const newTitle = `Branch of ${originalTitle}`;
 
     const { chainId } = await provider.getNetwork();
-    const newKeyFileTags = [
-      { name: "Content-Type", value: "application/rofl-key" },
-      { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${newConversationId}` },
-    ];
+    const newKeyFileTags = keyFileUploadTags(chainId, newConversationId);
     // For Sapphire, the sessionKey is received raw in the payload.
     // We must now encrypt it for persistent storage.
     let keyToStore;
@@ -2802,7 +2793,8 @@ async function handleBranch(
       keyToStore = Buffer.from(strip0xPrefix(roflEncryptedKey), "hex");
     }
 
-    await uploadData(keyToStore, newKeyFileTags);
+    // Stored as hex text, as a new conversation's key is: the reader decodes it as UTF-8 first.
+    await uploadData(Buffer.from(keyToStore.toString("hex")), newKeyFileTags);
 
     const conversationFile = createConversationFile({
       id: newConversationId.toString(),
