@@ -32,6 +32,9 @@ const ROOM_MEMORY_TABLES = Object.freeze(["messages", "facts", "tools", "resourc
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Each step is given the agent's id as a quoted uuid literal, made in sweepAgentMemory only after
+// the id has matched UUID: that match is what makes it safe to write into the statement, so no
+// other value may be written into one this way.
 // One statement per step, run in one transaction. The agent's own room, world and entity share
 // the agent's id and are kept. Rooms go first: a room's memories (and their embeddings), log
 // records, participants and components are deleted with it by the schema's foreign keys.

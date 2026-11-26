@@ -422,6 +422,8 @@ let expectedChainId;
 // from the provider the first time a conversation's scope is needed (tests, and a caller that has
 // not started the oracle). Never changes while the process runs.
 let deploymentChainId;
+// The read of the chain under way, while there is one.
+let chainIdRead;
 
 /**
  * Gives the oracle its keys and builds what it talks to the chain with. Called once by
@@ -1030,7 +1032,11 @@ async function reconstructHistory(startMessageCID, sessionKey) {
  */
 async function conversationScopeOf(conversationId, owner) {
   if (deploymentChainId === undefined) {
-    ({ chainId: deploymentChainId } = await provider.getNetwork());
+    // One read for every prompt that arrives before it answers; a read that failed is made again.
+    chainIdRead ??= provider.getNetwork().finally(() => {
+      chainIdRead = undefined;
+    });
+    ({ chainId: deploymentChainId } = await chainIdRead);
   }
 
   return conversationScopeKey({
@@ -3364,9 +3370,11 @@ function reportUndecodableLog(log) {
  */
 async function enqueueEventWork(eventName, args, work) {
   if (!ROOM_EVENTS.has(eventName)) return queue.add(work);
+  // Both events start with the conversation's owner and then its id, which the contract tests pin.
+  const [owner, conversationId] = args;
   let roomId;
   try {
-    ({ roomId } = await conversationRoomOf(String(args[1]), args[0]));
+    ({ roomId } = await conversationRoomOf(String(conversationId), owner));
   } catch {
     // No room can be named for it: its handler meets the same and fails its own way.
     return queue.add(work);
