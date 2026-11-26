@@ -1,9 +1,9 @@
 #!/bin/bash
-set -e # Exit immediately if a command fails
+set -euo pipefail # Stop at a failed command, a failed pipeline stage or an unset variable
 
 # --- 0. VALIDATE INPUT ---
 # The script now requires the path to the target mainnet compose file as an argument.
-if [ -z "$1" ]; then
+if [ -z "${1:-}" ]; then
   echo "Error: No compose file specified."
   echo "Usage: ./scripts/release-mainnet.sh <path_to_compose_file>"
   echo "Example: ./scripts/release-mainnet.sh compose.base-mainnet.yaml"
@@ -13,16 +13,29 @@ fi
 COMPOSE_FILE=$1
 IMAGE_BASE_NAME="ghcr.io/tradableapp/tokenized-ai-agent"
 
+. "$(dirname "$0")/rofl-image-refs.sh"
+
 # --- 1. SET VERSION ---
 # Get and display the current version from rofl.yaml
-CURRENT_VERSION=$(grep '^version:' rofl.yaml | awk '{print $2}')
+# Nothing is written until both the current and the new version are known to be usable.
+CURRENT_VERSION=$(awk '/^version:/ {print $2; exit}' rofl.yaml)
+if [ -z "$CURRENT_VERSION" ]; then
+  echo "❌ rofl.yaml has no 'version:' line. Aborting; nothing was changed."
+  exit 1
+fi
 echo "Current ROFL version is: $CURRENT_VERSION"
 
 # Prompt the user for the new version number
-read -p "Enter the new mainnet version number for '$COMPOSE_FILE': " NEW_VERSION
+read -r -p "Enter the new mainnet version number for '$COMPOSE_FILE': " NEW_VERSION
 
 if [ -z "$NEW_VERSION" ]; then
   echo "No version entered. Aborting."
+  exit 1
+fi
+
+# The version becomes the image tag and is written into both files, so it has to be one.
+if ! rofl_is_tag "$NEW_VERSION"; then
+  echo "❌ '$NEW_VERSION' is not a valid image tag (letters, digits, underscores, dots and dashes; not starting with a dot or dash). Aborting; nothing was changed."
   exit 1
 fi
 
