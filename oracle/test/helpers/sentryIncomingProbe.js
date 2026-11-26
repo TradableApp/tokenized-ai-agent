@@ -25,6 +25,10 @@ async function main() {
   // Required after initSentry, as the oracle's servers are: the instrumentation wraps the module.
   const http = require("http");
   const server = http.createServer((req, res) => {
+    // An error raised while the request is being served, in the request's own scope.
+    if (req.headers["x-probe-capture"]) {
+      Sentry.captureException(new Error("the oracle failed while serving a request"));
+    }
     res.writeHead(200, { "content-type": "text/plain" });
     res.end("ok");
   });
@@ -46,6 +50,15 @@ async function main() {
   await request(`/stream/${process.env.PROBE_ANSWER_ID}`, {
     "sentry-trace": "0123456789abcdef0123456789abcdef-0123456789abcdef-1",
     "x-senseai-stream-proof": process.env.PROBE_PROOF,
+  });
+  // A request during which the oracle reports an error, from a caller sending its own trace.
+  await request(`/stream/${process.env.PROBE_ANSWER_ID}`, {
+    "x-probe-capture": "1",
+    "x-senseai-stream-proof": process.env.PROBE_PROOF,
+    "user-agent": process.env.PROBE_USER_AGENT,
+    "last-event-id": process.env.PROBE_LAST_EVENT_ID,
+    "sentry-trace": `${process.env.PROBE_CALLER_TRACE_ID}-${process.env.PROBE_CALLER_SPAN_ID}-1`,
+    baggage: `sentry-trace_id=${process.env.PROBE_CALLER_TRACE_ID},sentry-sampled=true`,
   });
   await new Promise((resolve) => server.close(resolve));
 
