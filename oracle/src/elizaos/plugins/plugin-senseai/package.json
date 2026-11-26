@@ -40,7 +40,7 @@
   ],
   "dependencies": {
     "@elizaos/core": "1.7.2",
-    "axios": "^1.16.1",
+    "axios": "^1.20.0",
     "zod": "^4.3.5",
     "@tradableapp/sense-ai-brain": "../../../../packages/sense-ai-brain"
   },
