@@ -2,6 +2,8 @@ services:
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
+    # No image has been pushed for this tag, so this names no digest yet and the preflight refuses
+    # to bundle the file. The release script builds and pushes a version and writes its digest here.
     image: ghcr.io/tradableapp/tokenized-ai-agent:base-mainnet-latest
     platform: linux/amd64
     entrypoint: /bin/sh -c 'node src/index.js'
