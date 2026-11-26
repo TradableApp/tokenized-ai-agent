@@ -199,11 +199,48 @@ function describedException(exception) {
 }
 
 /**
+ * An event raised while a request was being served carries that request: the http integration
+ * gives each served request a scope of its own holding the request (its URL and headers), a
+ * transaction name made of its method and path, and the trace the caller sent. The oracle serves
+ * only the live reasoning stream, whose path names an answer and whose headers carry the
+ * caller's user agent and stream position, so all of that is dropped, from the event and from the
+ * trace header the envelope is given. An event raised outside a request keeps its trace.
+ *
+ * @param {object} event an already scrubbed copy, so reading it cannot throw.
+ */
+function withoutServedRequest(event) {
+  if (!event || typeof event !== "object") return event;
+  const metadata = event.sdkProcessingMetadata;
+  const served =
+    event.request !== undefined ||
+    (metadata && typeof metadata === "object" && metadata.normalizedRequest !== undefined);
+  if (!served) return event;
+
+  const { request: _request, transaction: _transaction, ...rest } = event;
+  const result = { ...rest };
+  if (rest.contexts && typeof rest.contexts === "object") {
+    const { trace: _trace, ...contexts } = rest.contexts;
+    result.contexts = contexts;
+  }
+  if (metadata && typeof metadata === "object") {
+    const {
+      normalizedRequest: _normalizedRequest,
+      ipAddress: _ipAddress,
+      dynamicSamplingContext: _dynamicSamplingContext,
+      ...kept
+    } = metadata;
+    result.sdkProcessingMetadata = kept;
+  }
+
+  return result;
+}
+
+/**
  * An event as it is sent: every field scrubbed (`scrubSensitiveData`), and then each exception's
  * message, the error's own and each linked cause's, described. A copy; the event is not changed.
  */
 function scrubbedEvent(event) {
-  const scrubbed = scrubSensitiveData(event);
+  const scrubbed = withoutServedRequest(scrubSensitiveData(event));
   const values = scrubbed?.exception?.values;
   if (!Array.isArray(values)) return scrubbed;
 
