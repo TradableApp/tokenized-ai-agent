@@ -36,6 +36,11 @@ const {
 
 const senseaiPluginModule = require("./elizaos/plugins/plugin-senseai/dist/index.js");
 const { startAgentWithCleanSettings } = require("./elizaos/agentSettings");
+const {
+  conversationScopeKey,
+  clearConversationRoom,
+  withRoomLock,
+} = require("./elizaos/conversationRoom");
 const senseaiPlugin = senseaiPluginModule.default;
 const senseAiCharacter = require("./elizaos/character.js");
 const { initializeOracle } = require("./contractUtility");
@@ -407,6 +412,10 @@ let isSapphire;
 // The key that opens each prompt's session key. Used through this, never read.
 let decryptor;
 let expectedChainId;
+// The chain the oracle answers on, once known: set by `start` after it has checked it, or read
+// from the provider the first time a conversation's scope is needed (tests, and a caller that has
+// not started the oracle). Never changes while the process runs.
+let deploymentChainId;
 
 /**
  * Gives the oracle its keys and builds what it talks to the chain with. Called once by
@@ -463,6 +472,7 @@ function initForTest(testComponents) {
   isSapphire = testComponents.isSapphire;
   if (testComponents.decryptor) decryptor = testComponents.decryptor;
   expectedChainId = testComponents.expectedChainId;
+  deploymentChainId = testComponents.chainId;
   if (testComponents.stateStore) {
     stateStore = testComponents.stateStore;
     lastProcessedBlockInMemory = null;
@@ -983,12 +993,36 @@ async function reconstructHistory(startMessageCID, sessionKey) {
 // --- AI Model Query Functions ---
 
 /**
+ * The name of a conversation outside the oracle: its room in the agent framework, and its history
+ * at ChainGPT. Made from the chain, the agent contract, the conversation id and the wallet that
+ * owns the conversation (the contract only takes a conversation's prompts from its owner), so no
+ * two deployments and no two owners share one. The chain is read from the provider at most once.
+ *
+ * @param {string} conversationId
+ * @param {string} owner
+ * @returns {Promise<string>}
+ */
+async function conversationScopeOf(conversationId, owner) {
+  if (deploymentChainId === undefined) {
+    ({ chainId: deploymentChainId } = await provider.getNetwork());
+  }
+
+  return conversationScopeKey({
+    chainId: deploymentChainId,
+    agentAddress: contract?.target,
+    conversationId,
+    owner,
+  });
+}
+
+/**
  * Query the ChainGPT API for a response.
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @param {string} conversationId - The unique on-chain ID for this conversation.
+ * @param {string} userWallet - The wallet that owns the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
-async function queryChainGPT(conversationHistory, conversationId) {
+async function queryChainGPT(conversationHistory, conversationId, userWallet) {
   console.log(`[ChainGPT] Querying ChainGPT for convId: ${conversationId}`);
   if (!process.env.CHAIN_GPT_API_KEY) {
     throw new Error("CHAIN_GPT_API_KEY is not set in the environment file.");
@@ -1001,8 +1035,12 @@ async function queryChainGPT(conversationHistory, conversationId) {
 
   const question = userPrompts[userPrompts.length - 1].content;
 
-  // Use the on-chain conversationId to generate a deterministic UUID.
-  const conversationUUID = uuidv5(conversationId.toString(), NAMESPACE_UUID);
+  // ChainGPT keeps the earlier turns under this id (`chatHistory: "on"`), so it is named for the
+  // deployment, the conversation and its owner, as the agent framework's room is.
+  const conversationUUID = uuidv5(
+    await conversationScopeOf(conversationId.toString(), userWallet),
+    NAMESPACE_UUID,
+  );
 
   const res = await fetch("https://api.chaingpt.org/chat/stream", {
     method: "POST",
@@ -1160,9 +1198,14 @@ function registerProvenanceHandlers(runtime) {
 /**
  * Query the ElizaOS third-party service with structured I/O.
  * Uses the internal ElizaOS runtime initialized in the TEE.
+ *
+ * The run happens in the conversation's own room (see elizaos/conversationRoom.js): named for
+ * the deployment, the conversation and its owner, emptied before the history is written into it
+ * and again when the run ends, whichever way it ends, and used by one run at a time.
+ *
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
- * @param {string} conversationId - The on-chain conversation ID, used as the room ID.
- * @param {string} userWallet - The user's wallet address for entity/room isolation.
+ * @param {string} conversationId - The on-chain conversation ID.
+ * @param {string} userWallet - The wallet that owns the conversation.
  * @returns {Promise<string>} The content of the AI's response.
  */
 async function queryElizaOS(conversationHistory, conversationId, userWallet, liveStream) {
@@ -1175,7 +1218,28 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
   const runtime = elizaOS.getAgent(senseAiAgentId);
   if (!runtime) throw new Error("Eliza Agent Runtime not found");
 
-  const roomId = stringToUuid(conversationId);
+  const roomId = stringToUuid(await conversationScopeOf(conversationId, userWallet));
+
+  return withRoomLock(roomId, async () => {
+    // A clear that fails is printed by clearConversationRoom and costs the answer nothing.
+    await clearConversationRoom(runtime, roomId, "before the run");
+    try {
+      return await runInRoom(
+        runtime,
+        roomId,
+        conversationHistory,
+        conversationId,
+        userWallet,
+        stream,
+      );
+    } finally {
+      await clearConversationRoom(runtime, roomId, "after the run");
+    }
+  });
+}
+
+/** One ElizaOS run in a room that queryElizaOS has emptied and holds. */
+async function runInRoom(runtime, roomId, conversationHistory, conversationId, userWallet, stream) {
   const entityId = stringToUuid(userWallet);
   const agentEntityId = runtime.agentId;
   const worldId = stringToUuid("onchain-world");
@@ -1205,11 +1269,13 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
   // We loop through the historical context reconstructed from Autonomys and insert it into PGLite.
   // This gives the stateless/ephemeral TEE the necessary context for RAG/Conversation.
   for (const msg of pastContext) {
-    // Create a deterministic ID for the historical message based on content + timestamp
-    // to avoid duplicates if this logic runs multiple times in the same session.
+    // A deterministic ID for the historical message from its room, content and timestamp, so a
+    // message repeated in the history is written once. The room is part of it because memory ids
+    // are unique across the whole database: without it, the same message in another room would
+    // be found there and left out of this one.
     const msgHash = crypto
       .createHash("sha256")
-      .update(msg.content + msg.createdAt)
+      .update(`${roomId}\n${msg.content}${msg.createdAt}`)
       .digest("hex");
     const memoryId = stringToUuid(msgHash);
 
@@ -1313,6 +1379,9 @@ async function queryElizaOS(conversationHistory, conversationId, userWallet, liv
         {
           entityId,
           roomId,
+          // The room's own world. Given none, the framework makes a world for every room it sees,
+          // named after the room, and that world would stay in the database.
+          worldId,
           content: {
             // ONLY the user's prompt. Market context arrives via providers during
             // composition — hand-building it here bypassed the framework and made the two
@@ -1738,7 +1807,7 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   // Direct provider bypass (used in tests and explicit operator config)
   if (aiProvider === "ChainGPT") {
     try {
-      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+      const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId, userWallet));
       providerTally.recordServed("chaingpt");
 
       return answer;
@@ -1815,7 +1884,9 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       // 4. Failover 1: ChainGPT. A new attempt on the stream: the steps shown so far stay.
       stream.attempt();
       try {
-        const answer = asAnswer(await queryChainGPT(conversationHistory, conversationId));
+        const answer = asAnswer(
+          await queryChainGPT(conversationHistory, conversationId, userWallet),
+        );
         // AFTER the await. Recording first means a ChainGPT throw is counted as a chaingpt
         // success AND as whatever the next catch then records (gemini or none).
         providerTally.recordServed("chaingpt");
@@ -3338,6 +3409,7 @@ async function start() {
   // against this same url.
   const { chainId } = await provider.getNetwork();
   assertChainOfKeys(chainId);
+  deploymentChainId = chainId;
   ({ store: stateStore } = createStateStore({
     postgresUrl: agentStateDbUrl,
     chainId,

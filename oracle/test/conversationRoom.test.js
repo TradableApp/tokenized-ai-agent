@@ -175,11 +175,15 @@ describe("clearConversationRoom", () => {
     const failed = await clearConversationRoom(runtime, "room-x", "after the run");
 
     expect(failed).to.include("messages");
-    expect(calls.some(([name]) => name === "deleteRoom"), "the room is still deleted").to.equal(
-      true,
-    );
+    expect(
+      calls.some(([name]) => name === "deleteRoom"),
+      "the room is still deleted",
+    ).to.equal(true);
     expect(consoleError.called).to.equal(true);
-    const line = consoleError.getCalls().map((call) => call.args.join(" ")).join("\n");
+    const line = consoleError
+      .getCalls()
+      .map((call) => call.args.join(" "))
+      .join("\n");
     expect(line).to.match(/could not clear/i);
     expect(line).to.include("after the run");
     expect(line).to.include("messages");
