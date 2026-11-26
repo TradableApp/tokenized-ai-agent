@@ -1,0 +1,57 @@
+# Advisories osv-scanner reports in this directory's bun.lock that no bump or Bun override here can clear.
+# Each entry names the copy, why it cannot move, and whether it is reached. Review each one before its date.
+
+[[IgnoredVulns]]
+id = "GHSA-378v-28hj-76wf"
+effectiveUntil = 2027-02-28
+reason = "bn.js 4.11.6: pinned exactly to 4.11.6 by ethjs-unit and number-to-bn under web3-utils, which solidity-coverage requires. Fixed in 4.12.3, but a Bun override sets every copy of a package, and this tree also holds bn.js 5. Coverage tooling only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-pxg6-pf52-xh8x"
+effectiveUntil = 2027-02-28
+reason = "cookie 0.4.2: required as ^0.4.1 by @sentry/node 5 inside Hardhat; fixed only in 0.7.0, outside that range. Hardhat tooling only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-73rr-hh4g-fpgx"
+effectiveUntil = 2027-02-28
+reason = "diff 7.0.0: required as ^7 by mocha 11; fixed only in 8.0.3. Test runner only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-848j-6mx2-7j84"
+effectiveUntil = 2027-02-28
+reason = "elliptic 6.6.1: no fixed version is published. Pinned by @ethersproject/signing-key 5.8.0 under Hardhat plugins. Contract tooling only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-3g3m-2fjr-6pw4"
+effectiveUntil = 2027-02-28
+reason = "glob 10.5.0, glob 13.0.7: fixed only in glob 14; the 10.x and 13.x lines required by mocha, hardhat-gas-reporter and solhint have no fix. Build and test tooling only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+effectiveUntil = 2027-02-28
+reason = "minimatch 10.2.6, minimatch 9.0.9: fixed only in minimatch 11; required as ^9 and ^10 by glob, mocha, solhint and @openzeppelin/upgrades-core. Build and test tooling only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-5c6j-r48x-rmvq"
+effectiveUntil = 2027-02-28
+reason = "serialize-javascript 6.0.2: required as ^6.0.2 by mocha 11; fixed only in 7.x. Test runner only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-m5mm-p8h7-m29v"
+effectiveUntil = 2027-02-28
+reason = "serialize-javascript 6.0.2: required as ^6.0.2 by mocha 11; fixed only in 7.x. Test runner only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-qj8w-gfj5-8c6v"
+effectiveUntil = 2027-02-28
+reason = "serialize-javascript 6.0.2: required as ^6.0.2 by mocha 11; fixed only in 7.x. Test runner only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-52f5-9888-hmc6"
+effectiveUntil = 2027-02-28
+reason = "tmp 0.0.33: pinned to 0.0.33 by solc 0.8.26 inside Hardhat and required as ^0.0.33 by external-editor; fixed only in 0.2.x. Build tooling only; not part of the oracle image."
+
+[[IgnoredVulns]]
+id = "GHSA-ph9p-34f9-6g65"
+effectiveUntil = 2027-02-28
+reason = "tmp 0.0.33: pinned to 0.0.33 by solc 0.8.26 inside Hardhat and required as ^0.0.33 by external-editor; fixed only in 0.2.x. Build tooling only; not part of the oracle image."
