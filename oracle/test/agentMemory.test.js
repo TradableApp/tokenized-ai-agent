@@ -101,6 +101,14 @@ describe("confineRuntimeToTheRun", () => {
     ).to.throw(/message service/);
   });
 
+  it("refuses a runtime whose evaluator list does not take the replacement", () => {
+    const { runtime } = frameworkRuntime();
+    const kept = [{ name: "reflection" }];
+    Object.defineProperty(runtime, "evaluators", { get: () => kept, set() {} });
+
+    expect(() => confineRuntimeToTheRun(runtime)).to.throw(/evaluator list/);
+  });
+
   it("can be asked twice", () => {
     const { runtime } = frameworkRuntime();
     confineRuntimeToTheRun(runtime);
