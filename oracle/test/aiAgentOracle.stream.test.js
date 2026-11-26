@@ -1065,6 +1065,11 @@ describe("answer path and live stream", function () {
         expect(frames.some((f) => f.type === "answer")).to.equal(false);
         expect(frames.at(-1).data).to.deep.equal({ outcome: "interrupted" });
         expect(activityKinds(stubs)).to.deep.equal(["answer_failed"]);
+        // One report per failure, from where the provider failed: the handler adds no second one.
+        const sites = stubs["@sentry/node"].captureException
+          .getCalls()
+          .map((call) => call.args[1]?.tags?.site);
+        expect(sites).to.deep.equal(["ai_all_tiers_failed"]);
       });
     });
 
