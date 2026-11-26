@@ -8,6 +8,7 @@ const {
   clearConversationRoom,
   withRoomLock,
   takeRoomTurn,
+  takeMetadataTurn,
   ROOM_MEMORY_TABLES,
 } = require("../src/elizaos/conversationRoom");
 
@@ -350,5 +351,84 @@ describe("takeRoomTurn", () => {
     expect(await takeRoomTurn("room-w", async () => "next")).to.equal("next");
     gate.resolve();
     await blocked;
+  });
+});
+
+describe("takeMetadataTurn", () => {
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await new Promise((r) => setImmediate(r));
+  };
+
+  it("runs one conversation's updates one at a time, in the order they were handed in", async () => {
+    const gates = [deferred(), deferred(), deferred()];
+    const started = [];
+    const finished = [];
+
+    const turns = gates.map((gate, i) =>
+      takeMetadataTurn("41", async () => {
+        started.push(i);
+        await gate.promise;
+        finished.push(i);
+        return i;
+      }),
+    );
+
+    await settle();
+    expect(started).to.deep.equal([0]);
+    // The later ones are let go first: each still waits for the one before it.
+    gates[2].resolve();
+    gates[1].resolve();
+    await settle();
+    expect(started).to.deep.equal([0]);
+    gates[0].resolve();
+
+    expect(await Promise.all(turns)).to.deep.equal([0, 1, 2]);
+    expect(finished).to.deep.equal([0, 1, 2]);
+  });
+
+  it("does not hold up another conversation's update", async () => {
+    const gate = deferred();
+    const blocked = takeMetadataTurn("42", () => gate.promise);
+
+    expect(await takeMetadataTurn("43", async () => "other")).to.equal("other");
+    gate.resolve();
+    await blocked;
+  });
+
+  it("lets the next update in after one that throws, and passes the throw on", async () => {
+    const failing = takeMetadataTurn("44", async () => {
+      throw new Error("upload failed");
+    });
+    const next = takeMetadataTurn("44", async () => "next");
+
+    let error;
+    try {
+      await failing;
+    } catch (e) {
+      error = e;
+    }
+    expect(error?.message).to.equal("upload failed");
+    expect(await next).to.equal("next");
+  });
+
+  it("is not held by a prompt's turn or room of the same key", async () => {
+    const held = deferred();
+    const answer = deferred();
+    await withRoomLock("45", async (hold) => {
+      hold(held.promise);
+    });
+    const prompt = takeRoomTurn("45", () => answer.promise);
+
+    expect(await takeMetadataTurn("45", async () => "renamed")).to.equal("renamed");
+    held.resolve();
+    answer.resolve();
+    await prompt;
   });
 });
