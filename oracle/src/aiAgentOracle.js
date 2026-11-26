@@ -60,7 +60,7 @@ const {
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
-const { createAlertThrottle } = require("./alertThrottle");
+const { createAlertThrottle, monotonicNow } = require("./alertThrottle");
 const { payloadText, unwrapSessionKey, isWrapNotOpened } = require("./userCiphertext");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
 const { validatePayload } = require("./payloadValidator");
@@ -465,6 +465,7 @@ function initForTest(testComponents) {
   isSapphire = testComponents.isSapphire;
   if (testComponents.decryptor) decryptor = testComponents.decryptor;
   expectedChainId = testComponents.expectedChainId;
+  if (testComponents.monotonicNow) buildAlertThrottles(testComponents.monotonicNow);
   if (testComponents.stateStore) {
     stateStore = testComponents.stateStore;
     lastProcessedBlockInMemory = null;
@@ -2817,13 +2818,21 @@ async function lostOracleRole(error) {
 // The lag alert is checked once per event, so a backlog would send one per event. One per ten
 // minutes says the same; the per-event lag is still logged.
 const LAG_ALERT_INTERVAL_MS = 10 * 60 * 1000;
-const lagAlerts = createAlertThrottle({ intervalMs: LAG_ALERT_INTERVAL_MS });
 
 // A wrap that does not open is dropped as the sender's mistake. If the dApp wraps to a key this
 // oracle does not hold, every prompt fails that way and none is answered, so the condition is
 // said once an hour: often enough to be seen, and no more however many such prompts arrive.
 const UNOPENED_WRAP_ALERT_INTERVAL_MS = 60 * 60 * 1000;
-const unopenedWrapAlerts = createAlertThrottle({ intervalMs: UNOPENED_WRAP_ALERT_INTERVAL_MS });
+
+let lagAlerts;
+let unopenedWrapAlerts;
+
+/** The throttles, on a clock that only goes forward; a test may give its own (initForTest). */
+function buildAlertThrottles(now = monotonicNow) {
+  lagAlerts = createAlertThrottle({ intervalMs: LAG_ALERT_INTERVAL_MS, now });
+  unopenedWrapAlerts = createAlertThrottle({ intervalMs: UNOPENED_WRAP_ALERT_INTERVAL_MS, now });
+}
+buildAlertThrottles();
 
 /**
  * A wrapper for event handlers that distinguishes between retryable and fatal errors.
