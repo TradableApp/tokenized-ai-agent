@@ -211,6 +211,40 @@ describe('sentryInit', () => {
       expect(integration.options).to.deep.equal({ mode: 'none' });
     });
 
+    it('tells the http integration to record no request the oracle serves', () => {
+      const httpIntegration = sinon.stub().callsFake((options) => ({ name: 'Http', options }));
+      const sentry = {
+        init: sinon.stub(),
+        httpIntegration,
+        nativeNodeFetchIntegration: sinon.stub().returns({ name: 'NodeFetch' }),
+        onUnhandledRejectionIntegration: sinon.stub().returns({ name: 'OnUnhandledRejection' }),
+      };
+      const previous = process.env.SENTRY_DSN;
+      process.env.SENTRY_DSN = 'https://public@sentry.example/1';
+      const log = sinon.stub(console, 'log');
+      try {
+        proxyquire('../src/sentryInit', { '@sentry/node': sentry }).initSentry();
+      } finally {
+        log.restore();
+        if (previous === undefined) delete process.env.SENTRY_DSN;
+        else process.env.SENTRY_DSN = previous;
+      }
+
+      const [options] = httpIntegration.firstCall.args;
+      expect(options.ignoreIncomingRequests, 'ignoreIncomingRequests').to.be.a('function');
+      for (const urlPath of ['/stream/123', '/', '/health']) {
+        expect(options.ignoreIncomingRequests(urlPath, {}), urlPath).to.equal(true);
+      }
+    });
+
+    it('redacts a stream proof header by name', () => {
+      const scrubbed = scrubSensitiveData({
+        'x-senseai-stream-proof': 'not-a-real-proof',
+        'http.request.header.x_senseai_stream_proof': ['not-a-real-proof'],
+      });
+      expect(JSON.stringify(scrubbed)).to.not.include('not-a-real-proof');
+    });
+
     it('scrubs transactions as it scrubs events', () => {
       const options = initWith();
 
