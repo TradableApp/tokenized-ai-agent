@@ -2294,8 +2294,8 @@ async function handlePrompt(
       });
     }
 
-    // Bad input is the sender's, and is not reported: one event per malformed prompt would let
-    // anyone fill the error reports.
+    // Bad input is the sender's: it is dropped by handleAndRecord with no alert, and is not
+    // reported to Sentry here either.
     if (!isBadInputError(error)) {
       Sentry.captureException(error, {
         tags: { site: "handle_prompt" },
