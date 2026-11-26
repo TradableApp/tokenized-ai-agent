@@ -105,7 +105,7 @@ rofl_unpinned_images() {
     elif [ -z "$ref" ]; then
       printf '%s\037has no image: line\n' "$service"
     elif ! rofl_is_pinned_ref "$ref" && [[ "$ref" == *@* ]] && rofl_ref_has_tag "$ref"; then
-      printf '%s\037names %s, which carries a tag and a digest; the registry transport takes one, so write <name>@sha256:<64 lower-case hex>\n' "$service" "$ref"
+      printf '%s\037names %s, which carries a tag and a digest; the registry transport takes one, so write <name>@sha256:<64 lower-case hex> and keep the tag in "# pinned from :<tag>" on the line above\n' "$service" "$ref"
     elif ! rofl_is_pinned_ref "$ref"; then
       printf '%s\037names %s, which is not <name>@sha256:<64 lower-case hex>\n' "$service" "$ref"
     fi
