@@ -108,12 +108,13 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   /// @param user The address of the withdrawing user.
   /// @param amount The amount withdrawn.
   event Withdrawal(address indexed user, uint256 amount); // solhint-disable-line gas-indexed-events
+  // solhint-disable gas-indexed-events
   /// @notice Emitted when a user's payment is successfully placed in escrow.
   /// @param escrowId The unique identifier for this escrow entry.
   /// @param user The address of the user whose payment is escrowed.
   /// @param amount The amount placed in escrow.
-  event PaymentEscrowed(// solhint-disable-line gas-indexed-events
-  uint256 indexed escrowId, address indexed user, uint256 amount);
+  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 amount);
+  // solhint-enable gas-indexed-events
   /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
   /// @param escrowId The unique identifier of the finalized escrow entry.
   event PaymentFinalized(uint256 indexed escrowId);
@@ -134,14 +135,20 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   /// @param user The address of the user cancelling the prompt.
   /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
+  // solhint-disable gas-indexed-events
   /// @notice Emitted with the amounts of a cancellation: together they are the escrowed amount.
   /// @dev Carries the user so an indexer needs no other event or stored record to file it.
   /// @param escrowId The unique ID of the cancelled escrow.
   /// @param user The user who cancelled.
   /// @param fee The cancellation fee sent to the treasury (never more than was escrowed).
   /// @param returned The rest of the escrowed amount, returned to the user's deposit.
-  event CancellationSettled(// solhint-disable-line gas-indexed-events
-  uint256 indexed escrowId, address indexed user, uint256 fee, uint256 returned);
+  event CancellationSettled(
+    uint256 indexed escrowId,
+    address indexed user,
+    uint256 fee,
+    uint256 returned
+  );
+  // solhint-enable gas-indexed-events
 
   /// @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
   /// @param user The address of the user who paid.
