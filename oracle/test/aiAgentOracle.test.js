@@ -1818,7 +1818,9 @@ describe("aiAgentOracle", function () {
         await aiAgentOracle.getSessionKey(null, null, "123");
         expect.fail("Should have thrown");
       } catch (error) {
-        expect(error.message).to.include("Could not find Key File");
+        // None sent and none stored: the sender's doing.
+        expect(error.name).to.equal("BadInputError");
+        expect(error.message).to.include("No session key for conversation 123");
       }
     });
   });

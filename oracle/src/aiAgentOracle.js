@@ -888,7 +888,11 @@ async function getSessionKey(payload, roflEncryptedKey, conversationId) {
       { name: "SenseAI-Key-For-Conversation", value: `${chainId}-${conversationId}` },
     ]);
     if (!keyFileCID) {
-      throw new Error(`Could not find Key File for conversation ${conversationId}.`);
+      // The event carried no key and the conversation has none stored: nothing can open the
+      // prompt, and that is the sender's doing. A lookup that fails throws and is handled as such.
+      throw new BadInputError(
+        `No session key for conversation ${conversationId}: none sent, none stored.`,
+      );
     }
     const fetchedHex = await fetchData(keyFileCID);
     return await requireDecryptor().decrypt(Buffer.from(fetchedHex, "hex"));
