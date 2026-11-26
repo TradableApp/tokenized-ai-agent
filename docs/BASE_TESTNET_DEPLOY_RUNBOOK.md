@@ -406,10 +406,20 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
   It ends by running `image:pin:base-testnet`, which reads the digest of the tag just pushed from
   the registry (`docker buildx imagetools inspect`) and writes it into `compose.base-testnet.yaml`
-  as `…:base-testnet@sha256:<digest>`. The bundle measures the compose file, so the digest is what
+  as `image: …@sha256:<digest>`, the digest alone (the registry transport does not take a tag and a
+  digest together), with `# pinned from :base-testnet` on the line above; the next pin reads the tag
+  from that line, so leave it there. The bundle measures the compose file, so the digest is what
   fixes which image the enclave runs; A.6's preflight refuses a compose that names an image by tag
   alone. If the push succeeded and the pin did not (the registry did not answer, buildx missing),
   run `bun run image:pin:base-testnet` on its own; it changes nothing when the digest is already there.
+  ⚠️ **Check the first deploy from a pinned file on a testnet machine.** A default buildx push makes
+  an image index (the image manifest plus a provenance attestation), so the digest pinned is the
+  index's. No document we have says how ROFL resolves an index digest to the platform's manifest;
+  the pull by tag did pick the amd64 manifest from this index. After A.9, read `oasis rofl machine
+  logs` for the image being pulled and the oracle starting. If the pull by index digest fails, the
+  fallback is to pin the linux/amd64 manifest's digest (from `docker buildx imagetools inspect
+  <name>:<tag> --raw`, the entry whose platform is linux/amd64) by hand, or to push without the
+  attestation so the tag names a single manifest; neither is what the scripts do today.
 - [ ] **A.4b Commit the pinned compose (me):** `compose.base-testnet.yaml` changed only in its
   `image:` line. Commit it on its own small PR, as with the machine id in `rofl.yaml`, so the
   digest that is bundled is the one reviewed. `compose.yaml` takes the same line at A.6.
