@@ -678,6 +678,39 @@ describe("startup config validation", () => {
       expect(() => validateConfig(baseEnv())).to.not.throw();
     });
 
+    it("ends a connection by default before the ROFL proxy would cut it, and after a poll's wait", () => {
+      const {
+        STREAM_SETTING_DEFAULTS,
+        PROXY_CONNECTION_LIMIT_MS,
+        PROXY_LIMIT_HEADROOM_MS,
+      } = require("../src/stream/streamConfig");
+      const { STREAM_HTTP } = require("../src/stream/streamContract");
+      const lifetime = STREAM_SETTING_DEFAULTS.STREAM_MAX_CONN_MS;
+      // The proxy closed every connection 30.3 to 30.5 s after it opened (measured on Sapphire
+      // testnet, 2026-11-25): the limit is taken as 30 000 ms and the default leaves 5 000 ms
+      // for a slow write, so the server's own clean end comes first.
+      expect(PROXY_CONNECTION_LIMIT_MS).to.equal(30000);
+      expect(PROXY_LIMIT_HEADROOM_MS).to.equal(5000);
+      expect(lifetime).to.equal(PROXY_CONNECTION_LIMIT_MS - PROXY_LIMIT_HEADROOM_MS);
+      // A poll waits 20 000 ms for a first frame; a lifetime below that would cut every poll short.
+      expect(lifetime).to.be.above(STREAM_HTTP.pollWaitMs);
+      // One heartbeat (15 000 ms) still fits inside a connection.
+      expect(lifetime).to.be.above(STREAM_SETTING_DEFAULTS.STREAM_HEARTBEAT_MS);
+    });
+
+    it("refuses a connection lifetime the ROFL proxy would cut first, naming the setting", () => {
+      // 30 000 ms is the proxy's limit: at it or above it, the proxy ends the stream, not the server.
+      for (const value of ["30000", "35000", "240000"]) {
+        const error = refusalFor({ STREAM_MAX_CONN_MS: value });
+        expect(error, value).to.be.an("error");
+        expect(error.message).to.match(/STREAM_MAX_CONN_MS/);
+        // The message names the limit (30000), never what was set.
+        if (value !== "30000") expect(error.message).to.not.include(value);
+      }
+      // One millisecond under the limit is the operator's choice to make.
+      expect(refusalFor({ STREAM_MAX_CONN_MS: "29999" })).to.equal(null);
+    });
+
     it("accepts a complete, valid set", () => {
       expect(() =>
         validateConfig(
@@ -688,7 +721,7 @@ describe("startup config validation", () => {
               "https://a.example, http://localhost:3002,https://b.example:8443",
             STREAM_GRACE_MS: "120000",
             STREAM_HEARTBEAT_MS: "15000",
-            STREAM_MAX_CONN_MS: "240000",
+            STREAM_MAX_CONN_MS: "25000",
             STREAM_MAX_CONN_PER_ANSWER: "4",
             STREAM_MAX_CONN_TOTAL: "200",
             STREAM_HOST: "127.0.0.1",

@@ -465,12 +465,15 @@ ciphertext only.
   - **a custom domain for 8787**: an annotation and two DNS records once; the URL survives a
     machine change, and the records move to the new machine's address instead.
 
-  Still to be measured by the Phase 0 spike, and recorded here: that the proxy passes the event
-  stream unbuffered, how long it keeps a quiet connection against the 15 s heartbeat and the
-  240 s connection limit (if it buffers or cuts, the dApp's poll mode is the fallback), that it
-  forwards `Origin`, `Last-Event-ID` and the proof header and returns the server's CORS and
-  `Retry-After` headers unchanged, and whether the `p8787` URL survives a restart of the same
-  machine.
+  Measured by the Phase 0 probe on a Sapphire **testnet** machine on 2026-11-25 (a `playground_short`
+  machine, which is not the mainnet size; read again on a mainnet machine before launch): the
+  proxy passes the event stream unbuffered and uncompressed (frames arrived a mean 75 ms after
+  they were sent), speaks HTTP/1.1, and passes the CORS preflight and headers. It **closes every
+  connection about 30 s after it opens**, with frames passing or with none, so the 15 s heartbeat
+  does not keep one open: `STREAM_MAX_CONN_MS` (25000) makes the server end each connection
+  first, and the dApp's reader reconnects from its cursor at once. Not yet measured: whether the
+  `p8787` URL survives a restart of the same machine, and whether a connection the browser
+  reuses for the next stream is given a new 30 s.
 - **Check the stream answers.** With `STREAM=<that origin>`:
   - `curl -sS -w ' %{http_code}\n' "$STREAM/health"` → `{"ok":true} 200` (the stream server is
     listening; the oracle starts its event processing right after, so this alone does not show
@@ -495,7 +498,7 @@ ciphertext only.
   (unset: every interface, which the container's published port needs; leave it unset here),
   `STREAM_ALLOWED_ORIGINS`, `STREAM_GRACE_MS` (120000; the dApp assumes this value as a constant
   for how long it follows an answer, so changing it needs the dApp's constant changed too),
-  `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (240000),
+  `STREAM_HEARTBEAT_MS` (15000), `STREAM_MAX_CONN_MS` (25000; 30000 or more stops start-up, see below),
   `STREAM_MAX_CONN_PER_ANSWER` (4), `STREAM_MAX_CONN_TOTAL` (200, at most 256: a third of the
   server's socket budget of 768). Heartbeat, maximum connection time and the total cap are set
   from the Phase 0 measurement. A value that cannot work stops
