@@ -265,6 +265,11 @@ bun run image:build:base-testnet
 bun run image:push:base-testnet
 ```
 
+The push ends by writing the pushed image's digest into `compose.base-testnet.yaml`
+(`image: …:base-testnet@sha256:<digest>`; `bun run image:pin:base-testnet` does it on its own).
+The bundle measures the compose file, so the digest is what fixes which image runs, and the
+bundle build below refuses a compose that names an image by tag alone. Commit the changed file.
+
 ### 3. Build ROFL Bundle
 
 Creates the canonical `.orc` file containing the TEE policy.

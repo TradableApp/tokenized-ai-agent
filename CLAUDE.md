@@ -82,13 +82,14 @@ Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.or
 |---------|---------|
 | `bun run rofl:create:testnet` | Create ROFL app on Sapphire testnet |
 | `bun run image:build:testnet` | Build ROFL Docker image (testnet) |
-| `bun run image:push:testnet` | Push ROFL image to registry (testnet) |
+| `bun run image:push:testnet` | Push ROFL image to registry, then pin it (testnet) |
+| `bun run image:pin:testnet` | Write the pushed image's digest into `compose.testnet.yaml` |
 | `bun run rofl:set:testnet` | Set ROFL app config (testnet) |
 | `bun run rofl:build:testnet` | Build ROFL bundle (testnet) |
 | `bun run rofl:update:testnet` | Update ROFL bundle on chain (testnet) |
 | `bun run rofl:deploy:testnet` | Full ROFL deploy workflow (testnet) |
 | `bun run rofl:create:mainnet` | Create ROFL app on Sapphire mainnet |
-| `bun run release:mainnet` | Release ROFL image (mainnet) |
+| `bun run release:mainnet` | Release ROFL image and pin it by digest in `compose.mainnet.yaml` (mainnet) |
 | `bun run rofl:set:mainnet` | Set ROFL app config (mainnet) |
 | `bun run rofl:build:mainnet` | Build ROFL bundle (mainnet) |
 | `bun run rofl:update:mainnet` | Update ROFL bundle on chain (mainnet) |
@@ -98,9 +99,11 @@ Oracle tests use `.env.oracle.example` by default: `DOTENV_CONFIG_PATH=./.env.or
 | Command | Purpose |
 |---------|---------|
 | `bun run rofl:create:base-testnet` | Create the ROFL app (on Sapphire testnet) for the oracle that serves Base Sepolia |
+| `bun run image:push:base-testnet` | Push the oracle image, then run `image:pin:base-testnet` |
+| `bun run image:pin:base-testnet` | Write the pushed image's digest into `compose.base-testnet.yaml` |
 | `bun run rofl:deploy:base-testnet` | Full ROFL deploy workflow (Base testnet) |
 | `bun run rofl:create:base-mainnet` | Create the ROFL app (on Sapphire mainnet) for the oracle that serves Base mainnet |
-| `bun run release:base-mainnet` | Build and push a versioned oracle image and set the version in `rofl.yaml` (Base mainnet) |
+| `bun run release:base-mainnet` | Build and push a versioned oracle image, set the version in `rofl.yaml` and pin the image by digest in `compose.base-mainnet.yaml` (Base mainnet) |
 | `bun run rofl:deploy:base-mainnet` | Full ROFL deploy workflow (Base mainnet) |
 | `bun run rofl:init:cloud-sql:sepolia-on-mainnet` | Verification run: Cloud SQL cert for the `base-mainnet` app on the testnet instance |
 | `bun run rofl:set:sepolia-on-mainnet` | Verification run: push `base-testnet` config/secrets to the `base-mainnet` app |
@@ -218,6 +221,8 @@ Each oracle env file is split by the line `# === 📄 ORC BUNDLE CONFIGURATION (
 Oracle is deployed as a Docker container inside a ROFL TEE. Relevant files at root:
 - `Dockerfile.oracle` — oracle image definition
 - `compose.yaml`, `compose.testnet.yaml`, `compose.mainnet.yaml`, `compose.base-testnet.yaml`, `compose.base-mainnet.yaml` — per-environment Compose files. Each publishes exactly one port, `"8787:8787"` (the live reasoning stream), above the `environment:` block that `scripts/rofl-set-secrets.sh` rewrites.
+
+**Images are pinned by digest.** The ROFL bundle measures the compose file, not the image it names, so the enclave identity fixes which oracle code runs only when the image is named by its content digest; `oasis rofl build` does not resolve one. Every compose file names the image as `ghcr.io/tradableapp/tokenized-ai-agent:<tag>@sha256:<64 lower-case hex>` (the tag is for the reader; the digest decides what is pulled). `scripts/rofl-preflight.sh`, which every `rofl:build:*` runs first, refuses a compose file in which any service has no `image:` or one that is not of that form, naming the file and the service and the command that writes the digest; the rule is in `scripts/rofl-image-refs.sh`. `scripts/pin-image-digest.sh <compose file>` writes the digest: it drops any digest already there, reads the digest of the tag from the registry (`docker buildx imagetools inspect`, no daemon needed; `ROFL_IMAGE_DIGEST_CMD` names a command to use instead, which the tests set), refuses an answer that is not `sha256:` and 64 lower-case hex, does every lookup before writing, and leaves the file as it was on any failure; with nothing new pushed it changes nothing. `image:push:<env>` runs it through `image:pin:<env>` (testnet and Base testnet), and `scripts/release-mainnet.sh` runs it after its push, so its compose file ends with `:<version>@sha256:<digest>` of what it pushed. No mainnet image has been pushed yet, so `compose.mainnet.yaml` and `compose.base-mainnet.yaml` name a tag alone and the preflight refuses them until a release pins them. A changed digest is committed like the machine id in `rofl.yaml`, through its own small PR. `oracle/test/roflPreflight.test.js` and `oracle/test/pinImageDigest.test.js` hold this, including which tracked files are pinned today.
 
 ## Cross-Repo Context
 

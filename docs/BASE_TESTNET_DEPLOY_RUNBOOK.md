@@ -404,6 +404,15 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
   secrets to the `base-testnet` deployment, stamps `POSTGRES_HOST` (it sits above the delimiter: the database address is a secret). Idempotent.
 - [ ] **A.3 Build the oracle image (me):** `bun run image:build:base-testnet` (`Dockerfile.oracle`, multi-stage — builds Brain + inner-plugin dists in-image).
 - [ ] **A.4 Push image (you — watch the ghcr push):** `! bun run image:push:base-testnet`.
+  It ends by running `image:pin:base-testnet`, which reads the digest of the tag just pushed from
+  the registry (`docker buildx imagetools inspect`) and writes it into `compose.base-testnet.yaml`
+  as `…:base-testnet@sha256:<digest>`. The bundle measures the compose file, so the digest is what
+  fixes which image the enclave runs; A.6's preflight refuses a compose that names an image by tag
+  alone. If the push succeeded and the pin did not (the registry did not answer, buildx missing),
+  run `bun run image:pin:base-testnet` on its own; it changes nothing when the digest is already there.
+- [ ] **A.4b Commit the pinned compose (me):** `compose.base-testnet.yaml` changed only in its
+  `image:` line. Commit it on its own small PR, as with the machine id in `rofl.yaml`, so the
+  digest that is bundled is the one reviewed. `compose.yaml` takes the same line at A.6.
 - [ ] **A.5 Sync secrets (me; gcloud for any SM keys):** `bun run rofl:set:base-testnet`.
 - [ ] **A.6 Build the ORC (me):** `bun run rofl:build:base-testnet`. Re-verify the trust root survived (re-apply A.1 values if the build rewrote it).
 - [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** on a manifest branch. NOT the `.orc` (gitignored build artifact).
@@ -784,7 +793,8 @@ target the `base-mainnet` app. Rules that fell out of doing it:
   signer and encryption key.
 
 
-`compose.base-mainnet.yaml` still carries placeholder contract addresses (the mainnet pair's
+`compose.base-mainnet.yaml` names its image by tag alone (no mainnet image has been pushed;
+`bun run release:base-mainnet` builds, pushes and pins a version), and it still carries placeholder contract addresses (the mainnet pair's
 are filled on deploy day) and a `PUBLIC_KEY` placeholder (a setting the oracle no longer reads;
 the preflight flags it all the same), so `bun run rofl:build:base-mainnet` **fails its preflight and writes no
 bundle**. That is the intended state, not a broken checkout: `ethers` accepts a
@@ -896,7 +906,8 @@ and waits for its one-hour refund.
 ## Footguns
 - Trust root ~1 yr stale — refresh (A.1) or it light-block loops.
 - Cert name `rofl-oracle-base-testnet` — never reuse the social `rofl-<env>` on the shared instance.
-- Commit `rofl.yaml` + ALL compose files (`compose.yaml` and the per-env ones). Only the `.orc` is gitignored. `rofl:build:<env>` now runs `scripts/rofl-preflight.sh` first, so a compose carrying placeholder or quoted values cannot be bundled.
+- Commit `rofl.yaml` + ALL compose files (`compose.yaml` and the per-env ones). Only the `.orc` is gitignored. `rofl:build:<env>` now runs `scripts/rofl-preflight.sh` first, so a compose carrying placeholder or quoted values, or naming an image without its digest, cannot be bundled.
+- An image is bundled by digest only. After every push the compose file's `image:` line changes (`image:push:<env>` pins it; `bun run image:pin:<env>` re-pins); commit it. A `rofl:build` without a new push bundles the digest already in the file, whatever the tag points at now.
 - ROFL deploy = `build → update → deploy`, never `restart`/`release`. **Never `oasis rofl machine release`.**
 - The oracle's own address (made by the ROFL key service, printed at start-up as `signer=`; not the deploy wallet) needs Base Sepolia ETH for **every answer** — if it runs dry, prompts submit but never get answered (smoke times out → exit 1).
 - The oracle's own address must hold the oracle role on the agent: removing the deploy wallet's role before granting the signer's leaves prompts paid and unanswered until the signer is granted it. Follow §1.1.
