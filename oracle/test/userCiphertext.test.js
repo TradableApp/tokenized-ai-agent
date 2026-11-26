@@ -85,6 +85,27 @@ describe("ciphertext a user sends", () => {
 
       expect(await refusal(unwrapSessionKey(failing, Buffer.from([0x01])))).to.equal(fault);
     });
+
+    // A mistake in the oracle's own code (a renamed library function, a decryptor of the wrong
+    // shape) must reach the fatal branch, not be dropped as the sender's.
+    for (const Fault of [TypeError, ReferenceError, SyntaxError]) {
+      it(`passes on a ${Fault.name}, which is a mistake in the oracle's own code`, async () => {
+        const fault = new Fault("not a function");
+        const failing = { decrypt: () => Promise.reject(fault) };
+
+        expect(await refusal(unwrapSessionKey(failing, Buffer.from([0x01])))).to.equal(fault);
+      });
+    }
+
+    it("refuses an empty wrap as bad input before the decryptor is asked", async () => {
+      let asked = false;
+      const watching = { decrypt: () => ((asked = true), decryptor.decrypt(Buffer.alloc(0))) };
+
+      expect(await refusal(unwrapSessionKey(watching, Buffer.alloc(0)))).to.be.instanceOf(
+        BadInputError,
+      );
+      expect(asked, "the decryptor is not asked").to.equal(false);
+    });
   });
 
   describe("payloadText", () => {
