@@ -354,6 +354,19 @@ describe("stored file fetch edge cases", function () {
     expect(compressed.length, "the wire carried far less than the limit").to.be.below(MIB);
   });
 
+  it("refuses a response that is not ok with a plain error naming only its status, when no refusal is given", async () => {
+    const response = new Response("the service's own words", {
+      status: 503,
+      statusText: "Service Unavailable from somewhere",
+    });
+
+    const error = await rejectionOf(fetchStoredFile(async () => response));
+
+    expect(error).to.be.an.instanceof(Error);
+    expect(error.name).to.equal("Error");
+    expect(error.message).to.equal("Stored file fetch refused: status 503.");
+  });
+
   it("refuses a key file one byte over its 4 KiB limit through a real fetch", async () => {
     server = await startServer((_req, res) => res.end(Buffer.alloc(4097, 0x30)));
 

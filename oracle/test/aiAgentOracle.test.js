@@ -2663,7 +2663,8 @@ describe("aiAgentOracle", function () {
     const errors = require("../src/errors");
     const idFor = (n) =>
       `bafkr6i${String(n)
-        .replace(/\d/g, (d) => "abcdefghij"[d])
+        // Not "a" for 0, the padding letter: idFor(10) must not be idFor(1).
+        .replace(/\d/g, (d) => "bcdefghijk"[d])
         .padEnd(52, "a")}`;
     const OTHER_KEY = crypto.randomBytes(32);
     const message = (content, parentCID) => ({ role: "user", content, parentCID });
@@ -2775,6 +2776,27 @@ describe("aiAgentOracle", function () {
         expect(timeoutMs).to.be.above(0).and.at.most(limits.fileMs);
         previousBytes = maxBytes;
       }
+    });
+
+    it("ends a walk served from the cache once its time is spent, as it does one from storage", async () => {
+      const limits = aiAgentOracle.HISTORY_LIMITS;
+      chain(10);
+      // First walk: every file fetched once, and cached.
+      await aiAgentOracle.reconstructHistory(idFor(10), FAKE_SESSION_KEY);
+      const fetchesBefore = fetchStub().callCount;
+      // Second walk: every reading of the clock is 40 s later than the one before.
+      let now = 1_000_000;
+      sinon.stub(Date, "now").callsFake(() => {
+        now += 40_000;
+        return now;
+      });
+
+      const history = await aiAgentOracle.reconstructHistory(idFor(10), FAKE_SESSION_KEY);
+
+      expect(fetchStub().callCount, "served from the cache").to.equal(fetchesBefore);
+      expect(history.length).to.be.at.least(1).and.below(10);
+      expect(history[history.length - 1].content).to.equal("Message 10");
+      expect(history.length).to.be.at.most(Math.ceil(limits.walkMs / 40_000));
     });
 
     it("stops the walk, keeping what it read, once the bytes for one prompt are spent", async () => {

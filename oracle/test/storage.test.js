@@ -184,6 +184,30 @@ describe("storage router", function () {
       expect(printed.join("\n")).to.not.include("forged line");
     });
 
+    it("takes and routes a 44-character Irys id as it does a 43-character one, and refuses 42 and 45", async () => {
+      for (const length of [43, 44]) {
+        const id = "Ab_-0".repeat(9).slice(0, length);
+        arweaveStub.fetchData.resetHistory();
+
+        expect(await storage.fetchData(id)).to.equal("arweave_data");
+        expect(arweaveStub.fetchData.calledOnceWith(id)).to.equal(true);
+      }
+      for (const length of [42, 45]) {
+        const id = "Ab_-0".repeat(10).slice(0, length);
+        arweaveStub.fetchData.resetHistory();
+
+        let refused;
+        try {
+          await storage.fetchData(id);
+        } catch (error) {
+          refused = error;
+        }
+        expect(refused, `refused at ${length}`).to.be.an("error");
+        expect(arweaveStub.fetchData.called).to.equal(false);
+        expect(autonomysStub.fetchData.called).to.equal(false);
+      }
+    });
+
     it("routes an Autonomys id to Auto Drive and passes the fetch limits on", async () => {
       const autonomysCid = `bafkr6i${"a".repeat(52)}`;
       const limits = { maxBytes: 1024, timeoutMs: 500 };
