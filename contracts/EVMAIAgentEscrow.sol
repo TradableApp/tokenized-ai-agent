@@ -162,6 +162,7 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
    */
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
 
+  // solhint-disable gas-indexed-events
   /**
    * @notice Emitted with the amounts of a cancellation: both leave the escrow's own balance.
    * @dev Carries the user so an indexer needs no other event or stored record to file it.
@@ -176,6 +177,7 @@ contract EVMAIAgentEscrow is Initializable, Ownable2StepUpgradeable, UUPSUpgrade
     uint256 fee,
     uint256 returned
   );
+  // solhint-enable gas-indexed-events
 
   /**
    * @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
