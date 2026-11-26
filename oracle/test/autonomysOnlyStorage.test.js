@@ -332,8 +332,8 @@ describe("start-up check — STORAGE_PROVIDER", () => {
   });
 
   it("does not ask about the value under mock storage, which never reads it for a provider", () => {
-    expect(
-      problemsOf(env({ USE_MOCK_STORAGE: "true", STORAGE_PROVIDER: "autonomys" })),
-    ).to.equal(null);
+    expect(problemsOf(env({ USE_MOCK_STORAGE: "true", STORAGE_PROVIDER: "autonomys" }))).to.equal(
+      null,
+    );
   });
 });
