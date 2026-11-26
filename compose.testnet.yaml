@@ -2,7 +2,8 @@ services:
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
-    image: ghcr.io/tradableapp/tokenized-ai-agent:testnet@sha256:f53ae7597d3ba463163beeac6ce45ea695df760006acffb328c73236a33d671e
+    # pinned from :testnet
+    image: ghcr.io/tradableapp/tokenized-ai-agent@sha256:f53ae7597d3ba463163beeac6ce45ea695df760006acffb328c73236a33d671e
     platform: linux/amd64
     entrypoint: /bin/sh -c 'node src/index.js'
     restart: on-failure

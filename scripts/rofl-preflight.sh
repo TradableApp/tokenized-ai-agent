@@ -29,8 +29,9 @@
 #   delimiter, where it is injected as ${POSTGRES_HOST:-}.
 #
 #   IMAGES BY TAG — the bundle measures this file, not the image it names, so every `image:`
-#   must be pinned as <name>:<tag>@sha256:<64 lower-case hex> (rofl-image-refs.sh). The digest
-#   is written by scripts/pin-image-digest.sh after a push; `oasis rofl build` does not resolve it.
+#   must be pinned as <name>@sha256:<64 lower-case hex>, with no tag beside the digest: the
+#   registry transport does not take both (rofl-image-refs.sh). The digest is written by
+#   scripts/pin-image-digest.sh after a push; `oasis rofl build` does not resolve it.
 #
 # Secrets are NOT checked: they are `${VAR:-}` placeholders here by design, resolved
 # at runtime from the ROFL manifest, so a missing one fails closed rather than shipping.
@@ -58,7 +59,7 @@ if [ -n "$unpinned" ]; then
       echo "  ✗ $why"
     fi
   done <<< "$unpinned"
-  echo "   Every image must be <name>:<tag>@sha256:<64 lower-case hex>. Push the image, then write"
+  echo "   Every image must be <name>@sha256:<64 lower-case hex>. Push the image, then write"
   case "$pin_env" in
     *mainnet) echo "   its digest with \`bun run release:${pin_env}\` (it builds, pushes and pins a version)" ;;
     testnet|base-testnet) echo "   its digest with \`bun run image:pin:${pin_env}\` (\`image:push:${pin_env}\` runs it)" ;;

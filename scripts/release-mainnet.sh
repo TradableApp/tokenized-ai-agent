@@ -34,11 +34,11 @@ echo "✅ rofl.yaml updated to version: $NEW_VERSION"
 
 # --- 2. PREPARE AND PUSH IMAGE ---
 # Point the compose file at the new version tag. The regex finds the base image name and replaces
-# the colon and everything after it, an old digest included; the digest of what is pushed below is
-# written in step 3. The '|' character is used as a delimiter to avoid issues with slashes '/' in
-# the path.
+# the tag or digest after it (`:` or `@`) and everything that follows; step 3 then names the
+# pushed image by its digest alone and records this version in the `# pinned from :<tag>` line
+# above it. The '|' character is used as a delimiter to avoid issues with slashes '/' in the path.
 echo "Updating '$COMPOSE_FILE' to the version tag..."
-sed -i.bak "s|$IMAGE_BASE_NAME:.*|$IMAGE_BASE_NAME:$NEW_VERSION|g" "$COMPOSE_FILE"
+sed -i.bak "s|$IMAGE_BASE_NAME[:@].*|$IMAGE_BASE_NAME:$NEW_VERSION|g" "$COMPOSE_FILE"
 rm "${COMPOSE_FILE}.bak"
 
 # Build and push the version-tagged Docker image

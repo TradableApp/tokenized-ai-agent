@@ -5,13 +5,19 @@
 #
 # The ROFL bundle measures compose.yaml, not the image it names. A tag can be pointed at other
 # content after the bundle is built; a digest cannot. So the enclave identity fixes which oracle
-# code runs only when every image is named as <name>[:<tag>]@sha256:<64 lower-case hex>.
-# `oasis rofl build` does not resolve a digest itself.
+# code runs only when every image is named as <name>@sha256:<64 lower-case hex>. The digest stands
+# alone: the registry transport the ROFL runtime pulls through (containers/image, under Podman)
+# does not take a tag and a digest in one reference. The tag the digest was read from is kept in a
+# comment directly above the image line, `# pinned from :<tag>`, for the reader and for the next
+# pin. `oasis rofl build` does not resolve a digest itself.
 
-# Prints one line per service, tab-separated: the line number of its `image:` (0 when it has
-# none), the service name, and the image reference with any quotes and trailing comment removed
-# (empty when it has none). A file with no service under `services:` gives one line `0<TAB><TAB>`,
-# so a caller that refuses empty fields fails closed on it.
+# Prints one line per service, its fields separated by the unit separator (\037; a tab is
+# whitespace to `read`, so an empty field would vanish and shift the rest): the line number of its
+# `image:` (0 when it has none), the service name, the image reference with any quotes and
+# trailing comment removed (empty when it has none), and the tag recorded on the line directly
+# above as `# pinned from :<tag>` (empty when that line is anything else). A file with no service
+# under `services:` gives one line with the number 0 and every other field empty, so a caller that
+# refuses empty fields fails closed on it.
 #
 # It reads the YAML layout compose files use: `services:` at the left margin, each service one
 # indent in, its keys one indent further. An `image:` deeper than that (inside another key) is not
@@ -19,8 +25,8 @@
 rofl_image_entries() {
   awk '
     function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
-    function flush() { if (svc != "" && !seen) printf "0\t%s\t\n", svc }
-    { sub(/\r$/, "") }
+    function flush() { if (svc != "" && !seen) printf "0\037%s\037\037\n", svc }
+    { sub(/\r$/, ""); above = here; here = $0 }
     /^[[:space:]]*(#.*)?$/ { next }
     {
       match($0, /^ */); ind = RLENGTH
@@ -46,19 +52,32 @@ rofl_image_entries() {
         sub(/[[:space:]]+#.*$/, "", v)
         v = trim(v)
         if (length(v) >= 2 && (v ~ /^".*"$/ || v ~ /^'\''.*'\''$/)) v = substr(v, 2, length(v) - 2)
-        printf "%d\t%s\t%s\n", NR, svc, v
+        recorded = ""
+        if (above ~ /^[[:space:]]*# pinned from :/) {
+          recorded = above
+          sub(/^[[:space:]]*# pinned from :/, "", recorded)
+          recorded = trim(recorded)
+        }
+        printf "%d\037%s\037%s\037%s\n", NR, svc, v, recorded
         seen = 1
       }
     }
     END {
       if (in_services) flush()
-      if (!services) printf "0\t\t\n"
+      if (!services) printf "0\037\037\037\n"
     }
   ' "$1"
 }
 
-# True when the reference is pinned: a name with no space or `@`, then `@sha256:` and exactly 64
-# lower-case hex characters, and nothing after them.
+# True when the reference names a tag: a `:` after its last `/` (a registry host may carry a
+# port, `host:5000/name`, so a `:` before the last `/` is not one).
+rofl_ref_has_tag() {
+  local name="${1%%@*}"
+  [[ "${name##*/}" == *:* ]]
+}
+
+# True when the reference is pinned: a name with no space, `@` or tag, then `@sha256:` and exactly
+# 64 lower-case hex characters, and nothing after them.
 rofl_is_pinned_ref() {
   local ref="$1" name digest
   [[ "$ref" == *@sha256:* ]] || return 1
@@ -66,21 +85,29 @@ rofl_is_pinned_ref() {
   digest="${ref##*@sha256:}"
   [ -n "$name" ] || return 1
   [[ "$name" != *[[:space:]@]* ]] || return 1
+  ! rofl_ref_has_tag "$name" || return 1
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
 }
 
+# True when the text is a tag as registries take it: a word character, then up to 127 word
+# characters, dots and dashes.
+rofl_is_tag() {
+  [[ "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]
+}
+
 # Prints one line per service that is not pinned: the service (empty when the file has none), the
-# unit separator (\037, not a tab: a tab is whitespace to `read`, so an empty first field would
-# vanish) and why. Prints nothing when every service's image is pinned.
+# unit separator and why. Prints nothing when every service's image is pinned.
 rofl_unpinned_images() {
   local service ref
-  while IFS=$'\t' read -r _ service ref; do
+  while IFS=$'\037' read -r _ service ref _; do
     if [ -z "$service" ]; then
       printf '\037no service found under services:\n'
     elif [ -z "$ref" ]; then
       printf '%s\037has no image: line\n' "$service"
+    elif ! rofl_is_pinned_ref "$ref" && [[ "$ref" == *@* ]] && rofl_ref_has_tag "$ref"; then
+      printf '%s\037names %s, which carries a tag and a digest; the registry transport takes one, so write <name>@sha256:<64 lower-case hex>\n' "$service" "$ref"
     elif ! rofl_is_pinned_ref "$ref"; then
-      printf '%s\037names %s, which is not <name>:<tag>@sha256:<64 lower-case hex>\n' "$service" "$ref"
+      printf '%s\037names %s, which is not <name>@sha256:<64 lower-case hex>\n' "$service" "$ref"
     fi
   done < <(rofl_image_entries "$1")
 }
