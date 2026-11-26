@@ -32,8 +32,6 @@ const { captureTypedSettings, typedSettings, typedOnlyProblems } = require("./li
 const { LOCAL_NETWORKS } = require("./lib/networks");
 const { PAIR_TARGET_VARS, resolveTarget, shown } = require("./lib/pairTarget");
 const { isEmptyRevert } = require("./rehearsal/token");
-// The oracle's describer of an error: one line, no address, no configured secret, no stack.
-const { describeError } = require("../oracle/src/errorDescription");
 
 const MAINNET_NETWORK = "base";
 const CONFIRM_VAR = "DEPLOY_MAINNET_CONFIRMED";
@@ -335,24 +333,11 @@ async function main() {
   });
 }
 
-/**
- * The one line a failed run prints. A refusal the script wrote itself is printed whole. Any other
- * error is described without its stack and without an address: a provider's error carries the
- * request's address in its message, and that address usually holds the account's access key.
- *
- * @param {unknown} error
- * @returns {string}
- */
-function failureLine(error) {
-  return error instanceof ListingError ? error.message : describeError(error);
-}
-
 module.exports = {
   listFeeTokenExempt,
   resolveListingTarget,
   targetLines,
   safeBatch,
-  failureLine,
   ListingError,
   TOKEN_ABI,
   LISTED_TRANSFER_SYMBOLS,
@@ -360,7 +345,9 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error(chalk.red(failureLine(error)));
+    console.error(
+      chalk.red(error instanceof ListingError ? error.message : (error?.stack ?? String(error))),
+    );
     process.exitCode = 1;
   });
 }

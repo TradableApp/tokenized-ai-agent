@@ -658,11 +658,13 @@ describe("scripts/deploy — what it prints", function () {
     expect(source).to.not.match(/rpcUrl/i);
   });
 
-  it("prints a failure's stack, never the whole error object, which can carry the request", function () {
+  it("prints a failure through failureText, never the error or its stack, which carry the request", function () {
     for (const script of ["deploy.js", "authorize-oracle.js", "list-fee-token-exempt.js"]) {
       const source = fs.readFileSync(path.join(__dirname, "..", "scripts", script), "utf8");
       expect(source, script).to.not.match(/console\.error\(\s*error\s*\)/);
-      expect(source, script).to.match(/error\?\.stack/);
+      // An ethers error's message holds the request's address, and a stack starts with the message.
+      expect(source, script).to.not.match(/error\??\.stack/);
+      expect(source, script).to.match(/console\.error\(chalk\.red\(failureText\(error/);
     }
   });
 });

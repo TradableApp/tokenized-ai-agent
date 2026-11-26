@@ -1,27 +1,35 @@
 const { expect } = require("chai");
+const { makeError } = require("ethers");
 
-const { failureLine, ListingError } = require("../scripts/list-fee-token-exempt");
+const { failureText } = require("../scripts/lib/failureText");
 
-describe("list-fee-token-exempt: what a failed run prints", () => {
+class Refusal extends Error {}
+
+describe("scripts: what a failed run prints", () => {
   it("prints a refusal's own message whole, since the script wrote it", () => {
-    const line = failureLine(new ListingError("The only option is --check. Nothing was sent."));
-    expect(line).to.equal("The only option is --check. Nothing was sent.");
+    const text = failureText(new Refusal("The only option is --check. Nothing was sent."), Refusal);
+    expect(text).to.equal("The only option is --check. Nothing was sent.");
   });
 
-  it("prints one line with no address for any other error, never its stack", () => {
-    // What a provider error looks like: the request's address, key included, is in the message.
-    const error = new Error(
-      'could not detect network (request={ "url": "https://rpc.example/v2/abcdefghijklmnopqrstuvwxyz0123456789" })',
-    );
-    const line = failureLine(error);
-    expect(line).to.not.include("rpc.example");
-    expect(line).to.not.include("abcdefghijklmnopqrstuvwxyz0123456789");
-    expect(line).to.not.include("\n");
-    expect(line).to.not.match(/\bat .+:\d+:\d+/);
-    expect(line).to.include("could not detect network");
+  it("describes a provider's error without the request's address, and keeps where it was thrown", () => {
+    // What ethers throws for a refused request: the address, key included, is in the message,
+    // and so in the first line of the stack.
+    const error = makeError("server response 401", "SERVER_ERROR", {
+      request: { url: "https://rpc.example/v2/abcdefghijklmnopqrstuvwxyz0123456789" },
+      info: { requestUrl: "https://rpc.example/v2/abcdefghijklmnopqrstuvwxyz0123456789" },
+    });
+    expect(error.stack).to.include("abcdefghijklmnopqrstuvwxyz0123456789");
+
+    const text = failureText(error, Refusal);
+
+    expect(text).to.not.include("rpc.example");
+    expect(text).to.not.include("abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(text.split("\n")[0]).to.include("server response 401");
+    // The frames say where it was thrown; they hold file paths, never the message.
+    expect(text).to.match(/\n\s+at .+listingFailureLine\.test\.js:\d+:\d+/);
   });
 
   it("prints something for a thrown value that is not an error", () => {
-    expect(failureLine(undefined)).to.be.a("string").and.not.equal("");
+    expect(failureText(undefined, Refusal)).to.be.a("string").and.not.equal("");
   });
 });
