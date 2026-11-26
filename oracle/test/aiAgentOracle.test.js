@@ -2605,6 +2605,37 @@ describe("aiAgentOracle", function () {
       expect(lagAlerts).to.have.lengthOf(1);
     });
 
+    it("sends the processing lag alert again ten minutes later, and not before", async () => {
+      const clock = { ms: 1_000_000 };
+      aiAgentOracle.initForTest({
+        ...stubs["./contractUtility"].initializeOracle(),
+        stateStore,
+        monotonicNow: () => clock.ms,
+      });
+      const handler = sinon.stub().resolves();
+      const hourOld = Math.floor(Date.now() / 1000) - 60 * 60;
+      const lagAlertCount = () =>
+        stubs["./alerting"].sendAlert
+          .getCalls()
+          .filter((c) => String(c.args[0]).includes("Processing Lag")).length;
+      const lagging = (index) =>
+        aiAgentOracle.handleAndRecord("PromptSubmitted", handler, {
+          blockNumber: 210 + index,
+          transactionHash: txHash(`lagging-again-${index}`),
+          index,
+          getBlock: () => Promise.resolve({ timestamp: hourOld }),
+        });
+
+      await lagging(0);
+      expect(lagAlertCount(), "the first").to.equal(1);
+      clock.ms += 10 * 60 * 1000 - 1;
+      await lagging(1);
+      expect(lagAlertCount(), "held inside ten minutes").to.equal(1);
+      clock.ms += 1;
+      await lagging(2);
+      expect(lagAlertCount(), "sent again at ten minutes").to.equal(2);
+    });
+
     it("queues an event for retry when the provider refuses a request made while handling it", async () => {
       // Reading the event's block is a provider request like any other, and the provider
       // refusing it says nothing about the event: a paid prompt must not be dropped for it.

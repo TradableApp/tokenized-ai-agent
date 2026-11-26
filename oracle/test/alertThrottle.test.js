@@ -1,9 +1,32 @@
 const { expect } = require("chai");
+const sinon = require("sinon");
+const { performance } = require("node:perf_hooks");
 
 const { createAlertThrottle } = require("../src/alertThrottle");
 
 describe("alert throttle", () => {
   const TEN_MINUTES = 10 * 60 * 1000;
+
+  describe("its default clock", () => {
+    afterEach(() => sinon.restore());
+
+    // The wall clock can be set back (an NTP step, an operator); a throttle on it would then hold
+    // every alert for as long as the clock was moved. The default reads a clock that only goes on.
+    it("follows the monotonic clock, not the wall clock", () => {
+      let monotonic = 5_000;
+      sinon.stub(performance, "now").callsFake(() => monotonic);
+      let wall = Date.UTC(2026, 0, 2);
+      sinon.stub(Date, "now").callsFake(() => wall);
+      const throttle = createAlertThrottle({ intervalMs: TEN_MINUTES });
+
+      expect(throttle.shouldSend(), "first").to.equal(true);
+      wall -= 24 * 60 * 60 * 1000; // the wall clock is set back a day
+      monotonic += TEN_MINUTES - 1;
+      expect(throttle.shouldSend(), "inside the interval").to.equal(false);
+      monotonic += 1;
+      expect(throttle.shouldSend(), "once the interval has passed").to.equal(true);
+    });
+  });
 
   function throttleAt(start) {
     const clock = { ms: start };
