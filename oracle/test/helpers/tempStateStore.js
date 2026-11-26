@@ -23,12 +23,19 @@ function createTempStateStore({ now } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oracle-state-test-"));
   const statePath = path.join(dir, "oracle-state.json");
   const jobsPath = path.join(dir, "failed-jobs.json");
-  const store = createFileStateStore({ statePath, jobsPath, ...(now ? { now } : {}) });
+  const metadataPath = path.join(dir, "metadata-updates.json");
+  const store = createFileStateStore({
+    statePath,
+    jobsPath,
+    metadataPath,
+    ...(now ? { now } : {}),
+  });
   return {
     store,
     dir,
     statePath,
     jobsPath,
+    metadataPath,
     cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
   };
 }

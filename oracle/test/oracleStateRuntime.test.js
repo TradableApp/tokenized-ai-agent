@@ -20,6 +20,7 @@ async function tempPaths() {
     dir,
     statePath: path.join(dir, "oracle-state.json"),
     jobsPath: path.join(dir, "failed-jobs.json"),
+    metadataPath: path.join(dir, "metadata-updates.json"),
   };
 }
 
@@ -47,6 +48,20 @@ describe("oracle state runtime", () => {
       });
 
       expect(store.backend).to.equal("file");
+    });
+
+    it("keeps the files' metadata positions in the file it is given, so a restart reads them", async () => {
+      const options = { postgresUrl: null, chainId: CHAIN_ID, contractAddress: CONTRACT, ...paths };
+      await createStateStore(options).store.recordMetadataUpdate({
+        conversationId: "7",
+        blockNumber: 12,
+        logIndex: 3,
+      });
+
+      expect(await createStateStore(options).store.lastMetadataUpdate("7")).to.deep.equal({
+        blockNumber: 12,
+        logIndex: 3,
+      });
     });
 
     it("treats a blank Postgres url as not configured", () => {

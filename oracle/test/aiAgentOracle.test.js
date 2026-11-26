@@ -157,6 +157,7 @@ describe("aiAgentOracle", function () {
             ...options,
             statePath: tempState.statePath,
             jobsPath: tempState.jobsPath,
+            metadataPath: tempState.metadataPath,
           }),
       },
       "./ecies": {
@@ -1605,6 +1606,7 @@ describe("aiAgentOracle", function () {
         eventName: "MetadataUpdateRequested",
         args: [USER_ADDRESS, CONVERSATION_ID, metadataPayload, ROFL_ENCRYPTED_KEY],
         blockNumber: 3,
+        index: 0,
         transactionIndex: 1,
         getBlock,
       };
@@ -2194,6 +2196,7 @@ describe("aiAgentOracle", function () {
       );
       const fakeEvent = {
         blockNumber: 5,
+        index: 0,
         getBlock: () => Promise.resolve({ timestamp: Date.now() }),
       };
 
@@ -2219,6 +2222,250 @@ describe("aiAgentOracle", function () {
       const uploadedContent = decryptSymmetrically(uploadArgs[0].toString(), FAKE_SESSION_KEY);
       expect(uploadedContent.title).to.equal(clientPayload.title);
       expect(uploadedContent.isDeleted).to.be.true;
+    });
+  });
+
+  describe("metadata updates of one conversation", () => {
+    // A rename and a delete, or one update retried after a later one, must land in the order the
+    // chain emitted them: the file submitted last is the conversation's metadata on every device.
+    const OWNER = "0x1111111111111111111111111111111111111111";
+    const AGENT_ADDRESS = "0x000000000000000000000000000000000000C0dE";
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+    const settle = async () => {
+      for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+    };
+
+    let contract;
+    let provider;
+    let uploads;
+    // What each uploaded CID holds, decrypted, so a submission can be read back as a title.
+    let uploaded;
+
+    function metadataEvent({ conversationId = 123, title, isDeleted = false, block, index = 0 }) {
+      const payload = ethers.toUtf8Bytes(
+        createEncryptedString({ title, isDeleted }, FAKE_SESSION_KEY),
+      );
+      return {
+        eventName: "MetadataUpdateRequested",
+        args: [OWNER, conversationId, payload, "0xkey"],
+        blockNumber: block,
+        index,
+        transactionHash: txHash(`meta-${conversationId}-${block}-${index}`),
+        getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+      };
+    }
+
+    /** The titles submitted on chain for a conversation, in the order they were submitted. */
+    function submitted(conversationId = 123) {
+      return contract.submitConversationMetadata
+        .getCalls()
+        .filter((call) => String(call.args[0]) === String(conversationId))
+        .map((call) => uploaded.get(call.args[1]))
+        .map((file) => (file.isDeleted ? `deleted:${file.title}` : file.title));
+    }
+
+    /** Puts a failed event in the retry queue and makes its receipt readable. */
+    async function failedEarlier(event) {
+      await stateStore.enqueueFailedJob({
+        transactionHash: event.transactionHash,
+        logIndex: event.index,
+        eventName: event.eventName,
+        blockNumber: event.blockNumber,
+        delayMs: 0,
+      });
+      provider.getTransactionReceipt.withArgs(event.transactionHash).resolves({
+        logs: [{ address: AGENT_ADDRESS, index: event.index, event }],
+        blockNumber: event.blockNumber,
+        transactionHash: event.transactionHash,
+      });
+    }
+
+    beforeEach(() => {
+      ({ contract, provider } = stubs["./contractUtility"].initializeOracle());
+      contract.isOracle.resolves(true);
+      contract.interface.parseLog.callsFake((log) =>
+        log.event ? { name: log.event.eventName, args: log.event.args } : null,
+      );
+      provider.getBlock.resolves({ timestamp: Math.floor(Date.now() / 1000) });
+      uploaded = new Map();
+      uploads = { inFlight: 0, most: 0, delays: [] };
+      stubs["./storage/storage"].uploadData.callsFake(async (buffer) => {
+        const file = decryptSymmetrically(buffer.toString(), FAKE_SESSION_KEY);
+        const cid = `fake_cid_${uploaded.size}_${file.title}_${file.isDeleted}`;
+        uploaded.set(cid, file);
+        uploads.inFlight += 1;
+        uploads.most = Math.max(uploads.most, uploads.inFlight);
+        const delay = uploads.delays.shift() ?? 0;
+        try {
+          if (typeof delay === "number") await new Promise((r) => setTimeout(r, delay));
+          else await delay;
+        } finally {
+          uploads.inFlight -= 1;
+        }
+        return cid;
+      });
+    });
+
+    it("applies two updates of one batch in chain order when the first upload is slower", async () => {
+      // The rename's upload takes longer than the delete's: run side by side, the rename would be
+      // submitted last and bring the deleted conversation back.
+      uploads.delays.push(60, 0);
+      contract.queryFilter.resolves([
+        metadataEvent({ title: "Renamed", block: 10 }),
+        metadataEvent({ title: "Renamed", isDeleted: true, block: 11 }),
+      ]);
+
+      await aiAgentOracle.processPastEvents(10, 11);
+
+      expect(submitted()).to.deep.equal(["Renamed", "deleted:Renamed"]);
+      expect(uploads.most, "the two updates never ran at once").to.equal(1);
+    });
+
+    it("orders two updates of one block by log index", async () => {
+      uploads.delays.push(60, 0);
+      contract.queryFilter.resolves([
+        metadataEvent({ title: "First", block: 10, index: 1 }),
+        metadataEvent({ title: "Second", block: 10, index: 2 }),
+      ]);
+
+      await aiAgentOracle.processPastEvents(10, 10);
+
+      expect(submitted()).to.deep.equal(["First", "Second"]);
+    });
+
+    it("does not hold up another conversation's update", async () => {
+      const slow = deferred();
+      uploads.delays.push(slow.promise, 0);
+      contract.queryFilter.resolves([
+        metadataEvent({ conversationId: 1, title: "Slow", block: 10 }),
+        metadataEvent({ conversationId: 2, title: "Quick", block: 11 }),
+      ]);
+
+      const scan = aiAgentOracle.processPastEvents(10, 11);
+      await settle();
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(submitted(2), "the other conversation is answered meanwhile").to.deep.equal(["Quick"]);
+      expect(submitted(1)).to.deep.equal([]);
+      slow.resolve();
+      await scan;
+      expect(submitted(1)).to.deep.equal(["Slow"]);
+    });
+
+    it("skips an older update retried after a newer one has landed, and completes its job", async () => {
+      const rename = metadataEvent({ title: "Renamed", block: 10 });
+      const remove = metadataEvent({ title: "Renamed", isDeleted: true, block: 11 });
+      contract.queryFilter.resolves([remove]);
+      await aiAgentOracle.processPastEvents(11, 11);
+      await failedEarlier(rename);
+      const uploadsBefore = stubs["./storage/storage"].uploadData.callCount;
+
+      await aiAgentOracle.retryFailedJobs();
+
+      expect(submitted()).to.deep.equal(["deleted:Renamed"]);
+      expect(stubs["./storage/storage"].uploadData.callCount, "nothing uploaded").to.equal(
+        uploadsBefore,
+      );
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+      expect(stubs["./alerting"].sendAlert.called, "no alert").to.equal(false);
+    });
+
+    it("skips an older update retried after a restart, once a newer one landed before it", async () => {
+      const rename = metadataEvent({ title: "Renamed", block: 10 });
+      const remove = metadataEvent({ title: "Renamed", isDeleted: true, block: 11 });
+      contract.queryFilter.resolves([remove]);
+      await aiAgentOracle.processPastEvents(11, 11);
+      await failedEarlier(rename);
+
+      // A new process: a fresh module, and a store opened again on the same files.
+      const reopened = realStateStore.createFileStateStore({
+        statePath: tempState.statePath,
+        jobsPath: tempState.jobsPath,
+        metadataPath: tempState.metadataPath,
+      });
+      const restarted = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+      restarted.initForTest({
+        ...stubs["./contractUtility"].initializeOracle(),
+        stateStore: reopened,
+      });
+
+      await restarted.retryFailedJobs();
+
+      expect(submitted()).to.deep.equal(["deleted:Renamed"]);
+      expect(await reopened.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+    });
+
+    it("applies a newer update retried after an older one landed", async () => {
+      const rename = metadataEvent({ title: "Renamed", block: 10 });
+      const remove = metadataEvent({ title: "Renamed", isDeleted: true, block: 11 });
+      contract.queryFilter.resolves([rename]);
+      await aiAgentOracle.processPastEvents(10, 10);
+      await failedEarlier(remove);
+
+      await aiAgentOracle.retryFailedJobs();
+
+      expect(submitted()).to.deep.equal(["Renamed", "deleted:Renamed"]);
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+    });
+
+    it("does not submit an update a second time when its range is scanned again", async () => {
+      contract.queryFilter.resolves([metadataEvent({ title: "Renamed", block: 10 })]);
+
+      await aiAgentOracle.processPastEvents(10, 10);
+      await aiAgentOracle.processPastEvents(10, 10);
+
+      expect(submitted()).to.deep.equal(["Renamed"]);
+    });
+
+    it("sends an update to the retry queue when the order record cannot be read", async () => {
+      sinon.stub(stateStore, "lastMetadataUpdate").rejects(new Error("connection terminated"));
+      const rename = metadataEvent({ title: "Renamed", block: 10 });
+
+      await aiAgentOracle.handleAndRecord(
+        "MetadataUpdateRequested",
+        aiAgentOracle.handleMetadataUpdate,
+        ...rename.args,
+        rename,
+      );
+
+      expect(submitted()).to.deep.equal([]);
+      expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 1, exhausted: 0 });
+    });
+
+    it("keeps an update that landed even when its position cannot be recorded", async () => {
+      sinon.stub(stateStore, "recordMetadataUpdate").rejects(new Error("connection terminated"));
+      const sentry = stubs["@sentry/node"].captureException;
+      const remove = metadataEvent({ title: "Renamed", isDeleted: true, block: 11 });
+      const rename = metadataEvent({ title: "Renamed", block: 10 });
+
+      await aiAgentOracle.handleMetadataUpdate(...remove.args, remove);
+
+      sinon.assert.calledWithMatch(sentry, sinon.match.any, {
+        tags: { site: "metadata_order_record" },
+      });
+      // Not lost in this process: an older update met afterwards is still skipped.
+      await aiAgentOracle.handleMetadataUpdate(...rename.args, rename);
+      expect(submitted()).to.deep.equal(["deleted:Renamed"]);
+    });
+
+    it("refuses an update whose position on the chain cannot be read", async () => {
+      const event = { ...metadataEvent({ title: "Renamed", block: 10 }), index: undefined };
+
+      let error;
+      try {
+        await aiAgentOracle.handleMetadataUpdate(...event.args, event);
+      } catch (e) {
+        error = e;
+      }
+
+      expect(error?.message).to.match(/position/);
+      expect(submitted()).to.deep.equal([]);
     });
   });
 

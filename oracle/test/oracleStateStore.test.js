@@ -271,6 +271,124 @@ function behavesLikeAStateStore(setup) {
       expect((await ctx.store.countFailedJobs()).pending).to.equal(0);
     });
   });
+
+  describe("metadata updates", () => {
+    const at = (blockNumber, logIndex, conversationId = "7") => ({
+      conversationId,
+      blockNumber,
+      logIndex,
+    });
+
+    it("has nothing recorded for a conversation before its first update", async () => {
+      expect(await ctx.store.lastMetadataUpdate("7")).to.equal(null);
+    });
+
+    it("records the position of the update applied and reads it back", async () => {
+      expect(await ctx.store.recordMetadataUpdate(at(120, 4))).to.equal(true);
+
+      expect(await ctx.store.lastMetadataUpdate("7")).to.deep.equal({
+        blockNumber: 120,
+        logIndex: 4,
+      });
+    });
+
+    it("moves forward by block, and by log index within a block", async () => {
+      await ctx.store.recordMetadataUpdate(at(120, 4));
+
+      expect(await ctx.store.recordMetadataUpdate(at(120, 5))).to.equal(true);
+      expect(await ctx.store.recordMetadataUpdate(at(121, 0))).to.equal(true);
+
+      expect(await ctx.store.lastMetadataUpdate("7")).to.deep.equal({
+        blockNumber: 121,
+        logIndex: 0,
+      });
+    });
+
+    it("refuses an older or the same position, without throwing, and keeps the newer", async () => {
+      await ctx.store.recordMetadataUpdate(at(120, 4));
+
+      expect(await ctx.store.recordMetadataUpdate(at(120, 3)), "earlier log").to.equal(false);
+      expect(await ctx.store.recordMetadataUpdate(at(119, 9)), "earlier block").to.equal(false);
+      expect(await ctx.store.recordMetadataUpdate(at(120, 4)), "the same").to.equal(false);
+
+      expect(await ctx.store.lastMetadataUpdate("7")).to.deep.equal({
+        blockNumber: 120,
+        logIndex: 4,
+      });
+    });
+
+    it("keeps each conversation's position apart", async () => {
+      await ctx.store.recordMetadataUpdate(at(120, 4, "7"));
+      await ctx.store.recordMetadataUpdate(at(90, 1, "8"));
+
+      expect(await ctx.store.lastMetadataUpdate("8")).to.deep.equal({
+        blockNumber: 90,
+        logIndex: 1,
+      });
+      expect(await ctx.store.lastMetadataUpdate("9")).to.equal(null);
+    });
+
+    it("takes a conversation id as a bigint, a safe integer or a decimal string alike", async () => {
+      await ctx.store.recordMetadataUpdate(at(120, 4, 7n));
+
+      expect(await ctx.store.lastMetadataUpdate(7)).to.deep.equal({
+        blockNumber: 120,
+        logIndex: 4,
+      });
+      expect(await ctx.store.lastMetadataUpdate("7")).to.deep.equal({
+        blockNumber: 120,
+        logIndex: 4,
+      });
+    });
+
+    it("keeps a conversation id larger than a safe integer whole", async () => {
+      const big = 2n ** 200n + 1n;
+      await ctx.store.recordMetadataUpdate(at(5, 0, big));
+
+      expect(await ctx.store.lastMetadataUpdate(big.toString())).to.deep.equal({
+        blockNumber: 5,
+        logIndex: 0,
+      });
+      expect(await ctx.store.lastMetadataUpdate((big - 1n).toString())).to.equal(null);
+    });
+
+    it("rejects a malformed conversation id or position", async () => {
+      // A TypeError from a missing method would pass the loop below for the wrong reason.
+      expect(ctx.store.recordMetadataUpdate).to.be.a("function");
+      expect(ctx.store.lastMetadataUpdate).to.be.a("function");
+      for (const bad of [
+        at(1, 0, "abc"),
+        at(1, 0, "-1"),
+        at(1, 0, "07"),
+        at(1, 0, 1.5),
+        // Not at(1, 0, undefined): the default would give it a conversation.
+        { conversationId: undefined, blockNumber: 1, logIndex: 0 },
+        at(-1, 0),
+        at(1, -1),
+        at(1, 1.5),
+        at(undefined, 0),
+        at(1, undefined),
+      ]) {
+        let error;
+        try {
+          await ctx.store.recordMetadataUpdate(bad);
+        } catch (e) {
+          error = e;
+        }
+        expect(
+          error,
+          JSON.stringify(bad, (_k, v) => (v === undefined ? "undefined" : v)),
+        ).to.be.instanceOf(TypeError);
+      }
+      let readError;
+      try {
+        await ctx.store.lastMetadataUpdate("x");
+      } catch (e) {
+        readError = e;
+      }
+      expect(readError).to.be.instanceOf(TypeError);
+    });
+  });
 }
 
 describe("oracle state store", () => {
@@ -314,6 +432,23 @@ describe("oracle state store", () => {
         expect(await two.loadCursor()).to.equal(null);
         expect(await two.claimDueJobs({ limit: 10, leaseMs: MINUTE })).to.have.length(0);
         expect(await two.enqueueFailedJob(job())).to.equal(true);
+      });
+
+      it("keeps a separate metadata position per contract", async () => {
+        const { createPostgresStateStore } = loadStore();
+        const one = createPostgresStateStore({ db, chainId: CHAIN_ID, contractAddress: CONTRACT });
+        const two = createPostgresStateStore({
+          db,
+          chainId: CHAIN_ID,
+          contractAddress: OTHER_CONTRACT,
+        });
+
+        await one.recordMetadataUpdate({ conversationId: "7", blockNumber: 500, logIndex: 2 });
+
+        expect(await two.lastMetadataUpdate("7")).to.equal(null);
+        expect(
+          await two.recordMetadataUpdate({ conversationId: "7", blockNumber: 1, logIndex: 0 }),
+        ).to.equal(true);
       });
 
       it("stores the contract address in lower case whatever case it was given in", async () => {
@@ -388,9 +523,48 @@ describe("oracle state store", () => {
       const store = createFileStateStore({
         statePath: path.join(dir, "oracle-state.json"),
         jobsPath: path.join(dir, "failed-jobs.json"),
+        metadataPath: path.join(dir, "metadata-updates.json"),
         now,
       });
       return { store, close: () => fs.rm(dir, { recursive: true, force: true }) };
+    });
+
+    it("keeps metadata positions through a restart (a new store on the same file)", async () => {
+      const { createFileStateStore } = loadStore();
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-state-"));
+      const paths = {
+        statePath: path.join(dir, "oracle-state.json"),
+        jobsPath: path.join(dir, "failed-jobs.json"),
+        metadataPath: path.join(dir, "metadata-updates.json"),
+      };
+      await createFileStateStore(paths).recordMetadataUpdate({
+        conversationId: "7",
+        blockNumber: 120,
+        logIndex: 4,
+      });
+
+      const again = createFileStateStore(paths);
+
+      expect(await again.lastMetadataUpdate("7")).to.deep.equal({ blockNumber: 120, logIndex: 4 });
+      expect(
+        await again.recordMetadataUpdate({ conversationId: "7", blockNumber: 119, logIndex: 0 }),
+      ).to.equal(false);
+      await fs.rm(dir, { recursive: true, force: true });
+    });
+
+    it("keeps metadata positions in memory when it is given no file for them", async () => {
+      const { createFileStateStore } = loadStore();
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-state-"));
+      const store = createFileStateStore({
+        statePath: path.join(dir, "oracle-state.json"),
+        jobsPath: path.join(dir, "failed-jobs.json"),
+      });
+
+      await store.recordMetadataUpdate({ conversationId: "7", blockNumber: 3, logIndex: 1 });
+
+      expect(await store.lastMetadataUpdate("7")).to.deep.equal({ blockNumber: 3, logIndex: 1 });
+      expect(await fs.readdir(dir)).to.deep.equal([]);
+      await fs.rm(dir, { recursive: true, force: true });
     });
 
     it("reads a cursor file written by the previous oracle version", async () => {
