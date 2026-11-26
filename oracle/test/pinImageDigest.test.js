@@ -364,8 +364,8 @@ describe("pin-image-digest.sh", function () {
 
 describe("release-mainnet.sh", function () {
   /** Runs the release in a temp dir with a docker that records what it was asked and does nothing. */
-  function release(t, version) {
-    fs.writeFileSync(path.join(t.dir, "rofl.yaml"), "name: test\nversion: 0.1.0\n");
+  function release(t, version, roflYaml = "name: test\nversion: 0.1.0\n") {
+    fs.writeFileSync(path.join(t.dir, "rofl.yaml"), roflYaml);
     const bin = path.join(t.dir, "bin");
     fs.mkdirSync(bin);
     const dockerLog = path.join(t.dir, "docker.log");
@@ -416,6 +416,31 @@ describe("release-mainnet.sh", function () {
     expect(read(t)).to.equal(mainnetCompose(pinned("0.2.0", HEX_A)));
     expect(docker).to.deep.equal([`build --platform linux/amd64 -t ${IMAGE}:0.2.0 -f Dockerfile.oracle .`, `push ${IMAGE}:0.2.0`]);
     expect(lookedUp(t)).to.deep.equal([`${IMAGE}:0.2.0`]);
+  });
+
+  it("refuses a version that is not a tag before it changes either file", function () {
+    const before = mainnetCompose(pinned("0.1.0", HEX_B));
+    for (const version of ["0.2|0", "0.2/0", "0.2 0", "-0.2.0", "0.2.0&"]) {
+      const t = setup(before, { name: "compose.base-mainnet.yaml" });
+      const { code, out, docker } = release(t, version);
+
+      expect(code, `${version}: ${out}`).to.not.equal(0);
+      expect(out, version).to.include("not a valid image tag");
+      expect(read(t), version).to.equal(before);
+      expect(fs.readFileSync(path.join(t.dir, "rofl.yaml"), "utf8"), version).to.equal("name: test\nversion: 0.1.0\n");
+      expect(docker, version).to.deep.equal([]);
+    }
+  });
+
+  it("stops before it changes either file when rofl.yaml has no version line", function () {
+    const before = mainnetCompose(pinned("0.1.0", HEX_B));
+    const t = setup(before, { name: "compose.base-mainnet.yaml" });
+    const { code, out, docker } = release(t, "0.2.0", "name: test\n");
+
+    expect(code, out).to.not.equal(0);
+    expect(read(t)).to.equal(before);
+    expect(fs.readFileSync(path.join(t.dir, "rofl.yaml"), "utf8")).to.equal("name: test\n");
+    expect(docker).to.deep.equal([]);
   });
 
   it("fails, claiming no release, when the digest cannot be read back", function () {
