@@ -2339,8 +2339,10 @@ describe("aiAgentOracle", function () {
     });
 
     // A prompt's wrapped session key and its payload bytes are the sender's. Read with the
-    // oracle's own healthy key, anything malformed in them is bad input: dropped, with no alert,
-    // no Sentry event and no `answer_failed`, however many such prompts are sent.
+    // oracle's own healthy key, anything malformed in them is bad input: dropped, with no fatal
+    // alert, no Sentry event and no `answer_failed`, however many such prompts are sent. A wrap
+    // that cannot be opened is also what every prompt looks like when the dApp wraps to a key the
+    // oracle does not hold, so that one case is said once an hour, never once per prompt.
     describe("a wrapped key or payload the sender got wrong", () => {
       const realEcies = require("../src/ecies");
 
@@ -2387,8 +2389,12 @@ describe("aiAgentOracle", function () {
         }),
       };
 
+      const UNOPENED_NOTICE = "Wrapped Session Keys Could Not Be Opened";
+      // The wrap opens in these two; only its content is wrong.
+      const OPENS = ["a well-formed wrap of a 16-byte key", "payload bytes that are not UTF-8"];
+
       for (const [name, build] of Object.entries(cases)) {
-        it(`drops ${name} as bad input, with no alert and no Sentry event`, async () => {
+        it(`drops ${name} as bad input, with no fatal alert and no Sentry event`, async () => {
           stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
           const recordAnswerActivity = sinon.stub().resolves();
           const mod = withTestKeys(
@@ -2410,7 +2416,10 @@ describe("aiAgentOracle", function () {
 
           await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
 
-          expect(stubs["./alerting"].sendAlert.called, "no alert").to.be.false;
+          const titles = stubs["./alerting"].sendAlert.getCalls().map((c) => String(c.args[0]));
+          expect(titles, "the hourly notice and nothing else").to.deep.equal(
+            OPENS.includes(name) ? [] : [UNOPENED_NOTICE],
+          );
           expect(stubs["@sentry/node"].captureException.called, "no Sentry event").to.be.false;
           expect(
             recordAnswerActivity.getCalls().filter((c) => c.args[0]?.kind === "answer_failed"),
@@ -2422,6 +2431,29 @@ describe("aiAgentOracle", function () {
           ).to.be.false;
         });
       }
+
+      it("says once, not once per prompt, that wrapped keys are not opening", async () => {
+        stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+        const mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+        mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+        for (const index of [0, 1, 2]) {
+          const { blob, payload } = await cases["a wrap whose authentication tag does not match"]();
+          const fakeEvent = {
+            blockNumber: 110 + index,
+            transactionHash: txHash(`unopened-${index}`),
+            index: 0,
+            args: ["0xUser", 1, 2, 3, payload, ethers.hexlify(blob)],
+            getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+          };
+          await mod.handleAndRecord("PromptSubmitted", mod.handlePrompt, ...fakeEvent.args, fakeEvent);
+        }
+
+        const calls = stubs["./alerting"].sendAlert.getCalls();
+        expect(calls.map((c) => String(c.args[0]))).to.deep.equal([UNOPENED_NOTICE]);
+        // It names what to check and carries nothing of the prompt or the wrap.
+        expect(String(calls[0].args[1])).to.match(/public key/);
+        expect(String(calls[0].args[1])).to.not.match(/0x[0-9a-f]{8,}/i);
+      });
 
       it("still alerts when the oracle has no decryption key of its own", async () => {
         const mod = proxyquire("../src/aiAgentOracle", stubs);
