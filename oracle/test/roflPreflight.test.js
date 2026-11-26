@@ -194,6 +194,8 @@ describe("rofl-preflight.sh", function () {
 
       refusesImage(result, "oracle");
       expect(result.out).to.include("tag and a digest");
+      // Where the tag goes instead.
+      expect(result.out).to.include("# pinned from :<tag>");
     });
 
     it("refuses an image named by tag alone", function () {

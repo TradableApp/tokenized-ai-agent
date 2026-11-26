@@ -202,6 +202,9 @@ describe("pin-image-digest.sh", function () {
       compose(`image: ${IMAGE}`), // no tag at all
       compose(`image: ${IMAGE}@sha256:${HEX_B}`), // pinned, with no record above
       compose(["# pinned from base-testnet", `image: ${IMAGE}@sha256:${HEX_B}`]), // record without its colon
+      // A record naming the whole reference is not the form: release-mainnet.sh rewrites every
+      // `<image name>:` it finds, so a record holding the name could be rewritten by it.
+      compose([`# pinned from ${IMAGE}:base-testnet`, `image: ${IMAGE}@sha256:${HEX_B}`]),
       compose(["# pinned from :bad tag", `image: ${IMAGE}@sha256:${HEX_B}`]), // not a tag
       compose(["# pinned from :base-testnet", "", `image: ${IMAGE}@sha256:${HEX_B}`]), // not directly above
       compose("platform: linux/amd64"), // no image at all
@@ -348,6 +351,17 @@ describe("release-mainnet.sh", function () {
     expect(docker).to.deep.equal([`build --platform linux/amd64 -t ${IMAGE}:0.2.0 -f Dockerfile.oracle .`, `push ${IMAGE}:0.2.0`]);
     expect(lookedUp(t)).to.deep.equal([`${IMAGE}:0.2.0`]);
     expect(out).to.include("compose.base-mainnet.yaml");
+  });
+
+  it("leaves the record to the pin script: its version rewrite does not reach the comment", function () {
+    // The record holds the tag alone, never the image name, so the rewrite of `<name>[:@]…` cannot
+    // match it; a run whose pin fails leaves the old record and a tag-only line, which the
+    // preflight refuses and the next pin reads from the line.
+    const t = setup(mainnetCompose(pinned("0.1.0", HEX_B)), { name: "compose.base-mainnet.yaml", exitCode: 1 });
+    const { code } = release(t, "0.2.0");
+
+    expect(code).to.not.equal(0);
+    expect(read(t)).to.equal(mainnetCompose(["# pinned from :0.1.0", `image: ${IMAGE}:0.2.0`]));
   });
 
   it("moves an already pinned compose to the new version and its digest", function () {
