@@ -388,16 +388,16 @@ describe("SapphireAIAgentEscrow", function () {
       ).to.be.revertedWithCustomError(escrow, "PromptNotRefundableYet");
     });
 
-    it("should revert cancelPrompt if user cannot afford the cancellation fee", async function () {
+    it("should let a user with no deposit left cancel, the fee coming out of the escrowed amount", async function () {
       const { escrow, user } = await loadFixture(deployEscrowFixture);
       await escrow.connect(user).withdraw(INITIAL_DEPOSIT); // Withdraw all funds
       await escrow.connect(user).deposit({ value: PROMPT_FEE }); // Deposit just enough for the prompt
       await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
       await escrow.connect(user).initiatePrompt(0, MOCK_PAYLOAD, ethers.MaxUint256);
       await time.increase(5);
-      await expect(
-        escrow.connect(user).cancelPrompt(1, ethers.MaxUint256),
-      ).to.be.revertedWithCustomError(escrow, "InsufficientDeposit");
+      await escrow.connect(user).cancelPrompt(1, ethers.MaxUint256);
+      // 10 escrowed, 1 to the treasury, 9 back to the empty deposit.
+      expect(await escrow.deposits(user.address)).to.equal(PROMPT_FEE - CANCELLATION_FEE);
     });
 
     context("Refund Failure Paths", function () {
