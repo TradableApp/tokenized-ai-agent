@@ -2220,6 +2220,70 @@ describe("aiAgentOracle", function () {
       expect(metaCID).to.include("fake_cid_");
     });
 
+    describe("key files", () => {
+      const fakeEvent = (blockNumber) => ({
+        blockNumber,
+        getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+      });
+      const keyUpload = () =>
+        stubs["./storage/storage"].uploadData
+          .getCalls()
+          .find((call) =>
+            (call.args[1] || []).some(
+              (tag) => tag.name === "Content-Type" && tag.value === "application/rofl-key",
+            ),
+          );
+
+      it("names a new conversation's key file after its chain and conversation", async () => {
+        const clientPayload = {
+          promptText: "Hello world",
+          isNewConversation: true,
+          previousMessageId: null,
+          previousMessageCID: null,
+        };
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+        );
+
+        await aiAgentOracle.handlePrompt(
+          "0xUserAddress",
+          123,
+          456,
+          457,
+          payloadBytes,
+          "0xabcdef01",
+          fakeEvent(1),
+        );
+
+        const [body, tags] = keyUpload().args;
+        expect(tags).to.deep.include({ name: "File-Name", value: "rofl-key-1-123.txt" });
+        expect(body.toString()).to.equal("abcdef01");
+      });
+
+      it("stores a branch's key as hex text, named after its chain and new conversation", async () => {
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString({ originalTitle: "My Conversation" }, FAKE_SESSION_KEY),
+        );
+
+        await aiAgentOracle.handleBranch(
+          "0xUser",
+          123,
+          457,
+          124,
+          payloadBytes,
+          "0xabcdef01",
+          fakeEvent(4),
+        );
+
+        const [body, tags] = keyUpload().args;
+        expect(tags).to.deep.include({ name: "File-Name", value: "rofl-key-1-124.txt" });
+        expect(tags).to.deep.include({ name: "SenseAI-Key-For-Conversation", value: "1-124" });
+        // The reader decodes the file as UTF-8 and then as hex, so raw key bytes would not survive.
+        expect(Buffer.isBuffer(body)).to.equal(true);
+        expect(body.toString()).to.equal("abcdef01");
+      });
+    });
+
     it("should handle a metadata update request", async () => {
       const user = "0xUser";
       const conversationId = 123;
