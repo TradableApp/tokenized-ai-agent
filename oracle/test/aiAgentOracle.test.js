@@ -2500,6 +2500,21 @@ describe("aiAgentOracle", function () {
           expect(notices(), "sent again at the hour").to.have.lengthOf(2);
         });
 
+        it("costs the event nothing when the notice cannot be sent", async () => {
+          stubs["./alerting"].sendAlert.rejects(new Error("alert channel down"));
+          try {
+            await unopened(); // dropped; its notice fails to send
+            clock.ms += HOUR;
+            await readButNotAnswered();
+            await unopened();
+            await readButNotAnswered(); // a handled event with a notice due
+          } finally {
+            stubs["./alerting"].sendAlert.resolves();
+          }
+
+          expect(await stateStore.countFailedJobs()).to.deep.equal({ pending: 0, exhausted: 0 });
+        });
+
         it("is CRITICAL when none was read in the hour and three or more could not be", async () => {
           await unopened(); // the first notice, which resets the counts
           await unopened();
