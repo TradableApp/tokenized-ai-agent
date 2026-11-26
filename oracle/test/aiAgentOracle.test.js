@@ -2473,6 +2473,116 @@ describe("aiAgentOracle", function () {
       });
     });
 
+    // Every handler reads its session key the same way. What the sender controls is the wrap; an
+    // event with none falls back to the conversation's stored key file, which the oracle wrote.
+    describe("reading the session key, in every handler", () => {
+      const realEcies = require("../src/ecies");
+      const wrap = (key) =>
+        realEcies.eciesEncrypt(realEcies.publicKeyFromPrivateKey(process.env.PRIVATE_KEY), key);
+      const somePayload = () =>
+        ethers.toUtf8Bytes(createEncryptedString({ promptText: "hello" }, FAKE_SESSION_KEY));
+
+      // Each handler's arguments before its payload and wrapped key.
+      const HANDLERS = {
+        PromptSubmitted: { handler: "handlePrompt", before: ["0xUser", 1, 2, 3] },
+        RegenerationRequested: { handler: "handleRegeneration", before: ["0xUser", 1, 2, 3, 4] },
+        BranchRequested: { handler: "handleBranch", before: ["0xUser", 1, 2, 9] },
+        MetadataUpdateRequested: { handler: "handleMetadataUpdate", before: ["0xUser", 1] },
+      };
+
+      function load() {
+        stubs["./ecies"].eciesDecrypt.callsFake(realEcies.eciesDecrypt);
+        const recordAnswerActivity = sinon.stub().resolves();
+        const mod = withTestKeys(
+          proxyquire("../src/aiAgentOracle", {
+            ...stubs,
+            "./answerActivity": { recordAnswerActivity },
+          }),
+          stubs["./ecies"],
+        );
+        mod.initForTest({ ...stubs["./contractUtility"].initializeOracle(), stateStore });
+        return { mod, recordAnswerActivity };
+      }
+
+      async function handle(mod, eventName, wrapped, label) {
+        const { handler, before } = HANDLERS[eventName];
+        const args = [...before, somePayload(), wrapped];
+        const fakeEvent = {
+          blockNumber: 120,
+          transactionHash: txHash(`${eventName}-${label}`),
+          index: 0,
+          args,
+          getBlock: () => Promise.resolve({ timestamp: Math.floor(Date.now() / 1000) }),
+        };
+        await mod.handleAndRecord(eventName, mod[handler], ...args, fakeEvent);
+      }
+
+      async function expectDroppedAsBadInput(recordAnswerActivity) {
+        const titles = stubs["./alerting"].sendAlert.getCalls().map((c) => String(c.args[0]));
+        expect(titles.filter((t) => t.startsWith("CRITICAL")), "no critical alert").to.deep.equal(
+          [],
+        );
+        expect(stubs["@sentry/node"].captureException.called, "no Sentry event").to.be.false;
+        expect(
+          recordAnswerActivity.getCalls().filter((c) => c.args[0]?.kind === "answer_failed"),
+          "no failure record",
+        ).to.have.lengthOf(0);
+        expect(await stateStore.countFailedJobs(), "no retry").to.deep.equal({
+          pending: 0,
+          exhausted: 0,
+        });
+      }
+
+      for (const eventName of Object.keys(HANDLERS)) {
+        it(`${eventName}: drops a wrap that does not open as bad input`, async () => {
+          const { mod, recordAnswerActivity } = load();
+          const blob = await wrap(FAKE_SESSION_KEY);
+          blob[blob.length - 1] ^= 0x01;
+
+          await handle(mod, eventName, ethers.hexlify(blob), "unopened");
+
+          await expectDroppedAsBadInput(recordAnswerActivity);
+        });
+
+        it(`${eventName}: drops an event with no wrapped key and no stored key file as bad input`, async () => {
+          const { mod, recordAnswerActivity } = load();
+          stubs["./storage/storage"].queryTransactionByTags.resolves(null);
+
+          await handle(mod, eventName, "0x", "no-key");
+
+          await expectDroppedAsBadInput(recordAnswerActivity);
+          expect(stubs["./storage/storage"].queryTransactionByTags.called, "the lookup ran").to.be
+            .true;
+        });
+      }
+
+      it("does not drop an event with no wrapped key when the key-file lookup itself fails", async () => {
+        const { mod } = load();
+        stubs["./storage/storage"].queryTransactionByTags.rejects(
+          new RetryableError("storage is unreachable"),
+        );
+
+        await handle(mod, "PromptSubmitted", "0x", "lookup-failed");
+
+        expect(await stateStore.countFailedJobs(), "queued for retry").to.deep.equal({
+          pending: 1,
+          exhausted: 0,
+        });
+      });
+
+      it("stays fatal when a stored key file is found but does not open: the oracle wrote it", async () => {
+        const { mod } = load();
+        const stored = await wrap(FAKE_SESSION_KEY);
+        stored[stored.length - 1] ^= 0x01;
+        stubs["./storage/storage"].queryTransactionByTags.resolves("stored-key-file-cid");
+        stubs["./storage/storage"].fetchData.resolves(stored.toString("hex"));
+
+        await handle(mod, "PromptSubmitted", "0x", "stored-key-unopened");
+
+        sinon.assert.calledWithMatch(stubs["./alerting"].sendAlert, "CRITICAL: Oracle Fatal Error");
+      });
+    });
+
     it("sends the processing lag alert once for a run of lagging events, not once per event", async () => {
       const handler = sinon.stub().resolves();
       const hourOld = Math.floor(Date.now() / 1000) - 60 * 60;
