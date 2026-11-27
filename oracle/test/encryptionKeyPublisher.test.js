@@ -311,7 +311,7 @@ describe("encryptionKeyPublisher", () => {
     keyPublisher.watch({ setIntervalFn });
 
     sinon.assert.calledOnce(setIntervalFn);
-    // 5 minutes: one eth_call (two when the key differs) per check while the key matches.
+    // 5 minutes = 5 * 60 * 1000 ms. A check that finds the key on chain is one eth_call.
     expect(setIntervalFn.firstCall.args[1]).to.equal(5 * 60 * 1000);
     sinon.assert.calledOnce(unref);
     setIntervalFn.firstCall.args[0]();

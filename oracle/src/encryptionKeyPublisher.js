@@ -8,9 +8,9 @@
  * this oracle decrypts with. The oracle publishes it with `setOracleEncryptionKey(key, proof)`,
  * where the proof is signed by the key itself (`decryptor.proveKey`).
  *
- *   check() — reads the key on chain and publishes this oracle's key when it differs. Never
- *             throws. Calls made while one runs share it.
- *   watch() — calls check() on a timer.
+ *   check(): reads the key on chain and publishes this oracle's key when it differs. Never
+ *            throws. Calls made while one runs share it.
+ *   watch(): calls check() on a timer.
  *
  * A key that cannot be published does not stop the oracle or hold its answers: the oracle can
  * only decrypt what was encrypted to its own key, whatever the chain shows, so holding answers
@@ -20,9 +20,9 @@
 
 const { describeError } = require("./errorDescription");
 
-/** One read (two when the key differs) per check while the key matches. */
+/** How often the key on the agent is checked again. A check that finds the key is one read. */
 const CHECK_EVERY_MS = 5 * 60 * 1000;
-/** Base makes a block about every 200 ms, so a receipt that has not come in 2 minutes is stuck. */
+/** 2 minutes is about 600 Base blocks (one every 200 ms): a receipt not in by then is stuck. */
 const RECEIPT_TIMEOUT_MS = 2 * 60 * 1000;
 const REMIND_EVERY_MS = 60 * 60 * 1000;
 

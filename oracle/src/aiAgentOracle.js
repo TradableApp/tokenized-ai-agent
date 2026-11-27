@@ -3455,9 +3455,9 @@ async function start() {
     await persistCursor(fromBlock - 1);
   }
 
-  // The agent must show the key this oracle decrypts with before anything is answered: clients
-  // check it before a paid send. Never throws and holds nothing back when it fails (it alerts
-  // and tries again on its timer). Skipped while the role is missing; the role's return runs it.
+  // Clients check the agent's key before a paid send, so it is published before anything is
+  // answered. It never throws and holds nothing back when it fails: it alerts and tries again on
+  // its timer. Skipped while the role is missing; the role's return runs it.
   await publishEncryptionKey(chainId);
 
   // Process any failed jobs from previous runs before catching up on past events.
