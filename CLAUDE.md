@@ -126,7 +126,7 @@ Both families expose the same event interface (`PromptSubmitted`, `RegenerationR
 The oracle has two distinct encryption paths, selected automatically by `contractUtility.js`:
 
 - **Sapphire**: The chain's TEE encrypts all calldata at the protocol level. Event payloads arrive as encrypted strings. The oracle decrypts them with the session key carried in the event payload.
-- **Base (EVM)**: No protocol-level encryption. The oracle uses ECIES (`eth-crypto`) to decrypt an asymmetrically encrypted session key, then AES-256-GCM to decrypt the conversation payload client-side.
+- **Base (EVM)**: No protocol-level encryption. The oracle uses ECIES (`oracle/src/ecies.js`) to decrypt an asymmetrically encrypted session key, then AES-256-GCM to decrypt the conversation payload client-side.
 
 `contractUtility.js:initializeOracle()` detects which mode applies by checking the network name and wraps the ethers provider/signer with Sapphire helpers when needed.
 

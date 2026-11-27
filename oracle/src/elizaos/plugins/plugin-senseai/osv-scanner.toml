@@ -1,0 +1,157 @@
+# Advisories osv-scanner reports in this directory's bun.lock that no bump or Bun override here can clear.
+# Each entry names the copy, why it cannot move, and whether it is reached. Review each one before its date.
+
+[[IgnoredVulns]]
+id = "GHSA-866g-f22w-33x8"
+effectiveUntil = 2027-02-28
+reason = "@ai-sdk/provider-utils 2.2.8: required as 2.2.8 by ai 4 under @elizaos/plugin-ollama, which the @elizaos/cli dev dependency brings in; fixed only in 3.0.28. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-gxm5-99cw-xjw9"
+effectiveUntil = 2027-02-28
+reason = "@fastify/busboy 2.1.1: required as ^2 by undici 5 under the @elizaos/cli dev dependency; fixed only in 3.2.1. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-x8mw-p69m-v3mx"
+effectiveUntil = 2027-02-28
+reason = "@fastify/busboy 2.1.1: required as ^2 by undici 5 under the @elizaos/cli dev dependency; fixed only in 3.2.1. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-v5rq-49vh-5v5c"
+effectiveUntil = 2027-02-28
+reason = "@simple-git/argv-parser 1.1.1: required by simple-git 3 under the @elizaos/cli dev dependency; fixed only in 2.0.1. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-rwvc-j5jr-mgvh"
+effectiveUntil = 2027-02-28
+reason = "ai 4.3.19: required as ^4.3.9 by @elizaos/plugin-ollama under the @elizaos/cli dev dependency; fixed only in 5.0.52. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-848j-6mx2-7j84"
+effectiveUntil = 2027-02-28
+reason = "elliptic 6.6.1: no fixed version is published. Required by crypto-browserify under @elizaos/core, which returns Node's crypto module when it runs on Node."
+
+[[IgnoredVulns]]
+id = "GHSA-67mh-4wv8-2f99"
+effectiveUntil = 2027-02-28
+reason = "esbuild 0.18.20: pinned to ~0.18.20 by @esbuild-kit/core-utils under drizzle-kit, which the @elizaos/cli dev dependency brings in; fixed in 0.25.0. The advisory concerns esbuild's development server; the plugin is built with Bun."
+
+[[IgnoredVulns]]
+id = "GHSA-3g3m-2fjr-6pw4"
+effectiveUntil = 2027-02-28
+reason = "glob 13.0.7: required as ^13 by @elizaos/core; fixed only in glob 14. The plugin passes no cancellation signal to glob."
+
+[[IgnoredVulns]]
+id = "GHSA-33vc-wfww-vjfv"
+effectiveUntil = 2027-02-28
+reason = "jsondiffpatch 0.6.0: pinned to 0.6.0 by ai 4 under the @elizaos/cli dev dependency; fixed only in 0.7.2. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-j4fx-xxwh-2485"
+effectiveUntil = 2027-02-28
+reason = "jsondiffpatch 0.6.0: pinned to 0.6.0 by ai 4 under the @elizaos/cli dev dependency; fixed only in 0.7.2. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+effectiveUntil = 2027-02-28
+reason = "minimatch 10.2.6: required as ^10 by glob 13 under @elizaos/core; fixed only in minimatch 11. Patterns come from package code, not from prompts."
+
+[[IgnoredVulns]]
+id = "GHSA-hq66-cqwq-w95j"
+effectiveUntil = 2027-02-28
+reason = "pdfjs-dist 5.7.284: required as ^5.2.133 by @elizaos/core 1.7.2; fixed only in 6.2.108. Nothing in @elizaos/core's built files loads it, and the plugin opens no PDF."
+
+[[IgnoredVulns]]
+id = "GHSA-858h-whjf-mvg5"
+effectiveUntil = 2027-02-28
+reason = "simple-git 3.36.0: required as ^3.27.0 by the @elizaos/cli dev dependency; fixed only in 4.0.0. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-g4wm-2vf7-vfgr"
+effectiveUntil = 2027-02-28
+reason = "simple-git 3.36.0: required as ^3.27.0 by the @elizaos/cli dev dependency; fixed only in 4.0.0. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-x6jw-m9v5-85vh"
+effectiveUntil = 2027-02-28
+reason = "simple-git 3.36.0: required as ^3.27.0 by the @elizaos/cli dev dependency; fixed only in 4.0.0. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-2m5v-pch6-74hx"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-2mjp-6q6p-2qxm"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-35p6-xmwp-9g52"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-4992-7rv2-5pvq"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-8xcm-r25x-g524"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-9fm3-97px-rjf6"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-g8m3-5g58-fq7m"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-g9mf-h72j-4rw9"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-m8rv-5g2x-5cg5"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-p88m-4jfj-68fv"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-qrxm-fqhp-jwvm"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-r53p-7pc4-xj5r"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-v3r7-h72x-cjcm"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-v9p9-hfj2-hcw8"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-vrm6-8vpv-qv8q"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."
+
+[[IgnoredVulns]]
+id = "GHSA-vxpw-j846-p89q"
+effectiveUntil = 2027-02-28
+reason = "undici 5.29.0: the 5.x copy is required as ^5.29.0 by @ai-sdk/provider-utils 3 under the @elizaos/cli dev dependency; fixed only in 6.x. Not in the bundled plugin dist."

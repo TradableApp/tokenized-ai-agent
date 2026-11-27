@@ -1,0 +1,62 @@
+# Advisories osv-scanner reports in this directory's bun.lock that no bump or Bun override here can clear.
+# Each entry names the copy, why it cannot move, and whether it is reached. Review each one before its date.
+
+[[IgnoredVulns]]
+id = "GHSA-8cw4-87c7-c6xx"
+effectiveUntil = 2027-02-28
+reason = "csv-parse 5.6.0: required as ^5.5.6 by @irys/upload 0.0.15; fixed only in 7.0.2. Only the Irys folder-upload path loads it, to read a manifest file on local disk; the oracle uploads single buffers and never calls that path."
+
+[[IgnoredVulns]]
+id = "GHSA-73rr-hh4g-fpgx"
+effectiveUntil = 2027-02-28
+reason = "diff 7.0.0: required as ^7 by mocha 11; fixed only in 8.0.3. Test runner only; installed without dev dependencies in the image."
+
+[[IgnoredVulns]]
+id = "GHSA-848j-6mx2-7j84"
+effectiveUntil = 2027-02-28
+reason = "elliptic 6.6.1: no fixed version is published. Pinned by @ethersproject/signing-key 5.8.0 under the Irys uploader, and required by crypto-browserify under @elizaos/core, which returns Node's crypto module when it runs on Node."
+
+[[IgnoredVulns]]
+id = "GHSA-67mh-4wv8-2f99"
+effectiveUntil = 2027-02-28
+reason = "esbuild 0.18.20: pinned to ~0.18.20 by @esbuild-kit/core-utils under drizzle-kit, which @elizaos/plugin-sql requires; fixed in 0.25.0. The advisory concerns esbuild's development server, which nothing in the oracle starts."
+
+[[IgnoredVulns]]
+id = "GHSA-3g3m-2fjr-6pw4"
+effectiveUntil = 2027-02-28
+reason = "glob 10.5.0, glob 13.0.7: fixed only in glob 14; the 10.x and 13.x lines required by @elizaos/core, mocha and nyc have no fix. The oracle passes no cancellation signal to glob."
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+effectiveUntil = 2027-02-28
+reason = "minimatch 10.2.6, minimatch 9.0.9: fixed only in minimatch 11; required as ^9 and ^10 by glob, mocha and nodemon. Patterns come from package code, not from prompts."
+
+[[IgnoredVulns]]
+id = "GHSA-hq66-cqwq-w95j"
+effectiveUntil = 2027-02-28
+reason = "pdfjs-dist 5.7.284: required as ^5.2.133 by @elizaos/core 1.7.2; fixed only in 6.2.108. Nothing in @elizaos/core's built files loads it, and the oracle opens no PDF."
+
+[[IgnoredVulns]]
+id = "GHSA-5c6j-r48x-rmvq"
+effectiveUntil = 2027-02-28
+reason = "serialize-javascript 6.0.2: required as ^6.0.2 by mocha 11; fixed only in 7.x. Test runner only; installed without dev dependencies in the image."
+
+[[IgnoredVulns]]
+id = "GHSA-m5mm-p8h7-m29v"
+effectiveUntil = 2027-02-28
+reason = "serialize-javascript 6.0.2: required as ^6.0.2 by mocha 11; fixed only in 7.x. Test runner only; installed without dev dependencies in the image."
+
+[[IgnoredVulns]]
+id = "GHSA-qj8w-gfj5-8c6v"
+effectiveUntil = 2027-02-28
+reason = "serialize-javascript 6.0.2: required as ^6.0.2 by mocha 11; fixed only in 7.x. Test runner only; installed without dev dependencies in the image."
+
+[[IgnoredVulns]]
+id = "GHSA-w5hq-g745-h8pq"
+effectiveUntil = 2027-02-28
+reason = "uuid 8.3.2: required as ^8.3.2 by istanbul-lib-processinfo under nyc; fixed only in 11.1.1. Coverage tool only; installed without dev dependencies in the image."
+
+[[IgnoredVulns]]
+id = "GHSA-mrhx-c7xc-m3w5"
+effectiveUntil = 2027-02-28
+reason = "zod 3.25.76: required as ^3 by @autonomys/auto-drive and @coingecko/coingecko-mcp; the 3.x line has no fix (fixed in 4.6.6). The oracle's own schemas use zod 4."
