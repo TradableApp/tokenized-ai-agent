@@ -849,6 +849,13 @@ closes new paid actions on the old pair with the dApp's prompts switch and lets 
 already sent settle; otherwise a prompt sent to the old pair after the oracle has moved is paid
 and waits for its one-hour refund.
 
+- **On mainnet, do not replace the pair until history carry-over exists.** A user's
+  conversations belong to the agent they were sent to: the dApp keeps one local store per agent
+  and reads one agent's history, so a build pointed at a new pair shows every returning user an
+  empty history. The old conversations stay on chain and in storage, but no build shows them
+  until the dApp can carry a wallet's history over from an earlier agent, and that does not
+  exist yet. Until it does, change a deployed mainnet pair only by upgrading it in place (agent
+  before escrow). Replacing the pair on a test network is fine.
 - The switch is a document every open copy of the dApp listens to, per network and agent
   (`sense-ai-dapp/docs/decisions/0008-remote-prompts-switch.md`). Closing it stops new prompts,
   plans, branches and renames in every open tab without a deploy; cancelling, refunds and
