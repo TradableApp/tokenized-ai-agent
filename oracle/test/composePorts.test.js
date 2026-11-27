@@ -87,6 +87,84 @@ describe("compose files publish only the stream port", () => {
 });
 
 /**
+ * The stream's public name. The proxy's own URL for a port carries the machine's id, so it
+ * changes with the machine, and the dApp reads the stream URL at build time. The Base
+ * deployments therefore give port 8787 a name of ours, one per network, and the DNS records for
+ * it move with the machine. The Sapphire deployments are an example and set no name.
+ * `compose.yaml` is the copy the last build made, so it carries one of the two names or none.
+ */
+const STREAM_DOMAINS = {
+  "compose.base-testnet.yaml": "stream-testnet.senseai.tradable.app",
+  "compose.base-mainnet.yaml": "stream.senseai.tradable.app",
+};
+const DOMAIN_KEY = `net.oasis.proxy.ports.${PORT}.custom_domain`;
+
+/** The `key: value` pairs of the map under the key `name:` at the given indent. */
+function mapUnder(lines, name, indent) {
+  const start = lines.findIndex((line) => line === `${" ".repeat(indent)}${name}:`);
+  if (start === -1) return null;
+  const pairs = {};
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    const lead = line.length - line.trimStart().length;
+    if (lead <= indent) break;
+    const at = line.indexOf(": ");
+    pairs[line.slice(0, at).trim()] = line.slice(at + 2).trim();
+  }
+  return pairs;
+}
+
+describe("the stream port's public name", () => {
+  it("reads a map and stops at the next key (the check itself)", () => {
+    const lines = [
+      "    annotations:",
+      "      # why",
+      "      a.b: c.d",
+      "    environment:",
+      "      - X=1",
+    ];
+    expect(mapUnder(lines, "annotations", 4)).to.deep.equal({ "a.b": "c.d" });
+    expect(mapUnder(lines, "labels", 4)).to.equal(null);
+  });
+
+  for (const file of COMPOSE_FILES) {
+    const lines = readFileSync(join(ROOT, file), "utf8").split("\n");
+    const annotations = mapUnder(lines, "annotations", 4);
+
+    if (STREAM_DOMAINS[file]) {
+      it(`${file} names the stream ${STREAM_DOMAINS[file]} and sets nothing else on the proxy`, () => {
+        expect(annotations).to.deep.equal({ [DOMAIN_KEY]: STREAM_DOMAINS[file] });
+      });
+
+      it(`${file} keeps annotations: above the environment: block the secrets script rewrites`, () => {
+        const envAt = lines.findIndex((line) => /^\s*environment:\s*$/.test(line));
+        const at = lines.findIndex((line) => /^\s*annotations:\s*$/.test(line));
+        expect(at).to.be.greaterThan(-1);
+        expect(at).to.be.below(envAt);
+        expect(lines.filter((line) => /^\s*annotations:/.test(line))).to.have.length(1);
+      });
+    } else if (file === "compose.yaml") {
+      it("compose.yaml carries a name only as a copy of a Base file", () => {
+        if (annotations === null) return;
+        expect(Object.keys(annotations)).to.deep.equal([DOMAIN_KEY]);
+        expect(Object.values(STREAM_DOMAINS)).to.include(annotations[DOMAIN_KEY]);
+      });
+    } else {
+      it(`${file} sets nothing on the proxy`, () => {
+        expect(annotations).to.equal(null);
+        expect(lines.join("\n")).to.not.include("net.oasis.proxy");
+      });
+    }
+  }
+
+  it("gives each network its own name", () => {
+    const names = Object.values(STREAM_DOMAINS);
+    expect(new Set(names).size).to.equal(names.length);
+    for (const name of names) expect(name).to.match(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/);
+  });
+});
+
+/**
  * The stream settings are plain configuration, never secrets: in the settings template and in
  * each generated compose file they sit below the plaintext delimiter (above it is what is pushed
  * on-chain as an encrypted ROFL secret). A testnet compose file and its mainnet twin list the
