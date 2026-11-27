@@ -22,7 +22,10 @@ const { describeError } = require("./errorDescription");
 
 /** How often the key on the agent is checked again. A check that finds the key is one read. */
 const CHECK_EVERY_MS = 5 * 60 * 1000;
-/** 2 minutes is about 600 Base blocks (one every 200 ms): a receipt not in by then is stuck. */
+/**
+ * Two minutes: about 600 blocks at the 200 ms measured on Base Sepolia, and 60 at a 2 s block
+ * time. A receipt not in by then is stuck either way.
+ */
 const RECEIPT_TIMEOUT_MS = 2 * 60 * 1000;
 const REMIND_EVERY_MS = 60 * 60 * 1000;
 
@@ -152,6 +155,9 @@ function createKeyPublisher({
       agentAddress: contract.target,
       publisher: signerAddress,
     });
+    // The wait is inside the lock on purpose: releasing it after the send would let answers be
+    // sent on later nonces behind a publish that may be dropped, and a dropped nonce holds every
+    // later one. The cost is that a publish that is not mined holds answers for the timeout.
     const receipt = await runExclusive(async () => {
       const tx = await contract.setOracleEncryptionKey(decryptor.publicKey, proof);
       return tx.wait(1, RECEIPT_TIMEOUT_MS);
@@ -186,7 +192,8 @@ function createKeyPublisher({
       if (revert?.name === "EncryptionKeyHeldByAnotherOracle") return heldByOther(revert.args[0]);
       if (revert?.name !== "InvalidEncryptionKey" && revert?.name !== "InvalidEncryptionKeyProof") {
         // A refusal for want of the role (by name, or a mined revert with no reason) is the role
-        // gate's to confirm and to page for.
+        // gate's to confirm and to page for. A failed read comes here too: the gate answers
+        // "not lost" for anything that is neither the refusal nor a mined revert.
         let roleLost = false;
         try {
           roleLost = await onRoleRefused(error);
