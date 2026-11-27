@@ -81,6 +81,12 @@ describe("aiAgentOracle", function () {
         isJobFinalized: sinon.stub().resolves(false),
         isOracle: sinon.stub(),
         addOracle: sinon.stub().resolves({ wait: () => Promise.resolve() }),
+        // The encryption key slot, empty until the oracle publishes.
+        oracleEncryptionKey: sinon.stub().resolves("0x"),
+        oracleEncryptionKeyPublisher: sinon.stub().resolves(ethers.ZeroAddress),
+        setOracleEncryptionKey: sinon
+          .stub()
+          .resolves({ hash: "0xKeyTx", wait: () => Promise.resolve({ status: 1, hash: "0xKeyTx" }) }),
         queryFilter: sinon.stub(),
         // Add stub for event listener attachment, required by start().
         on: sinon.stub(),
@@ -323,6 +329,89 @@ describe("aiAgentOracle", function () {
       provider.getBlockNumber.resolves(10000);
 
       await aiAgentOracle.start();
+    });
+
+    describe("publishing the encryption key", () => {
+      const keyAlerts = () =>
+        stubs["./alerting"].sendAlert
+          .getCalls()
+          .filter((c) => c.args[0] === "CRITICAL: Oracle Encryption Key Not Published");
+
+      it("publishes its key before it handles any event, when the chain shows none", async () => {
+        const { contract } = stubs["./contractUtility"].initializeOracle();
+
+        await aiAgentOracle.start();
+
+        sinon.assert.calledOnce(contract.setOracleEncryptionKey);
+        const [key] = contract.setOracleEncryptionKey.firstCall.args;
+        expect(key).to.equal(new ethers.SigningKey(process.env.PRIVATE_KEY).publicKey);
+        sinon.assert.callOrder(contract.setOracleEncryptionKey, contract.queryFilter);
+      });
+
+      it("sends nothing when the chain already shows its key", async () => {
+        const { contract } = stubs["./contractUtility"].initializeOracle();
+        contract.oracleEncryptionKey.resolves(
+          new ethers.SigningKey(process.env.PRIVATE_KEY).publicKey,
+        );
+
+        await aiAgentOracle.start();
+
+        sinon.assert.notCalled(contract.setOracleEncryptionKey);
+      });
+
+      it("starts answering all the same when the key cannot be published, and alerts", async () => {
+        const { contract } = stubs["./contractUtility"].initializeOracle();
+        contract.setOracleEncryptionKey.rejects(
+          Object.assign(new Error("missing response"), { code: "SERVER_ERROR" }),
+        );
+
+        await aiAgentOracle.start();
+
+        expect(keyAlerts()).to.have.lengthOf(1);
+        expect(contract.queryFilter.called, "events are still scanned").to.equal(true);
+      });
+
+      it("checks again on a five-minute timer", async () => {
+        await aiAgentOracle.start();
+
+        const timers = global.setInterval.getCalls().map((c) => c.args[1]);
+        expect(timers).to.include(5 * 60 * 1000);
+      });
+
+      it("does not publish on Sapphire, where the agent's setter is the TEE's alone", async () => {
+        aiAgentOracle.initForTest({
+          ...stubs["./contractUtility"].initializeOracle(),
+          isSapphire: true,
+        });
+        const { contract } = stubs["./contractUtility"].initializeOracle();
+
+        await aiAgentOracle.start();
+
+        sinon.assert.notCalled(contract.oracleEncryptionKey);
+        sinon.assert.notCalled(contract.setOracleEncryptionKey);
+      });
+
+      it("publishes once the oracle role is granted, not before", async () => {
+        process.env.ORACLE_ROLE_RECHECK_MS = "1";
+        const { contract } = stubs["./contractUtility"].initializeOracle();
+        // Start-up check and one recheck find no role; then it is granted.
+        contract.isOracle.onCall(0).resolves(false);
+        contract.isOracle.onCall(1).resolves(false);
+        contract.isOracle.resolves(true);
+
+        await aiAgentOracle.start();
+        // The publish on the role's return is not awaited by the gate.
+        for (let tick = 0; tick < 20 && !contract.setOracleEncryptionKey.called; tick++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+
+        sinon.assert.calledOnce(contract.setOracleEncryptionKey);
+        expect(contract.setOracleEncryptionKey.firstCall.calledAfter(contract.isOracle.getCall(2)))
+          .to.be.true;
+        expect(keyAlerts(), "no page from the key path while the role is missing").to.have.lengthOf(
+          0,
+        );
+      });
     });
 
     describe("the thought sanitiser's warm-up", () => {
