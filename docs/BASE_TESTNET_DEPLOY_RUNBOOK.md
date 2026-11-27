@@ -459,11 +459,25 @@ ciphertext only.
   reads it **at build time**, so a URL that changes needs the dApp rebuilt and redeployed; until
   then the hosted dApp asks the old host, shows no live reasoning and reports nothing (the paid
   answer still lands from storage). The machine domain carries the machine's id, so a new or
-  replaced machine changes a `p8787.<domain>` URL. Two ways to hold the URL, an owner decision:
-  - **the proxy's `p8787.<domain>` URL**: nothing to set up; every machine change is a dApp
-    rebuild and redeploy, done as part of that change;
-  - **a custom domain for 8787**: an annotation and two DNS records once; the URL survives a
-    machine change, and the records move to the new machine's address instead.
+  replaced machine changes a `p8787.<domain>` URL. So the Base compose files give port 8787 a
+  name of ours with the proxy's `custom_domain` annotation (owner decision, 2026-11-26):
+
+  | Deployment | Compose file | Stream name | dApp `VITE_REASONING_STREAM_URL` |
+  |---|---|---|---|
+  | Base Sepolia | `compose.base-testnet.yaml` | `stream-testnet.senseai.tradable.app` | `https://stream-testnet.senseai.tradable.app` |
+  | Base mainnet | `compose.base-mainnet.yaml` | `stream.senseai.tradable.app` | `https://stream.senseai.tradable.app` |
+
+  The name needs two DNS records, and both come from the machine: after the deploy,
+  `oasis rofl machine show --deployment <name>` prints under `Proxy` the address for the name's
+  **A** record and an `oasis-rofl-verification=…` value for a **TXT** record on the same name.
+  Create both (the owner does this; a short TTL on testnet, where machines are replaced often),
+  then wait for them to resolve before the checks below. A new or replaced machine prints its
+  own values, so the records are set again at each machine change; the dApp is not rebuilt.
+  Not measured yet, to record here on the first run: whether a new machine prints a new TXT
+  value as well as a new address, how long the proxy takes to serve the name once the records
+  resolve, and whether the certificate for the name is issued again for each machine (a public
+  certificate authority limits how many it issues for one name in a week, which would bound how
+  often a testnet machine can be replaced under this name).
 
   Still to be measured by the Phase 0 spike, and recorded here: that the proxy passes the event
   stream unbuffered, how long it keeps a quiet connection against the 15 s heartbeat and the
