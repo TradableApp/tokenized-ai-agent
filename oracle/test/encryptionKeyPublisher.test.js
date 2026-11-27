@@ -156,6 +156,48 @@ describe("encryptionKeyPublisher", () => {
     expect(alertsTitled(NOT_PUBLISHED)).to.have.lengthOf(1);
   });
 
+  /** What ethers 6 throws from wait() for a mined transaction that reverted: no revert data. */
+  function minedRevert() {
+    return Object.assign(new Error("transaction execution reverted"), {
+      code: "CALL_EXCEPTION",
+      receipt: { status: 0, hash: "0xpublish" },
+    });
+  }
+
+  it("names a mined revert as one, when the oracle still holds its role", async () => {
+    contract.setOracleEncryptionKey.resolves({
+      hash: "0xpublish",
+      wait: sinon.stub().rejects(minedRevert()),
+    });
+    onRoleRefused.resolves(false);
+
+    const outcome = await publisher().check();
+
+    expect(outcome).to.equal("failed");
+    sinon.assert.calledOnceWithExactly(report, "reverted");
+    expect(alertsTitled(NOT_PUBLISHED)).to.have.lengthOf(1);
+  });
+
+  it("says who holds the key when another oracle published first and this send reverted", async () => {
+    // Both oracles read an empty slot; the other one's send was mined first.
+    contract.oracleEncryptionKeyPublisher
+      .onFirstCall()
+      .resolves(ethers.ZeroAddress)
+      .onSecondCall()
+      .resolves(OTHER_ORACLE);
+    contract.setOracleEncryptionKey.resolves({
+      hash: "0xpublish",
+      wait: sinon.stub().rejects(minedRevert()),
+    });
+    onRoleRefused.resolves(false);
+
+    const outcome = await publisher().check();
+
+    expect(outcome).to.equal("held-by-other");
+    const [page] = alertsTitled(NOT_PUBLISHED);
+    expect(page.args[1]).to.include(`removeOracle(${OTHER_ORACLE})`);
+  });
+
   it("alerts when the receipt does not come, and leaves the transaction lock free", async () => {
     const timeout = Object.assign(new Error("wait for transaction timeout"), { code: "TIMEOUT" });
     contract.setOracleEncryptionKey.resolves({
