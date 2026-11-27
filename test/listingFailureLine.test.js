@@ -29,9 +29,25 @@ describe("scripts: what a failed run prints", () => {
     expect(text).to.match(/\n\s+at .+listingFailureLine\.test\.js:\d+:\d+/);
   });
 
+  it("does not take a line of the message that starts like a frame for a frame", () => {
+    // A stack starts with the message, every line of it. A message line that begins "    at "
+    // is still part of the message, so it is printed once, with its address removed.
+    const error = new Error(
+      "server error\n    at https://rpc.example/v2/abcdefghijklmnopqrstuvwxyz0123456789",
+    );
+
+    const text = failureText(error);
+
+    expect(text).to.not.include("rpc.example");
+    expect(text).to.not.include("abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(text.split("\n")[0]).to.equal("server error");
+    expect(text).to.match(/\n\s+at .+listingFailureLine\.test\.js:\d+:\d+/);
+  });
+
   it("removes a configured key written without its address, when the setting came after loading", () => {
     const before = process.env.FAILURE_TEXT_TEST_RPC_URL;
-    process.env.FAILURE_TEXT_TEST_RPC_URL = "https://rpc.example/v2/zyxwvutsrqponmlkjihgfedcba987654";
+    process.env.FAILURE_TEXT_TEST_RPC_URL =
+      "https://rpc.example/v2/zyxwvutsrqponmlkjihgfedcba987654";
     try {
       const text = failureText(new Error("POST /v2/zyxwvutsrqponmlkjihgfedcba987654 refused"));
       expect(text).to.not.include("zyxwvutsrqponmlkjihgfedcba987654");
