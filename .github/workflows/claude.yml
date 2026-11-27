@@ -36,11 +36,11 @@ jobs:
           OPENED_BY: ${{ github.event.issue.user.login }}
         run: |
           # Read needs only the token's metadata permission, which every workflow token has. A
-          # request that fails is not an answer: the job fails, so it shows in the Actions tab,
-          # and no run starts.
+          # request that fails is not an answer: the job fails, so it shows in the Actions tab
+          # with the request's own error in this log, and no run starts.
           allowed=true
           check() {
-            if ! permission=$(gh api "repos/$REPOSITORY/collaborators/$1/permission" --jq .permission 2>&1); then
+            if ! permission=$(gh api "repos/$REPOSITORY/collaborators/$1/permission" --jq .permission); then
               echo "::error::Could not read the repository permission of one of the two accounts; no run starts."
               exit 1
             fi
@@ -49,13 +49,19 @@ jobs:
               *) allowed=false ;;
             esac
           }
+          # The sender: for an assignment that is who assigned the issue, not who it went to.
           check "$ASKED_BY"
-          if [ "$OPENED_BY" != "$ASKED_BY" ]; then check "$OPENED_BY"; fi
+          # An issue whose opener's account no longer exists names nobody with write access.
+          if [ -z "$OPENED_BY" ]; then
+            allowed=false
+          elif [ "$OPENED_BY" != "$ASKED_BY" ]; then
+            check "$OPENED_BY"
+          fi
           echo "allowed=$allowed" >> "$GITHUB_OUTPUT"
 
   claude:
     needs: gate
-    if: needs.gate.outputs.allowed == 'true'
+    if: needs.gate.result == 'success' && needs.gate.outputs.allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
