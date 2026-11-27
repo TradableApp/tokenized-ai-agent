@@ -24,9 +24,17 @@ function failureText(error, Refusal) {
   // file is, and a key written without its address ("POST /v2/<key>") is removed by value.
   refreshRequestSecrets();
   const message = withoutAddresses(String(error?.message ?? error));
+  // A stack starts with the message, every line of it. Those lines are skipped, so a line of
+  // the message that starts like a frame is not taken for one, and what is left has its
+  // addresses removed as the message has.
+  const messageLines = typeof error?.message === "string" ? error.message.split("\n").length : 1;
   const frames =
     typeof error?.stack === "string"
-      ? error.stack.split("\n").filter((line) => /^\s+at /.test(line))
+      ? error.stack
+          .split("\n")
+          .slice(messageLines)
+          .filter((line) => /^\s+at /.test(line))
+          .map((line) => withoutAddresses(line))
       : [];
   return [message, ...frames].join("\n");
 }
