@@ -84,9 +84,10 @@ describe("aiAgentOracle", function () {
         // The encryption key slot, empty until the oracle publishes.
         oracleEncryptionKey: sinon.stub().resolves("0x"),
         oracleEncryptionKeyPublisher: sinon.stub().resolves(ethers.ZeroAddress),
-        setOracleEncryptionKey: sinon
-          .stub()
-          .resolves({ hash: "0xKeyTx", wait: () => Promise.resolve({ status: 1, hash: "0xKeyTx" }) }),
+        setOracleEncryptionKey: sinon.stub().resolves({
+          hash: "0xKeyTx",
+          wait: () => Promise.resolve({ status: 1, hash: "0xKeyTx" }),
+        }),
         queryFilter: sinon.stub(),
         // Add stub for event listener attachment, required by start().
         on: sinon.stub(),
@@ -336,6 +337,13 @@ describe("aiAgentOracle", function () {
         stubs["./alerting"].sendAlert
           .getCalls()
           .filter((c) => c.args[0] === "CRITICAL: Oracle Encryption Key Not Published");
+
+      beforeEach(() => {
+        // The proof names the agent and the sender, so both must be real addresses here.
+        const { contract, signer } = stubs["./contractUtility"].initializeOracle();
+        contract.target = "0x1111111111111111111111111111111111111111";
+        signer.address = "0x2222222222222222222222222222222222222222";
+      });
 
       it("publishes its key before it handles any event, when the chain shows none", async () => {
         const { contract } = stubs["./contractUtility"].initializeOracle();

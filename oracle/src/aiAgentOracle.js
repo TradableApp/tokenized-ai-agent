@@ -87,6 +87,7 @@ const { createFileStateStore } = require("./oracleState/store");
 const { createStateStore, resolveResumeCursor } = require("./oracleState/runtime");
 const { createOutageTracker } = require("./oracleState/outageTracker");
 const { createRoleGate } = require("./oracleRoleGate");
+const { createKeyPublisher } = require("./encryptionKeyPublisher");
 
 const NAMESPACE_UUID = "f7e8a6a0-8d5d-4f7d-8f8a-8c7d6e5f4a3b";
 const STATE_FILE_PATH = path.resolve(__dirname, "../oracle-state.json");
@@ -212,6 +213,8 @@ const oracleRole = createRoleGate({
   },
   onRestored: () => {
     console.log(`[OracleRole] Oracle address is authorized again: ${signer.address}`);
+    // A key withdrawn with the role, or never published while it was missing. Never rejects.
+    if (keyPublisher) void keyPublisher.check();
     return sendAlert(
       "Oracle is authorized again",
       `Oracle ${signer.address} holds the oracle role again and has resumed answering.`,
@@ -407,6 +410,9 @@ let isSapphire;
 // The key that opens each prompt's session key. Used through this, never read.
 let decryptor;
 let expectedChainId;
+// Publishes the decryptor's public key on the EVM agent; built in `start`, once the chain id is
+// known. Null on Sapphire and before `start`.
+let keyPublisher = null;
 
 /**
  * Gives the oracle its keys and builds what it talks to the chain with. Called once by
@@ -3290,6 +3296,39 @@ async function pollEvents(startBlock) {
 }
 
 /**
+ * Makes the EVM agent show this oracle's encryption key, now and every few minutes after (see
+ * encryptionKeyPublisher.js). On Sapphire the agent's setter is for the ROFL app's own TEE
+ * transactions only and takes no proof, so the oracle does not call it there.
+ */
+async function publishEncryptionKey(chainId) {
+  if (isSapphire) {
+    console.log("[OracleKey] Sapphire: the oracle does not publish its encryption key.");
+    return;
+  }
+  keyPublisher = createKeyPublisher({
+    contract,
+    signerAddress: signer.address,
+    decryptor: requireDecryptor(),
+    chainId,
+    runExclusive: (work) => txMutex.runExclusive(work),
+    isRoleLost: () => oracleRole.isLost(),
+    onRoleRefused: async (error) => {
+      const { lost } = await lostOracleRole(error);
+      if (lost) oracleRole.markLost(error);
+      return lost;
+    },
+    alert: sendAlert,
+    report: (kind) =>
+      Sentry.captureMessage("Oracle encryption key not published", {
+        level: "error",
+        tags: { site: "encryption_key_publish", kind },
+      }),
+  });
+  await keyPublisher.check();
+  keyPublisher.watch();
+}
+
+/**
  * The entry point for the oracle service.
  */
 async function start() {
@@ -3415,6 +3454,11 @@ async function start() {
     // younger than the look-back): there is no earlier block to store.
     await persistCursor(fromBlock - 1);
   }
+
+  // The agent must show the key this oracle decrypts with before anything is answered: clients
+  // check it before a paid send. Never throws and holds nothing back when it fails (it alerts
+  // and tries again on its timer). Skipped while the role is missing; the role's return runs it.
+  await publishEncryptionKey(chainId);
 
   // Process any failed jobs from previous runs before catching up on past events.
   await retryFailedJobs();

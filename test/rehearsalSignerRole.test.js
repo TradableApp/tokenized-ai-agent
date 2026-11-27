@@ -150,10 +150,9 @@ describe("the rehearsal and the signer's own oracle role", function () {
   });
 
   // Revoking the role of the oracle that published the encryption key withdraws the key (the
-  // agent's `_revokeRole`). Nothing reads that key today: the dApp encrypts to the key its build
-  // names, and no prompt path reads it on chain, so removing the role stops nothing. The real
-  // oracle does not publish its own key yet. The role is still removed; a snapshot that recorded
-  // the signer's key then always differs on it.
+  // agent's `_revokeRole`). While the signer's key is there the oracle cannot publish its own, and
+  // once it is withdrawn the oracle publishes its own on its next check. The role is still
+  // removed; a snapshot that recorded the signer's key then always differs on it.
   describe("when the signer published the encryption key", function () {
     const plainAdvice = "so the owner removes it before the handover";
 
@@ -162,8 +161,9 @@ describe("the rehearsal and the signer's own oracle role", function () {
       expect(text).to.include("is the agent's oracleEncryptionKeyPublisher");
       expect(text).to.include(`agent.removeOracle(${signer})`);
       expect(text).to.include("withdraws that key");
-      expect(text).to.include("none does");
-      expect(text).to.include("not built yet");
+      expect(text).to.include("the oracle cannot publish its own");
+      expect(text).to.include("refuses to send while it differs");
+      expect(text).to.include("publishes its own key on its next check");
       expect(text).to.include("Remove the role all the same");
       expect(text).to.include("move that snapshot aside");
       expect(text).to.include("Never publish an encryption key from the deploy wallet");

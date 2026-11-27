@@ -264,7 +264,9 @@ describe("encryptionKeyPublisher", () => {
   });
 
   it("pages again at once when the failure changes kind", async () => {
-    contract.oracleEncryptionKey.rejects(Object.assign(new Error("down"), { code: "SERVER_ERROR" }));
+    contract.oracleEncryptionKey.rejects(
+      Object.assign(new Error("down"), { code: "SERVER_ERROR" }),
+    );
     const keyPublisher = publisher();
     await keyPublisher.check();
 

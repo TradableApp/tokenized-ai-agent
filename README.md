@@ -238,7 +238,7 @@ On a deployed network the oracle's signing key and its encryption key are both m
 [OracleKeys] mode=rofl app=… signer=0x… encryptionKey=0x…
 ```
 
-- `encryptionKey=` is the key prompts are encrypted to: put it in `sense-ai-dapp/.env.testnet` → `VITE_ORACLE_PUBLIC_KEY`.
+- `encryptionKey=` is the key prompts are encrypted to: put it in `sense-ai-dapp/.env.testnet` → `VITE_ORACLE_PUBLIC_KEY`. Once it holds the oracle role, the oracle also publishes it on the agent (`oracleEncryptionKey()`), where a client can check it.
 - `signer=` is the address the oracle answers from. It needs Base Sepolia ETH for answer gas and the oracle role on the agent: the owner grants it with `authorize-oracle:base-testnet grant` and retires the deploy wallet's role after one answer, in the order of [the runbook's "Fresh pair, in order"](docs/BASE_TESTNET_DEPLOY_RUNBOOK.md#12-fresh-pair-in-order).
 
 ---
