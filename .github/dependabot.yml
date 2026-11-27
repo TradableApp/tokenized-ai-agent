@@ -38,3 +38,12 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # The contract libraries are pinned to the versions the deployed bytecode was built and
+      # reviewed against. A newer one changes that bytecode, so it is taken on purpose, in its
+      # own change, never in a grouped update. Security updates are not held back by this.
+      - dependency-name: "@openzeppelin/contracts"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "@openzeppelin/contracts-upgradeable"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "@oasisprotocol/sapphire-contracts"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
