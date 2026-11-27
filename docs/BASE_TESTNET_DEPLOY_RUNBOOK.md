@@ -72,6 +72,12 @@ What the contract allows, and why the order matters:
   agent's key before a paid send refuses to send while it differs. Neither changes the order:
   once step 5 withdraws the key, the oracle publishes its own on its next check (at most five
   minutes). See the `signerIsOracle` row under Lessons learned for what the rehearsal then says.
+- **A publish that is not mined.** The oracle waits two minutes for the publish's receipt, then
+  pages and carries on. The transaction keeps its nonce while it is pending, so the answers the
+  oracle sends after it wait behind it until it is mined or dropped. If the page says the receipt
+  did not come and answers stop landing, look at the oracle address's pending transactions on
+  the explorer: the page clears by itself once the publish is mined. A publish that is mined and
+  reverts is paged as `reverted`, or names the other oracle when one published first.
 
 The reads and owner calls below use the Hardhat console on the agent's network, which signs with
 the root `PRIVATE_KEY` (the deploy wallet, the same account the admin rehearsal uses):

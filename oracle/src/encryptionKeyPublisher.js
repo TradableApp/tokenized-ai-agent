@@ -50,9 +50,18 @@ function revertOf(contract, error) {
   }
 }
 
+/**
+ * Whether the error is a transaction that was mined and reverted. ethers throws that from
+ * `wait()` with the receipt and no revert data, so the agent's reason cannot be read from it.
+ */
+function isMinedRevert(error) {
+  return error?.code === "CALL_EXCEPTION" && error?.receipt?.status === 0;
+}
+
 /** A short name for what went wrong: one page per kind, and the Sentry tag. */
 function failureKind(revert, error) {
   if (revert) return `revert-${revert.name}`;
+  if (isMinedRevert(error)) return "reverted";
   if (error?.code === "TIMEOUT") return "timeout";
   return "failed";
 }
@@ -185,6 +194,15 @@ function createKeyPublisher({
           roleLost = false;
         }
         if (roleLost) return "role-missing";
+      }
+      if (isMinedRevert(error)) {
+        // A mined revert carries no reason. The usual cause, with the role held, is another
+        // oracle publishing between this one's read and its send: the publisher is read again,
+        // so the page says who holds the key and what removes it.
+        const holder = await contract.oracleEncryptionKeyPublisher().catch(() => null);
+        if (holder !== null && !isZeroAddress(holder) && !sameHex(holder, signerAddress)) {
+          return heldByOther(holder);
+        }
       }
       return failed(failureKind(revert, error), "failed", `Last failure: ${describeError(error)}.`);
     }
