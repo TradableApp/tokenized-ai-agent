@@ -217,7 +217,7 @@ Each oracle env file is split by the line `# === 📄 ORC BUNDLE CONFIGURATION (
 
 Oracle is deployed as a Docker container inside a ROFL TEE. Relevant files at root:
 - `Dockerfile.oracle` — oracle image definition
-- `compose.yaml`, `compose.testnet.yaml`, `compose.mainnet.yaml`, `compose.base-testnet.yaml`, `compose.base-mainnet.yaml` — per-environment Compose files. Each publishes exactly one port, `"8787:8787"` (the live reasoning stream), above the `environment:` block that `scripts/rofl-set-secrets.sh` rewrites.
+- `compose.yaml`, `compose.testnet.yaml`, `compose.mainnet.yaml`, `compose.base-testnet.yaml`, `compose.base-mainnet.yaml` — per-environment Compose files. Each publishes exactly one port, `"8787:8787"` (the live reasoning stream), above the `environment:` block that `scripts/rofl-set-secrets.sh` rewrites. The two Base files also give that port a public name with the proxy annotation `net.oasis.proxy.ports.8787.custom_domain` (`stream-testnet.senseai.tradable.app` and `stream.senseai.tradable.app`), so the dApp's stream URL does not change with the machine; the Sapphire files set none. `oracle/test/composePorts.test.js` pins the port, the names and that both sit above `environment:`.
 
 ## Cross-Repo Context
 
