@@ -109,7 +109,9 @@ function mapUnder(lines, name, indent) {
     const lead = line.length - line.trimStart().length;
     if (lead <= indent) break;
     const at = line.indexOf(": ");
-    pairs[line.slice(0, at).trim()] = line.slice(at + 2).trim();
+    // A line with no value is kept under its own text, so a comparison shows it as it is.
+    if (at === -1) pairs[line.trim()] = "";
+    else pairs[line.slice(0, at).trim()] = line.slice(at + 2).trim();
   }
   return pairs;
 }
@@ -125,6 +127,9 @@ describe("the stream port's public name", () => {
     ];
     expect(mapUnder(lines, "annotations", 4)).to.deep.equal({ "a.b": "c.d" });
     expect(mapUnder(lines, "labels", 4)).to.equal(null);
+    expect(mapUnder(["    annotations:", "      bare.key:"], "annotations", 4)).to.deep.equal({
+      "bare.key:": "",
+    });
   });
 
   for (const file of COMPOSE_FILES) {
