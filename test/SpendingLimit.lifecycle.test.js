@@ -145,7 +145,7 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
 
       let limit = await escrow.spendingLimits(user.address);
       expect(limit.spentAmount).to.equal(
@@ -158,7 +158,9 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       const agentIface = aiAgent.interface;
       const escrowIface = escrow.interface;
 
-      const receipt1 = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+      const receipt1 = await (
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+      ).wait();
       const escrowLog1 = receipt1.logs.find(
         (l) => l.topics[0] === escrowIface.getEvent("PaymentEscrowed").topicHash,
       );
@@ -190,7 +192,7 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       const { escrow, user } = await loadFixture(deployFixture);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
 
@@ -201,7 +203,7 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       await escrow.connect(user).cancelSpendingLimit();
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
   });
@@ -215,7 +217,7 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       await time.increase(10);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "SpendingLimitExpired");
     });
   });
@@ -227,14 +229,16 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
       const escrowIface = escrow.interface;
-      const receipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+      const receipt = await (
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+      ).wait();
       const escrowLog = receipt.logs.find(
         (l) => l.topics[0] === escrowIface.getEvent("PaymentEscrowed").topicHash,
       );
       const answerMessageId = escrowIface.parseLog(escrowLog).args[0];
 
       await time.increase(5);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       const limit = await escrow.spendingLimits(user.address);
       expect(limit.spentAmount).to.equal(CANCELLATION_FEE);
@@ -246,7 +250,9 @@ describe("Suite 3 — SpendingLimit Lifecycle", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, expiresAt);
 
       const escrowIface = escrow.interface;
-      const receipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+      const receipt = await (
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+      ).wait();
       const escrowLog = receipt.logs.find(
         (l) => l.topics[0] === escrowIface.getEvent("PaymentEscrowed").topicHash,
       );

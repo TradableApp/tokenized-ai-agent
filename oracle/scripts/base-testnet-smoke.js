@@ -71,7 +71,8 @@ const ESCROW_ABI = [
   "function promptFee() view returns (uint256)",
   "function spendingLimits(address) view returns (uint256 allowance, uint256 spent, uint256 expiresAt)",
   "function setSpendingLimit(uint256 allowance, uint256 expiresAt)",
-  "function initiatePrompt(uint256 conversationId, bytes encryptedPayload, bytes roflEncryptedKey)",
+  "function initiatePrompt(uint256 conversationId, bytes encryptedPayload, bytes roflEncryptedKey, uint256 maxFee)",
+  "error FeeAboveMaximum(uint256 fee, uint256 maxFee)",
   // Custom errors. ethers can only NAME a revert it holds the signature for — without these a
   // failure prints the bare selector (`0x26575023` cost a manual 4-byte lookup during the
   // 2026-08-22 deploy). Cheap to carry, and they turn every escrow revert into a readable cause.
@@ -244,7 +245,9 @@ async function runPrompt({
       `initiatePrompt(${JSON.stringify(promptText.slice(0, 60))}${promptText.length > 60 ? "…" : ""})...`,
     );
     const submittedAt = Date.now();
-    const rc = await (await escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)).wait();
+    const rc = await (
+      await escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey, fee)
+    ).wait();
     const [submitted] = agentEvents(agent, rc, "PromptSubmitted");
     if (!submitted) throw new Error("PromptSubmitted not found in receipt logs");
     Object.assign(result, {

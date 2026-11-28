@@ -57,6 +57,18 @@ contract MockReentrantToken is ERC20 {
     address to,
     uint256 amount
   ) public override returns (bool) {
+    _callBackOnce();
+    return super.transferFrom(from, to, amount);
+  }
+
+  /// @dev The same callback on a plain transfer: a settlement that pays out of the escrow's own
+  ///      balance (a cancellation, a refund) calls `transfer`, never `transferFrom`.
+  function transfer(address to, uint256 amount) public override returns (bool) {
+    _callBackOnce();
+    return super.transfer(to, amount);
+  }
+
+  function _callBackOnce() private {
     if (target != address(0) && !reentered) {
       reentered = true;
       if (useCall) {
@@ -75,6 +87,5 @@ contract MockReentrantToken is ERC20 {
         }
       }
     }
-    return super.transferFrom(from, to, amount);
   }
 }

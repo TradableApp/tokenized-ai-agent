@@ -78,13 +78,15 @@ describe("Conversations and regenerations — who owns what, and where an answer
         return { aiAgent, escrow, user, oracle, attacker };
       },
       prompt: (escrow, account, conversationId = 0) =>
-        escrow.connect(account).initiatePrompt(conversationId, "0x", "0x"),
+        escrow.connect(account).initiatePrompt(conversationId, "0x", "0x", ethers.MaxUint256),
       regenerate: (escrow, account, conversationId, promptId, answerId) =>
         escrow
           .connect(account)
-          .initiateRegeneration(conversationId, promptId, answerId, "0x", "0x"),
+          .initiateRegeneration(conversationId, promptId, answerId, "0x", "0x", ethers.MaxUint256),
       branch: (escrow, account, conversationId, branchPointId) =>
-        escrow.connect(account).initiateBranch(conversationId, branchPointId, "0x", "0x"),
+        escrow
+          .connect(account)
+          .initiateBranch(conversationId, branchPointId, "0x", "0x", ethers.MaxUint256),
       promptPayloadMatchers: ["0x", "0x"],
       async deployAgent(deployer, oracle) {
         const aiAgent = await upgrades.deployProxy(
@@ -135,11 +137,15 @@ describe("Conversations and regenerations — who owns what, and where an answer
         return { aiAgent, escrow, user, oracle, attacker };
       },
       prompt: (escrow, account, conversationId = 0) =>
-        escrow.connect(account).initiatePrompt(conversationId, "payload"),
+        escrow.connect(account).initiatePrompt(conversationId, "payload", ethers.MaxUint256),
       regenerate: (escrow, account, conversationId, promptId, answerId) =>
-        escrow.connect(account).initiateRegeneration(conversationId, promptId, answerId, "payload"),
+        escrow
+          .connect(account)
+          .initiateRegeneration(conversationId, promptId, answerId, "payload", ethers.MaxUint256),
       branch: (escrow, account, conversationId, branchPointId) =>
-        escrow.connect(account).initiateBranch(conversationId, branchPointId, "payload"),
+        escrow
+          .connect(account)
+          .initiateBranch(conversationId, branchPointId, "payload", ethers.MaxUint256),
       promptPayloadMatchers: ["payload"],
       async deployAgent(deployer, oracle) {
         const aiAgent = await (

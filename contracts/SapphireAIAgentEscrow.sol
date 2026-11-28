@@ -108,15 +108,13 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   /// @param user The address of the withdrawing user.
   /// @param amount The amount withdrawn.
   event Withdrawal(address indexed user, uint256 amount); // solhint-disable-line gas-indexed-events
+  // solhint-disable gas-indexed-events
   /// @notice Emitted when a user's payment is successfully placed in escrow.
   /// @param escrowId The unique identifier for this escrow entry.
   /// @param user The address of the user whose payment is escrowed.
   /// @param amount The amount placed in escrow.
-  event PaymentEscrowed( // solhint-disable-line gas-indexed-events
-    uint256 indexed escrowId,
-    address indexed user,
-    uint256 amount
-  );
+  event PaymentEscrowed(uint256 indexed escrowId, address indexed user, uint256 amount);
+  // solhint-enable gas-indexed-events
   /// @notice Emitted when an escrowed payment is finalized and sent to the treasury.
   /// @param escrowId The unique identifier of the finalized escrow entry.
   event PaymentFinalized(uint256 indexed escrowId);
@@ -137,6 +135,20 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   /// @param user The address of the user cancelling the prompt.
   /// @param answerMessageId The ID of the answer message being cancelled.
   event PromptCancelled(address indexed user, uint256 indexed answerMessageId);
+  // solhint-disable gas-indexed-events
+  /// @notice Emitted with the amounts of a cancellation: together they are the escrowed amount.
+  /// @dev Carries the user so an indexer needs no other event or stored record to file it.
+  /// @param escrowId The unique ID of the cancelled escrow.
+  /// @param user The user who cancelled.
+  /// @param fee The cancellation fee sent to the treasury (never more than was escrowed).
+  /// @param returned The rest of the escrowed amount, returned to the user's deposit.
+  event CancellationSettled(
+    uint256 indexed escrowId,
+    address indexed user,
+    uint256 fee,
+    uint256 returned
+  );
+  // solhint-enable gas-indexed-events
 
   /// @notice Emitted when a fee is paid straight to the treasury (a branch or a metadata update).
   /// @param user The address of the user who paid.
@@ -160,6 +172,10 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   error NotPromptOwner();
 
   // Spending Limit Errors
+  /// @notice Reverts if the fee for an action is above the most its caller agreed to pay.
+  /// @param fee The fee the action costs now.
+  /// @param maxFee The most the caller agreed to pay.
+  error FeeAboveMaximum(uint256 fee, uint256 maxFee);
   /// @notice Reverts if a user tries to submit a prompt without an active allowance term.
   error NoActiveSpendingLimit();
   /// @notice Reverts if a user tries to submit a prompt with an expired allowance term.
@@ -370,8 +386,14 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @dev If _conversationId is 0, it reserves a new conversation ID.
    * @param _conversationId The ID of the conversation. Pass 0 to start a new conversation.
    * @param _payload The plaintext user prompt intended for the TEE.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
-  function initiatePrompt(uint256 _conversationId, string calldata _payload) external {
+  function initiatePrompt(
+    uint256 _conversationId,
+    string calldata _payload,
+    uint256 _maxFee
+  ) external {
+    _checkMaxFee(promptFee, _maxFee);
     _processEscrowPayment(msg.sender, promptFee);
 
     uint256 conversationId = _conversationId;
@@ -406,13 +428,16 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @param _promptMessageId The ID of the user's prompt that is being regenerated.
    * @param _previousAnswerMessageId The ID of the specific AI answer the user wants to regenerate from.
    * @param _payload The plaintext instructions for the TEE (e.g., "make it more concise").
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
   function initiateRegeneration(
     uint256 _conversationId,
     uint256 _promptMessageId,
     uint256 _previousAnswerMessageId,
-    string calldata _payload
+    string calldata _payload,
+    uint256 _maxFee
   ) external {
+    _checkMaxFee(promptFee, _maxFee);
     _processEscrowPayment(msg.sender, promptFee);
 
     uint256 answerMessageId = sapphireAIAgent.reserveMessageId();
@@ -477,12 +502,15 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @param _originalConversationId The ID of the conversation being branched from.
    * @param _branchPointMessageId The ID of the message where the branch occurs.
    * @param _payload The plaintext context (e.g., original title) for the TEE.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
   function initiateBranch(
     uint256 _originalConversationId,
     uint256 _branchPointMessageId,
-    string calldata _payload
+    string calldata _payload,
+    uint256 _maxFee
   ) external {
+    _checkMaxFee(branchFee, _maxFee);
     _processDirectPayment(msg.sender, branchFee);
 
     uint256 newConversationId = sapphireAIAgent.reserveConversationId();
@@ -498,13 +526,17 @@ contract SapphireAIAgentEscrow is Ownable2Step {
 
   /**
    * @notice Allows a user to cancel their own pending prompt.
-   * @dev Charges a fixed `cancellationFee` from the user's deposit and refunds the original `promptFee`.
+   * @dev The cancellation fee comes out of the escrowed amount: the treasury is paid the fee and
+   *      the rest goes back to the user's deposit. Nothing is taken from the deposit itself, so a
+   *      user with no deposit left can still cancel. The fee charged is never more than was
+   *      escrowed.
    *      Unlike `processRefund`, this reverts if the agent cannot record the cancellation: a
    *      cancellation exists to stop the oracle, so one the agent never hears of is refused, and
    *      the user's exit is then `processRefund` after the refund timeout.
    * @param _answerMessageId The ID of the answer message to cancel.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee charged is above it.
    */
-  function cancelPrompt(uint256 _answerMessageId) external {
+  function cancelPrompt(uint256 _answerMessageId, uint256 _maxFee) external {
     uint256 escrowId = _answerMessageId;
     Escrow storage escrow = escrows[escrowId];
 
@@ -517,19 +549,28 @@ contract SapphireAIAgentEscrow is Ownable2Step {
     if (block.timestamp < escrow.createdAt + CANCELLATION_TIMEOUT) {
       revert PromptNotCancellableYet();
     }
-    if (deposits[msg.sender] < cancellationFee) {
-      revert InsufficientDeposit();
+    // Who may cancel, and when, is settled first, as on the EVM escrow; then the fee.
+    uint256 amount = escrow.amount;
+    uint256 fee = cancellationFee;
+    if (fee > amount) {
+      fee = amount;
     }
+    _checkMaxFee(fee, _maxFee);
+    uint256 returned = amount - fee;
 
+    // EFFECTS BEFORE INTERACTIONS: every state write lands before any external call.
     --pendingEscrowCount[msg.sender];
     escrow.status = EscrowStatus.REFUNDED;
-    // Charge cancellation fee and refund original prompt fee in one operation.
-    deposits[msg.sender] = deposits[msg.sender] + escrow.amount - cancellationFee;
+    // Returned to the deposit, not sent to the wallet: this escrow's balances are deposits, as
+    // processRefund credits them.
+    deposits[msg.sender] += returned;
 
-    payable(treasury).sendValue(cancellationFee);
-    sapphireAIAgent.recordCancellation(msg.sender, _answerMessageId);
-
+    emit CancellationSettled(escrowId, msg.sender, fee, returned);
     emit PromptCancelled(msg.sender, _answerMessageId);
+    sapphireAIAgent.recordCancellation(msg.sender, _answerMessageId);
+    if (fee != 0) {
+      payable(treasury).sendValue(fee);
+    }
   }
 
   /**
@@ -537,8 +578,14 @@ contract SapphireAIAgentEscrow is Ownable2Step {
    * @dev Charges a fixed `metadataUpdateFee` from the user's deposit.
    * @param _conversationId The ID of the conversation to update.
    * @param _payload The plaintext ABI-encoded update instructions for the TEE.
+   * @param _maxFee The most the caller agrees to pay; the call reverts if the fee is above it.
    */
-  function initiateMetadataUpdate(uint256 _conversationId, string calldata _payload) external {
+  function initiateMetadataUpdate(
+    uint256 _conversationId,
+    string calldata _payload,
+    uint256 _maxFee
+  ) external {
+    _checkMaxFee(metadataUpdateFee, _maxFee);
     _processDirectPayment(msg.sender, metadataUpdateFee);
 
     sapphireAIAgent.submitMetadataUpdate(msg.sender, _conversationId, _payload);
@@ -627,6 +674,17 @@ contract SapphireAIAgentEscrow is Ownable2Step {
   }
 
   // --- Internal Helper Functions ---
+
+  /**
+   * @notice Reverts when a fee is above the most its caller agreed to pay.
+   * @param _fee The fee the action costs now.
+   * @param _maxFee The most the caller agreed to pay.
+   */
+  function _checkMaxFee(uint256 _fee, uint256 _maxFee) private pure {
+    if (_fee > _maxFee) {
+      revert FeeAboveMaximum(_fee, _maxFee);
+    }
+  }
 
   /**
    * @notice Handles spending limit checks and state changes for an escrowed payment.

@@ -54,7 +54,9 @@ describe("scripts/authorize-oracle — moving the oracle role off the deploy wal
   }
 
   async function answerOnePrompt({ aiAgent, aiAgentEscrow, user }, answerer) {
-    const receipt = await (await aiAgentEscrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+    const receipt = await (
+      await aiAgentEscrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+    ).wait();
     const topic = aiAgent.interface.getEvent("PromptSubmitted").topicHash;
     const log = receipt.logs.find((l) => l.topics[0] === topic);
     const { promptMessageId, answerMessageId } = aiAgent.interface.parseLog(log).args;

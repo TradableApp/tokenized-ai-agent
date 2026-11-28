@@ -75,12 +75,12 @@ describe("Security hardening", function () {
       const answerMessageId = 1;
 
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       await time.increase(5);
 
       const peek = escrow.interface.encodeFunctionData("escrows", [answerMessageId]);
       await token.arm(await escrow.getAddress(), peek);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       const observed = await token.observed();
       expect(observed, "token callback never fired").to.not.equal("0x");
@@ -108,20 +108,22 @@ describe("Security hardening", function () {
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
       // TWO pending escrows: with only one, an underflow reverts the re-entrant call for an
       // unrelated reason and the test would pass without the ordering being responsible.
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
-      await escrow.connect(user).initiatePrompt(0, "0x", "0x");
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256);
       await time.increase(3601);
 
       const reentry = escrow.interface.encodeFunctionData("processRefund", [answerMessageId]);
       await token.armCall(await escrow.getAddress(), reentry);
 
       const before = await token.balanceOf(user.address);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       expect(await token.reentrySucceeded(), "the re-entrant refund must be rejected").to.equal(
         false,
       );
-      expect((await token.balanceOf(user.address)) - before).to.equal(PROMPT_FEE - CANCELLATION_FEE);
+      expect((await token.balanceOf(user.address)) - before).to.equal(
+        PROMPT_FEE - CANCELLATION_FEE,
+      );
       expect(await escrow.pendingEscrowCount(user.address)).to.equal(1);
     });
   });
@@ -136,7 +138,8 @@ describe("Security hardening", function () {
 
       await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
 
-      await expect(escrow.connect(user).initiatePrompt(0, "0x", "0x")).to.be.reverted;
+      await expect(escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)).to.be
+        .reverted;
     });
   });
 });

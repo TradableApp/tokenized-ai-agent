@@ -64,7 +64,9 @@ describe("Timeout refund — what the agent contract knows afterwards", function
     await token.connect(user).approve(await escrow.getAddress(), INITIAL_ALLOWANCE);
     await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
 
-    const receipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+    const receipt = await (
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+    ).wait();
     // Topic lookup, as in answerMessageId.lifecycle.test.js; a missing log names itself.
     const findEvent = (contract, name) => {
       const topic = contract.interface.getEvent(name).topicHash;
@@ -127,7 +129,9 @@ describe("Timeout refund — what the agent contract knows afterwards", function
     await token.connect(user).approve(await escrow.getAddress(), INITIAL_ALLOWANCE);
     await escrow.connect(user).setSpendingLimit(INITIAL_ALLOWANCE, (await time.latest()) + 7200);
 
-    const receipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+    const receipt = await (
+      await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+    ).wait();
     const topic = escrow.interface.getEvent("PaymentEscrowed").topicHash;
     const escrowId = escrow.interface.parseLog(receipt.logs.find((l) => l.topics[0] === topic))
       .args[0];
@@ -207,7 +211,7 @@ describe("Timeout refund — what the agent contract knows afterwards", function
       const { aiAgent, escrow, user, keeper, answerMessageId, refundTimeout } =
         await loadFixture(pendingPromptFixture);
       await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
       await time.increase(refundTimeout + 1);
 
       const refund = escrow.connect(keeper).processRefund(answerMessageId);
@@ -328,7 +332,7 @@ describe("Timeout refund — what the agent contract knows afterwards", function
       const { aiAgent, escrow, user, keeper, answerMessageId } =
         await loadFixture(pendingPromptFixture);
       await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       const retry = escrow.connect(keeper).retryRefundRecord(answerMessageId);
 
@@ -372,7 +376,9 @@ describe("Timeout refund — what the agent contract knows afterwards", function
         const topic = contract.interface.getEvent(name).topicHash;
         return contract.interface.parseLog(receipt.logs.find((l) => l.topics[0] === topic));
       };
-      const promptReceipt = await (await escrow.connect(user).initiatePrompt(0, "0x", "0x")).wait();
+      const promptReceipt = await (
+        await escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256)
+      ).wait();
       const { conversationId, promptMessageId, answerMessageId } = eventOf(
         promptReceipt,
         aiAgent,
@@ -382,7 +388,14 @@ describe("Timeout refund — what the agent contract knows afterwards", function
       const regenReceipt = await (
         await escrow
           .connect(user)
-          .initiateRegeneration(conversationId, promptMessageId, answerMessageId, "0x", "0x")
+          .initiateRegeneration(
+            conversationId,
+            promptMessageId,
+            answerMessageId,
+            "0x",
+            "0x",
+            ethers.MaxUint256,
+          )
       ).wait();
       const regenAnswerId = eventOf(regenReceipt, escrow, "PaymentEscrowed").args[0];
       await escrow.markRefundedWithoutRecord(regenAnswerId);
@@ -433,7 +446,9 @@ describe("Timeout refund — what the agent contract knows afterwards", function
       await escrow.connect(user).deposit({ value: INITIAL_ALLOWANCE });
       await escrow.connect(user).setSpendingLimit((await time.latest()) + 7200);
 
-      const receipt = await (await escrow.connect(user).initiatePrompt(0, "payload")).wait();
+      const receipt = await (
+        await escrow.connect(user).initiatePrompt(0, "payload", ethers.MaxUint256)
+      ).wait();
       const topic = aiAgent.interface.getEvent("PromptSubmitted").topicHash;
       const submitted = aiAgent.interface.parseLog(receipt.logs.find((l) => l.topics[0] === topic));
       const { promptMessageId, answerMessageId } = submitted.args;
@@ -482,7 +497,7 @@ describe("Timeout refund — what the agent contract knows afterwards", function
         sapphirePendingPromptFixture,
       );
       await time.increase(Number(await escrow.CANCELLATION_TIMEOUT()) + 1);
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       const retry = escrow.connect(keeper).retryRefundRecord(answerMessageId);
 

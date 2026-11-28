@@ -54,14 +54,18 @@ describe("State changes are announced by the contract that makes them", function
 
     it("a branch emits DirectPaymentProcessed(user, branchFee) from the escrow", async function () {
       const { escrow, user } = await loadFixture(evmEscrowFixture);
-      await expect(escrow.connect(user).initiateBranch(123, 456, "0x1234", "0x5678"))
+      await expect(
+        escrow.connect(user).initiateBranch(123, 456, "0x1234", "0x5678", ethers.MaxUint256),
+      )
         .to.emit(escrow, "DirectPaymentProcessed")
         .withArgs(user.address, BRANCH_FEE);
     });
 
     it("a metadata update emits DirectPaymentProcessed(user, metadataUpdateFee)", async function () {
       const { escrow, user } = await loadFixture(evmEscrowFixture);
-      await expect(escrow.connect(user).initiateMetadataUpdate(1, "0x1234", "0x5678"))
+      await expect(
+        escrow.connect(user).initiateMetadataUpdate(1, "0x1234", "0x5678", ethers.MaxUint256),
+      )
         .to.emit(escrow, "DirectPaymentProcessed")
         .withArgs(user.address, METADATA_FEE);
     });
@@ -122,7 +126,9 @@ describe("State changes are announced by the contract that makes them", function
     }
 
     async function initiatePromptAndPassTimeout(escrow, user) {
-      const receipt = await (await escrow.connect(user).initiatePrompt(0, "payload")).wait();
+      const receipt = await (
+        await escrow.connect(user).initiatePrompt(0, "payload", ethers.MaxUint256)
+      ).wait();
       const topic = escrow.interface.getEvent("PaymentEscrowed").topicHash;
       const escrowId = escrow.interface.parseLog(receipt.logs.find((l) => l.topics[0] === topic))
         .args[0];
@@ -142,14 +148,14 @@ describe("State changes are announced by the contract that makes them", function
 
     it("a branch emits DirectPaymentProcessed(user, branchFee) from the escrow", async function () {
       const { escrow, user } = await loadFixture(sapphireEscrowFixture);
-      await expect(escrow.connect(user).initiateBranch(456, 789, "payload"))
+      await expect(escrow.connect(user).initiateBranch(456, 789, "payload", ethers.MaxUint256))
         .to.emit(escrow, "DirectPaymentProcessed")
         .withArgs(user.address, BRANCH_FEE);
     });
 
     it("a metadata update emits DirectPaymentProcessed(user, metadataUpdateFee)", async function () {
       const { escrow, user } = await loadFixture(sapphireEscrowFixture);
-      await expect(escrow.connect(user).initiateMetadataUpdate(123, "payload"))
+      await expect(escrow.connect(user).initiateMetadataUpdate(123, "payload", ethers.MaxUint256))
         .to.emit(escrow, "DirectPaymentProcessed")
         .withArgs(user.address, METADATA_FEE);
     });

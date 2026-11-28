@@ -64,7 +64,9 @@ describe("E2E: Advanced Scenarios", function () {
       await escrow.connect(user).setSpendingLimit(ethers.parseEther("100"), expiresAt);
 
       // Conversation 1: new conversation (conversationId=0)
-      const tx1 = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx1 = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const r1 = await tx1.wait();
       const agent1 = extractEventArgs(r1, aiAgent.interface, "PromptSubmitted");
       const conv1Id = agent1[1];
@@ -72,7 +74,9 @@ describe("E2E: Advanced Scenarios", function () {
       const answer1Id = extractEventArgs(r1, escrow.interface, "PaymentEscrowed")[0];
 
       // Conversation 2: new conversation (conversationId=0 again)
-      const tx2 = await escrow.connect(user).initiatePrompt(0, "0xabcd", "0xef01");
+      const tx2 = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0xabcd", "0xef01", ethers.MaxUint256);
       const r2 = await tx2.wait();
       const agent2 = extractEventArgs(r2, aiAgent.interface, "PromptSubmitted");
       const conv2Id = agent2[1];
@@ -125,7 +129,9 @@ describe("E2E: Advanced Scenarios", function () {
       const answerIds = [];
 
       for (let i = 0; i < 5; i++) {
-        const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+        const tx = await escrow
+          .connect(user)
+          .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
         const receipt = await tx.wait();
         promptIds.push(extractEventArgs(receipt, aiAgent.interface, "PromptSubmitted")[2]);
         answerIds.push(extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0]);
@@ -136,7 +142,7 @@ describe("E2E: Advanced Scenarios", function () {
 
       // 6th prompt exceeds limit
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678"),
+        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
 
       // Cannot cancel limit while prompts are pending
@@ -171,7 +177,7 @@ describe("E2E: Advanced Scenarios", function () {
 
       // Prompt after cancellation fails
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678"),
+        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
   });
@@ -188,8 +194,12 @@ describe("E2E: Advanced Scenarios", function () {
       const treasuryBalBefore = await token.balanceOf(treasury.address);
 
       // Two prompts submitted back-to-back
-      const tx1 = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
-      const tx2 = await escrow.connect(user).initiatePrompt(0, "0xabcd", "0xef01");
+      const tx1 = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
+      const tx2 = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0xabcd", "0xef01", ethers.MaxUint256);
 
       const [r1, r2] = await Promise.all([tx1.wait(), tx2.wait()]);
 
@@ -237,7 +247,9 @@ describe("E2E: Advanced Scenarios", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(ethers.parseEther("100"), expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
 
       expect(receipt.gasUsed).to.be.lessThan(500_000n);
@@ -249,7 +261,9 @@ describe("E2E: Advanced Scenarios", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(ethers.parseEther("100"), expiresAt);
 
-      const initTx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const initTx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const initReceipt = await initTx.wait();
       const promptId = extractEventArgs(initReceipt, aiAgent.interface, "PromptSubmitted")[2];
       const answerId = extractEventArgs(initReceipt, escrow.interface, "PaymentEscrowed")[0];
@@ -273,13 +287,15 @@ describe("E2E: Advanced Scenarios", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(ethers.parseEther("100"), expiresAt);
 
-      const initTx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const initTx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const initReceipt = await initTx.wait();
       const answerId = extractEventArgs(initReceipt, escrow.interface, "PaymentEscrowed")[0];
 
       await time.increase(5);
 
-      const tx = await escrow.connect(user).cancelPrompt(answerId);
+      const tx = await escrow.connect(user).cancelPrompt(answerId, ethers.MaxUint256);
       const receipt = await tx.wait();
 
       expect(receipt.gasUsed).to.be.lessThan(500_000n);
@@ -291,7 +307,9 @@ describe("E2E: Advanced Scenarios", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(ethers.parseEther("100"), expiresAt);
 
-      const initTx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const initTx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const initReceipt = await initTx.wait();
       const answerId = extractEventArgs(initReceipt, escrow.interface, "PaymentEscrowed")[0];
 

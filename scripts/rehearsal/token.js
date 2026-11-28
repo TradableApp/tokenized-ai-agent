@@ -68,8 +68,9 @@ async function readTransferRule({ escrow, safe, runner }) {
  * Why the Safe must not become the treasury, or null when it may. A token that keeps a list
  * moves only when the sender or the recipient is listed, so with an unlisted Safe as the
  * treasury every fee a user pays straight to the treasury is refused until the restore: the
- * cancellation fee, and the branch and metadata (rename or delete) fees. The escrow's own
- * payment of an answered prompt's fee still moves while the escrow is listed. An answer that
+ * branch and metadata (rename or delete) fees. The escrow's own payments (an answered prompt's
+ * fee, and a cancellation's fee, taken from the escrowed amount) still move while the escrow is
+ * listed. An answer that
  * cannot be read is refused too: a guess either way could leave users' payments refused while
  * the Safe is the treasury.
  */

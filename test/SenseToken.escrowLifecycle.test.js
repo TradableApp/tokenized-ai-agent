@@ -75,7 +75,7 @@ describe("the escrow with SENSE as the fee token", function () {
   // Sends a prompt and returns the ids the two contracts gave it.
   async function prompt(escrow, agent, user, conversationId = 0) {
     const receipt = await (
-      await escrow.connect(user).initiatePrompt(conversationId, "0x", "0x")
+      await escrow.connect(user).initiatePrompt(conversationId, "0x", "0x", ethers.MaxUint256)
     ).wait();
     const find = (contract, name) => {
       const topic = contract.interface.getEvent(name).topicHash;
@@ -113,7 +113,7 @@ describe("the escrow with SENSE as the fee token", function () {
       const { answerMessageId } = await prompt(escrow, agent, user);
       await time.increase(await escrow.CANCELLATION_TIMEOUT());
 
-      await escrow.connect(user).cancelPrompt(answerMessageId);
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
 
       expect(await token.balanceOf(user.address)).to.equal(GRANT - CANCELLATION_FEE);
       expect(await token.balanceOf(treasury.address)).to.equal(CANCELLATION_FEE);
@@ -140,10 +140,12 @@ describe("the escrow with SENSE as the fee token", function () {
         .connect(oracle)
         .submitAnswer(first.promptMessageId, first.answerMessageId, CID_BUNDLE);
 
-      await escrow.connect(user).initiateMetadataUpdate(first.conversationId, "0x", "0x");
       await escrow
         .connect(user)
-        .initiateBranch(first.conversationId, first.promptMessageId, "0x", "0x");
+        .initiateMetadataUpdate(first.conversationId, "0x", "0x", ethers.MaxUint256);
+      await escrow
+        .connect(user)
+        .initiateBranch(first.conversationId, first.promptMessageId, "0x", "0x", ethers.MaxUint256);
 
       expect(await token.balanceOf(treasury.address)).to.equal(
         PROMPT_FEE + METADATA_FEE + BRANCH_FEE,
@@ -182,7 +184,7 @@ describe("the escrow with SENSE as the fee token", function () {
     it("refuses every prompt while the escrow is not listed", async function () {
       const { token, escrow, user } = await loadFixture(escrowNotListed);
 
-      await expect(escrow.connect(user).initiatePrompt(0, "0x", "0x"))
+      await expect(escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256))
         .to.be.revertedWithCustomError(token, "TransferNotAllowed")
         .withArgs(user.address, await escrow.getAddress());
     });
@@ -211,24 +213,40 @@ describe("the escrow with SENSE as the fee token", function () {
       expect(await token.balanceOf(treasury.address)).to.equal(PROMPT_FEE);
     });
 
-    it("refuses a cancel, a metadata update and a branch while the treasury is not listed", async function () {
+    it("refuses a metadata update and a branch while the treasury is not listed", async function () {
       const { token, agent, escrow, user, treasury } = await loadFixture(treasuryNotListed);
-      const { answerMessageId, conversationId, promptMessageId } = await prompt(
-        escrow,
-        agent,
-        user,
-      );
-      await time.increase(await escrow.CANCELLATION_TIMEOUT());
+      const { conversationId, promptMessageId } = await prompt(escrow, agent, user);
 
       for (const call of [
-        () => escrow.connect(user).cancelPrompt(answerMessageId),
-        () => escrow.connect(user).initiateMetadataUpdate(conversationId, "0x", "0x"),
-        () => escrow.connect(user).initiateBranch(conversationId, promptMessageId, "0x", "0x"),
+        () =>
+          escrow
+            .connect(user)
+            .initiateMetadataUpdate(conversationId, "0x", "0x", ethers.MaxUint256),
+        () =>
+          escrow
+            .connect(user)
+            .initiateBranch(conversationId, promptMessageId, "0x", "0x", ethers.MaxUint256),
       ]) {
         await expect(call())
           .to.be.revertedWithCustomError(token, "TransferNotAllowed")
           .withArgs(user.address, treasury.address);
       }
+    });
+
+    it("lets a cancel through while the treasury is not listed, since both payments leave the listed escrow", async function () {
+      const { token, agent, escrow, user, treasury } = await loadFixture(treasuryNotListed);
+      const { answerMessageId } = await prompt(escrow, agent, user);
+      await time.increase(await escrow.CANCELLATION_TIMEOUT());
+      const fee = await escrow.cancellationFee();
+      const userBefore = await token.balanceOf(user.address);
+      const treasuryBefore = await token.balanceOf(treasury.address);
+
+      await escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256);
+
+      // The escrow held the prompt fee: the fee of the cancellation goes to the treasury and the
+      // rest back to the user.
+      expect(await token.balanceOf(treasury.address)).to.equal(treasuryBefore + fee);
+      expect(await token.balanceOf(user.address)).to.equal(userBefore + PROMPT_FEE - fee);
     });
 
     it("refuses prompts, answers, refunds and cancels alike while the token is paused", async function () {
@@ -238,7 +256,7 @@ describe("the escrow with SENSE as the fee token", function () {
       await token.pause();
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x", "0x"),
+        escrow.connect(user).initiatePrompt(0, "0x", "0x", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(token, "EnforcedPause");
       await expect(
         agent.connect(oracle).submitAnswer(promptMessageId, answerMessageId, CID_BUNDLE),
@@ -247,7 +265,7 @@ describe("the escrow with SENSE as the fee token", function () {
         escrow.connect(stranger).processRefund(answerMessageId),
       ).to.be.revertedWithCustomError(token, "EnforcedPause");
       await expect(
-        escrow.connect(user).cancelPrompt(answerMessageId),
+        escrow.connect(user).cancelPrompt(answerMessageId, ethers.MaxUint256),
       ).to.be.revertedWithCustomError(token, "EnforcedPause");
     });
   });

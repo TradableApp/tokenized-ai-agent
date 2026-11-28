@@ -108,7 +108,9 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       expect(limit.spentAmount).to.equal(0);
 
       const treasuryBalBefore = await token.balanceOf(treasury.address);
-      const initTx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const initTx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await initTx.wait();
 
       const escrowArgs = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed");
@@ -147,7 +149,9 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       const promptIds = [];
 
       for (let i = 0; i < 3; i++) {
-        const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+        const tx = await escrow
+          .connect(user)
+          .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
         const receipt = await tx.wait();
 
         const escrowParsed = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed");
@@ -186,7 +190,9 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
       const promptMessageId = extractEventArgs(receipt, aiAgent.interface, "PromptSubmitted")[2];
@@ -208,7 +214,7 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       await escrow.connect(user).setSpendingLimit(smallLimit, expiresAt);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678"),
+        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
     });
 
@@ -219,7 +225,8 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(exactLimit, expiresAt);
 
-      await expect(escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678")).to.not.be.reverted;
+      await expect(escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256)).to
+        .not.be.reverted;
     });
 
     it("tracks cumulative spent amount and rejects at exhaustion", async function () {
@@ -229,16 +236,16 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(limitForTwo, expiresAt);
 
-      await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const limitMid = await escrow.spendingLimits(user.address);
       expect(limitMid.spentAmount).to.equal(PROMPT_FEE);
 
-      await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const limitFull = await escrow.spendingLimits(user.address);
       expect(limitFull.spentAmount).to.equal(PROMPT_FEE * 2n);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678"),
+        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "InsufficientSpendingLimitAllowance");
     });
 
@@ -246,7 +253,7 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       const { escrow, user } = await loadFixture(deployFullStackFixture);
 
       await expect(
-        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678"),
+        escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256),
       ).to.be.revertedWithCustomError(escrow, "NoActiveSpendingLimit");
     });
   });
@@ -258,7 +265,9 @@ describe("E2E: Contract Deployment & Cross-Contract Interaction", function () {
       const expiresAt = (await time.latest()) + 7200;
       await escrow.connect(user).setSpendingLimit(SPENDING_LIMIT, expiresAt);
 
-      const tx = await escrow.connect(user).initiatePrompt(0, "0x1234", "0x5678");
+      const tx = await escrow
+        .connect(user)
+        .initiatePrompt(0, "0x1234", "0x5678", ethers.MaxUint256);
       const receipt = await tx.wait();
       const answerMessageId = extractEventArgs(receipt, escrow.interface, "PaymentEscrowed")[0];
       const promptMessageId = extractEventArgs(receipt, aiAgent.interface, "PromptSubmitted")[2];
