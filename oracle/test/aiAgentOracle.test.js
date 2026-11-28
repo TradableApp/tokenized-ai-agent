@@ -2281,7 +2281,7 @@ describe("aiAgentOracle", function () {
     });
 
     it("never cuts a character in two", async () => {
-      // "Branch of " and 89 letters is 99 code units; the emoji after them is two, so it goes whole.
+      // "Branch of " and 89 letters is 99 code units; the emoji after them is two, so it cannot be cut and is left out.
       const original = `${"a".repeat(89)}\u{1F600}tail`;
 
       const title = await branchOf(original);
@@ -2375,7 +2375,10 @@ describe("aiAgentOracle", function () {
     async function nextSubmissionGoesThrough() {
       const { contract } = components();
       contract.submitConversationMetadata.reset();
-      contract.submitConversationMetadata.resolves({ wait: () => Promise.resolve({ hash: "0xNext" }) });
+      contract.submitConversationMetadata.resolves({
+        hash: "0xNext",
+        wait: () => Promise.resolve({ hash: "0xNext" }),
+      });
       const next = await settledWithin(
         aiAgentOracle.handleMetadataUpdate(
           "0xUser",

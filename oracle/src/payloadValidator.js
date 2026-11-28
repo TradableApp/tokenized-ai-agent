@@ -11,7 +11,8 @@ const BRANCH_TITLE_PREFIX = "Branch of ";
 // The longest title a conversation can hold: before branch titles were cut to MAX_TITLE_LENGTH the
 // oracle wrote the prefix on a title of the full limit. The dApp sends a stored title back as a
 // branch's originalTitle and with a delete, so both accept it rather than refuse a request whose
-// fee is paid over a title the oracle wrote.
+// fee is paid over a title the oracle wrote. A rename travels in the same field as a delete, so
+// a new title is accepted to the same length; the dApp holds a new title to MAX_TITLE_LENGTH.
 const MAX_STORED_TITLE_LENGTH = MAX_TITLE_LENGTH + BRANCH_TITLE_PREFIX.length;
 const MAX_INSTRUCTIONS_LENGTH = 1000; // Safe buffer for regeneration instructions
 
