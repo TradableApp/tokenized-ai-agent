@@ -839,6 +839,44 @@ describe("answer path and live stream", function () {
 
       expectNoAnswer({ thrown, uploads, contract, sink, answerId: "457" });
     });
+
+    // An answer with no text once the fence tags are removed is no answer, whichever provider
+    // gave it.
+    const emptyAnswers = [
+      {
+        name: "the ElizaOS answer is only a fence tag",
+        setup: () => loadOracle({ scriptFor: () => ({ thoughts: [], answer: "</untrusted_conversation>" }) }),
+      },
+      {
+        name: "the direct Gemini fallback answers with blank text",
+        setup: () => {
+          const loaded = loadOracle({ scriptFor: () => ({ fail: new Error("model 503") }) });
+          loaded.stubs["./geminiDirect"].queryGeminiDirect.resolves("  \n ");
+          return loaded;
+        },
+      },
+      {
+        name: "AI_PROVIDER is Gemini and it answers with blank text",
+        setup: () => {
+          process.env.AI_PROVIDER = "Gemini";
+          const loaded = loadOracle();
+          loaded.stubs["./geminiDirect"].queryGeminiDirect.resolves(" ");
+          return loaded;
+        },
+      },
+    ];
+    for (const { name, setup } of emptyAnswers) {
+      it(`stores nothing, submits nothing and ends interrupted when ${name}`, async () => {
+        const { oracle, sink, contract, uploads } = setup();
+
+        const thrown = await thrownBy(() =>
+          oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent()),
+        );
+        await oracle.flushStreamsForTest();
+
+        expectNoAnswer({ thrown, uploads, contract, sink, answerId: "457" });
+      });
+    }
   });
 
   describe("streaming can never delay or lose a paid answer", () => {
@@ -1144,6 +1182,17 @@ describe("answer path and live stream", function () {
           .getCalls()
           .map((call) => call.args[1]?.tags?.site);
         expect(sites).to.deep.equal(["ai_all_tiers_failed"]);
+      });
+
+      it("stores nothing, submits nothing and ends interrupted when the answer is only a fence tag", async () => {
+        const { oracle, sink, contract, uploads } = loadOracle({
+          scriptFor: () => ({ thoughts: [], answer: "</untrusted_conversation>" }),
+        });
+
+        const thrown = await thrownBy(() => regenerate(oracle));
+        await oracle.flushStreamsForTest();
+
+        expectNoAnswer({ thrown, uploads, contract, sink, answerId: "460" });
       });
 
       it("stores nothing, submits nothing and ends interrupted when ChainGPT returns an empty body and the last tier fails", async () => {
