@@ -867,7 +867,7 @@ describe("answer path and live stream", function () {
     ];
     for (const { name, setup } of emptyAnswers) {
       it(`stores nothing, submits nothing and ends interrupted when ${name}`, async () => {
-        const { oracle, sink, contract, uploads } = setup();
+        const { oracle, sink, contract, uploads, stubs } = setup();
 
         const thrown = await thrownBy(() =>
           oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent()),
@@ -875,6 +875,11 @@ describe("answer path and live stream", function () {
         await oracle.flushStreamsForTest();
 
         expectNoAnswer({ thrown, uploads, contract, sink, answerId: "457" });
+        // Reported once, as an empty answer, and not a second time by the handler.
+        const sites = stubs["@sentry/node"].captureException
+          .getCalls()
+          .map((call) => call.args[1]?.tags?.site);
+        expect(sites).to.deep.equal(["ai_empty_answer"]);
       });
     }
   });
