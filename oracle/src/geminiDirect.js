@@ -111,7 +111,8 @@ async function generateContent({ model, contents, generationConfig, fetchImpl = 
   const json = await res.json();
   const parts = json?.candidates?.[0]?.content?.parts ?? [];
   const text = parts.map((part) => part?.text ?? "").join("");
-  if (!text) {
+  // Text of only white space is no answer either; text that has any is returned as it came.
+  if (!text.trim()) {
     throw new Error(`Gemini (${model}) returned no text candidate.`);
   }
 
