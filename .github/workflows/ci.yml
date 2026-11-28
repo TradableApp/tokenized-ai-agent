@@ -84,6 +84,18 @@ jobs:
       - name: Lint (contracts)
         run: bun run lint
 
+      # The escrow invariant suite (test/foundry). foundry.toml maps @openzeppelin/ to the
+      # node_modules the root install above provides; the suite needs nothing else. Foundry's
+      # version is pinned so a release cannot change the result. No fork tests read an RPC, so
+      # there is nothing for the action's cache to keep.
+      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with:
+          version: v1.10.0
+          cache: false
+
+      - name: Test (invariants)
+        run: bun run test:invariants
+
       # Build the Brain dist BEFORE the oracle install (bun copies path deps at
       # install time; the copy must contain dist/ and must NOT contain the
       # Brain's node_modules — its drizzle-orm devDependency would shadow the
