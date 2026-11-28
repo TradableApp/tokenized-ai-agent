@@ -2222,6 +2222,189 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("receipt waits are bounded", () => {
+    const OWN_TX = "0xOwnTx";
+
+    before(async () => {
+      // The handlers strip fence tags from prompts and answers; that needs the Brain loaded.
+      await require("../src/inboundPrompt").initInboundPrompt();
+    });
+    const encrypted = (obj) => ethers.toUtf8Bytes(createEncryptedString(obj, FAKE_SESSION_KEY));
+    const event = () => ({ blockNumber: 1, getBlock: () => Promise.resolve({ timestamp: Date.now() }) });
+    const components = () => stubs["./contractUtility"].initializeOracle();
+
+    /**
+     * A sent transaction whose receipt never comes. Its wait behaves as ethers v6's does: with no
+     * timeout it never settles; with one it rejects with code TIMEOUT once the timeout has passed
+     * (here at once, so the suite does not wait for the real limit).
+     */
+    function txWithNoReceipt() {
+      return {
+        hash: OWN_TX,
+        wait: sinon.stub().callsFake(
+          (_confirms, timeout) =>
+            new Promise((_resolve, reject) => {
+              if (timeout > 0) {
+                setTimeout(() => reject(ethers.makeError("wait for transaction timeout", "TIMEOUT")), 0);
+              }
+            }),
+        ),
+      };
+    }
+
+    /** How `promise` has settled after `ms`: resolved, rejected (with the error) or pending. */
+    function settledWithin(promise, ms = 1000) {
+      return Promise.race([
+        promise.then(
+          () => ({ state: "resolved" }),
+          (error) => ({ state: "rejected", error }),
+        ),
+        new Promise((resolve) => setTimeout(() => resolve({ state: "pending" }), ms)),
+      ]);
+    }
+
+    /** A metadata update with a healthy transaction: it can only submit once the lock is free. */
+    async function nextSubmissionGoesThrough() {
+      const { contract } = components();
+      contract.submitConversationMetadata.reset();
+      contract.submitConversationMetadata.resolves({ wait: () => Promise.resolve({ hash: "0xNext" }) });
+      const next = await settledWithin(
+        aiAgentOracle.handleMetadataUpdate(
+          "0xUser",
+          77,
+          encrypted({ title: "Next", isDeleted: false }),
+          "0xkey",
+          event(),
+        ),
+      );
+      expect(next.state, "the transaction lock was released").to.equal("resolved");
+      expect(contract.submitConversationMetadata.calledOnce).to.equal(true);
+    }
+
+    const submissions = [
+      {
+        name: "a prompt's answer",
+        send: (contract, tx) => contract.submitAnswer.resolves(tx),
+        run: () =>
+          aiAgentOracle.handlePrompt(
+            "0xUser",
+            123,
+            456,
+            457,
+            encrypted({
+              promptText: "Hello",
+              isNewConversation: true,
+              previousMessageId: null,
+              previousMessageCID: null,
+            }),
+            "0xkey",
+            event(),
+          ),
+      },
+      {
+        name: "a regenerated answer",
+        send: (contract, tx) => contract.submitAnswer.resolves(tx),
+        run: () =>
+          aiAgentOracle.handleRegeneration(
+            "0xUser",
+            123,
+            456,
+            457,
+            458,
+            encrypted({
+              instructions: "shorter",
+              promptMessageCID: "cid-prompt",
+              originalAnswerMessageCID: "cid-answer",
+            }),
+            "0xkey",
+            event(),
+          ),
+      },
+      {
+        name: "a branch",
+        send: (contract, tx) => contract.submitBranch.resolves(tx),
+        run: () =>
+          aiAgentOracle.handleBranch(
+            "0xUser",
+            123,
+            457,
+            124,
+            encrypted({ originalTitle: "Mine" }),
+            "0xkey",
+            event(),
+          ),
+      },
+      {
+        name: "a metadata update",
+        send: (contract, tx) => contract.submitConversationMetadata.resolves(tx),
+        run: () =>
+          aiAgentOracle.handleMetadataUpdate(
+            "0xUser",
+            123,
+            encrypted({ title: "T", isDeleted: false }),
+            "0xkey",
+            event(),
+          ),
+      },
+    ];
+
+    for (const { name, send, run } of submissions) {
+      it(`stops waiting for ${name}'s receipt at RECEIPT_WAIT_TIMEOUT_MS, frees the lock, and hands an unmined submission to the retry`, async () => {
+        const { contract, provider } = components();
+        const tx = txWithNoReceipt();
+        send(contract, tx);
+        provider.getTransactionReceipt.withArgs(OWN_TX).resolves(null);
+
+        const outcome = await settledWithin(run());
+
+        expect(outcome.state, "the wait must end").to.equal("rejected");
+        expect(outcome.error.code, "the timeout reaches the retry handling").to.equal("TIMEOUT");
+        expect(tx.wait.firstCall.args).to.deep.equal([1, aiAgentOracle.RECEIPT_WAIT_TIMEOUT_MS]);
+        await nextSubmissionGoesThrough();
+      });
+    }
+
+    for (const { name, send, run } of submissions.slice(0, 2)) {
+      it(`counts ${name} as submitted when its receipt wait times out but its own transaction was mined`, async () => {
+        const { contract, provider } = components();
+        send(contract, txWithNoReceipt());
+        provider.getTransactionReceipt.withArgs(OWN_TX).resolves({ hash: OWN_TX, status: 1 });
+
+        const outcome = await settledWithin(run());
+
+        expect(outcome.state).to.equal("resolved");
+        await nextSubmissionGoesThrough();
+      });
+    }
+
+    it("sets a limit a healthy network never reaches", () => {
+      // Base makes a block every 2 s; a healthy network includes a transaction within a few.
+      expect(aiAgentOracle.RECEIPT_WAIT_TIMEOUT_MS).to.be.at.least(60 * 1000);
+      expect(aiAgentOracle.RECEIPT_WAIT_TIMEOUT_MS).to.be.at.most(10 * 60 * 1000);
+    });
+
+    it("bounds the wait for the oracle's own registration on the Sapphire localnet", async () => {
+      const originalNetwork = process.env.NETWORK_NAME;
+      process.env.NETWORK_NAME = "sapphire-localnet";
+      try {
+        const mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+        const base = components();
+        mod.initForTest({ ...base, isSapphire: true });
+        base.contract.isOracle.resolves(false);
+        const tx = txWithNoReceipt();
+        base.contract.addOracle.resolves(tx);
+
+        const outcome = await settledWithin(mod.ensureOracleAuthorized());
+
+        expect(outcome.state, "start-up must not hang on the receipt").to.equal("rejected");
+        expect(tx.wait.firstCall.args).to.deep.equal([1, mod.RECEIPT_WAIT_TIMEOUT_MS]);
+      } finally {
+        if (originalNetwork === undefined) delete process.env.NETWORK_NAME;
+        else process.env.NETWORK_NAME = originalNetwork;
+      }
+    });
+  });
+
   describe("Error Handling", () => {
     it("should add a job to the retry queue if a retryable error occurs", async () => {
       stubs["./storage/storage"].uploadData.rejects(new Error("Irys is down"));
