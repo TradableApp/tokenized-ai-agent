@@ -480,6 +480,19 @@ function initForTest(testComponents) {
 // This implements the "Mutual Exclusion" pattern from the async-mutex docs.
 const txMutex = new Mutex();
 
+// How long a transaction's receipt is waited for, inside the lock above, before the wait gives
+// up. Base makes a block every 2 s (Base Sepolia was measured at 200 ms), so a healthy network
+// includes a transaction within a few seconds; two minutes is 60 Base blocks and 600 on Base
+// Sepolia, which a healthy network never reaches. When it is reached ethers v6 rejects with code
+// TIMEOUT, the lock is released, and the caller settles the submission by its hash
+// (minedDespiteFailedWait) or hands it to the retry handling.
+const RECEIPT_WAIT_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** Wait for one confirmation of `tx`, for at most RECEIPT_WAIT_TIMEOUT_MS. */
+function waitForReceipt(tx) {
+  return tx.wait(1, RECEIPT_WAIT_TIMEOUT_MS);
+}
+
 // Job Queue: Limits concurrency to 5.
 // This implements the "Promise queue with concurrency control" pattern from p-queue docs.
 const queue = new PQueue({ concurrency: 5 });
@@ -1626,7 +1639,7 @@ function storedExtrasFrom({ reasoning, sources, answerAttempt }, reasoningDurati
 
 /**
  * Whether this run's own submitAnswer transaction was mined and succeeded although waiting for its
- * receipt threw (an RPC drop or a timeout after it landed). Read by the transaction's hash, so only
+ * receipt threw (an RPC drop, or the TIMEOUT of a wait that reached RECEIPT_WAIT_TIMEOUT_MS). Read by the transaction's hash, so only
  * this run's submission can count: a revert, a cancellation or another replica's answer leaves no
  * successful receipt under it. Never asked for a `JobAlreadyFinalized` revert, which the handler's
  * own branch keeps. Never throws: a receipt that cannot be read counts as not mined.
@@ -2193,7 +2206,7 @@ async function handlePrompt(
         const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
         sentTxHash = tx.hash;
 
-        const receipt = await tx.wait();
+        const receipt = await waitForReceipt(tx);
         // After the receipt: an unconfirmed submission is not an answer. Recording before
         // confirmation would be the worse error; a wait that throws is settled below.
         submitted = true;
@@ -2467,7 +2480,7 @@ async function handleRegeneration(
         const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
         sentTxHash = tx.hash;
 
-        const receipt = await tx.wait();
+        const receipt = await waitForReceipt(tx);
         // After the receipt: an unconfirmed submission is not an answer. Recording before
         // confirmation would be the worse error; a wait that throws is settled below.
         submitted = true;
@@ -2647,7 +2660,7 @@ async function handleBranch(
         metadataCID,
       );
 
-      const receipt = await tx.wait();
+      const receipt = await waitForReceipt(tx);
       console.log(
         `  ✅ Success! Branch submitted. New convId: ${newConversationId}. Tx: ${receipt.hash}`,
       );
@@ -2692,7 +2705,7 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
 
       const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
 
-      const receipt = await tx.wait();
+      const receipt = await waitForReceipt(tx);
       console.log(
         `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
       );
@@ -2739,7 +2752,7 @@ async function ensureOracleAuthorized() {
       // On localnet, we can send a direct transaction as we control the TEE simulation.
       const tx = await contract.addOracle(signer.address, { gasLimit: 1000000 });
 
-      await tx.wait();
+      await waitForReceipt(tx);
     } else {
       // On testnet/mainnet, the transaction must be signed by the ROFL TEE.
       console.log("Populating addOracle transaction...");
@@ -3472,6 +3485,7 @@ module.exports = {
   handleAndRecord,
   ensureOracleAuthorized,
   processPastEvents,
+  RECEIPT_WAIT_TIMEOUT_MS,
   retryFailedJobs,
   wireAgentDbForPluginSql,
 };
