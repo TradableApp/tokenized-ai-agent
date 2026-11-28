@@ -2364,7 +2364,9 @@ describe("aiAgentOracle", function () {
       });
     }
 
-    for (const { name, send, run } of submissions.slice(0, 2)) {
+    // A submission that was mined is done: it is not handed to the retry, which would submit the
+    // same branch or metadata update a second time.
+    for (const { name, send, run } of submissions) {
       it(`counts ${name} as submitted when its receipt wait times out but its own transaction was mined`, async () => {
         const { contract, provider } = components();
         send(contract, txWithNoReceipt());
