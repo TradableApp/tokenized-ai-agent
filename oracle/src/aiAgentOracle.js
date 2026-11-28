@@ -61,7 +61,11 @@ const {
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
-const { validatePayload } = require("./payloadValidator");
+const {
+  validatePayload,
+  MAX_TITLE_LENGTH,
+  BRANCH_TITLE_PREFIX,
+} = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
 const { createRangePoller } = require("./eventPoller");
 const {
@@ -2580,6 +2584,23 @@ async function handleRegeneration(
   }
 }
 
+/**
+ * The title of a branch of a conversation titled `originalTitle`: the prefix and the original
+ * title, cut to MAX_TITLE_LENGTH so the title is one the validator accepts when it comes back as
+ * a later branch's originalTitle or a rename. Cut between code points, never inside one, and
+ * measured in UTF-16 code units, as the validator measures.
+ */
+function branchTitle(originalTitle) {
+  const full = `${BRANCH_TITLE_PREFIX}${originalTitle}`;
+  if (full.length <= MAX_TITLE_LENGTH) return full;
+  let cut = "";
+  for (const codePoint of full) {
+    if (cut.length + codePoint.length > MAX_TITLE_LENGTH) break;
+    cut += codePoint;
+  }
+  return cut;
+}
+
 async function handleBranch(
   user,
   originalConversationId,
@@ -2609,7 +2630,7 @@ async function handleBranch(
     const { originalTitle } = clientPayload;
 
     const now = Date.now();
-    const newTitle = `Branch of ${originalTitle}`;
+    const newTitle = branchTitle(originalTitle);
 
     const { chainId } = await provider.getNetwork();
     const newKeyFileTags = [

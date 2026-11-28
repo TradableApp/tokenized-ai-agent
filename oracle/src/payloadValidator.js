@@ -5,6 +5,14 @@ const { errorKind } = require("./errorDescription");
 // --- Global Constants (Aligned with Frontend) ---
 const MAX_PROMPT_LENGTH = 5000; // Matches Chat.jsx
 const MAX_TITLE_LENGTH = 100; // Matches RenameConversationModal.jsx
+// What the oracle puts before the original title when it names a branch. The title it writes is
+// cut to MAX_TITLE_LENGTH.
+const BRANCH_TITLE_PREFIX = "Branch of ";
+// The longest title a conversation can hold: before branch titles were cut to MAX_TITLE_LENGTH the
+// oracle wrote the prefix on a title of the full limit. The dApp sends a stored title back as a
+// branch's originalTitle and with a delete, so both accept it rather than refuse a request whose
+// fee is paid over a title the oracle wrote.
+const MAX_STORED_TITLE_LENGTH = MAX_TITLE_LENGTH + BRANCH_TITLE_PREFIX.length;
 const MAX_INSTRUCTIONS_LENGTH = 1000; // Safe buffer for regeneration instructions
 
 // --- Schemas ---
@@ -30,13 +38,13 @@ const RegenerationRequestedSchema = z.object({
 
 // 3. BranchRequested
 const BranchRequestedSchema = z.object({
-  originalTitle: z.string().min(1).max(MAX_TITLE_LENGTH),
+  originalTitle: z.string().min(1).max(MAX_STORED_TITLE_LENGTH),
   sessionKey: z.string().optional(),
 });
 
 // 4. MetadataUpdateRequested
 const MetadataUpdateRequestedSchema = z.object({
-  title: z.string().min(1).max(MAX_TITLE_LENGTH),
+  title: z.string().min(1).max(MAX_STORED_TITLE_LENGTH),
   isDeleted: z.boolean(),
   sessionKey: z.string().optional(),
 });
@@ -111,4 +119,4 @@ function issuesOf(error) {
     .join(", ");
 }
 
-module.exports = { validatePayload };
+module.exports = { validatePayload, MAX_TITLE_LENGTH, BRANCH_TITLE_PREFIX };
