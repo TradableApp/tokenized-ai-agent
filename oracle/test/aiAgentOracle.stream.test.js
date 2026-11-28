@@ -245,6 +245,33 @@ function loadOracleWithNoModel() {
   return loaded;
 }
 
+/** ChainGPT answers its request with HTTP 200 and `body` (empty or blank) as the whole response. */
+function chainGptAnswersWith(body) {
+  process.env.CHAIN_GPT_API_KEY = "test-key";
+  sinon.stub(global, "fetch").resolves({ ok: true, status: 200, text: async () => body });
+}
+
+/** Runs `run` and gives back what it threw, or undefined. */
+async function thrownBy(run) {
+  try {
+    await run();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
+/** The no-answer outcome: a retryable error, nothing stored or submitted, the run interrupted. */
+function expectNoAnswer({ thrown, uploads, contract, sink, answerId }) {
+  expect(thrown, "no answer goes to the retry queue").to.exist;
+  expect(thrown.name).to.equal("NoModelAnswerError");
+  expect(uploads, "nothing is stored").to.have.length(0);
+  expect(contract.submitAnswer.called, "nothing is submitted").to.equal(false);
+  const frames = sink.frames(answerId);
+  expect(frames.some((f) => f.type === "answer"), "no answer frame").to.equal(false);
+  expect(frames.at(-1).data).to.deep.equal({ outcome: "interrupted" });
+}
+
 const activityKinds = (stubs) =>
   stubs["./answerActivity"].recordAnswerActivity.getCalls().map((call) => call.args[0].kind);
 
@@ -284,6 +311,7 @@ describe("answer path and live stream", function () {
     outbound._resetForTests();
     delete process.env.MOCK_AI;
     delete process.env.CHAIN_GPT_API_KEY;
+    delete process.env.AI_PROVIDER;
   });
 
   describe("steps still being sanitised when the run completes", () => {
@@ -765,6 +793,52 @@ describe("answer path and live stream", function () {
       expect(contract.submitAnswer.calledOnce).to.equal(true);
       expect(storedAnswer().map((a) => a.file.content)).to.deep.equal([text]);
     });
+
+    // An empty response body from ChainGPT is a failed call, like an error status: it is never
+    // stored as an answer.
+    for (const body of ["", "  \n "]) {
+      it(`answers with the next tier when ChainGPT returns ${JSON.stringify(body)} with status 200`, async () => {
+        chainGptAnswersWith(body);
+        const { oracle, sink, contract, storedAnswer } = loadOracle({
+          scriptFor: () => ({ fail: new Error("model 503") }),
+        });
+
+        await oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent());
+        await oracle.flushStreamsForTest();
+
+        expect(contract.submitAnswer.calledOnce).to.equal(true);
+        expect(storedAnswer().map((a) => a.file.content)).to.deep.equal(["Direct Gemini answer."]);
+        expect(sink.frames("457").at(-1).data).to.deep.equal({ outcome: "answered" });
+      });
+    }
+
+    it("stores nothing, submits nothing and ends interrupted when ChainGPT returns an empty body and the last tier fails", async () => {
+      chainGptAnswersWith("");
+      const { oracle, sink, contract, uploads, stubs } = loadOracle({
+        scriptFor: () => ({ fail: new Error("model 503") }),
+      });
+      stubs["./geminiDirect"].queryGeminiDirect.rejects(new Error("Gemini is down"));
+
+      const thrown = await thrownBy(() =>
+        oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent()),
+      );
+      await oracle.flushStreamsForTest();
+
+      expectNoAnswer({ thrown, uploads, contract, sink, answerId: "457" });
+    });
+
+    it("stores nothing, submits nothing and ends interrupted when AI_PROVIDER is ChainGPT and it returns an empty body", async () => {
+      process.env.AI_PROVIDER = "ChainGPT";
+      chainGptAnswersWith("");
+      const { oracle, sink, contract, uploads } = loadOracle();
+
+      const thrown = await thrownBy(() =>
+        oracle.handlePrompt(USER, 9, 456, 457, promptPayload("Hello there"), "0xkey", fakeEvent()),
+      );
+      await oracle.flushStreamsForTest();
+
+      expectNoAnswer({ thrown, uploads, contract, sink, answerId: "457" });
+    });
   });
 
   describe("streaming can never delay or lose a paid answer", () => {
@@ -1070,6 +1144,19 @@ describe("answer path and live stream", function () {
           .getCalls()
           .map((call) => call.args[1]?.tags?.site);
         expect(sites).to.deep.equal(["ai_all_tiers_failed"]);
+      });
+
+      it("stores nothing, submits nothing and ends interrupted when ChainGPT returns an empty body and the last tier fails", async () => {
+        chainGptAnswersWith("");
+        const { oracle, sink, contract, uploads, stubs } = loadOracle({
+          scriptFor: () => ({ fail: new Error("model 503") }),
+        });
+        stubs["./geminiDirect"].queryGeminiDirect.rejects(new Error("Gemini is down"));
+
+        const thrown = await thrownBy(() => regenerate(oracle));
+        await oracle.flushStreamsForTest();
+
+        expectNoAnswer({ thrown, uploads, contract, sink, answerId: "460" });
       });
     });
 
