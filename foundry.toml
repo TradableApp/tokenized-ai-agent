@@ -1,0 +1,21 @@
+# Foundry runs the invariant suite in test/foundry beside the Hardhat project. It compiles the
+# same contracts with the same compiler settings as hardhat.config.js. Hardhat does not read this
+# file, and Foundry's build output is kept apart from Hardhat's.
+[profile.default]
+src = "contracts"
+test = "test/foundry"
+out = "forge-out"
+cache_path = "forge-cache"
+libs = ["node_modules"]
+solc_version = "0.8.24"
+optimizer = true
+optimizer_runs = 10000
+remappings = [
+  "@openzeppelin/=node_modules/@openzeppelin/",
+  "@oasisprotocol/=node_modules/@oasisprotocol/",
+]
+
+[invariant]
+runs = 256
+depth = 128
+fail_on_revert = false
