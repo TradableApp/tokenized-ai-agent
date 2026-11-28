@@ -987,7 +987,8 @@ async function reconstructHistory(startMessageCID, sessionKey) {
  * Query the ChainGPT API for a response.
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @param {string} conversationId - The unique on-chain ID for this conversation.
- * @returns {Promise<string>} The content of the AI's response.
+ * @returns {Promise<string>} The content of the AI's response, never empty.
+ * @throws {Error} On a missing key, an error status, or an empty response body.
  */
 async function queryChainGPT(conversationHistory, conversationId) {
   console.log(`[ChainGPT] Querying ChainGPT for convId: ${conversationId}`);
@@ -1025,7 +1026,11 @@ async function queryChainGPT(conversationHistory, conversationId) {
   const answerText = (await res.text()).trim();
   console.log(`[ChainGPT] Response received (${answerText.length} chars)`);
 
-  return answerText || "Error: Malformed response from ChainGPT.";
+  // An empty body is a failed call, like an error status: the failover chain moves on, and with
+  // no tier left no answer is stored or submitted.
+  if (!answerText) throw new Error("ChainGPT API returned an empty response.");
+
+  return answerText;
 }
 
 /**
