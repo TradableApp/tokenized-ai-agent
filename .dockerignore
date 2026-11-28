@@ -3,9 +3,12 @@ node_modules
 */node_modules
 **/node_modules
 
-# Ignore environment files
+# Ignore environment files, at the root and at any depth (the Dockerfile copies whole
+# subdirectories, and a pattern without **/ matches at the root of the context only)
 .env
 .env.*
+**/.env
+**/.env.*
 oracle/.env.oracle
 oracle/.env.oracle.*
 

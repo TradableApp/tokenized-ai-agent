@@ -28,6 +28,11 @@
 #   public repo. Any literal value in the plaintext block fails; it belongs above the
 #   delimiter, where it is injected as ${POSTGRES_HOST:-}.
 #
+#   IMAGES BY TAG — the bundle measures this file, not the image it names, so every `image:`
+#   must be pinned as <name>@sha256:<64 lower-case hex>, with no tag beside the digest: the
+#   registry transport does not take both (rofl-image-refs.sh). The digest is written by
+#   scripts/pin-image-digest.sh after a push; `oasis rofl build` does not resolve it.
+#
 # Secrets are NOT checked: they are `${VAR:-}` placeholders here by design, resolved
 # at runtime from the ROFL manifest, so a missing one fails closed rather than shipping.
 set -euo pipefail
@@ -36,7 +41,38 @@ COMPOSE_FILE="${1:?usage: rofl-preflight.sh <compose-file>}"
 [ -f "$COMPOSE_FILE" ] || { echo "❌ Preflight: '$COMPOSE_FILE' not found."; exit 1; }
 
 . "$(dirname "$0")/rofl-config-patterns.sh"
+. "$(dirname "$0")/rofl-image-refs.sh"
 failures=""
+
+# IMAGES PINNED BY DIGEST. The bundle measures this file, not the image it names, so the enclave
+# identity fixes which oracle code runs only when every image is named by its content digest.
+# Checked first, and on every compose file whatever its layout: the rules below read the plaintext
+# block, this one reads `services:`.
+# rofl_unpinned_images exits non-zero whenever it refuses, and prints why; an exit with nothing
+# printed is still a refusal, so a failure in it can never read as a clean pass.
+unpinned=""
+if ! unpinned="$(rofl_unpinned_images "$COMPOSE_FILE")"; then
+  [ -n "$unpinned" ] || unpinned=$'\037could not read the image entries'
+fi
+if [ -n "$unpinned" ]; then
+  pin_env="$(basename "$COMPOSE_FILE" .yaml)"; pin_env="${pin_env#compose.}"
+  echo "❌ Preflight: '$COMPOSE_FILE' names an image that is not pinned by digest — refusing to build an ORC bundle."
+  while IFS=$'\037' read -r service why; do
+    if [ -n "$service" ]; then
+      echo "  ✗ service '$service' $why"
+    else
+      echo "  ✗ $why"
+    fi
+  done <<< "$unpinned"
+  echo "   Every image must be <name>@sha256:<64 lower-case hex>. Push the image, then write"
+  case "$pin_env" in
+    *mainnet) echo "   its digest with \`bun run release:${pin_env}\` (it builds, pushes and pins a version)" ;;
+    testnet|base-testnet) echo "   its digest with \`bun run image:pin:${pin_env}\` (\`image:push:${pin_env}\` runs it)" ;;
+    *) echo "   its digest" ;;
+  esac
+  echo "   or \`bash scripts/pin-image-digest.sh $COMPOSE_FILE\`, and commit the file. No bundle was built."
+  exit 1
+fi
 
 # Scan ONLY the plaintext config block, not the whole YAML. The `- ` prefix alone also
 # matches ports:, volumes: and any future service list, so a volume like
@@ -234,7 +270,7 @@ fi
 # success line is what gets read, so an unconditional ✅ made a run where the staleness guard
 # never executed look fully verified.
 if [ "${staleness_skipped:-0}" = "1" ]; then
-  echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder, quoted or inline-comment values (⚠️ staleness check skipped — env file absent)."
+  echo "✅ Preflight: '$COMPOSE_FILE' names every image by digest and has no placeholder, quoted or inline-comment values (⚠️ staleness check skipped — env file absent)."
 else
-  echo "✅ Preflight: '$COMPOSE_FILE' has no placeholder, quoted or inline-comment values."
+  echo "✅ Preflight: '$COMPOSE_FILE' names every image by digest and has no placeholder, quoted or inline-comment values."
 fi

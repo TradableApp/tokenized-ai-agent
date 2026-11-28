@@ -2,6 +2,8 @@ services:
   oracle:
     build:
       dockerfile: ./Dockerfile.oracle
+    # Until a release pins this image, the line names a tag alone and the preflight refuses to bundle
+    # the file. The release script pushes a version, names it here by digest and records the version.
     image: ghcr.io/tradableapp/tokenized-ai-agent:mainnet-latest
     platform: linux/amd64
     entrypoint: /bin/sh -c 'node src/index.js'
