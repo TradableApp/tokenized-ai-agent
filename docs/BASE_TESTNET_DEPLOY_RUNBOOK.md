@@ -317,7 +317,19 @@ transfer or whose balances rebase is not supported.
      shows the live reasoning stream, the stream of the oracle that serves the new pair. The dApp
      keeps one local database per agent (`SenseAI:<chainId>:<agent address>`), so a user's first
      visit on the new build starts a new local store and syncs the new pair's history; the old
-     pair's conversations are not shown by it.
+     pair's conversations are not shown by it. A build also stops unless `VITE_CHAIN_ID` and
+     `VITE_FEE_TOKEN` (exactly `SENSE` or `ABLE`) are set, and `VITE_PAYLOAD_MIRROR_URL` names the
+     network's payload mirror (§9) when one is used.
+     Two things come before the build is published. The oracle has published its encryption key
+     on the new agent (`oracleEncryptionKey()` on the agent is not empty; it publishes at start,
+     once its own address holds the oracle role, §1.1): the dApp reads that key from the chain
+     and keeps prompts, branches, renames and deletes closed until it equals
+     `VITE_ORACLE_PUBLIC_KEY`. And the Firebase functions and rules the build calls (answer
+     ratings, the prompts switch) are deployed to the build's project: a build published before
+     them cannot save or read a rating.
+     The order is always contracts, then the subgraph, then the dApp. A dApp build from this
+     version on names a maximum fee in every paying call, which an escrow deployed before that
+     change does not accept, so it is never published against an older pair.
    - **Then the smoke test's `SMOKE_*`** (its oracle key included) **and the e2e testnet
      settings.**
    9a. **Distribute the fee token** (SenseToken): the token's owner, or the treasury once it is
@@ -412,6 +424,7 @@ notes that used to sit on A.8/A.9 predate it. Read-only commands (`rofl trust-ro
 - [ ] **A.7 Commit `rofl.yaml` AND `compose.yaml` (me):** on a manifest branch. NOT the `.orc` (gitignored build artifact).
   **ALL compose files are tracked**, including the per-env ones. They hold no secrets — every credential, and the database address, is a `${VAR:-}` placeholder injected at runtime. Ignoring them meant a fresh clone could not build any deployment (`rofl:build` copies `compose.<env>.yaml`, which was not in the repo) and made per-env config changes unreviewable. `compose.yaml` is the copy of the per-env file the last build used (`rofl:build` copies it); the per-env files are its sources, and a change to them (the database address injected, for one) reaches what runs only with the next `rofl update`.
 - [ ] **A.8 Push on-chain (me; wrapper):** `bun run oasis:unlock rofl update --deployment base-testnet --account oasis_testnet --gas-limit 200000` (not `rofl:update:base-testnet` — that re-runs `rofl:set` and churns every ciphertext).
+  ⚠️ **Once, after the change that moved the oracle's keys into the ROFL key service:** run A.5 (`rofl:set`) before this step even for a manifest-only push. On a network other than the local one the oracle refuses to start while a `PRIVATE_KEY` secret is set ("PRIVATE_KEY is set, but on this network the oracle takes its keys from the ROFL key service; remove the secret"), and `rofl:set` is what removes a secret that the env file no longer lists.
   ⚠️ **Once, after the change that made `POSTGRES_HOST` a secret:** run A.5 (`rofl:set`) before this step even for a manifest-only push. The compose now injects `POSTGRES_HOST` from a ROFL secret; until `rofl:set` has pushed that secret, the oracle starts with an empty host and refuses at boot (`missing: POSTGRES_HOST`). `rofl:set` itself refuses database settings with no `POSTGRES_HOST` above the delimiter.
 - [ ] **A.9 Deploy (me; wrapper, only when the operator says go — it rents the machine):** `bun run oasis:unlock rofl deploy --deployment base-testnet --account oasis_testnet --offer playground_short`. No machine exists → it provisions one; **testnet offer `playground_short` (5 TEST/hr, ~1 h)** — may prompt for `--offer playground_short` + a ROSE top-up; `--replace-machine` if a stale one lingers. ⚠️ **The TEE lives ~1 h — do the boot + smoke checks promptly.**
 
@@ -615,7 +628,7 @@ the oracle; out of scope here.
 2. **Balances + fee** — reads `promptFee()`, ETH and fee token balances; hard-fails on zero ETH, warns on low.
 3. **Plan setup** — `token.approve(escrow, …)` then `escrow.setSpendingLimit(…, +1 day)` (skips if already active).
 4. **Encrypt** — generates a random 32-byte session key, AES-256-GCM-encrypts the prompt payload (`{promptText, isNewConversation, …}`), and ECIES-encrypts the session key to `SMOKE_ORACLE_PUBLIC_KEY` (the oracle's `encryptionKey=` from its `[OracleKeys]` start-up line; reusing the oracle's own `src/ecies.js` → wire-format guaranteed to match).
-5. **Submit** — `escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey)`; parses `PromptSubmitted` for `answerMessageId`.
+5. **Submit** — `escrow.initiatePrompt(0, encryptedPayload, roflEncryptedKey, maxFee)`, with the `promptFee` it has just read as the maximum; parses `PromptSubmitted` for `answerMessageId`.
 6. **Wait for the answer** — polls the on-chain `AnswerMessageAdded(convId, answerMessageId, cid)` event (indexed; **no subgraph needed**) with `eth_getLogs` walked in contiguous windows of at most `SMOKE_LOGS_BLOCK_RANGE` blocks (default 10 — Alchemy's free-tier cap; the public node allows a few hundred), resuming from a refused window rather than re-widening it and logging the node's own error, up to `SMOKE_TIMEOUT_MS` (5 min). A single request over `[submitBlock, head]` is refused by a capped endpoint, so the wait walks windows instead (`scripts/smoke/answerWait.js`).
 7. **Fetch + decrypt** — fetches the answer `MessageFile` from the storage gateway (Autonomys/Irys, 30-s bounded), AES-decrypts it with the session key.
 8. **Assert** — prints the answer and judges it with `src/answerQuality.js` (burst: `scripts/smoke/burst.js`; injection: `scripts/smoke/injection.js`), then writes the metrics file.
@@ -689,8 +702,9 @@ The metrics file gains a `settle` block (`settleMs`, `durationMs`, `fromBlock`, 
   alert), the oracle replays `[head − 1800, head]` (six minutes on Base at 200 ms blocks).
   Otherwise it resumes at the stored block + 1.
 - **Duplicate guard.** Before sending, the oracle checks `isJobFinalized` and skips finalised
-  jobs (`:1405`, and again inside the tx mutex at `:1670`). If that read errors it logs and
-  proceeds anyway (`:1414`), which is why the settle check counts nonces as well as events.
+  jobs (in `handlePrompt` and the regeneration handler, once before the model is asked and again
+  inside the transaction lock). If that read errors it logs and proceeds anyway, which is why
+  the settle check counts nonces as well as events.
 - **Failed jobs across the restart.** The retry queue is in the same database
   (`oracle_state.oracle_failed_jobs`), so queued retries survive too. Expect the start-up log line
   `[OracleState] Cursor and failed jobs are kept in: postgres.` and no `No stored cursor found`
@@ -887,6 +901,9 @@ and waits for its one-hour refund.
 
 ### Mainnet pre-flight additions (do before the first mainnet `rofl deploy`)
 
+- [ ] **The wallet provider's client id is restricted to the app's domains.** In the thirdweb dashboard, the client id the mainnet build uses lists only the mainnet site (and no wildcard). An in-app wallet signs the session message with no prompt, so this restriction is what keeps that signature, which is the key to the user's history, to the app's own pages. Check it again whenever a domain is added.
+- [ ] **Storage mode is chosen on purpose.** `STORAGE_PROVIDER=autonomys-only` in the mainnet env file (below the delimiter) for a deployment that writes and reads Autonomys alone; left unset, the oracle also uses Irys and needs a funded `IRYS_PAYMENT_PRIVATE_KEY`. The start-up line says which mode is in force.
+- [ ] **Order of the first deploy:** contracts, the oracle (its key published on the agent), the subgraph synced to the head, the Firebase functions and rules, then the dApp build (§1.2 step 9).
 - [ ] **Refresh the Sapphire-mainnet trust root** (mainnet counterpart of A.1; read-only, no passphrase):
   `oasis rofl trust-root --network mainnet --paratime sapphire` → set `height` + `hash` under
   `deployments.base-mainnet.trust_root` in `rofl.yaml`. Re-verify it after `rofl:build:base-mainnet`
