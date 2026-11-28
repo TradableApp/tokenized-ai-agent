@@ -927,31 +927,32 @@ describe("aiAgentOracle", function () {
       expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
     });
 
-    it("PINS THE ACCEPTED GAP: a receipt that never arrives records nothing, not an answer", async () => {
-      // The tx lands on chain, then the connection drops before tx.wait() resolves. The catch's
-      // isJobFinalized re-check returns true (it DID land) and returns gracefully, so `submitted`
-      // is never set and the settled escrow goes unrecorded.
+    it("records nothing when the receipt wait fails, the run's own transaction is not found mined, and the job is finalized", async () => {
+      // The wait for this run's own transaction throws, and its receipt read by hash shows it was
+      // not mined. The job is finalized all the same (a cancellation, or another replica's
+      // answer), so the run ends gracefully and records neither an answer nor a failure.
       //
-      // Deliberate: recording answers that never confirmed is the worse error, and `isFinalized`
-      // being true there means either "the tx landed" or "the user cancelled".
-      //
-      // What this guards is the plausible repair — recording an `answer` on that graceful branch,
-      // which would book answers for cancelled prompts. Note hoisting `submitted = true` above
-      // tx.wait() is inert, since the graceful return exits before the recording is reached.
+      // The other side, a wait that fails for a transaction that WAS mined, is an answer like any
+      // other and is recorded as one: see "ends answered, with the answer frame, when the receipt
+      // wait fails but this run's own submission was mined" in aiAgentOracle.stream.test.js.
+      // The handler runs to its end here, so the fence strip it calls needs the Brain loaded.
+      await require("../src/inboundPrompt").initInboundPrompt();
       const base = stubs["./contractUtility"].initializeOracle();
       const finalized = sinon.stub();
       finalized.onCall(0).resolves(false); // pre-flight
       finalized.onCall(1).resolves(false); // post-AI
       finalized.onCall(2).resolves(false); // inside the mutex -> we submit
-      finalized.resolves(true); // the catch's re-check: the tx DID land
+      finalized.resolves(true); // the catch's re-check: finalized, but not by this run
+      base.provider.getTransactionReceipt.withArgs("0xOwnTx").resolves(null);
       const dropped = {
         ...base,
         contract: {
           ...base.contract,
           isJobFinalized: finalized,
-          submitAnswer: sinon
-            .stub()
-            .resolves({ wait: sinon.stub().rejects(new Error("connection reset")) }),
+          submitAnswer: sinon.stub().resolves({
+            hash: "0xOwnTx",
+            wait: sinon.stub().rejects(new Error("connection reset")),
+          }),
         },
       };
       const recordAnswerActivity = sinon.stub().resolves();
@@ -962,13 +963,15 @@ describe("aiAgentOracle", function () {
       }), stubs["./ecies"]);
       mod.initForTest(dropped);
 
-      await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
-        .catch(() => {});
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
 
       expect(
+        base.provider.getTransactionReceipt.calledWith("0xOwnTx"),
+        "the run's own transaction is looked up by its hash",
+      ).to.equal(true);
+      expect(
         recordAnswerActivity.callCount,
-        "an unconfirmed submission must not be recorded as an answer",
+        "a submission not found mined is not recorded as an answer",
       ).to.equal(0);
     });
 
