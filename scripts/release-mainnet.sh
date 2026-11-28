@@ -68,6 +68,7 @@ docker push "$IMAGE_FULL_NAME"
 echo "Pinning '$COMPOSE_FILE' to the digest of $IMAGE_FULL_NAME..."
 if ! bash "$(dirname "$0")/pin-image-digest.sh" "$COMPOSE_FILE"; then
   echo "❌ $IMAGE_FULL_NAME was pushed, but its digest was not written to '$COMPOSE_FILE'."
+  echo "   Do not run this script again: the image is already in the registry."
   echo "   Run \`bash scripts/pin-image-digest.sh $COMPOSE_FILE\` once the registry answers;"
   echo "   until then the preflight refuses to bundle it."
   exit 1
