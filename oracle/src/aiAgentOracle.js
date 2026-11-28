@@ -1638,10 +1638,11 @@ function storedExtrasFrom({ reasoning, sources, answerAttempt }, reasoningDurati
 }
 
 /**
- * Whether this run's own submitAnswer transaction was mined and succeeded although waiting for its
- * receipt threw (an RPC drop, or the TIMEOUT of a wait that reached RECEIPT_WAIT_TIMEOUT_MS). Read by the transaction's hash, so only
- * this run's submission can count: a revert, a cancellation or another replica's answer leaves no
- * successful receipt under it. Never asked for a `JobAlreadyFinalized` revert, which the handler's
+ * Whether this run's own submission (an answer, a branch or a metadata update) was mined and
+ * succeeded although waiting for its receipt threw (an RPC drop, or the TIMEOUT of a wait that
+ * reached RECEIPT_WAIT_TIMEOUT_MS). Read by the transaction's hash, so only this run's submission
+ * can count: a revert, a cancellation or another replica's answer leaves no successful receipt
+ * under it. Never asked for a `JobAlreadyFinalized` revert, which the handler's
  * own branch keeps. Never throws: a receipt that cannot be read counts as not mined.
  */
 async function minedDespiteFailedWait(error, txHash) {
@@ -2648,23 +2649,34 @@ async function handleBranch(
       uploadData(Buffer.from(encryptedMeta)),
     ]);
 
-    await txMutex.runExclusive(async () => {
-      console.log(`  Submitting branch ${newConversationId}...`);
+    // This run's own submitBranch transaction once sent (see handlePrompt).
+    let sentTxHash = null;
+    try {
+      await txMutex.runExclusive(async () => {
+        console.log(`  Submitting branch ${newConversationId}...`);
 
-      const tx = await contract.submitBranch(
-        user,
-        originalConversationId,
-        branchPointMessageId,
-        newConversationId,
-        conversationCID,
-        metadataCID,
-      );
+        const tx = await contract.submitBranch(
+          user,
+          originalConversationId,
+          branchPointMessageId,
+          newConversationId,
+          conversationCID,
+          metadataCID,
+        );
+        sentTxHash = tx.hash;
 
-      const receipt = await waitForReceipt(tx);
+        const receipt = await waitForReceipt(tx);
+        console.log(
+          `  ✅ Success! Branch submitted. New convId: ${newConversationId}. Tx: ${receipt.hash}`,
+        );
+      });
+    } catch (submitError) {
+      // A branch that was mined is done: retrying it would submit the same branch again.
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       console.log(
-        `  ✅ Success! Branch submitted. New convId: ${newConversationId}. Tx: ${receipt.hash}`,
+        `  ✅ Branch ${newConversationId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
   } catch (error) {
     console.error(
       `Error in handleBranch for convId ${originalConversationId}:`,
@@ -2700,16 +2712,27 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
 
     const metadataCID = await uploadData(Buffer.from(encryptedMeta));
 
-    await txMutex.runExclusive(async () => {
-      console.log(`  Submitting metadata update for ${conversationId}...`);
+    // This run's own submitConversationMetadata transaction once sent (see handlePrompt).
+    let sentTxHash = null;
+    try {
+      await txMutex.runExclusive(async () => {
+        console.log(`  Submitting metadata update for ${conversationId}...`);
 
-      const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
+        const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
+        sentTxHash = tx.hash;
 
-      const receipt = await waitForReceipt(tx);
+        const receipt = await waitForReceipt(tx);
+        console.log(
+          `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
+        );
+      });
+    } catch (submitError) {
+      // An update that was mined is done: retrying it would submit the same update again.
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       console.log(
-        `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
+        `  ✅ Metadata update for conversation ${conversationId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
   } catch (error) {
     console.error(
       `Error in handleMetadataUpdate for convId ${conversationId}:`,
