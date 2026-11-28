@@ -5,7 +5,7 @@ const { expect } = chai;
 const proxyquire = require("proxyquire").noCallThru();
 const util = require("node:util");
 const { refusedByProvider } = require("./helpers/refusedByProvider");
-const { RetryableError } = require("../src/errors");
+const { RetryableError, isRetryableError } = require("../src/errors");
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 const realStateStore = require("../src/oracleState/store");
@@ -447,45 +447,44 @@ describe("aiAgentOracle", function () {
       expect(body.model).to.equal("general_assistant");
     });
 
-    it("should return a specific error message if the chosen provider fails", async () => {
-      process.env.AI_PROVIDER = "ChainGPT";
-      process.env.CHAIN_GPT_API_KEY = "fake-key";
-      stubs["node-fetch"].rejects(new Error("API is down"));
+    // A provider that fails produces no answer, and no answer means nothing is stored and nothing
+    // is submitted: the fee stays in escrow and the refund stays open. The handler throws a
+    // typed, retryable error instead.
+    for (const provider of ["ChainGPT", "Gemini"]) {
+      it(`stores and submits nothing when AI_PROVIDER is '${provider}' and that provider fails`, async () => {
+        process.env.AI_PROVIDER = provider;
+        process.env.CHAIN_GPT_API_KEY = "fake-key";
+        stubs["node-fetch"].rejects(new Error("API is down"));
 
-      const clientPayload = { promptText: "test", isNewConversation: false };
-      const payloadBytes = ethers.toUtf8Bytes(
-        createEncryptedString(clientPayload, FAKE_SESSION_KEY),
-      );
-      const fakeEvent = { getBlock: () => Promise.resolve({ timestamp: 1 }), blockNumber: 1 };
+        const clientPayload = { promptText: "test", isNewConversation: false };
+        const payloadBytes = ethers.toUtf8Bytes(
+          createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+        );
+        const fakeEvent = { getBlock: () => Promise.resolve({ timestamp: 1 }), blockNumber: 1 };
 
-      await aiAgentOracle.handlePrompt(
-        FAKE_USER_ADDRESS,
-        FAKE_CONVERSATION_ID,
-        FAKE_PROMPT_MESSAGE_ID,
-        FAKE_ANSWER_MESSAGE_ID,
-        payloadBytes,
-        FAKE_ROFL_KEY,
-        fakeEvent,
-      );
+        let thrown;
+        await aiAgentOracle
+          .handlePrompt(
+            FAKE_USER_ADDRESS,
+            FAKE_CONVERSATION_ID,
+            FAKE_PROMPT_MESSAGE_ID,
+            FAKE_ANSWER_MESSAGE_ID,
+            payloadBytes,
+            FAKE_ROFL_KEY,
+            fakeEvent,
+          )
+          .catch((error) => {
+            thrown = error;
+          });
 
-      const uploadCalls = stubs["./storage/storage"].uploadData.getCalls();
-      let uploadedAnswer;
-      for (const call of uploadCalls) {
-        try {
-          const decrypted = decryptSymmetrically(call.args[0].toString(), FAKE_SESSION_KEY);
-          if (decrypted.role === "assistant") {
-            uploadedAnswer = decrypted;
-            break;
-          }
-        } catch (e) {
-          /* ignore */
-        }
-      }
-
-      expect(uploadedAnswer.content).to.equal(
-        "Error: Could not generate a response from the ChainGPT service.",
-      );
-    });
+        expect(thrown, "no answer is an error, not an answer").to.exist;
+        expect(thrown.name).to.equal("NoModelAnswerError");
+        expect(isRetryableError(thrown), "it goes to the retry queue").to.equal(true);
+        expect(stubs["./storage/storage"].uploadData.called).to.equal(false);
+        const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+        expect(mockedContract.submitAnswer.called).to.equal(false);
+      });
+    }
   });
 
   describe("parseMockDelayMs (E2E delay sentinel)", () => {
@@ -1929,18 +1928,13 @@ describe("aiAgentOracle", function () {
       expect(cidBundle.searchDeltaCID).to.include("fake_cid_");
     });
 
-    it("should produce an error message if the AI model fails", async () => {
-      // Simulate the AI model's API being down.
+    it("stores nothing, submits nothing and tells Sentry when every tier fails", async () => {
+      // Every AI provider's API is down.
       stubs["node-fetch"].resolves({
         ok: false,
         status: 503,
       });
-
-      const user = "0xUser";
-      const conversationId = 1;
-      const promptMessageId = 2;
-      const answerMessageId = 3;
-      const roflEncryptedKey = "0xkey";
+      process.env.CHAIN_GPT_API_KEY = "fake-key";
 
       const clientPayload = {
         promptText: "Hello world",
@@ -1953,33 +1947,25 @@ describe("aiAgentOracle", function () {
       );
       const fakeEvent = { getBlock: () => Promise.resolve({ timestamp: 1 }), blockNumber: 1 };
 
-      await aiAgentOracle.handlePrompt(
-        user,
-        conversationId,
-        promptMessageId,
-        answerMessageId,
-        payloadBytes,
-        roflEncryptedKey,
-        fakeEvent,
-      );
+      let thrown;
+      await aiAgentOracle
+        .handlePrompt("0xUser", 1, 2, 3, payloadBytes, "0xkey", fakeEvent)
+        .catch((error) => {
+          thrown = error;
+        });
 
-      // Find the uploaded answer file by decrypting all uploads and checking the role.
-      const uploadCalls = stubs["./storage/storage"].uploadData.getCalls();
-      let uploadedAnswer;
-      for (const call of uploadCalls) {
-        try {
-          const decrypted = decryptSymmetrically(call.args[0].toString(), FAKE_SESSION_KEY);
-          if (decrypted.role === "assistant") {
-            uploadedAnswer = decrypted;
-            break;
-          }
-        } catch (e) {
-          // Ignore uploads that are not symmetrically encrypted message files (like the key file).
-        }
-      }
-
-      expect(uploadedAnswer).to.not.be.undefined;
-      expect(uploadedAnswer.content).to.include("Error: Could not generate a response");
+      expect(thrown, "no answer is an error, not an answer").to.exist;
+      expect(thrown.name).to.equal("NoModelAnswerError");
+      expect(isRetryableError(thrown)).to.equal(true);
+      // Not even the key file or the prompt: a new conversation is stored with its first answer.
+      expect(stubs["./storage/storage"].uploadData.called).to.equal(false);
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      expect(mockedContract.submitAnswer.called).to.equal(false);
+      const tags = stubs["@sentry/node"].captureException
+        .getCalls()
+        .map((call) => call.args[1]?.tags?.site);
+      // One report per failure, from where the provider failed: the handler adds no second one.
+      expect(tags).to.deep.equal(["ai_all_tiers_failed"]);
     });
   });
 
@@ -2304,6 +2290,42 @@ describe("aiAgentOracle", function () {
       expect(jobs, "the event must be queued for retry").to.have.lengthOf(1);
       expect(jobs[0].blockNumber).to.equal(56696323);
     });
+
+    it("queues a prompt that no model answered for retry, and submits nothing", async () => {
+      stubs["node-fetch"].rejects(new Error("every provider is down"));
+      process.env.CHAIN_GPT_API_KEY = "fake-key";
+      const clientPayload = { promptText: "Nobody can answer this now", isNewConversation: true };
+      const payloadBytes = ethers.toUtf8Bytes(
+        createEncryptedString(clientPayload, FAKE_SESSION_KEY),
+      );
+      const fakeEvent = {
+        blockNumber: 200,
+        transactionHash: txHash("no-model-answer"),
+        index: 3,
+        args: ["0xUser", 77, 78, 79, payloadBytes, "0xkey"],
+        getBlock: () => Promise.resolve({ timestamp: Date.now() }),
+      };
+
+      await aiAgentOracle.handleAndRecord(
+        "PromptSubmitted",
+        aiAgentOracle.handlePrompt,
+        ...fakeEvent.args,
+        fakeEvent,
+      );
+
+      const mockedContract = stubs["./contractUtility"].initializeOracle().contract;
+      expect(mockedContract.submitAnswer.called).to.equal(false);
+      expect(stubs["./storage/storage"].uploadData.called).to.equal(false);
+      const fatal = stubs["./alerting"].sendAlert
+        .getCalls()
+        .find((c) => String(c.args[0]).includes("Oracle Fatal Error"));
+      expect(fatal, "an outage of the models is not a fatal error").to.be.undefined;
+      storeClock.ms += 24 * 60 * 60 * 1000;
+      const jobs = await stateStore.claimDueJobs({ limit: 10, leaseMs: 0 });
+      expect(jobs, "the prompt waits in the retry queue").to.have.lengthOf(1);
+      expect(jobs[0].blockNumber).to.equal(200);
+    });
+
     it("should send a critical alert for a non-retryable error", async () => {
       // Simulate a fatal error like a decryption failure.
       stubs["./ecies"].eciesDecrypt.rejects(new Error("Decryption failed"));

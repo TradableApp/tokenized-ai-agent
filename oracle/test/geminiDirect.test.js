@@ -148,6 +148,17 @@ describe("geminiDirect", () => {
         /no text/i,
       );
     });
+
+    it("throws when the text is only white space, and returns other text as it came", async () => {
+      const blank = fetchResolving(geminiResponse(" \n "));
+      await expect(
+        generateContent({ model: "m", contents: [], fetchImpl: blank }),
+      ).to.be.rejectedWith(/no text/i);
+
+      const padded = fetchResolving(geminiResponse(" an answer\n"));
+      const kept = await generateContent({ model: "m", contents: [], fetchImpl: padded });
+      expect(kept).to.equal(" an answer\n");
+    });
   });
 
   describe("classifyIntent", () => {

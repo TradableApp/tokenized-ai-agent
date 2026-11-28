@@ -56,6 +56,7 @@ const {
   BadInputError,
   isBadInputError,
   isRetryableError,
+  NoModelAnswerError,
   isTransientProviderError,
 } = require("./errors");
 const { submitTx } = require("./roflUtility");
@@ -986,7 +987,8 @@ async function reconstructHistory(startMessageCID, sessionKey) {
  * Query the ChainGPT API for a response.
  * @param {Array<object>} conversationHistory - The full, ordered history of the conversation.
  * @param {string} conversationId - The unique on-chain ID for this conversation.
- * @returns {Promise<string>} The content of the AI's response.
+ * @returns {Promise<string>} The content of the AI's response, never empty.
+ * @throws {Error} On a missing key, an error status, or an empty response body.
  */
 async function queryChainGPT(conversationHistory, conversationId) {
   console.log(`[ChainGPT] Querying ChainGPT for convId: ${conversationId}`);
@@ -1024,7 +1026,11 @@ async function queryChainGPT(conversationHistory, conversationId) {
   const answerText = (await res.text()).trim();
   console.log(`[ChainGPT] Response received (${answerText.length} chars)`);
 
-  return answerText || "Error: Malformed response from ChainGPT.";
+  // An empty body is a failed call, like an error status: the failover chain moves on, and with
+  // no tier left no answer is stored or submitted.
+  if (!answerText) throw new Error("ChainGPT API returned an empty response.");
+
+  return answerText;
 }
 
 /**
@@ -1699,6 +1705,9 @@ function shouldInitializeConversation({
  *          The normalized answer object (CU-86d3cfa41) — string-only provider
  *          paths carry empty reasoning/sources, and so does the ElizaOS path (its sources and
  *          steps go to the live stream as they are known).
+ * @throws {NoModelAnswerError} When no model answered: every tier failed, or the one provider
+ *          `AI_PROVIDER` names did. Nothing is returned for the handler to store or submit, so
+ *          the user is not charged; the error is retryable, so the prompt waits in the retry queue.
  */
 function asAnswer(text) {
   return { text, reasoning: [], sources: [] };
@@ -1745,9 +1754,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
     } catch (err) {
       console.error("[queryAIModel] ChainGPT provider failed.", describeError(err));
       // Bypass configured but the provider failed — no answer produced.
+      Sentry.captureException(err, { tags: { site: "ai_all_tiers_failed" } });
       providerTally.recordServed("none");
 
-      return asAnswer("Error: Could not generate a response from the ChainGPT service.");
+      throw new NoModelAnswerError("No model answered: the ChainGPT provider failed.");
     }
   }
   if (aiProvider === "Gemini") {
@@ -1761,9 +1771,10 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
     } catch (err) {
       console.error("[queryAIModel] Direct Gemini provider failed.", describeError(err));
       // Bypass configured but the provider failed — no answer produced.
+      Sentry.captureException(err, { tags: { site: "ai_all_tiers_failed" } });
       providerTally.recordServed("none");
 
-      return asAnswer("Error: Could not generate a response from the Gemini service.");
+      throw new NoModelAnswerError("No model answered: the direct Gemini provider failed.");
     }
   }
 
@@ -1842,11 +1853,26 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
       // "nobody asked anything". A total outage must not look like a quiet hour.
       providerTally.recordServed("none");
 
-      return asAnswer(
-        "Error: Could not generate a response. All AI providers are currently unavailable.",
-      );
+      // Thrown, never returned as text: an error sentence returned here was stored and submitted
+      // as the answer, which released the user's fee and closed the refund.
+      throw new NoModelAnswerError("No model answered: every tier of the fallback chain failed.");
     }
   }
+}
+
+/**
+ * Refuse a stripped answer that has no text. Called by each handler on its `answerText` binding,
+ * after the fence strip and before anything is stored, streamed or submitted, so it covers every
+ * provider and a reply made only of what the strip removes.
+ * @param {string} answerText - The answer text after `stripStoredAnswer`.
+ * @throws {NoModelAnswerError} When the text is empty or only whitespace. Reported here, once,
+ *          since the handler does not report a run no model answered.
+ */
+function requireAnswerText(answerText) {
+  if (answerText.trim()) return;
+  const error = new NoModelAnswerError("No model answered: the answer has no text.");
+  Sentry.captureException(error, { tags: { site: "ai_empty_answer" } });
+  throw error;
 }
 
 // --- Event Handlers ---
@@ -1975,6 +2001,8 @@ async function handlePrompt(
 
     history.push({ role: "user", content: promptText, createdAt: Date.now() });
 
+    // Throws NoModelAnswerError when no model answered. Nothing below runs then: nothing is
+    // stored or submitted, the catch ends the run interrupted, and the retry queue takes it.
     const answer = await queryAIModel(history, conversationId.toString(), user, stream);
     // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
     // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
@@ -1983,6 +2011,8 @@ async function handlePrompt(
     // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
     // see it. Storage is immutable, so this has to happen before the upload, not at the read.
     const answerText = stripStoredAnswer(answer.text);
+    // No text left is no answer: nothing is stored, streamed or submitted (see requireAnswerText).
+    requireAnswerText(answerText);
     // Reasoning and sources from the stream's record ONLY: the projection of the frames it built,
     // so what was shown live is what is stored. Read once every queued step is in (bounded), and
     // nothing is added to the stream's steps after it.
@@ -2291,10 +2321,14 @@ async function handlePrompt(
       });
     }
 
-    Sentry.captureException(error, {
-      tags: { site: "handle_prompt" },
-      extra: { convId: conversationId?.toString() },
-    });
+    // A run no model answered was reported where the provider failed, with that provider's
+    // error. A second report here would double every such failure, on each retry too.
+    if (!(error instanceof NoModelAnswerError)) {
+      Sentry.captureException(error, {
+        tags: { site: "handle_prompt" },
+        extra: { convId: conversationId?.toString() },
+      });
+    }
     console.error(`Error in handlePrompt for convId ${conversationId}:`, describedError(error));
 
     // Bad input is dropped for good; anything else may be retried as a new run.
@@ -2391,6 +2425,7 @@ async function handleRegeneration(
       });
     }
 
+    // Throws NoModelAnswerError when no model answered (see handlePrompt).
     const answer = await queryAIModel(history, conversationId.toString(), user, stream);
     // FENCE STRIP on the way OUT, and not redundant with the inbound one. The inbound strip covers
     // `promptText` and everything derived from it; this answer is derived from the MODEL, and it lands
@@ -2399,6 +2434,8 @@ async function handleRegeneration(
     // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
     // see it. Storage is immutable, so this has to happen before the upload, not at the read.
     const answerText = stripStoredAnswer(answer.text);
+    // No text left is no answer: nothing is stored, streamed or submitted (see requireAnswerText).
+    requireAnswerText(answerText);
     // Reasoning and sources from the stream's record ONLY (see handlePrompt).
     await stream.flush();
     const storedExtras = storedExtrasFrom(stream.record(), answer.reasoningDuration);
