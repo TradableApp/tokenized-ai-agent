@@ -927,31 +927,32 @@ describe("aiAgentOracle", function () {
       expect(recordAnswerActivity.firstCall.args[0]).to.include({ kind: "answer_failed" });
     });
 
-    it("PINS THE ACCEPTED GAP: a receipt that never arrives records nothing, not an answer", async () => {
-      // The tx lands on chain, then the connection drops before tx.wait() resolves. The catch's
-      // isJobFinalized re-check returns true (it DID land) and returns gracefully, so `submitted`
-      // is never set and the settled escrow goes unrecorded.
+    it("records nothing when the receipt wait fails, the run's own transaction is not found mined, and the job is finalized", async () => {
+      // The wait for this run's own transaction throws, and its receipt read by hash shows it was
+      // not mined. The job is finalized all the same (a cancellation, or another replica's
+      // answer), so the run ends gracefully and records neither an answer nor a failure.
       //
-      // Deliberate: recording answers that never confirmed is the worse error, and `isFinalized`
-      // being true there means either "the tx landed" or "the user cancelled".
-      //
-      // What this guards is the plausible repair — recording an `answer` on that graceful branch,
-      // which would book answers for cancelled prompts. Note hoisting `submitted = true` above
-      // tx.wait() is inert, since the graceful return exits before the recording is reached.
+      // The other side, a wait that fails for a transaction that WAS mined, is an answer like any
+      // other and is recorded as one: see "ends answered, with the answer frame, when the receipt
+      // wait fails but this run's own submission was mined" in aiAgentOracle.stream.test.js.
+      // The handler runs to its end here, so the fence strip it calls needs the Brain loaded.
+      await require("../src/inboundPrompt").initInboundPrompt();
       const base = stubs["./contractUtility"].initializeOracle();
       const finalized = sinon.stub();
       finalized.onCall(0).resolves(false); // pre-flight
       finalized.onCall(1).resolves(false); // post-AI
       finalized.onCall(2).resolves(false); // inside the mutex -> we submit
-      finalized.resolves(true); // the catch's re-check: the tx DID land
+      finalized.resolves(true); // the catch's re-check: finalized, but not by this run
+      base.provider.getTransactionReceipt.withArgs("0xOwnTx").resolves(null);
       const dropped = {
         ...base,
         contract: {
           ...base.contract,
           isJobFinalized: finalized,
-          submitAnswer: sinon
-            .stub()
-            .resolves({ wait: sinon.stub().rejects(new Error("connection reset")) }),
+          submitAnswer: sinon.stub().resolves({
+            hash: "0xOwnTx",
+            wait: sinon.stub().rejects(new Error("connection reset")),
+          }),
         },
       };
       const recordAnswerActivity = sinon.stub().resolves();
@@ -962,13 +963,15 @@ describe("aiAgentOracle", function () {
       }), stubs["./ecies"]);
       mod.initForTest(dropped);
 
-      await mod
-        .handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent())
-        .catch(() => {});
+      await mod.handlePrompt("0xUser", 123, 456, 457, payloadFor("hello"), "0xkey", fakeEvent());
 
       expect(
+        base.provider.getTransactionReceipt.calledWith("0xOwnTx"),
+        "the run's own transaction is looked up by its hash",
+      ).to.equal(true);
+      expect(
         recordAnswerActivity.callCount,
-        "an unconfirmed submission must not be recorded as an answer",
+        "a submission not found mined is not recorded as an answer",
       ).to.equal(0);
     });
 
@@ -2219,6 +2222,299 @@ describe("aiAgentOracle", function () {
       const uploadedContent = decryptSymmetrically(uploadArgs[0].toString(), FAKE_SESSION_KEY);
       expect(uploadedContent.title).to.equal(clientPayload.title);
       expect(uploadedContent.isDeleted).to.be.true;
+    });
+  });
+
+  describe("branch titles stay within the title limit", () => {
+    // The validator's title limit, written out so these tests do not depend on how it is named.
+    const MAX_TITLE_LENGTH = 100;
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const encrypted = (obj) => ethers.toUtf8Bytes(createEncryptedString(obj, FAKE_SESSION_KEY));
+    const event = () => ({ blockNumber: 4, getBlock: () => Promise.resolve({ timestamp: Date.now() }) });
+
+    /** Branches a conversation titled `originalTitle` and gives back the title the oracle wrote. */
+    async function branchOf(originalTitle) {
+      const upload = stubs["./storage/storage"].uploadData;
+      upload.resetHistory();
+      await aiAgentOracle.handleBranch(
+        "0xUser",
+        123,
+        457,
+        124,
+        encrypted({ originalTitle }),
+        "0xkey",
+        event(),
+      );
+      const titles = upload
+        .getCalls()
+        .map((call) => {
+          try {
+            return decryptSymmetrically(call.args[0].toString(), FAKE_SESSION_KEY).title;
+          } catch {
+            return undefined; // the key file is not a sealed JSON file
+          }
+        })
+        .filter((title) => title !== undefined);
+      expect(titles).to.have.lengthOf(1);
+      return titles[0];
+    }
+
+    it("is the limit the validator exports", () => {
+      expect(require("../src/payloadValidator").MAX_TITLE_LENGTH).to.equal(MAX_TITLE_LENGTH);
+    });
+
+    it("writes a branch title no longer than the limit, and a branch of that branch is accepted", async () => {
+      const original = "t".repeat(MAX_TITLE_LENGTH);
+
+      const first = await branchOf(original);
+      expect(first.startsWith("Branch of t")).to.equal(true);
+      expect(first.length).to.equal(MAX_TITLE_LENGTH);
+
+      const second = await branchOf(first);
+      expect(second.length).to.be.at.most(MAX_TITLE_LENGTH);
+      const submitBranch = stubs["./contractUtility"].initializeOracle().contract.submitBranch;
+      expect(submitBranch.callCount, "both branches are submitted").to.equal(2);
+    });
+
+    it("keeps a short branch title whole", async () => {
+      expect(await branchOf("My Conversation")).to.equal("Branch of My Conversation");
+    });
+
+    it("never cuts a character in two", async () => {
+      // "Branch of " and 89 letters is 99 code units; the emoji after them is two, so it cannot be cut and is left out.
+      const original = `${"a".repeat(89)}\u{1F600}tail`;
+
+      const title = await branchOf(original);
+
+      expect(title).to.equal(`Branch of ${"a".repeat(89)}`);
+      expect(LONE_SURROGATE.test(title)).to.equal(false);
+    });
+
+    it("accepts a branch of a conversation whose title the oracle wrote before titles were capped", async () => {
+      // The longest such title: the prefix on a title of the full limit.
+      const written = `Branch of ${"t".repeat(MAX_TITLE_LENGTH)}`;
+
+      const title = await branchOf(written);
+
+      expect(title.length).to.equal(MAX_TITLE_LENGTH);
+    });
+
+    it("accepts deleting a conversation whose title the oracle wrote before titles were capped", async () => {
+      // The dApp sends the conversation's stored title with a delete.
+      const written = `Branch of ${"t".repeat(MAX_TITLE_LENGTH)}`;
+
+      await aiAgentOracle.handleMetadataUpdate(
+        "0xUser",
+        124,
+        encrypted({ title: written, isDeleted: true }),
+        "0xkey",
+        event(),
+      );
+
+      const submitMeta =
+        stubs["./contractUtility"].initializeOracle().contract.submitConversationMetadata;
+      expect(submitMeta.calledOnce).to.equal(true);
+    });
+
+    it("still refuses a title longer than any the oracle has written", async () => {
+      const tooLong = `Branch of ${"t".repeat(MAX_TITLE_LENGTH + 1)}`;
+
+      const thrown = await aiAgentOracle
+        .handleBranch("0xUser", 123, 457, 124, encrypted({ originalTitle: tooLong }), "0xkey", event())
+        .then(
+          () => undefined,
+          (error) => error,
+        );
+
+      expect(thrown?.name).to.equal("BadInputError");
+    });
+  });
+
+  describe("receipt waits are bounded", () => {
+    const OWN_TX = "0xOwnTx";
+
+    before(async () => {
+      // The handlers strip fence tags from prompts and answers; that needs the Brain loaded.
+      await require("../src/inboundPrompt").initInboundPrompt();
+    });
+    const encrypted = (obj) => ethers.toUtf8Bytes(createEncryptedString(obj, FAKE_SESSION_KEY));
+    const event = () => ({ blockNumber: 1, getBlock: () => Promise.resolve({ timestamp: Date.now() }) });
+    const components = () => stubs["./contractUtility"].initializeOracle();
+
+    /**
+     * A sent transaction whose receipt never comes. Its wait behaves as ethers v6's does: with no
+     * timeout it never settles; with one it rejects with code TIMEOUT once the timeout has passed
+     * (here at once, so the suite does not wait for the real limit).
+     */
+    function txWithNoReceipt() {
+      return {
+        hash: OWN_TX,
+        wait: sinon.stub().callsFake(
+          (_confirms, timeout) =>
+            new Promise((_resolve, reject) => {
+              if (timeout > 0) {
+                setTimeout(() => reject(ethers.makeError("wait for transaction timeout", "TIMEOUT")), 0);
+              }
+            }),
+        ),
+      };
+    }
+
+    /** How `promise` has settled after `ms`: resolved, rejected (with the error) or pending. */
+    function settledWithin(promise, ms = 1000) {
+      return Promise.race([
+        promise.then(
+          () => ({ state: "resolved" }),
+          (error) => ({ state: "rejected", error }),
+        ),
+        new Promise((resolve) => setTimeout(() => resolve({ state: "pending" }), ms)),
+      ]);
+    }
+
+    /** A metadata update with a healthy transaction: it can only submit once the lock is free. */
+    async function nextSubmissionGoesThrough() {
+      const { contract } = components();
+      contract.submitConversationMetadata.reset();
+      contract.submitConversationMetadata.resolves({
+        hash: "0xNext",
+        wait: () => Promise.resolve({ hash: "0xNext" }),
+      });
+      const next = await settledWithin(
+        aiAgentOracle.handleMetadataUpdate(
+          "0xUser",
+          77,
+          encrypted({ title: "Next", isDeleted: false }),
+          "0xkey",
+          event(),
+        ),
+      );
+      expect(next.state, "the transaction lock was released").to.equal("resolved");
+      expect(contract.submitConversationMetadata.calledOnce).to.equal(true);
+    }
+
+    const submissions = [
+      {
+        name: "a prompt's answer",
+        send: (contract, tx) => contract.submitAnswer.resolves(tx),
+        run: () =>
+          aiAgentOracle.handlePrompt(
+            "0xUser",
+            123,
+            456,
+            457,
+            encrypted({
+              promptText: "Hello",
+              isNewConversation: true,
+              previousMessageId: null,
+              previousMessageCID: null,
+            }),
+            "0xkey",
+            event(),
+          ),
+      },
+      {
+        name: "a regenerated answer",
+        send: (contract, tx) => contract.submitAnswer.resolves(tx),
+        run: () =>
+          aiAgentOracle.handleRegeneration(
+            "0xUser",
+            123,
+            456,
+            457,
+            458,
+            encrypted({
+              instructions: "shorter",
+              promptMessageCID: "cid-prompt",
+              originalAnswerMessageCID: "cid-answer",
+            }),
+            "0xkey",
+            event(),
+          ),
+      },
+      {
+        name: "a branch",
+        send: (contract, tx) => contract.submitBranch.resolves(tx),
+        run: () =>
+          aiAgentOracle.handleBranch(
+            "0xUser",
+            123,
+            457,
+            124,
+            encrypted({ originalTitle: "Mine" }),
+            "0xkey",
+            event(),
+          ),
+      },
+      {
+        name: "a metadata update",
+        send: (contract, tx) => contract.submitConversationMetadata.resolves(tx),
+        run: () =>
+          aiAgentOracle.handleMetadataUpdate(
+            "0xUser",
+            123,
+            encrypted({ title: "T", isDeleted: false }),
+            "0xkey",
+            event(),
+          ),
+      },
+    ];
+
+    for (const { name, send, run } of submissions) {
+      it(`stops waiting for ${name}'s receipt at RECEIPT_WAIT_TIMEOUT_MS, frees the lock, and hands an unmined submission to the retry`, async () => {
+        const { contract, provider } = components();
+        const tx = txWithNoReceipt();
+        send(contract, tx);
+        provider.getTransactionReceipt.withArgs(OWN_TX).resolves(null);
+
+        const outcome = await settledWithin(run());
+
+        expect(outcome.state, "the wait must end").to.equal("rejected");
+        expect(outcome.error.code, "the timeout reaches the retry handling").to.equal("TIMEOUT");
+        expect(tx.wait.firstCall.args).to.deep.equal([1, aiAgentOracle.RECEIPT_WAIT_TIMEOUT_MS]);
+        await nextSubmissionGoesThrough();
+      });
+    }
+
+    // A submission that was mined is done: it is not handed to the retry, which would submit the
+    // same branch or metadata update a second time.
+    for (const { name, send, run } of submissions) {
+      it(`counts ${name} as submitted when its receipt wait times out but its own transaction was mined`, async () => {
+        const { contract, provider } = components();
+        send(contract, txWithNoReceipt());
+        provider.getTransactionReceipt.withArgs(OWN_TX).resolves({ hash: OWN_TX, status: 1 });
+
+        const outcome = await settledWithin(run());
+
+        expect(outcome.state).to.equal("resolved");
+        await nextSubmissionGoesThrough();
+      });
+    }
+
+    it("sets a limit a healthy network never reaches", () => {
+      // Base makes a block every 2 s; a healthy network includes a transaction within a few.
+      expect(aiAgentOracle.RECEIPT_WAIT_TIMEOUT_MS).to.be.at.least(60 * 1000);
+      expect(aiAgentOracle.RECEIPT_WAIT_TIMEOUT_MS).to.be.at.most(10 * 60 * 1000);
+    });
+
+    it("bounds the wait for the oracle's own registration on the Sapphire localnet", async () => {
+      const originalNetwork = process.env.NETWORK_NAME;
+      process.env.NETWORK_NAME = "sapphire-localnet";
+      try {
+        const mod = withTestKeys(proxyquire("../src/aiAgentOracle", stubs), stubs["./ecies"]);
+        const base = components();
+        mod.initForTest({ ...base, isSapphire: true });
+        base.contract.isOracle.resolves(false);
+        const tx = txWithNoReceipt();
+        base.contract.addOracle.resolves(tx);
+
+        const outcome = await settledWithin(mod.ensureOracleAuthorized());
+
+        expect(outcome.state, "start-up must not hang on the receipt").to.equal("rejected");
+        expect(tx.wait.firstCall.args).to.deep.equal([1, mod.RECEIPT_WAIT_TIMEOUT_MS]);
+      } finally {
+        if (originalNetwork === undefined) delete process.env.NETWORK_NAME;
+        else process.env.NETWORK_NAME = originalNetwork;
+      }
     });
   });
 

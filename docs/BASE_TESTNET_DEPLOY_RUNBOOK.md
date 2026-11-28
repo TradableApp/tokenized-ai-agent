@@ -707,8 +707,9 @@ re-run — repeat until exit 0.
 `gateway.autonomys.xyz/file/<cid>` is intermittently 503, and the dApp hydrates ALL history from
 those CIDs. The oracle now mirrors every Autonomys payload it uploads into a public GCS bucket
 (`oracle/src/storage/mirror.js`): object name = CID, `Content-Type: text/plain`, immutable
-cache headers, and the Auto Drive file name as object metadata `name` so the dApp can recompute
-and verify the CID from the mirrored bytes. **Autonomys stays the permanence layer and the
+cache headers, and the Auto Drive file name as object metadata `name`, with which the CID can be
+recomputed from the mirrored bytes. The dApp does not recompute it: it checks each decrypted file
+against the conversation or message it was asked for. **Autonomys stays the permanence layer and the
 on-chain CID stays the root of trust — the bucket is a cache.** The mirror is never on the
 prompt's critical path: a failing bucket costs one alert and a climbing `payloadMirror.failed`
 counter in the heartbeat vitals, never an unanswered prompt. Unset bucket = mirror disabled.

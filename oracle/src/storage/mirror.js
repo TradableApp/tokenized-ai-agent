@@ -9,9 +9,10 @@ const { describeError, withoutAddresses } = require("../errorDescription");
  * WHY. `gateway.autonomys.xyz/file/<cid>` is intermittently 503 (the same CID serves 200 a
  * second later), and the dApp hydrates conversation history exclusively from those CIDs. The
  * mirror is a CACHE in front of Autonomys, not a replacement: Autonomys stays the permanence
- * layer, the on-chain CID stays the root of trust, and the dApp verifies the mirror's bytes
- * against the CID before trusting them. Nothing here can lose data — a missed mirror is a slower
- * read, never a lost payload.
+ * layer and the on-chain CID names each payload. The dApp does not recompute a CID from the
+ * mirror's bytes: it keeps a file only if it decrypts with the wallet's key and the identifiers
+ * written inside it match the conversation and message it was asked for. Nothing here can lose
+ * data — a missed mirror is a slower read, never a lost payload.
  *
  * THE INVARIANT: the mirror is never on the prompt's critical path.
  *
@@ -26,8 +27,9 @@ const { describeError, withoutAddresses } = require("../errorDescription");
  *   Content-Type     text/plain — the payload is `iv.ciphertext`, opaque to the browser
  *   Cache-Control    public, max-age=31536000, immutable — a CID's bytes never change
  *   metadata.name    the Auto Drive file name. The name is PART of the Auto Drive CID
- *                    (createSingleFileIpldNode(data, name)), so the dApp needs it to recompute
- *                    and verify the CID from the mirrored bytes. Served as `x-goog-meta-name`.
+ *                    (createSingleFileIpldNode(data, name)), so it is kept with the bytes: with
+ *                    it the CID can be recomputed from the mirror, which the dApp does not do
+ *                    today. Served as `x-goog-meta-name`.
  *   write            JSON API multipart upload with ifGenerationMatch=0: a 412 means another
  *                    writer (or a backfill) already mirrored this CID, which is success.
  */

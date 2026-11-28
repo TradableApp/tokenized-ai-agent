@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
  * Backfill the GCS payload mirror with every Autonomys CID that pre-dates write-through
- * mirroring (CU-14ym9bvm1d4).
+ * mirroring.
  *
  * The subgraph is the index of every CID the dApp will ever ask for (conversationCID,
  * conversationMetadataCID, messageCID, searchDeltaCID). Auto Drive is the source of the bytes
- * AND of the original file name — the name is part of the Auto Drive CID, and the dApp needs it
- * (served as object metadata `name`) to recompute and verify the CID from mirrored bytes. A CID
- * whose name cannot be recovered is reported and NOT mirrored: an unverifiable object costs the
- * dApp a wasted round trip on every read, which is worse than falling straight through to the
- * gateway.
+ * AND of the original file name — the name is part of the Auto Drive CID, and it is kept as
+ * object metadata `name` so the CID can be recomputed from the mirrored bytes. The dApp does not
+ * do that: it checks each decrypted file against the conversation or message it was asked for.
+ * A CID whose name cannot be recovered is reported and NOT mirrored, so every mirrored object
+ * can still be tied back to its CID.
  *
  * Resumable by construction: a CID the bucket already serves (HEAD 200) is skipped before
  * Auto Drive is touched, and the mirror write itself is `ifGenerationMatch=0`, so two runs

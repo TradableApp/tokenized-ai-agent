@@ -61,7 +61,11 @@ const {
 const { submitTx } = require("./roflUtility");
 const { sendAlert } = require("./alerting");
 const { initInboundPrompt, stripInboundPrompt, stripStoredAnswer } = require("./inboundPrompt");
-const { validatePayload } = require("./payloadValidator");
+const {
+  validatePayload,
+  MAX_TITLE_LENGTH,
+  BRANCH_TITLE_PREFIX,
+} = require("./payloadValidator");
 const { ORACLE_WORK_EVENTS, queryOracleWorkEvents } = require("./eventLogQuery");
 const { createRangePoller } = require("./eventPoller");
 const {
@@ -479,6 +483,19 @@ function initForTest(testComponents) {
 // Transaction Mutex: Ensures we NEVER send 2 transactions simultaneously (prevents Nonce errors)
 // This implements the "Mutual Exclusion" pattern from the async-mutex docs.
 const txMutex = new Mutex();
+
+// How long a transaction's receipt is waited for, inside the lock above, before the wait gives
+// up. Base makes a block every 2 s (Base Sepolia was measured at 200 ms), so a healthy network
+// includes a transaction within a few seconds; two minutes is 60 Base blocks and 600 on Base
+// Sepolia, which a healthy network never reaches. When it is reached ethers v6 rejects with code
+// TIMEOUT, the lock is released, and the caller settles the submission by its hash
+// (minedDespiteFailedWait) or hands it to the retry handling.
+const RECEIPT_WAIT_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** Wait for one confirmation of `tx`, for at most RECEIPT_WAIT_TIMEOUT_MS. */
+function waitForReceipt(tx) {
+  return tx.wait(1, RECEIPT_WAIT_TIMEOUT_MS);
+}
 
 // Job Queue: Limits concurrency to 5.
 // This implements the "Promise queue with concurrency control" pattern from p-queue docs.
@@ -1625,10 +1642,11 @@ function storedExtrasFrom({ reasoning, sources, answerAttempt }, reasoningDurati
 }
 
 /**
- * Whether this run's own submitAnswer transaction was mined and succeeded although waiting for its
- * receipt threw (an RPC drop or a timeout after it landed). Read by the transaction's hash, so only
- * this run's submission can count: a revert, a cancellation or another replica's answer leaves no
- * successful receipt under it. Never asked for a `JobAlreadyFinalized` revert, which the handler's
+ * Whether this run's own submission (an answer, a branch or a metadata update) was mined and
+ * succeeded although waiting for its receipt threw (an RPC drop, or the TIMEOUT of a wait that
+ * reached RECEIPT_WAIT_TIMEOUT_MS). Read by the transaction's hash, so only this run's submission
+ * can count: a revert, a cancellation or another replica's answer leaves no successful receipt
+ * under it. Never asked for a `JobAlreadyFinalized` revert, which the handler's
  * own branch keeps. Never throws: a receipt that cannot be read counts as not mined.
  */
 async function minedDespiteFailedWait(error, txHash) {
@@ -2193,7 +2211,7 @@ async function handlePrompt(
         const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
         sentTxHash = tx.hash;
 
-        const receipt = await tx.wait();
+        const receipt = await waitForReceipt(tx);
         // After the receipt: an unconfirmed submission is not an answer. Recording before
         // confirmation would be the worse error; a wait that throws is settled below.
         submitted = true;
@@ -2467,7 +2485,7 @@ async function handleRegeneration(
         const tx = await contract.submitAnswer(promptMessageId, answerMessageId, cidBundle);
         sentTxHash = tx.hash;
 
-        const receipt = await tx.wait();
+        const receipt = await waitForReceipt(tx);
         // After the receipt: an unconfirmed submission is not an answer. Recording before
         // confirmation would be the worse error; a wait that throws is settled below.
         submitted = true;
@@ -2566,6 +2584,23 @@ async function handleRegeneration(
   }
 }
 
+/**
+ * The title of a branch of a conversation titled `originalTitle`: the prefix and the original
+ * title, cut to MAX_TITLE_LENGTH so the title is one the validator accepts when it comes back as
+ * a later branch's originalTitle or a rename. Cut between code points, never inside one, and
+ * measured in UTF-16 code units, as the validator measures.
+ */
+function branchTitle(originalTitle) {
+  const full = `${BRANCH_TITLE_PREFIX}${originalTitle}`;
+  if (full.length <= MAX_TITLE_LENGTH) return full;
+  let cut = "";
+  for (const codePoint of full) {
+    if (cut.length + codePoint.length > MAX_TITLE_LENGTH) break;
+    cut += codePoint;
+  }
+  return cut;
+}
+
 async function handleBranch(
   user,
   originalConversationId,
@@ -2595,7 +2630,7 @@ async function handleBranch(
     const { originalTitle } = clientPayload;
 
     const now = Date.now();
-    const newTitle = `Branch of ${originalTitle}`;
+    const newTitle = branchTitle(originalTitle);
 
     const { chainId } = await provider.getNetwork();
     const newKeyFileTags = [
@@ -2635,23 +2670,34 @@ async function handleBranch(
       uploadData(Buffer.from(encryptedMeta)),
     ]);
 
-    await txMutex.runExclusive(async () => {
-      console.log(`  Submitting branch ${newConversationId}...`);
+    // This run's own submitBranch transaction once sent (see handlePrompt).
+    let sentTxHash = null;
+    try {
+      await txMutex.runExclusive(async () => {
+        console.log(`  Submitting branch ${newConversationId}...`);
 
-      const tx = await contract.submitBranch(
-        user,
-        originalConversationId,
-        branchPointMessageId,
-        newConversationId,
-        conversationCID,
-        metadataCID,
-      );
+        const tx = await contract.submitBranch(
+          user,
+          originalConversationId,
+          branchPointMessageId,
+          newConversationId,
+          conversationCID,
+          metadataCID,
+        );
+        sentTxHash = tx.hash;
 
-      const receipt = await tx.wait();
+        const receipt = await waitForReceipt(tx);
+        console.log(
+          `  ✅ Success! Branch submitted. New convId: ${newConversationId}. Tx: ${receipt.hash}`,
+        );
+      });
+    } catch (submitError) {
+      // A branch that was mined is done: retrying it would submit the same branch again.
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       console.log(
-        `  ✅ Success! Branch submitted. New convId: ${newConversationId}. Tx: ${receipt.hash}`,
+        `  ✅ Branch ${newConversationId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
   } catch (error) {
     console.error(
       `Error in handleBranch for convId ${originalConversationId}:`,
@@ -2687,16 +2733,27 @@ async function handleMetadataUpdate(user, conversationId, payload, roflEncrypted
 
     const metadataCID = await uploadData(Buffer.from(encryptedMeta));
 
-    await txMutex.runExclusive(async () => {
-      console.log(`  Submitting metadata update for ${conversationId}...`);
+    // This run's own submitConversationMetadata transaction once sent (see handlePrompt).
+    let sentTxHash = null;
+    try {
+      await txMutex.runExclusive(async () => {
+        console.log(`  Submitting metadata update for ${conversationId}...`);
 
-      const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
+        const tx = await contract.submitConversationMetadata(conversationId, metadataCID);
+        sentTxHash = tx.hash;
 
-      const receipt = await tx.wait();
+        const receipt = await waitForReceipt(tx);
+        console.log(
+          `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
+        );
+      });
+    } catch (submitError) {
+      // An update that was mined is done: retrying it would submit the same update again.
+      if (!(await minedDespiteFailedWait(submitError, sentTxHash))) throw submitError;
       console.log(
-        `  ✅ Success! Metadata updated for conversation ${conversationId}. Tx: ${receipt.hash}`,
+        `  ✅ Metadata update for conversation ${conversationId} was mined, though waiting for its receipt failed. Tx: ${sentTxHash}`,
       );
-    });
+    }
   } catch (error) {
     console.error(
       `Error in handleMetadataUpdate for convId ${conversationId}:`,
@@ -2739,7 +2796,7 @@ async function ensureOracleAuthorized() {
       // On localnet, we can send a direct transaction as we control the TEE simulation.
       const tx = await contract.addOracle(signer.address, { gasLimit: 1000000 });
 
-      await tx.wait();
+      await waitForReceipt(tx);
     } else {
       // On testnet/mainnet, the transaction must be signed by the ROFL TEE.
       console.log("Populating addOracle transaction...");
@@ -3472,6 +3529,7 @@ module.exports = {
   handleAndRecord,
   ensureOracleAuthorized,
   processPastEvents,
+  RECEIPT_WAIT_TIMEOUT_MS,
   retryFailedJobs,
   wireAgentDbForPluginSql,
 };
