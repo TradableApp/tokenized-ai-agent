@@ -127,8 +127,9 @@ async function uploadData(dataBuffer, tags = []) {
 
   // Pin the Auto Drive file name here rather than letting autonomys.uploadData default it:
   // the name is part of the Auto Drive CID, and the mirror records it as object metadata so
-  // the dApp can recompute and verify the CID from mirrored bytes. Both sides must see the
-  // same name, so it is decided once, up front.
+  // the CID can be recomputed from the mirrored bytes. The dApp does not do that: it keeps a
+  // file only if it decrypts with the wallet's key and the identifiers inside it match the slot
+  // it was asked for. Both sides must see the same name, so it is decided once, up front.
   const taggedForAutonomys = ensureFileNameTag(tags);
   const cid = await autonomys.uploadData(dataBuffer, taggedForAutonomys);
 
