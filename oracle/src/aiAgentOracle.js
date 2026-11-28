@@ -1860,6 +1860,21 @@ async function queryAIModel(conversationHistory, conversationId, userWallet, liv
   }
 }
 
+/**
+ * Refuse a stripped answer that has no text. Called by each handler on its `answerText` binding,
+ * after the fence strip and before anything is stored, streamed or submitted, so it covers every
+ * provider and a reply made only of what the strip removes.
+ * @param {string} answerText - The answer text after `stripStoredAnswer`.
+ * @throws {NoModelAnswerError} When the text is empty or only whitespace. Reported here, once,
+ *          since the handler does not report a run no model answered.
+ */
+function requireAnswerText(answerText) {
+  if (answerText.trim()) return;
+  const error = new NoModelAnswerError("No model answered: the answer has no text.");
+  Sentry.captureException(error, { tags: { site: "ai_empty_answer" } });
+  throw error;
+}
+
 // --- Event Handlers ---
 
 // Helper to check for specific contract errors using Ethers v6 Interface
@@ -1996,6 +2011,8 @@ async function handlePrompt(
     // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
     // see it. Storage is immutable, so this has to happen before the upload, not at the read.
     const answerText = stripStoredAnswer(answer.text);
+    // No text left is no answer: nothing is stored, streamed or submitted (see requireAnswerText).
+    requireAnswerText(answerText);
     // Reasoning and sources from the stream's record ONLY: the projection of the frames it built,
     // so what was shown live is what is stored. Read once every queued step is in (bounded), and
     // nothing is added to the stream's steps after it.
@@ -2417,6 +2434,8 @@ async function handleRegeneration(
     // `</untrusted_conversation>` escapes the fence one turn later, where the inbound strip cannot
     // see it. Storage is immutable, so this has to happen before the upload, not at the read.
     const answerText = stripStoredAnswer(answer.text);
+    // No text left is no answer: nothing is stored, streamed or submitted (see requireAnswerText).
+    requireAnswerText(answerText);
     // Reasoning and sources from the stream's record ONLY (see handlePrompt).
     await stream.flush();
     const storedExtras = storedExtrasFrom(stream.record(), answer.reasoningDuration);
