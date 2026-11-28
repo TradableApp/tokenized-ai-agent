@@ -2222,6 +2222,111 @@ describe("aiAgentOracle", function () {
     });
   });
 
+  describe("branch titles stay within the title limit", () => {
+    // The validator's title limit, written out so these tests do not depend on how it is named.
+    const MAX_TITLE_LENGTH = 100;
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const encrypted = (obj) => ethers.toUtf8Bytes(createEncryptedString(obj, FAKE_SESSION_KEY));
+    const event = () => ({ blockNumber: 4, getBlock: () => Promise.resolve({ timestamp: Date.now() }) });
+
+    /** Branches a conversation titled `originalTitle` and gives back the title the oracle wrote. */
+    async function branchOf(originalTitle) {
+      const upload = stubs["./storage/storage"].uploadData;
+      upload.resetHistory();
+      await aiAgentOracle.handleBranch(
+        "0xUser",
+        123,
+        457,
+        124,
+        encrypted({ originalTitle }),
+        "0xkey",
+        event(),
+      );
+      const titles = upload
+        .getCalls()
+        .map((call) => {
+          try {
+            return decryptSymmetrically(call.args[0].toString(), FAKE_SESSION_KEY).title;
+          } catch {
+            return undefined; // the key file is not a sealed JSON file
+          }
+        })
+        .filter((title) => title !== undefined);
+      expect(titles).to.have.lengthOf(1);
+      return titles[0];
+    }
+
+    it("is the limit the validator exports", () => {
+      expect(require("../src/payloadValidator").MAX_TITLE_LENGTH).to.equal(MAX_TITLE_LENGTH);
+    });
+
+    it("writes a branch title no longer than the limit, and a branch of that branch is accepted", async () => {
+      const original = "t".repeat(MAX_TITLE_LENGTH);
+
+      const first = await branchOf(original);
+      expect(first.startsWith("Branch of t")).to.equal(true);
+      expect(first.length).to.equal(MAX_TITLE_LENGTH);
+
+      const second = await branchOf(first);
+      expect(second.length).to.be.at.most(MAX_TITLE_LENGTH);
+      const submitBranch = stubs["./contractUtility"].initializeOracle().contract.submitBranch;
+      expect(submitBranch.callCount, "both branches are submitted").to.equal(2);
+    });
+
+    it("keeps a short branch title whole", async () => {
+      expect(await branchOf("My Conversation")).to.equal("Branch of My Conversation");
+    });
+
+    it("never cuts a character in two", async () => {
+      // "Branch of " and 89 letters is 99 code units; the emoji after them is two, so it goes whole.
+      const original = `${"a".repeat(89)}\u{1F600}tail`;
+
+      const title = await branchOf(original);
+
+      expect(title).to.equal(`Branch of ${"a".repeat(89)}`);
+      expect(LONE_SURROGATE.test(title)).to.equal(false);
+    });
+
+    it("accepts a branch of a conversation whose title the oracle wrote before titles were capped", async () => {
+      // The longest such title: the prefix on a title of the full limit.
+      const written = `Branch of ${"t".repeat(MAX_TITLE_LENGTH)}`;
+
+      const title = await branchOf(written);
+
+      expect(title.length).to.equal(MAX_TITLE_LENGTH);
+    });
+
+    it("accepts deleting a conversation whose title the oracle wrote before titles were capped", async () => {
+      // The dApp sends the conversation's stored title with a delete.
+      const written = `Branch of ${"t".repeat(MAX_TITLE_LENGTH)}`;
+
+      await aiAgentOracle.handleMetadataUpdate(
+        "0xUser",
+        124,
+        encrypted({ title: written, isDeleted: true }),
+        "0xkey",
+        event(),
+      );
+
+      const submitMeta =
+        stubs["./contractUtility"].initializeOracle().contract.submitConversationMetadata;
+      expect(submitMeta.calledOnce).to.equal(true);
+    });
+
+    it("still refuses a title longer than any the oracle has written", async () => {
+      const tooLong = `Branch of ${"t".repeat(MAX_TITLE_LENGTH + 1)}`;
+
+      const thrown = await aiAgentOracle
+        .handleBranch("0xUser", 123, 457, 124, encrypted({ originalTitle: tooLong }), "0xkey", event())
+        .then(
+          () => undefined,
+          (error) => error,
+        );
+
+      expect(thrown?.name).to.equal("BadInputError");
+    });
+  });
+
   describe("receipt waits are bounded", () => {
     const OWN_TX = "0xOwnTx";
 
